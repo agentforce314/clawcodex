@@ -1,4 +1,4 @@
-"""memory — ``/memory`` memory-file picker (port of TS local-jsx, degraded no-spawn).
+"""memory — ``/memory`` memory-file picker (port of TS local-jsx).
 
 Port of ``typescript/src/commands/memory/`` + the core of ``MemoryFileSelector``.
 Presents the CLAUDE.md memory hierarchy — the synthetic **User memory**
@@ -9,12 +9,17 @@ enumerated by the ``claude_md`` port — ensure-creates the selected file
 (exclusive-create; existing content preserved), and reports its path with an editor
 hint.
 
+The FULL port — picker overlay + TS ``editFileInEditor``'s suspend-aware
+``$EDITOR`` spawn + post-edit cache bust — lives in the Ink TUI
+(``ui-tui/src/components/memoryPicker.tsx`` + ``ui-tui/src/lib/memoryEdit.ts``),
+fed by the agent-server's ``memory_targets`` / ``memory_edited`` controls over
+``build_memory_options`` below. This InteractiveCommand remains the UIHost-driven
+fallback for non-TUI hosts (and yields the clean ``NullUIHost`` engine error on
+headless surfaces); with no way to suspend a caller's screen from here, it
+reports the path instead of spawning (the ``/copy`` clipboard standard — the
+cancel/error strings stay TS-verbatim).
+
 Deliberate divergences (documented for parity review):
-  * **No ``$EDITOR`` spawn.** TS ``editFileInEditor`` suspends the Ink app; Python has
-    no suspend-aware helper, and spawning an editor inside a full-screen TUI corrupts the
-    screen. The success message is adapted accordingly (an "Opened … in your editor"
-    claim would be false — the ``/copy`` clipboard standard); the cancel/error strings
-    stay TS-verbatim.
   * **Folder-open extras dropped** (auto-memory / team / agent folders — need the
     open-folder mechanism and those subsystems).
   * Rules files are listed flat (the ``select`` primitive has flat labels; TS indents).

@@ -10,6 +10,7 @@ const buildOverlayState = (): OverlayState => ({
   clarify: null,
   confirm: null,
   logoPicker: false,
+  memoryPicker: false,
   modelPicker: false,
   pager: null,
   petPicker: false,
@@ -33,6 +34,7 @@ export const $isBlocked = computed(
     clarify,
     confirm,
     logoPicker,
+    memoryPicker,
     modelPicker,
     pager,
     petPicker,
@@ -51,6 +53,7 @@ export const $isBlocked = computed(
       clarify ||
       confirm ||
       logoPicker ||
+      memoryPicker ||
       modelPicker ||
       pager ||
       petPicker ||
@@ -86,6 +89,7 @@ export const resetFlowOverlays = () =>
     agents: $overlayState.get().agents,
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     logoPicker: $overlayState.get().logoPicker,
+    memoryPicker: $overlayState.get().memoryPicker,
     modelPicker: $overlayState.get().modelPicker,
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,

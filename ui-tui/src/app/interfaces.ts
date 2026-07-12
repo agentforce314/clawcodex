@@ -141,6 +141,7 @@ export interface OverlayState {
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
   logoPicker: boolean
+  memoryPicker: boolean
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean
@@ -412,6 +413,7 @@ export interface AppLayoutActions {
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onLogoSelect: (value: string) => void
+  onMemorySelect: (path: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -476,6 +478,7 @@ export interface AppOverlaysProps {
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onLogoSelect: (value: string) => void
+  onMemorySelect: (path: string) => void
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

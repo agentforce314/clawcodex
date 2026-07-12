@@ -1,4 +1,12 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@clawcodex/ink'
+import {
+  type ScrollBoxHandle,
+  useApp,
+  useHasSelection,
+  useSelection,
+  useStdout,
+  useTerminalTitle,
+  withInkSuspended
+} from '@clawcodex/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -21,6 +29,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
+import { openMemoryFileInEditor } from '../lib/memoryEdit.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -1102,6 +1111,22 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/logo ${value}`)
   }, [])
 
+  // /memory picker choice → the memory.tsx flow: ensure-create, $EDITOR under
+  // the alt-screen suspend, "Opened memory file at …" system line, and a
+  // memory_edited cache bust so the next turn re-reads the file.
+  const onMemorySelect = useCallback(
+    (path: string) => {
+      patchOverlayState({ memoryPicker: false })
+      void openMemoryFileInEditor(path, {
+        cwd: getUiState().info?.cwd || process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd(),
+        notifyEdited: () => void gw.request('memory.edited', {}).catch(() => {}),
+        suspend: withInkSuspended,
+        sys
+      })
+    },
+    [gw, sys]
+  )
+
   const closeLiveSession = useCallback(
     async (id: string) => {
       patchUiState({ status: 'closing session…' })
@@ -1206,6 +1231,7 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onLogoSelect,
+      onMemorySelect,
       onModelSelect,
       // Resuming a cold session from the overlay CLOSES the current one, so it
       // must respect the busy guard just like the `/resume` slash path.
@@ -1230,6 +1256,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       newPromptSession,
       onLogoSelect,
+      onMemorySelect,
       onModelSelect,
       session
     ]

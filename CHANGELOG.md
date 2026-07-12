@@ -32,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ⏰ 1 scheduled` line above the composer (cronStore + CronIndicator), fed
   by new `cron_status` events that also render fire/stop/restore lines in
   the transcript.
+- **`/memory` now opens memory files in your `$EDITOR` from the TUI** — the
+  full port of openclaude's memory-file picker (`commands/memory/` +
+  `MemoryFileSelector`). Typing `/memory` opens a picker overlay listing the
+  memory hierarchy (synthetic **User memory** `~/.clawcodex/CLAUDE.md` and
+  **Project memory** rows first, then every loaded CLAUDE.md / rules file /
+  `@`-import, each with its "Saved in …" / "@-imported" description), served
+  by a new `memory_targets` control over the shared `build_memory_options`
+  enumeration. Selecting a file ensure-creates it (exclusive-create preserves
+  existing content), suspends the TUI to the alternate screen, and spawns
+  `$VISUAL`/`$EDITOR` (bare `code`/`subl` get their wait flags, the TS
+  `EDITOR_OVERRIDES`); on return the TS-verbatim "Opened memory file at …"
+  line lands in the transcript and a `memory_edited` control busts the
+  backend's memory-file cache so the very next turn re-reads the edited
+  content. Previously `/memory` wasn't wired into the TUI at all — the
+  Python `InteractiveCommand` port existed but had no reachable surface.
 
 ### Fixed
 

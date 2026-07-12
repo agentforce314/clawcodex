@@ -205,6 +205,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ logoPicker: false })
     }
 
+    if (overlay.memoryPicker) {
+      return patchOverlayState({ memoryPicker: false })
+    }
+
     if (overlay.billing) {
       return patchOverlayState({ billing: null })
     }
