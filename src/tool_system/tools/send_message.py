@@ -320,6 +320,27 @@ def _broadcast(
     )
 
 
+def _approve_flag(message_obj: dict[str, Any]) -> bool:
+    """Read ``approve`` with the original's semanticBoolean→z.boolean strictness.
+
+    The original wraps ``approve`` in ``semanticBoolean()`` inside the union
+    branches (SendMessageTool.ts:55,61): the exact literals "true"/"false"
+    coerce, and anything else — junk strings, numbers, a missing field —
+    fails z.boolean(), rejecting the whole message. The port's loose oneOf
+    (no ``properties``) never type-checks ``approve``, so the strictness
+    must live here: shutdown/plan approvals are control-plane messages, and
+    a truthy junk value ("no", "0", 1) must not read as an approval.
+    """
+    from ..schema_validation import semantic_coerce
+
+    coerced = semantic_coerce(message_obj.get("approve"), {"type": "boolean"})
+    if not isinstance(coerced, bool):
+        raise ToolInputError(
+            'approve must be a boolean (or the string literal "true"/"false").'
+        )
+    return coerced
+
+
 def _structured_message_to_envelope(
     *,
     message_obj: dict[str, Any],
@@ -344,7 +365,7 @@ def _structured_message_to_envelope(
             "",  # caller passes the original ``to``
         )
     if msg_type == "shutdown_response":
-        approve = bool(message_obj.get("approve"))
+        approve = _approve_flag(message_obj)
         if approve:
             return (
                 create_shutdown_approved_message(
@@ -371,7 +392,7 @@ def _structured_message_to_envelope(
             raise ToolInputError(
                 "plan_approval_response can only be sent by the team lead."
             )
-        approve = bool(message_obj.get("approve"))
+        approve = _approve_flag(message_obj)
         permission_mode = str(
             message_obj.get("permission_mode") or "default"
         )
