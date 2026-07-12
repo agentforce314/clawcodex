@@ -43,6 +43,34 @@ const renderPlain = (node: React.ReactNode) => {
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
 }
 
+// Like renderPlain, but returns the raw output stream with escape
+// sequences intact — for asserting on OSC 8 hyperlink metadata.
+const renderRaw = (node: React.ReactNode) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 120, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(node, {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return output
+}
+
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
     expect(matches('say _hi_ there')).toEqual(['_hi_'])
@@ -248,37 +276,185 @@ describe('Md wrapping', () => {
 })
 
 describe('Md link labels', () => {
-  it('renders bare URLs with readable slug labels', () => {
-    const lines = renderPlain(
-      React.createElement(
-        Box,
-        { width: 120 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: 'see https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure for details'
-        })
-      )
-    )
-
-    const rendered = lines.join('\n')
-
-    expect(rendered).toContain('Puerto Rico El Yunque Rainforest Adventure')
-    expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
-  })
-
-  it('keeps explicit markdown labels as the immediate fallback', () => {
+  // URLs must stay visible — see the ResolvedLink comment in
+  // components/markdown.tsx for why.
+  it('renders bare URLs verbatim', () => {
     const lines = renderPlain(
       React.createElement(
         Box,
         { width: 80 },
         React.createElement(Md, {
           t: DEFAULT_THEME,
-          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
+          text: 'see https://www.expedia.com/things-to-do/el-yunque for details'
         })
       )
     )
 
-    expect(lines.join('\n')).toContain('Trip details')
+    expect(lines.join('\n')).toContain('https://www.expedia.com/things-to-do/el-yunque')
+  })
+
+  it('renders explicit markdown labels with the target URL alongside', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/deals)'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Trip details')
+    expect(rendered).toContain('(https://www.expedia.com/deals)')
+  })
+
+  it('does not duplicate the URL when the label is the URL itself', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[https://example.com/docs](https://example.com/docs) and <user@example.com>'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('https://example.com/docs')
+    expect(rendered).not.toContain('(https://example.com/docs)')
+    expect(rendered).toContain('user@example.com')
+    expect(rendered).not.toContain('(mailto:user@example.com)')
+  })
+
+  it('strips the mailto scheme from labeled-link suffixes', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Email me](mailto:user@example.com)'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Email me (user@example.com)')
+    expect(rendered).not.toContain('mailto:')
+  })
+
+  it('suppresses the URL suffix when the label normalizes to the target', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[example.com/docs](https://example.com/docs)'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('https://example.com/docs')
+    expect(rendered).not.toContain('(https://example.com/docs)')
+  })
+
+  it('loses no characters when a long URL wraps across lines', () => {
+    const longUrl = `https://www.example.com/very/long/path/${'segment-abcdefgh/'.repeat(6)}index.html`
+
+    const lines = renderPlain(
+      React.createElement(Box, { width: 80 }, React.createElement(Md, { t: DEFAULT_THEME, text: `see ${longUrl}` }))
+    )
+
+    // Hard wrap may split the URL across rows; joining without newlines
+    // must reconstruct it exactly — the terminal shows every character.
+    expect(lines.join('')).toContain(longUrl)
+  })
+
+  it('keeps balanced parens in bare URLs but trims prose punctuation', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 100 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: 'see https://en.wikipedia.org/wiki/Foo_(bar), then (https://x.com/a) after'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('https://en.wikipedia.org/wiki/Foo_(bar), then')
+    expect(rendered).toContain('(https://x.com/a) after')
+  })
+
+  it('emits OSC 8 hyperlink metadata with the exact click target', () => {
+    const raw = renderRaw(
+      React.createElement(
+        Box,
+        { width: 100 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[Trip details](https://www.expedia.com/deals) and https://en.wikipedia.org/wiki/Foo_(bar).'
+        })
+      )
+    )
+
+    // OSC 8 form: ESC ] 8 ; params ; URI terminator — the URI must be the
+    // full target (balanced paren kept, trailing period trimmed).
+    expect(raw).toMatch(new RegExp(`\\]8;[^;]*;https://www\\.expedia\\.com/deals(?:${BEL}|${ESC}\\\\)`))
+    expect(raw).toMatch(new RegExp(`\\]8;[^;]*;https://en\\.wikipedia\\.org/wiki/Foo_\\(bar\\)(?:${BEL}|${ESC}\\\\)`))
+  })
+
+  it('strips bidi and C0 control characters from displayed link text', () => {
+    // U+202E (right-to-left override) can visually reorder a domain on
+    // software-bidi terminals, and C0 controls should never leave the link
+    // text either — neither may reach the visible output.
+    const rlo = String.fromCharCode(0x202e)
+    const bel = String.fromCharCode(7)
+
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: `see https://example.com/${rlo}gro${bel}.evil now` })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('https://example.com/gro.evil')
+    expect(rendered).not.toContain(rlo)
+    expect(rendered).not.toContain(bel)
+  })
+
+  it('handles paren floods after bare URLs in linear time', () => {
+    // Regression: trimBareUrl used to rescan the whole string once per
+    // trimmed character (O(n²)) — a model-printed URL followed by tens of
+    // thousands of ')' would freeze the render synchronously. Post-fix
+    // this completes instantly; pre-fix it blows the test timeout.
+    const flood = ')'.repeat(50_000)
+
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: `see https://a.com/x${flood} end` })
+      )
+    )
+
+    // The link target stops at the URL; the flood renders as plain text
+    // after it, with no characters lost.
+    expect(lines.join('')).toContain(`https://a.com/x${flood}`)
   })
 })
 
