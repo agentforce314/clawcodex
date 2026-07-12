@@ -868,6 +868,12 @@ def _handle_openai_subscription_login(console, Prompt):
     console.print(
         "[dim]Subscription models: " + ", ".join(SUBSCRIPTION_MODELS) + "[/dim]"
     )
+    import os as _os
+    if (_os.environ.get("OPENAI_API_KEY") or "").strip():
+        console.print(
+            "[yellow]Note:[/yellow] OPENAI_API_KEY is set in your environment "
+            "and takes precedence — unset it to use the subscription."
+        )
     return 0
 
 

@@ -324,12 +324,13 @@ def _sse(event: dict) -> str:
 
 def _subscription_provider(monkeypatch) -> OpenAIProvider:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with patch.object(auth, "get_valid_credentials", return_value=_credentials()):
-        with patch(
-            "src.auth.openai_subscription.get_valid_credentials",
-            return_value=_credentials(),
-        ):
-            provider = OpenAIProvider(api_key="")
+    # Construction checks credential PRESENCE only (load_credentials);
+    # request-time freshness goes through get_valid_credentials.
+    with patch(
+        "src.auth.openai_subscription.load_credentials",
+        return_value=_credentials(),
+    ):
+        provider = OpenAIProvider(api_key="")
     assert provider._subscription_active
     return provider
 
@@ -423,6 +424,38 @@ def test_provider_streams_responses_and_builds_chat_response(monkeypatch) -> Non
     ]
 
 
+def test_chat_stream_yields_text_deltas(monkeypatch) -> None:
+    provider = _subscription_provider(monkeypatch)
+    lines = [
+        _sse({"type": "response.output_text.delta", "delta": "hel"}),
+        _sse({"type": "response.output_text.delta", "delta": "lo"}),
+        _sse({"type": "response.completed", "response": {
+            "model": "gpt-5.4", "usage": {"input_tokens": 1, "output_tokens": 1},
+        }}),
+    ]
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, headers=None, json=None):
+            return "request"
+
+        def send(self, request, stream=False):
+            return _FakeStreamResponse(lines)
+
+        def close(self):
+            pass
+
+    with patch(
+        "src.auth.openai_subscription.get_valid_credentials",
+        return_value=_credentials(),
+    ), patch("httpx.Client", _FakeClient):
+        assert list(provider.chat_stream([{"role": "user", "content": "hi"}])) == [
+            "hel", "lo",
+        ]
+
+
 def test_provider_refreshes_once_on_401(monkeypatch) -> None:
     provider = _subscription_provider(monkeypatch)
 
@@ -501,6 +534,84 @@ def test_provider_surfaces_backend_failure_events(monkeypatch) -> None:
             assert "usage limit reached" in str(exc)
 
 
+def test_abort_mid_stream_raises_and_closes_response(monkeypatch) -> None:
+    """ESC during generation: AbortError surfaces promptly and the guard's
+    close-on-abort listener actually closes the underlying httpx response
+    (via the _HttpxStreamHolder.response slot)."""
+    import threading
+
+    from src.utils.abort_controller import AbortController, AbortError
+
+    provider = _subscription_provider(monkeypatch)
+    controller = AbortController()
+    started = threading.Event()
+
+    class _HangingResponse(_FakeStreamResponse):
+        def iter_lines(self):
+            yield _sse({"type": "response.output_text.delta", "delta": "par"})
+            started.set()
+            # Block like a stalled socket until the abort closes us.
+            while not self.closed:
+                time.sleep(0.02)
+            raise RuntimeError("connection closed")
+
+    fake_response = _HangingResponse([])
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, headers=None, json=None):
+            return "request"
+
+        def send(self, request, stream=False):
+            return fake_response
+
+        def close(self):
+            pass
+
+    def _abort_after_first_chunk():
+        started.wait(timeout=5)
+        controller.abort("user_interrupt")
+
+    aborter = threading.Thread(target=_abort_after_first_chunk, daemon=True)
+    aborter.start()
+    with patch(
+        "src.auth.openai_subscription.get_valid_credentials",
+        return_value=_credentials(),
+    ), patch("httpx.Client", _FakeClient):
+        try:
+            provider.chat_stream_response(
+                [{"role": "user", "content": "hi"}],
+                abort_signal=controller.signal,
+            )
+            raise AssertionError("expected AbortError")
+        except AbortError:
+            pass
+    aborter.join(timeout=5)
+    assert fake_response.closed, "abort must close the underlying response"
+
+
+def test_effort_setting_reaches_reasoning_body(monkeypatch) -> None:
+    """/effort (injected as extra_body.reasoning_effort by the agent-server
+    wrapper) wins over the default; xhigh clamps to high."""
+    provider = _subscription_provider(monkeypatch)
+    body = provider._subscription_request_body(
+        [{"role": "user", "content": "hi"}], None,
+        extra_body={"reasoning_effort": "low"},
+    )
+    assert body["reasoning"]["effort"] == "low"
+    body = provider._subscription_request_body(
+        [{"role": "user", "content": "hi"}], None,
+        extra_body={"reasoning_effort": "xhigh"},
+    )
+    assert body["reasoning"]["effort"] == "high"
+    body = provider._subscription_request_body(
+        [{"role": "user", "content": "hi"}], None,
+    )
+    assert body["reasoning"]["effort"] == "medium"
+
+
 def test_provider_lists_subscription_models(monkeypatch) -> None:
     provider = _subscription_provider(monkeypatch)
     models = provider.get_available_models()
@@ -509,7 +620,7 @@ def test_provider_lists_subscription_models(monkeypatch) -> None:
 
 def test_api_key_wins_over_subscription(monkeypatch) -> None:
     with patch(
-        "src.auth.openai_subscription.get_valid_credentials",
+        "src.auth.openai_subscription.load_credentials",
         return_value=_credentials(),
     ):
         provider = OpenAIProvider(api_key="sk-live")

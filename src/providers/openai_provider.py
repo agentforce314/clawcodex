@@ -51,15 +51,24 @@ logger = logging.getLogger(__name__)
 _REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
-def _subscription_reasoning_effort() -> str:
+def _subscription_reasoning_effort(requested: str | None = None) -> str:
     """Reasoning effort for subscription requests.
 
-    ``medium`` is both OpenCode's default (transform.ts:1176) and the
-    backend's own default_reasoning_level (Codex CLI models cache).
-    Overridable via ``CLAWCODEX_OPENAI_REASONING_EFFORT``.
+    Precedence: the session's ``/effort`` setting (arrives as
+    ``extra_body.reasoning_effort`` via the agent-server's
+    ``_EffortProvider`` wrapper) → ``CLAWCODEX_OPENAI_REASONING_EFFORT``
+    → ``medium`` (OpenCode's default, transform.ts:1176, and the
+    backend's own default_reasoning_level). ``xhigh``/``max`` clamp to
+    ``high`` — the general gpt-5.x models advertise low/medium/high and
+    reject higher tiers.
     """
-    effort = os.environ.get("CLAWCODEX_OPENAI_REASONING_EFFORT", "").strip().lower()
-    return effort if effort in _REASONING_EFFORTS else "medium"
+    for candidate in (requested, os.environ.get("CLAWCODEX_OPENAI_REASONING_EFFORT")):
+        effort = (candidate or "").strip().lower()
+        if effort in ("xhigh", "max"):
+            return "high"
+        if effort in _REASONING_EFFORTS:
+            return effort
+    return "medium"
 
 
 class _HttpxStreamHolder:
@@ -105,20 +114,14 @@ class OpenAIProvider(OpenAICompatibleProvider):
         # Anthropic provider's Claude-subscription fallback.
         oauth_eligible = not base_url or urlparse(base_url).hostname == "api.openai.com"
         if not api_key and oauth_eligible:
-            from src.auth.openai_subscription import get_valid_credentials
+            # Presence check only — deliberately NOT ``get_valid_credentials``:
+            # that can perform a blocking token refresh (30 s urllib timeout),
+            # and providers are constructed at startup and on every /model
+            # switch. The request path refreshes right before each call, so
+            # freshness at construction time buys nothing.
+            from src.auth.openai_subscription import load_credentials
 
-            try:
-                credentials = get_valid_credentials()
-            except RuntimeError as exc:
-                # A broken refresh must not brick provider construction —
-                # surface at request time instead (validation already passed
-                # on the credential file's existence).
-                logger.warning("ChatGPT subscription refresh failed: %s", exc)
-                credentials = None
-                from src.auth.openai_subscription import load_credentials
-
-                if load_credentials() is not None:
-                    self._subscription_active = True
+            credentials = load_credentials()
             if credentials is not None:
                 self._subscription_active = True
                 self._subscription_account_id = credentials.account_id
@@ -285,7 +288,11 @@ class OpenAIProvider(OpenAICompatibleProvider):
             "stream": True,
             "include": list(INCLUDE_ENCRYPTED_REASONING),
             "reasoning": {
-                "effort": _subscription_reasoning_effort(),
+                # /effort arrives as extra_body.reasoning_effort via the
+                # agent-server's _EffortProvider wrapper (agent_server.py).
+                "effort": _subscription_reasoning_effort(
+                    (kwargs.get("extra_body") or {}).get("reasoning_effort")
+                ),
                 "summary": "auto",
             },
             "prompt_cache_key": self._subscription_session_id,
