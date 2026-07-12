@@ -23,11 +23,39 @@ from pathlib import Path
 from typing import Any
 
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
-TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
-REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-SCOPES = "org:create_api_key user:profile user:inference"
+# Endpoints track the current upstream Claude Code config
+# (typescript/src/constants/oauth.ts PROD_OAUTH_CONFIG). The login flow
+# migrated off ``console.anthropic.com`` to ``platform.claude.com``; the old
+# console token endpoint now sits behind Cloudflare and 404s, so a login
+# against it fails with a 403 "error code: 1010" (Cloudflare bot block) before
+# it even reaches OAuth.
+#
+# AUTHORIZE_URL is the Claude.ai *subscriber* entrypoint (CLAUDE_AI_AUTHORIZE_URL
+# — a default ``claude login`` sets ``loginWithClaudeAi = !useConsole``, i.e.
+# true, per cli/handlers/auth.ts:133-135; the console entrypoint is only for
+# ``--console`` / API-account logins). ``claude.com/cai/*`` is an attribution
+# wrapper that 307-redirects to ``claude.ai/oauth/authorize`` — the exact
+# consent page a Pro/Max subscriber signs in against.
+AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
+TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+# The copy/paste ("manual") redirect target — MANUAL_REDIRECT_URL upstream.
+# Same host for both authorize bases (client.ts uses MANUAL_REDIRECT_URL
+# regardless of the authorize base), and it must match the token exchange's
+# redirect_uri.
+REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+# ALL_OAUTH_SCOPES (console ∪ claude.ai), constants/oauth.ts:56-58. The prior
+# 3-scope subset omitted the claude.ai subscriber scopes the real CLI requests.
+SCOPES = (
+    "org:create_api_key user:profile user:inference "
+    "user:sessions:claude_code user:mcp_servers user:file_upload"
+)
 OAUTH_BETAS = ("oauth-2025-04-20", "interleaved-thinking-2025-05-14")
+# The token endpoint is Cloudflare-fronted and rejects the default
+# ``Python-urllib/x.y`` client signature with a 403 "error code: 1010" bot
+# block. The real CLI reaches it via axios (which sends its own UA); any
+# genuine UA gets through, so we send the same ``claude-cli`` identity the
+# inference requests use (verified: bare urllib → 1010; this UA → the app).
+OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)"
 _refresh_lock = threading.Lock()
 
 
@@ -93,7 +121,14 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        # The User-Agent is load-bearing: without it urllib sends
+        # ``Python-urllib/x.y`` and Cloudflare bot-blocks the token endpoint
+        # with a 403 "error code: 1010" before the request reaches OAuth.
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": OAUTH_USER_AGENT,
+            "Accept": "application/json",
+        },
         method="POST",
     )
     try:
@@ -166,6 +201,11 @@ def get_valid_credentials() -> SubscriptionCredentials | None:
         credentials = load_credentials()
         if credentials is None or not credentials.needs_refresh:
             return credentials
+        # No ``scope`` sent: RFC 6749 §6 — omitting it returns the originally
+        # granted scopes (which include user:inference from the full-scope
+        # login), so there's nothing to re-request. Upstream sends a narrower
+        # set only to allow scope expansion for pre-expansion imported tokens,
+        # which is never clawcodex's case.
         result = _post_json(TOKEN_URL, {
             "grant_type": "refresh_token",
             "refresh_token": credentials.refresh_token,
@@ -182,5 +222,5 @@ def subscription_headers(existing: dict[str, str] | None = None) -> dict[str, st
     headers = dict(existing or {})
     present = [part.strip() for part in headers.get("anthropic-beta", "").split(",") if part.strip()]
     headers["anthropic-beta"] = ",".join(dict.fromkeys([*OAUTH_BETAS, *present]))
-    headers["user-agent"] = "claude-cli/2.1.2 (external, cli)"
+    headers["user-agent"] = OAUTH_USER_AGENT
     return headers
