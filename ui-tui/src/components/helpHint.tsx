@@ -12,7 +12,9 @@ const COMMON_COMMANDS: [string, string][] = [
   ['/exit', 'exit clawcodex']
 ]
 
-const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
+// 9 rows so the link-opening gesture (inserted near the top when the
+// terminal has one) doesn't push Tab-completion out of the preview.
+const HOTKEY_PREVIEW = HOTKEYS.slice(0, 9)
 
 export function HelpHint({ t }: { t: Theme }) {
   const labelW = Math.max(...COMMON_COMMANDS.map(([k]) => k.length), ...HOTKEY_PREVIEW.map(([k]) => k.length))

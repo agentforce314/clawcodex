@@ -5,6 +5,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { LINK_TIP_TEXT, resetLinkTipForTests } from '../lib/linkAffordance.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -1626,6 +1627,94 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Apple Terminal link tip', () => {
+    // The handler calls linkTipFor with ambient env + supportsHyperlinks(),
+    // which reads more than TERM_PROGRAM: LC_TERMINAL (iTerm2 exports it
+    // into every shell, and vitest inherits it), TERM (xterm-kitty) and
+    // FORCE_HYPERLINK. The helper must pin ALL detection inputs or these
+    // tests fail on unchanged code when run from an OSC 8 terminal.
+    const withEnv = (overrides: Record<string, string | undefined>, fn: () => void) => {
+      const prev = new Map(Object.keys(overrides).map(key => [key, process.env[key]]))
+
+      const apply = (key: string, value: string | undefined) => {
+        if (value === undefined) {
+          delete process.env[key]
+        } else {
+          process.env[key] = value
+        }
+      }
+
+      for (const [key, value] of Object.entries(overrides)) {
+        apply(key, value)
+      }
+
+      try {
+        fn()
+      } finally {
+        for (const [key, value] of prev) {
+          apply(key, value)
+        }
+      }
+    }
+
+    const APPLE_TERMINAL_ENV = {
+      FORCE_HYPERLINK: undefined,
+      LC_TERMINAL: undefined,
+      TERM: 'xterm-256color',
+      TERM_PROGRAM: 'Apple_Terminal'
+    }
+
+    beforeEach(() => {
+      resetLinkTipForTests()
+    })
+
+    it('prints the tip once, after the first assistant message containing a URL', () => {
+      withEnv(APPLE_TERMINAL_ENV, () => {
+        const ctx = buildCtx([])
+        const onEvent = createGatewayEventHandler(ctx)
+
+        onEvent({ payload: { text: 'plain answer, no links' }, type: 'message.complete' } as any)
+        expect(ctx.system.sys).not.toHaveBeenCalled()
+
+        onEvent({
+          payload: { text: 'see [docs](https://example.com/docs) for details' },
+          type: 'message.complete'
+        } as any)
+        expect(ctx.system.sys).toHaveBeenCalledWith(LINK_TIP_TEXT)
+
+        // A later linky message must not repeat the tip.
+        ;(ctx.system.sys as ReturnType<typeof vi.fn>).mockClear()
+        onEvent({ payload: { text: 'also https://example.org' }, type: 'message.complete' } as any)
+        expect(ctx.system.sys).not.toHaveBeenCalledWith(LINK_TIP_TEXT)
+      })
+    })
+
+    it('stays quiet outside Apple Terminal', () => {
+      withEnv({ ...APPLE_TERMINAL_ENV, TERM_PROGRAM: 'vscode' }, () => {
+        const ctx = buildCtx([])
+        const onEvent = createGatewayEventHandler(ctx)
+
+        onEvent({ payload: { text: 'see https://example.com' }, type: 'message.complete' } as any)
+        expect(ctx.system.sys).not.toHaveBeenCalledWith(LINK_TIP_TEXT)
+      })
+    })
+
+    it('lands after the assistant message in the transcript, not before', () => {
+      withEnv(APPLE_TERMINAL_ENV, () => {
+        const order: string[] = []
+        const ctx = buildCtx([])
+        ctx.transcript.appendMessage = (msg: Msg) => order.push(`msg:${msg.text}`)
+        ctx.system.sys = vi.fn((text: string) => order.push(`sys:${text}`))
+
+        const onEvent = createGatewayEventHandler(ctx)
+
+        onEvent({ payload: { text: 'see https://example.com' }, type: 'message.complete' } as any)
+
+        expect(order).toEqual(['msg:see https://example.com', `sys:${LINK_TIP_TEXT}`])
+      })
     })
   })
 })

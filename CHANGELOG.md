@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ⏰ 1 scheduled` line above the composer (cronStore + CronIndicator), fed
   by new `cron_status` events that also render fire/stop/restore lines in
   the transcript.
+- **Link-opening gesture is now discoverable per terminal.** Apple Terminal
+  has no OSC 8 hyperlink support (still true on macOS 26), and the default
+  inline mode deliberately leaves the mouse to the terminal — so the only
+  way to open an agent-printed link there is Apple Terminal's own URL
+  detection: hold ⌘ and double-click the URL. That gesture was undocumented
+  and undiscoverable, reading as "links are broken". The TUI now prints a
+  one-time dim tip under the first assistant message that contains a URL
+  (Apple Terminal only), and `?` quick help / `/help` list the
+  terminal-appropriate gesture (`Cmd+click link` in OSC 8 terminals,
+  `Cmd+double-click URL` in Apple Terminal, omitted when unknown). VS Code
+  (`TERM_PROGRAM=vscode` — also Cursor/Windsurf) is now recognized as an
+  OSC 8 terminal: xterm.js has handled `Cmd+click` hyperlinks since 2022,
+  and `supportsHyperlinks` is exported from `@clawcodex/ink` for app-level
+  use.
 - **`/memory` now opens memory files in your `$EDITOR` from the TUI** — the
   full port of openclaude's memory-file picker (`commands/memory/` +
   `MemoryFileSelector`). Typing `/memory` opens a picker overlay listing the
