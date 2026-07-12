@@ -415,16 +415,18 @@ describe('Md link labels', () => {
     expect(raw).toMatch(new RegExp(`\\]8;[^;]*;https://en\\.wikipedia\\.org/wiki/Foo_\\(bar\\)(?:${BEL}|${ESC}\\\\)`))
   })
 
-  it('strips bidi control characters from displayed link text', () => {
+  it('strips bidi and C0 control characters from displayed link text', () => {
     // U+202E (right-to-left override) can visually reorder a domain on
-    // software-bidi terminals — it must never reach the visible link text.
+    // software-bidi terminals, and C0 controls should never leave the link
+    // text either — neither may reach the visible output.
     const rlo = String.fromCharCode(0x202e)
+    const bel = String.fromCharCode(7)
 
     const lines = renderPlain(
       React.createElement(
         Box,
         { width: 80 },
-        React.createElement(Md, { t: DEFAULT_THEME, text: `see https://example.com/${rlo}gro.evil now` })
+        React.createElement(Md, { t: DEFAULT_THEME, text: `see https://example.com/${rlo}gro${bel}.evil now` })
       )
     )
 
@@ -432,6 +434,27 @@ describe('Md link labels', () => {
 
     expect(rendered).toContain('https://example.com/gro.evil')
     expect(rendered).not.toContain(rlo)
+    expect(rendered).not.toContain(bel)
+  })
+
+  it('handles paren floods after bare URLs in linear time', () => {
+    // Regression: trimBareUrl used to rescan the whole string once per
+    // trimmed character (O(n²)) — a model-printed URL followed by tens of
+    // thousands of ')' would freeze the render synchronously. Post-fix
+    // this completes instantly; pre-fix it blows the test timeout.
+    const flood = ')'.repeat(50_000)
+
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, { t: DEFAULT_THEME, text: `see https://a.com/x${flood} end` })
+      )
+    )
+
+    // The link target stops at the URL; the flood renders as plain text
+    // after it, with no characters lost.
+    expect(lines.join('')).toContain(`https://a.com/x${flood}`)
   })
 })
 
