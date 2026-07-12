@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Bounded the ESC-cancel worker-thread queue in `OpenAICompatibleProvider.chat_stream_response` (`src/providers/openai_compatible.py`) to `maxsize=64`. Previously an unbounded `queue.Queue` let an orphaned worker accumulate chunks in memory indefinitely when a proxy kept sending bytes after abort without closing the SDK iterator (#278).
+- **URLs the agent prints are clickable again.** The TUI markdown renderer
+  (`ui-tui/src/components/markdown.tsx`) replaced every visible URL with a
+  remote-fetched page `<title>` (silently HTTP-GETting each URL the agent
+  printed) or a slug-derived label, leaving the real URL only in OSC 8
+  metadata. Terminals without OSC 8 support (e.g. Apple Terminal) strip
+  that metadata, so the URL was invisible, unclickable, and uncopyable —
+  and in the default inline mode the TUI never captures the mouse, so
+  terminal-native detection over the visible text is the only affordance
+  that works everywhere. Bare URLs now render verbatim, `[label](url)`
+  renders as `label (url)`, the stealth title fetch is gone, and links
+  remain OSC 8-wrapped for terminals with first-class hyperlink support
+  (Cmd+click in VS Code/iTerm2, plain click in fullscreen mode).
 
 ### Changed
 
