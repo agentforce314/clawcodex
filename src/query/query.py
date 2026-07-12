@@ -423,16 +423,54 @@ _THINKING_ELIGIBLE_MODEL_PATTERN = re.compile(
 
 
 def _model_supports_extended_thinking(model: str | None) -> bool:
-    """True iff the model is on the Anthropic Claude 4.x or newer family.
+    """True iff the model supports extended thinking at all (any type).
 
-    Extended thinking (``thinking={"type": "adaptive"}``) was introduced
-    with the Claude 4 series — the Anthropic API rejects the parameter
-    on 3.x and earlier. Detection is by name pattern so unreleased model
-    snapshots (e.g. ``claude-opus-4-7-20260201``) opt in automatically.
+    Thinking was introduced with the Claude 4 series — the Anthropic API
+    rejects any ``thinking`` param on 3.x and earlier. On the first-party
+    endpoint every Claude 4+ model (Sonnet, Opus, AND Haiku 4.5) supports
+    thinking (TS ``modelSupportsThinking``, thinking.ts:117-148, firstParty
+    branch). Detection is by name pattern so unreleased snapshots
+    (e.g. ``claude-opus-4-7-20260201``) opt in automatically.
+
+    NOTE: supporting thinking does NOT imply supporting the *adaptive*
+    thinking type — that's the narrower :func:`_model_supports_adaptive_thinking`
+    allowlist. Models here that aren't adaptive-capable take a token budget
+    instead (see the caller in ``_call_model_sync``).
     """
     if not model:
         return False
     return bool(_THINKING_ELIGIBLE_MODEL_PATTERN.search(model))
+
+
+def _model_supports_adaptive_thinking(model: str | None) -> bool:
+    """True iff the model supports the *adaptive* thinking type.
+
+    Only a subset of Claude 4 models accept ``thinking={"type": "adaptive"}``;
+    the rest support thinking only with an explicit ``budget_tokens``. Sending
+    adaptive to a non-adaptive model is rejected with HTTP 400 "adaptive
+    thinking is not supported on this model". Allowlist ported verbatim from
+    TS ``modelSupportsAdaptiveThinking`` (thinking.ts:152-169): Opus 4.6/4.7
+    and Sonnet 4.6. Substring match mirrors the reference's ``.includes()``
+    so dated snapshots (``claude-sonnet-4-6-20250929``) match.
+    """
+    if not model:
+        return False
+    m = model.lower()
+    return "opus-4-7" in m or "opus-4-6" in m or "sonnet-4-6" in m
+
+
+def _model_supports_effort(model: str | None) -> bool:
+    """True iff the model accepts ``output_config={"effort": ...}``.
+
+    Narrower than thinking support — Opus 4.6 and Sonnet 4.6 only (TS
+    ``modelSupportsEffort``, effort.ts:32-51). Sending effort to a model that
+    doesn't support it is rejected, so the caller gates on this independently
+    of the thinking type.
+    """
+    if not model:
+        return False
+    m = model.lower()
+    return "opus-4-6" in m or "sonnet-4-6" in m
 
 
 def _is_overloaded_error(e: Exception) -> bool:
@@ -910,14 +948,50 @@ async def _call_model_sync(
     # the provider's kwargs pass-through to client.messages.stream(
     # thinking=..., output_config=...). Off-API on older Claude versions
     # and on non-Anthropic providers, so guarded by both. ``None`` =
-    # auto-enable; ``True`` / ``False`` = caller override. Mirrors the
-    # TS reference which sends ``thinking: {type: "adaptive"}`` and
-    # ``output_config: {effort: ...}`` on every Claude 4.x request.
+    # auto-enable; ``True`` / ``False`` = caller override.
+    #
+    # The adaptive-vs-budget selection mirrors TS claude.ts:1612-1640:
+    # models that support thinking AND the adaptive type get
+    # ``{type: "adaptive"}``; models that support thinking but NOT adaptive
+    # (Sonnet 4.5, Haiku 4.5, older Opus 4.x, …) get an explicit
+    # ``{type: "enabled", budget_tokens: N}`` instead — sending adaptive to
+    # them is a hard 400 ("adaptive thinking is not supported on this
+    # model"). ``output_config.effort`` is gated separately and even more
+    # narrowly (Opus 4.6 / Sonnet 4.6 only). Getting either gate wrong
+    # breaks every request on the affected model — including the whole
+    # subscription/OAuth path, which is how this surfaced.
     if extended_thinking is not False and is_anthropic:
         provider_model = getattr(provider, "model", None) or call_kwargs.get("model")
         if extended_thinking is True or _model_supports_extended_thinking(provider_model):
-            call_kwargs["thinking"] = {"type": "adaptive"}
-            call_kwargs["output_config"] = {"effort": thinking_effort}
+            if _model_supports_adaptive_thinking(provider_model):
+                call_kwargs["thinking"] = {"type": "adaptive"}
+            else:
+                # Non-adaptive (incl. an explicit ``extended_thinking=True``
+                # on an unknown alias): budget thinking. This is the safe
+                # direction — budget works on any thinking-capable model,
+                # whereas adaptive 400s where unsupported; TS defaults an
+                # unknown first-party alias to adaptive (thinking.ts:178-183),
+                # we deliberately prefer budget. budget_tokens must be ≥ 1024
+                # (API minimum) and strictly less than max_tokens, which is
+                # already resolved above for every Anthropic request. TS uses
+                # maxOutputTokens-1 (claude.ts:1628-1635); we clamp identically.
+                _max_tok = int(call_kwargs.get("max_tokens") or 0)
+                if _max_tok > 1024:
+                    call_kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": max(1024, _max_tok - 1),
+                    }
+                else:
+                    # No budget in [1024, max_tokens) fits — omit thinking
+                    # rather than send an invalid request (max_tokens this
+                    # small only happens via an explicit tiny override).
+                    logger.debug(
+                        "thinking omitted: max_tokens=%s too small for a "
+                        "valid budget on non-adaptive model %s",
+                        _max_tok, provider_model,
+                    )
+            if _model_supports_effort(provider_model):
+                call_kwargs["output_config"] = {"effort": thinking_effort}
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams
