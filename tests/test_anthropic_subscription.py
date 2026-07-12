@@ -45,6 +45,47 @@ def test_complete_login_accepts_claude_copy_paste_code(tmp_path: Path, monkeypat
     assert payload["code_verifier"] == "verifier"
 
 
+def test_oauth_endpoints_are_current_platform_domain() -> None:
+    # The login flow migrated to platform.claude.com; the old
+    # console.anthropic.com token endpoint is Cloudflare-blocked/404 and made
+    # login fail with "error code: 1010". Guard against a regression to the
+    # stale hosts. (Mirrors typescript/src/constants/oauth.ts PROD_OAUTH_CONFIG.)
+    # Subscriber authorize entrypoint (claude.com/cai → 307 → claude.ai
+    # consent); console platform.claude.com/oauth/authorize is the --console
+    # path and must NOT be used for a subscription login.
+    assert auth.AUTHORIZE_URL == "https://claude.com/cai/oauth/authorize"
+    assert auth.TOKEN_URL == "https://platform.claude.com/v1/oauth/token"
+    assert auth.REDIRECT_URI == "https://platform.claude.com/oauth/code/callback"
+    assert "console.anthropic.com" not in auth.TOKEN_URL
+    assert "console.anthropic.com" not in auth.REDIRECT_URI
+    # The old code pointed the token exchange at console.anthropic.com — the
+    # host that 1010'd. Ensure neither login host regressed to it.
+    assert "console.anthropic.com" not in auth.AUTHORIZE_URL
+    # The full subscriber scope set (ALL_OAUTH_SCOPES), not the old 3-scope subset.
+    for scope in ("user:inference", "user:sessions:claude_code", "user:mcp_servers"):
+        assert scope in auth.SCOPES
+
+
+def test_post_json_sends_user_agent_to_evade_cloudflare(monkeypatch) -> None:
+    # Without a real User-Agent, urllib sends Python-urllib/x.y and Cloudflare
+    # 1010-blocks the token endpoint. The request MUST carry a genuine UA.
+    captured = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"access_token":"a","refresh_token":"r","expires_in":3600}'
+
+    def _fake_urlopen(request, timeout=30):
+        captured["ua"] = request.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(auth.urllib.request, "urlopen", _fake_urlopen)
+    auth._post_json(auth.TOKEN_URL, {"grant_type": "refresh_token"})
+    assert captured["ua"] == auth.OAUTH_USER_AGENT
+    assert captured["ua"] and "urllib" not in captured["ua"].lower()
+
+
 def test_provider_uses_bearer_oauth_and_adapts_tools(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     with patch.object(auth, "get_valid_credentials", return_value=_credentials()), \
