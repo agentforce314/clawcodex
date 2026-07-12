@@ -187,6 +187,21 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=8_192,
         supports_cache=True,
     ),
+    # MiniMax pricing is maintained in services/pricing.py.
+    "MiniMax-M2.7": ModelConfig(
+        model_id="MiniMax-M2.7",
+        display_name="MiniMax M2.7",
+        context_window=204_800,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
+    "MiniMax-M3": ModelConfig(
+        model_id="MiniMax-M3",
+        display_name="MiniMax M3",
+        context_window=1_000_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
     # Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Muse Spark is a
     # server-side reasoning model (usage reports ``reasoning_tokens``); like
     # DeepSeek/GLM it exposes no Anthropic-style thinking blocks (the

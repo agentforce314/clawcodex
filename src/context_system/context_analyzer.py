@@ -36,7 +36,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # DeepSeek V4 ships a 1M context window, like glm-5.2 (legacy deepseek-chat/
     # -reasoner are intentionally NOT matched here — see src/models/configs.py).
     "deepseek-v4": 1_000_000,
-    # Minimax defaults
+    # MiniMax model-specific windows must precede the family fallback.
+    "minimax-m3": 1_000_000,
+    "minimax-m2.7": 204_800,
     "minimax": 128_000,
     "abab": 128_000,
 }

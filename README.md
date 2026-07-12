@@ -366,8 +366,8 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
     },
     "minimax": {
       "api_key": "your-api-key",
-      "base_url": "https://api.minimaxi.com/anthropic",
-      "default_model": "MiniMax-M2.7"
+      "base_url": "https://api.minimax.io/anthropic",
+      "default_model": "MiniMax-M3"
     },
     "openrouter": {
       "api_key": "your-api-key",
@@ -395,6 +395,14 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
   }
 }
 ```
+
+The built-in Minimax provider passes an SDK base URL to the Anthropic SDK. Use
+`https://api.minimax.io/anthropic` globally or
+`https://api.minimaxi.com/anthropic` in China; the SDK appends `/v1/messages`.
+The corresponding raw Messages API roots are
+`https://api.minimax.io/anthropic/v1` and
+`https://api.minimaxi.com/anthropic/v1`. The OpenAI-compatible API roots are
+`https://api.minimax.io/v1` globally and `https://api.minimaxi.com/v1` in China.
 
 - **`session`** — REPL session persistence: `auto_save` writes each session automatically; `max_history` caps retained turns.
 - **`settings`** — the advisor (reviewer) feature. **`advisor_enabled` is the master switch — `false` by default, so the advisor is OFF unless you opt in** (set it to `true`, or run `/advisor <provider>:<model>` which flips it on). `advisor_provider` / `advisor_model` pick the reviewer model; `advisor_client_mode` routes the call via the client.

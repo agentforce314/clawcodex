@@ -20,6 +20,7 @@ from src.providers import (
     resolve_api_key,
 )
 from src.providers.base import ChatMessage
+from src.providers.minimax_provider import MinimaxProvider
 from src.providers.openai_compatible import OpenAICompatibleProvider
 from src.providers.openai_compatible_specs import (
     SPECS_BY_ID,
@@ -85,6 +86,17 @@ class TestRegistryCompleteness(unittest.TestCase):
     def test_default_model_is_in_available_models(self):
         for spec in SPECS_BY_ID.values():
             self.assertIn(spec.default_model, spec.available_models, spec.id)
+
+    def test_minimax_current_defaults_and_models(self):
+        info = PROVIDER_INFO["minimax"]
+        self.assertEqual(info["default_base_url"], "https://api.minimax.io/anthropic")
+        self.assertEqual(info["default_model"], "MiniMax-M3")
+        self.assertEqual(info["available_models"][:2], ["MiniMax-M3", "MiniMax-M2.7"])
+
+        provider = MinimaxProvider(api_key="k")
+        self.assertEqual(provider.base_url, "https://api.minimax.io/anthropic")
+        self.assertEqual(provider.model, "MiniMax-M3")
+        self.assertEqual(provider.get_available_models()[:2], ["MiniMax-M3", "MiniMax-M2.7"])
 
     def test_hand_written_providers_not_shadowed(self):
         # The registry must hold only the *new* providers — never override the
