@@ -9,9 +9,11 @@ const XTERM = { TERM_PROGRAM: undefined } as NodeJS.ProcessEnv
 
 describe('linkOpenHotkey', () => {
   it('advertises the platform click gesture when the terminal supports OSC 8', () => {
+    const mod = isMac ? 'Cmd' : 'Ctrl'
+
     expect(linkOpenHotkey({ TERM_PROGRAM: 'iTerm.app' } as NodeJS.ProcessEnv, true)).toEqual([
-      `${isMac ? 'Cmd' : 'Ctrl'}+click link`,
-      'open link in browser'
+      `${mod}+click link`,
+      `open link in browser (${mod}+hover underlines it)`
     ])
   })
 
@@ -24,8 +26,10 @@ describe('linkOpenHotkey', () => {
   })
 
   it('advertises a plain click in fullscreen mode, where the in-process opener handles every terminal', () => {
-    expect(linkOpenHotkey(APPLE, false, false)).toEqual(['click link', 'open link in browser'])
-    expect(linkOpenHotkey(XTERM, false, false)).toEqual(['click link', 'open link in browser'])
+    const row = ['click link', 'open link in browser (highlights on hover)']
+
+    expect(linkOpenHotkey(APPLE, false, false)).toEqual(row)
+    expect(linkOpenHotkey(XTERM, false, false)).toEqual(row)
   })
 })
 
