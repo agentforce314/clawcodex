@@ -2,7 +2,7 @@ import { Box, Link, stringWidth, Text } from '@clawcodex/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
-import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
+import { normalizeExternalUrl } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
@@ -150,8 +150,34 @@ const isTableDivider = (row: string) => {
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
-const defaultLinkLabel = (url: string) =>
-  url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
+// Trim trailing prose punctuation off a bare URL, but keep a ')' that
+// closes a '(' inside the URL — wikipedia-style /Foo_(bar) paths would
+// otherwise lose their final paren and the click target would 404.
+const trimBareUrl = (raw: string): string => {
+  let url = raw
+
+  while (url.length > 0) {
+    const ch = url[url.length - 1]!
+
+    if (',.;:!?'.includes(ch)) {
+      url = url.slice(0, -1)
+
+      continue
+    }
+
+    if (ch === ')' && (url.match(/\)/g)?.length ?? 0) > (url.match(/\(/g)?.length ?? 0)) {
+      url = url.slice(0, -1)
+
+      continue
+    }
+
+    break
+  }
+
+  return url
+}
+
+const defaultLinkLabel = (url: string) => (url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : url)
 
 const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
   const trimmed = label?.trim()
@@ -169,15 +195,30 @@ interface ResolvedLinkProps {
   url: string
 }
 
+// Bidi control codepoints (U+202A–202E embeddings/overrides, U+2066–2069
+// isolates) survive the renderer's C0-control filter and can visually
+// reorder a displayed URL on software-bidi terminals (Trojan-Source-style
+// domain spoofing). Strip them from the visible text only — the OSC 8
+// target and the click opener still receive the untouched URL.
+const stripBidiControls = (s: string) => s.replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+
 function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+  // The URL text must stay on screen. Terminals without OSC 8 support strip
+  // the <Link> metadata entirely, and inline mode (the default) never arms
+  // mouse tracking, so the in-process click opener can't fire there — the
+  // only universally working affordance is the terminal's own URL detection
+  // over the visible text (Cmd+click / Cmd+double-click). A custom markdown
+  // label still renders, with the target appended alongside.
+  const base = defaultLinkLabel(url)
+  const display = stripBidiControls(fallbackLabel || base)
+  const showTarget = Boolean(fallbackLabel) && fallbackLabel !== base
 
   return (
     <Link url={url}>
       <Text color={t.color.accent} underline>
         {display}
       </Text>
+      {showTarget ? <Text color={t.color.muted}>{` (${stripBidiControls(base)})`}</Text> : null}
     </Link>
   )
 }
@@ -621,7 +662,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     } else if (m[16]) {
       // Bare URL — trim trailing prose punctuation into a sibling text node
       // so `see https://x.com/, which…` keeps the comma outside the link.
-      const url = m[16].replace(/[),.;:!?]+$/g, '')
+      const url = trimBareUrl(m[16])
 
       parts.push(renderResolvedLink(parts.length, t, url))
 
