@@ -26,9 +26,10 @@ Design decisions (mirroring the TS engine unless noted):
 * **No output schemas:** this port's tools declare none, so none are
   emitted (pre-empts TS's object-rooted-only branch, mcp.ts:106-120).
 * **SDK input validation disabled** (``validate_input=False``): the
-  registry's ``validate_json_schema`` runs inside ``dispatch`` and produces
-  this port's error text — the analog of TS shaping its own ZodError
-  message (mcp.ts:231-241) rather than letting the transport layer do it.
+  registry's ``validate_tool_input`` runs inside ``dispatch`` and produces
+  ``formatZodValidationError``-parity error text — the analog of TS shaping
+  its own ZodError message (mcp.ts:231-241) rather than letting the
+  transport layer do it.
 * **No provider:** the registry is built with ``provider=None`` — the
   serve surface exposes the tool set, not the model stack; agent-spawning
   tools report "no provider configured" honestly at call time (divergence
