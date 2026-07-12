@@ -29,6 +29,8 @@ from src.utils.abort_controller import AbortController
 
 from src.query.query import (
     QueryParams,
+    _model_supports_adaptive_thinking,
+    _model_supports_effort,
     _model_supports_extended_thinking,
     query,
 )
@@ -86,6 +88,34 @@ class TestModelSupportsThinking(unittest.TestCase):
             self.assertFalse(_model_supports_extended_thinking(m), m)
 
 
+class TestThinkingAllowlists(unittest.TestCase):
+    """Direct allowlist tables for the adaptive / effort gates.
+
+    Documents the exact per-model capability matrix (ported from TS
+    thinking.ts:152-169 and effort.ts:32-51) so a change to either allowlist
+    fails here with a clear model name rather than only end-to-end.
+    """
+
+    # (model, supports_thinking, supports_adaptive, supports_effort)
+    MATRIX = [
+        ("claude-sonnet-4-6", True, True, True),
+        ("claude-sonnet-4-6-20250929", True, True, True),
+        ("claude-opus-4-6", True, True, True),
+        ("claude-opus-4-7", True, True, False),   # adaptive but NOT effort
+        ("claude-sonnet-4-5", True, False, False),
+        ("claude-haiku-4-5", True, False, False),
+        ("claude-opus-4-1", True, False, False),
+        ("claude-3-5-sonnet-20241022", False, False, False),
+        (None, False, False, False),
+    ]
+
+    def test_capability_matrix(self):
+        for model, thinking, adaptive, effort in self.MATRIX:
+            self.assertEqual(_model_supports_extended_thinking(model), thinking, model)
+            self.assertEqual(_model_supports_adaptive_thinking(model), adaptive, model)
+            self.assertEqual(_model_supports_effort(model), effort, model)
+
+
 class TestExtendedThinkingInjection(unittest.TestCase):
     """End-to-end: drive the loop and inspect kwargs the provider saw."""
 
@@ -128,10 +158,41 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
         self.assertEqual(kw.get("output_config"), {"effort": "medium"})
 
-    def test_anthropic_sonnet_4_gets_thinking_by_default(self):
-        provider = _make_anthropic_mock("claude-sonnet-4-5")
+    def test_anthropic_sonnet_46_gets_adaptive_and_effort(self):
+        # Sonnet 4.6 is on both the adaptive and effort allowlists.
+        provider = _make_anthropic_mock("claude-sonnet-4-6")
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertEqual(kw.get("output_config"), {"effort": "medium"})
+
+    def test_anthropic_sonnet_45_gets_budget_thinking_not_adaptive(self):
+        # Sonnet 4.5 supports thinking but NOT the adaptive type, and NOT
+        # effort — sending either is a hard 400. It must get a token budget
+        # (max_tokens-1) and no output_config. This is the exact bug the
+        # subscription evaluation surfaced.
+        provider = _make_anthropic_mock("claude-sonnet-4-5")
+        kw = self._drive_one_turn(provider)
+        thinking = kw.get("thinking") or {}
+        self.assertEqual(thinking.get("type"), "enabled")
+        self.assertIn("budget_tokens", thinking)
+        self.assertGreaterEqual(thinking["budget_tokens"], 1024)
+        self.assertLess(thinking["budget_tokens"], kw.get("max_tokens"))
+        self.assertNotIn("output_config", kw)
+
+    def test_anthropic_haiku_45_gets_budget_thinking_not_adaptive(self):
+        provider = _make_anthropic_mock("claude-haiku-4-5")
+        kw = self._drive_one_turn(provider)
+        self.assertEqual((kw.get("thinking") or {}).get("type"), "enabled")
+        self.assertNotIn("output_config", kw)
+
+    def test_anthropic_opus_47_adaptive_but_no_effort(self):
+        # The fix's most fragile case: opus-4-7 is on the adaptive allowlist
+        # but NOT the (narrower) effort allowlist. Collapsing the two gates
+        # would 400 every opus-4-7 request on an unsupported output_config.
+        provider = _make_anthropic_mock("claude-opus-4-7")
+        kw = self._drive_one_turn(provider)
+        self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertNotIn("output_config", kw)
 
     def test_anthropic_legacy_3x_does_NOT_get_thinking(self):
         # 3.x models reject the parameter at the API layer — the helper
@@ -151,9 +212,11 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         # An out-of-band model name (e.g. proxy alias) should still get
         # thinking if the caller forces it. Lets users opt into thinking
         # on a custom Claude alias the helper hasn't been taught about.
+        # An unknown model isn't on the adaptive allowlist, so it takes the
+        # safe budget form (adaptive is the type that 400s when unsupported).
         provider = _make_anthropic_mock("custom-proxy-claude-model")
         kw = self._drive_one_turn(provider, extended_thinking=True)
-        self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertEqual((kw.get("thinking") or {}).get("type"), "enabled")
 
     def test_custom_effort_propagates(self):
         provider = _make_anthropic_mock("claude-opus-4-6")
