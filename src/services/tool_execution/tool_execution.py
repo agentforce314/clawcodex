@@ -170,15 +170,19 @@ async def _check_permissions_and_call_tool(
     # Mirrors typescript/src/services/tools/toolExecution.ts schema check at
     # the head of checkPermissionsAndCallTool. Skipped when the tool has no
     # input_schema (defensive — every Tool should declare one).
+    # ``validate_tool_input`` returns the semantically-coerced input (string
+    # "true"/"30" → bool/number, the zod preprocess wrappers) and the
+    # coerced object is what flows onward — TS carries ``parsedInput.data``
+    # forward (toolExecution.ts:669 → 821), not the raw model input.
     if getattr(tool, "input_schema", None):
         try:
             from src.tool_system.schema_validation import (
                 build_schema_not_sent_hint,
-                validate_json_schema,
+                validate_tool_input,
             )
 
-            validate_json_schema(
-                processed_input, tool.input_schema, root_name=tool.name,
+            processed_input = validate_tool_input(
+                tool.name, processed_input, tool.input_schema,
             )
         except Exception as schema_err:  # ToolInputError or any subclass
             msg = str(schema_err)

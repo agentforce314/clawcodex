@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from .build_tool import Tool, Tools, tool_matches_name
 from .context import ToolContext
 from .protocol import ToolCall, ToolResult
-from .schema_validation import validate_json_schema
+from .schema_validation import validate_tool_input
 from src.permissions.check import has_permissions_to_use_tool
 from src.permissions.handler import handle_permission_ask
 from src.permissions.types import (
@@ -184,7 +184,14 @@ class ToolRegistry:
             )
 
         context.ensure_tool_allowed(tool.name)
-        validate_json_schema(call.input, tool.input_schema, root_name=tool.name)
+        # Semantic-coerce + validate; the coerced input (string "true"/"30" →
+        # bool/number) replaces the raw model input for permissions and call,
+        # mirroring TS carrying ``parsedInput.data`` forward.
+        coerced_input = validate_tool_input(tool.name, call.input, tool.input_schema)
+        if coerced_input is not call.input:
+            call = ToolCall(
+                name=call.name, input=coerced_input, tool_use_id=call.tool_use_id,
+            )
 
         if tool.validate_input is not None:
             validation = tool.validate_input(call.input, context)
