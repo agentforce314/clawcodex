@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
 
 from src.types.messages import (
     CANCEL_MESSAGE,
+    INTERRUPT_MESSAGE_FOR_TOOL_USE,
     AssistantMessage,
     Message,
     create_progress_message,
@@ -667,13 +668,51 @@ def _create_tool_result_stop(tool_use_id: str) -> dict[str, Any]:
     }
 
 
+# TS formatError caps thrown-error content at 40KB with middle truncation
+# (toolErrors.ts:16) — "enough for most command error logs".
+_FORMAT_ERROR_MAX_LENGTH = 40000
+
+
 def _format_error(error: Exception) -> str:
+    """Format a thrown tool error — port of formatError (utils/toolErrors.ts:5).
+
+    Thrown ``call()`` errors go on the wire RAW: ``is_error: True`` on the
+    tool_result carries the error-ness (TS toolExecution.ts:1633+1674 sends
+    ``content: formatError(error)`` with no ``<tool_use_error>`` wrapping).
+    The tags are reserved for pre-execution failures — no-such-tool,
+    InputValidationError, validate_input — which TS also tags. Wrapping
+    thrown errors too (the old behavior here) leaked the tags into the TUI
+    transcript (`Error: <tool_use_error>path is not a file: …`) and diverged
+    the model-facing bytes from the original.
+
+    getErrorParts (toolErrors.ts:26) appends ``stderr``/``stdout`` string
+    attributes when present (subprocess.CalledProcessError carries both).
+    The TS ShellError branch has no Python parallel — our bash tool formats
+    shell failures into the result body itself, so only the generic branch
+    is ported.
+    """
     if isinstance(error, AbortError):
-        return CANCEL_MESSAGE
-    msg = str(error)
-    if not msg:
-        msg = type(error).__name__
-    return f"<tool_use_error>{msg}</tool_use_error>"
+        # TS: error.message || INTERRUPT_MESSAGE_FOR_TOOL_USE. Effectively
+        # dead here — AbortError is caught by the dedicated except at the
+        # call-tool layer before Step 14 — kept as a belt for direct callers.
+        return str(error) or INTERRUPT_MESSAGE_FOR_TOOL_USE
+    parts = [str(error)]
+    for attr in ("stderr", "stdout"):
+        value = getattr(error, attr, None)
+        if isinstance(value, str):
+            parts.append(value)
+    full_message = "\n".join(p for p in parts if p).strip()
+    if not full_message:
+        full_message = "Command failed with no output"
+    if len(full_message) <= _FORMAT_ERROR_MAX_LENGTH:
+        return full_message
+    half_length = _FORMAT_ERROR_MAX_LENGTH // 2
+    start = full_message[:half_length]
+    end = full_message[-half_length:]
+    return (
+        f"{start}\n\n... [{len(full_message) - _FORMAT_ERROR_MAX_LENGTH} "
+        f"characters truncated] ...\n\n{end}"
+    )
 
 
 def classify_tool_error(error: Exception) -> str:

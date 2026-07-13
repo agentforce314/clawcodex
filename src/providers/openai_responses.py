@@ -349,6 +349,12 @@ def convert_messages_to_responses_input(
                         })
                     if not flat:
                         flat = "[empty tool result]"
+                    # ``function_call_output`` is text-only with no error
+                    # field — prefix ``Error: `` on is_error, same policy
+                    # as the Chat Completions converter (which mirrors TS
+                    # convertToolResultContent, openaiShim.ts:309).
+                    if block.get("is_error"):
+                        flat = f"Error: {flat}"
                     input_items.append({
                         "type": "function_call_output",
                         "call_id": call_id,
