@@ -19,6 +19,11 @@ except ModuleNotFoundError:  # pragma: no cover
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
 
+def _usage_token_count(usage: Any, field: str) -> int:
+    value = getattr(usage, field, 0)
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
 class MinimaxProvider(BaseProvider):
     """Minimax AI provider using Anthropic-compatible API.
 
@@ -65,7 +70,12 @@ class MinimaxProvider(BaseProvider):
         from .openai_responses import strip_responses_item_blocks
         return strip_responses_item_blocks(prepared)
 
-    def _build_chat_response(self, response: Any) -> ChatResponse:
+    def _build_chat_response(
+        self,
+        response: Any,
+        *,
+        request_service_tier: str = "standard",
+    ) -> ChatResponse:
         content_text = ""
         tool_uses: list[dict[str, Any]] = []
 
@@ -83,12 +93,25 @@ class MinimaxProvider(BaseProvider):
                 })
 
         usage = getattr(response, "usage", None)
+        response_service_tier = getattr(usage, "service_tier", None)
+        service_tier = (
+            response_service_tier
+            if response_service_tier in ("standard", "priority")
+            else request_service_tier
+        )
         return ChatResponse(
             content=content_text,
             model=getattr(response, "model", self.model or ""),
             usage={
-                "input_tokens": getattr(usage, "input_tokens", 0),
-                "output_tokens": getattr(usage, "output_tokens", 0),
+                "input_tokens": _usage_token_count(usage, "input_tokens"),
+                "output_tokens": _usage_token_count(usage, "output_tokens"),
+                "cache_creation_input_tokens": _usage_token_count(
+                    usage, "cache_creation_input_tokens"
+                ),
+                "cache_read_input_tokens": _usage_token_count(
+                    usage, "cache_read_input_tokens"
+                ),
+                "service_tier": service_tier,
             },
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
@@ -112,6 +135,9 @@ class MinimaxProvider(BaseProvider):
         """
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
+        request_service_tier = (
+            "priority" if kwargs.get("service_tier") == "priority" else "standard"
+        )
 
         system = kwargs.pop("system", None)
 
@@ -133,7 +159,10 @@ class MinimaxProvider(BaseProvider):
             **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
         )
 
-        return self._build_chat_response(response)
+        return self._build_chat_response(
+            response,
+            request_service_tier=request_service_tier,
+        )
 
     def chat_stream(
         self,
@@ -197,6 +226,9 @@ class MinimaxProvider(BaseProvider):
 
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
+        request_service_tier = (
+            "priority" if kwargs.get("service_tier") == "priority" else "standard"
+        )
         system = kwargs.pop("system", None)
         minimax_messages = self._prepare_messages(messages)
 
@@ -235,7 +267,10 @@ class MinimaxProvider(BaseProvider):
         guard.raise_if_post_aborted()
 
         if final_message is not None:
-            return self._build_chat_response(final_message)
+            return self._build_chat_response(
+                final_message,
+                request_service_tier=request_service_tier,
+            )
 
         return ChatResponse(
             content=streamed_text,

@@ -99,6 +99,10 @@ class TestCapabilities:
         assert supports_tools("claude-sonnet-4-20250514") is True
         assert supports_vision("claude-sonnet-4-20250514") is True
 
+    def test_minimax_model_modalities(self):
+        assert supports_vision("MiniMax-M3") is True
+        assert supports_vision("MiniMax-M2.7") is False
+
 
 class TestModelResolution:
     def test_resolve_alias(self):

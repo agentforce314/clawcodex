@@ -78,13 +78,32 @@ _TIER_DEEPSEEK_PRO = {
     "cache_creation": 0.435 / 1_000_000,
     "cache_read": 0.003625 / 1_000_000,
 }
-# MiniMax standard pay-as-you-go rates in USD per million tokens. The static
-# pricing table uses M3's <=512k input tier; longer requests have a higher tier.
-_TIER_MINIMAX_M3 = {
+# MiniMax M3 pay-as-you-go rates in USD per million tokens. Prompt size is the
+# complete request input, including cache creation and cache read tokens.
+_MINIMAX_M3_INPUT_TIER_LIMIT = 512_000
+_TIER_MINIMAX_M3_STANDARD = {
     "input": 0.30 / 1_000_000,
     "output": 1.20 / 1_000_000,
     "cache_creation": 0.30 / 1_000_000,
     "cache_read": 0.06 / 1_000_000,
+}
+_TIER_MINIMAX_M3_STANDARD_LONG = {
+    "input": 0.60 / 1_000_000,
+    "output": 2.40 / 1_000_000,
+    "cache_creation": 0.60 / 1_000_000,
+    "cache_read": 0.12 / 1_000_000,
+}
+_TIER_MINIMAX_M3_PRIORITY = {
+    "input": 0.45 / 1_000_000,
+    "output": 1.80 / 1_000_000,
+    "cache_creation": 0.45 / 1_000_000,
+    "cache_read": 0.09 / 1_000_000,
+}
+_TIER_MINIMAX_M3_PRIORITY_LONG = {
+    "input": 0.90 / 1_000_000,
+    "output": 3.60 / 1_000_000,
+    "cache_creation": 0.90 / 1_000_000,
+    "cache_read": 0.18 / 1_000_000,
 }
 _TIER_MINIMAX_M27 = {
     "input": 0.30 / 1_000_000,
@@ -138,7 +157,7 @@ PRICING: dict[str, dict[str, float]] = {
     # every proxied model is priced at its upstream rate.
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
-    "MiniMax-M3": _TIER_MINIMAX_M3,
+    "MiniMax-M3": _TIER_MINIMAX_M3_STANDARD,
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
     "muse-spark-1.1": _TIER_MUSE_SPARK,
@@ -173,8 +192,40 @@ _FAMILY_PREFIXES: list[tuple[str, dict[str, float]]] = [
 ]
 
 
-def get_pricing(model: str) -> dict[str, float] | None:
+def _get_exact_pricing(
+    model: str,
+    *,
+    input_tokens: int,
+    service_tier: str,
+) -> dict[str, float] | None:
+    if model != "MiniMax-M3":
+        return PRICING.get(model)
+
+    is_long_context = input_tokens > _MINIMAX_M3_INPUT_TIER_LIMIT
+    if service_tier == "priority":
+        return (
+            _TIER_MINIMAX_M3_PRIORITY_LONG
+            if is_long_context
+            else _TIER_MINIMAX_M3_PRIORITY
+        )
+    return (
+        _TIER_MINIMAX_M3_STANDARD_LONG
+        if is_long_context
+        else _TIER_MINIMAX_M3_STANDARD
+    )
+
+
+def get_pricing(
+    model: str,
+    *,
+    input_tokens: int = 0,
+    service_tier: str = "standard",
+) -> dict[str, float] | None:
     """Return per-token prices for ``model``, or ``None`` if unknown.
+
+    ``input_tokens`` is the complete prompt size for one request. MiniMax M3
+    uses it with ``service_tier`` to select its standard/priority and
+    short/long-context rate.
 
     Lookup order:
       1. Exact match in ``PRICING``.
@@ -194,11 +245,19 @@ def get_pricing(model: str) -> dict[str, float] | None:
     if not model:
         return None
     if model in PRICING:
-        return PRICING[model]
+        return _get_exact_pricing(
+            model,
+            input_tokens=input_tokens,
+            service_tier=service_tier,
+        )
     if "/" in model:
         bare = model.split("/", 1)[1]
         if bare in PRICING:
-            return PRICING[bare]
+            return _get_exact_pricing(
+                bare,
+                input_tokens=input_tokens,
+                service_tier=service_tier,
+            )
         for prefix, pricing in _FAMILY_PREFIXES:
             if bare.startswith(prefix):
                 return pricing
@@ -228,13 +287,18 @@ def compute_cost(model: str, usage: dict[str, Any]) -> float:
     from ``usage``. Missing keys default to zero so callers that only
     track input+output still get a sensible result.
     """
-    pricing = get_pricing(model)
-    if pricing is None:
-        return 0.0
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     cache_creation = int(usage.get("cache_creation_input_tokens", 0) or 0)
     cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    prompt_tokens = input_tokens + cache_creation + cache_read
+    pricing = get_pricing(
+        model,
+        input_tokens=prompt_tokens,
+        service_tier=str(usage.get("service_tier") or "standard"),
+    )
+    if pricing is None:
+        return 0.0
     return (
         input_tokens * pricing["input"]
         + output_tokens * pricing["output"]
