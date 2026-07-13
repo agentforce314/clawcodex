@@ -369,24 +369,19 @@ def _clawcodex_data_dir_line() -> str | None:
     ``~/.Claude Code/sessions``), landing on the wrong tool's data or
     nothing at all.
 
-    Anchored on ``Path.home() / ".clawcodex"`` rather than
-    ``get_user_config_dir()``: the ``sessions/`` and ``transcripts/`` stores
-    are hardcoded to ``~/.clawcodex`` in every writer (``agent/session.py``,
-    ``agent/transcript.py``, ``services/session_storage.py``, …) and
-    deliberately do NOT honor ``$CLAWCODEX_CONFIG_DIR``, so this is their
-    invariant location in both the default and the override configuration.
-    (Config/memory/skills DO relocate under the override — but the model
-    doesn't need those to find session history, so we don't name them and
-    avoid emitting a path we can't back up. Anchoring on the override root
-    instead would authoritatively misdirect the model whenever the override
-    is set — strictly worse than the guessing this line replaces.) The value
-    is constant per process, so it is safe to embed in the REQUEST-scoped
+    Anchored on ``get_user_config_dir()`` (``$CLAWCODEX_CONFIG_DIR`` or
+    ``~/.clawcodex``): the ``sessions/`` and ``transcripts/`` stores now
+    resolve through ``get_sessions_dir()``/``get_transcripts_dir()`` (same
+    resolver), so they relocate WITH the override — naming that root points
+    the model at the real location in both default and override configs.
+    The value is constant per process (the override is an env var fixed
+    before start), so it is safe to embed in the REQUEST-scoped
     # Environment block without busting the cache prefix.
     """
     try:
-        from pathlib import Path
+        from src.utils.clawcodex_dirs import get_user_config_dir
 
-        root = str(Path.home() / ".clawcodex")
+        root = str(get_user_config_dir())
     except Exception:
         return None
     return (

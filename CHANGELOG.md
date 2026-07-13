@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Session history and transcripts (`sessions/`, `transcripts/`) now honor
+  `$CLAWCODEX_CONFIG_DIR`, consistent with config, memory, skills, and auth.
+  Default users are unaffected (still under `~/.clawcodex/`). If you set the
+  override *after* accumulating sessions, `/resume` and session search look
+  under the new root — move the old `~/.clawcodex/sessions` and
+  `~/.clawcodex/transcripts` if you want them to carry over. The
+  `# Environment` system-prompt hint now points at the resolved root so the
+  model finds session history in either configuration.
+
 ## [1.1.0] - 2026-07-12
 
 ### Added

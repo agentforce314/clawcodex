@@ -4193,7 +4193,10 @@ class _EffortProvider:
 
 
 def _sessions_dir() -> Path:
-    return Path.home() / ".clawcodex" / "sessions"
+    # Honors $CLAWCODEX_CONFIG_DIR (default ~/.clawcodex/sessions).
+    from src.utils.clawcodex_dirs import get_sessions_dir
+
+    return get_sessions_dir()
 
 
 def _first_prompt_preview(msgs: list) -> str:

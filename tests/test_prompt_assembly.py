@@ -640,12 +640,12 @@ class TestComputeEnvInfo(unittest.TestCase):
 class TestClawcodexDataDirLine(unittest.TestCase):
     """The env-section pointer to clawcodex's session store."""
 
-    def test_names_clawcodex_home_and_ignores_override(self):
-        # sessions/ and transcripts/ are hardcoded to ~/.clawcodex and do NOT
-        # honor $CLAWCODEX_CONFIG_DIR, so the line must name ~/.clawcodex in
-        # BOTH modes — never the override root, which would authoritatively
-        # misdirect the model (worse than the guessing this line replaces).
-        expected = os.path.join(os.path.expanduser("~"), ".clawcodex")
+    def test_follows_config_dir_override(self):
+        # sessions/ and transcripts/ now resolve through get_user_config_dir()
+        # (get_sessions_dir/get_transcripts_dir), so the line must relocate WITH
+        # $CLAWCODEX_CONFIG_DIR — pointing the model at the real session store
+        # in both the default and the override configuration.
+        default_root = os.path.join(os.path.expanduser("~"), ".clawcodex")
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAWCODEX_CONFIG_DIR", None)
@@ -653,13 +653,13 @@ class TestClawcodexDataDirLine(unittest.TestCase):
         with patch.dict(os.environ, {"CLAWCODEX_CONFIG_DIR": "/custom/cc"}):
             line_override = _clawcodex_data_dir_line()
 
+        assert line_default is not None and line_override is not None
+        self.assertIn(default_root, line_default)
+        self.assertIn("/custom/cc", line_override)
+        # Both still name the two subdirectories the model should grep.
         for line in (line_default, line_override):
-            assert line is not None
-            self.assertIn(expected, line)
             self.assertIn("sessions/", line)
             self.assertIn("transcripts/", line)
-        assert line_override is not None
-        self.assertNotIn("/custom/cc", line_override)
 
     def test_named_root_matches_actual_stores(self):
         # Drift guard: if EITHER the sessions or the transcripts store is ever
