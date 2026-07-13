@@ -30,6 +30,7 @@ import type {
   StructuredDiffPayload
 } from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
+import { extractTag } from './lib/messages.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -185,6 +186,50 @@ function webSearchSummary(result: string, webSearch?: WebSearchDisplay): string 
   return s === undefined ? line : `${line} in ${s >= 1 ? `${Math.round(s)}s` : `${Math.round(s * 1000)}ms`}`
 }
 
+// Shared with the backend Read tool (read.py FILE_NOT_FOUND_CWD_NOTE) and the
+// original (utils/file.ts:213) — the marker the per-tool error renderers key
+// "File not found" on.
+const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is'
+
+/** Collapsed one-liners for known error shapes, port of each tool's
+ *  renderToolUseErrorMessage (tools/{FileReadTool,GrepTool,GlobTool,
+ *  FileEditTool,FileWriteTool,NotebookEditTool}/UI.tsx). These fire in the
+ *  original's non-verbose transcript — our trail line — while the raw text
+ *  stays reachable behind ctrl+o (result_raw), the verbose analog. Only
+ *  `<tool_use_error>`-tagged results collapse (pre-execution failures:
+ *  validation, permissions); thrown call() errors arrive untagged and fall
+ *  through to the full message. Exception: Read's file-not-found check is on
+ *  the raw string — Read throws that error, so it's never tagged
+ *  (FileReadTool/UI.tsx:150-156). */
+function toolSpecificErrorSummary(name: string | undefined, result: string): string | undefined {
+  if (name === 'Read' && result.includes(FILE_NOT_FOUND_CWD_NOTE)) {
+    return 'File not found'
+  }
+
+  const tagged = extractTag(result, 'tool_use_error')
+
+  if (!tagged) {return undefined}
+
+  switch (name) {
+    case 'Read':
+      return 'Error reading file'
+    case 'Grep':
+    case 'Glob':
+      return tagged.includes(FILE_NOT_FOUND_CWD_NOTE) ? 'File not found' : 'Error searching files'
+    case 'Edit':
+      // "Show a less scary message for intended behavior" (FileEditTool/UI.tsx:138).
+      if (tagged.includes('File has not been read yet')) {return 'File must be read first'}
+
+      return tagged.includes(FILE_NOT_FOUND_CWD_NOTE) ? 'File not found' : 'Error editing file'
+    case 'Write':
+      return 'Error writing file'
+    case 'NotebookEdit':
+      return 'Error editing notebook'
+    default:
+      return undefined
+  }
+}
+
 export function formatToolResult(
   name: string | undefined,
   result: string,
@@ -192,18 +237,40 @@ export function formatToolResult(
   webSearch?: WebSearchDisplay
 ): string {
   if (isError) {
-    let msg = (result ?? '').trim() || 'Tool execution failed'
+    const summary = toolSpecificErrorSummary(name, result ?? '')
 
-    if (!/^(Error|Cancelled): /.test(msg)) {
-      msg = `Error: ${msg}`
+    if (summary) {return summary}
+
+    // Port of FallbackToolUseErrorMessage.tsx:30-55 — unwrap the wire-format
+    // error markup before display: the `<tool_use_error>` envelope, sandbox
+    // violation blocks, and bare `<error>` tags are model-facing bytes, not
+    // something the transcript should print.
+    const extracted = extractTag(result ?? '', 'tool_use_error') ?? (result ?? '')
+    const trimmed = extracted
+      .replace(/<sandbox_violations>[\s\S]*?<\/sandbox_violations>/g, '')
+      .replace(/<\/?error>/g, '')
+      .trim()
+
+    let msg: string
+
+    if (!trimmed) {
+      msg = 'Tool execution failed'
+    } else if (trimmed.includes('InputValidationError: ')) {
+      msg = 'Invalid tool parameters'
+    } else if (/^(Error|Cancelled): /.test(trimmed)) {
+      msg = trimmed
+    } else {
+      msg = `Error: ${trimmed}`
     }
 
     const lines = msg.split('\n')
 
     if (lines.length > ERROR_RESULT_MAX_LINES) {
+      const plusLines = lines.length - ERROR_RESULT_MAX_LINES
+
       return [
         ...lines.slice(0, ERROR_RESULT_MAX_LINES),
-        `… +${lines.length - ERROR_RESULT_MAX_LINES} lines (ctrl+o to see all)`
+        `… +${plusLines} ${plusLines === 1 ? 'line' : 'lines'} (ctrl+o to see all)`
       ].join('\n')
     }
 

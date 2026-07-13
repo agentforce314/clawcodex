@@ -100,6 +100,70 @@ describe('formatToolResult', () => {
     expect(lines[0]).toBe('Error: e0')
     expect(lines[10]).toBe('… +4 lines (ctrl+o to see all)')
   })
+
+  // FallbackToolUseErrorMessage.tsx:35-47 — the wire-format markup never
+  // reaches the transcript (the bug: `Error: <tool_use_error>path is not a
+  // file: …</tool_use_error>` printed raw).
+  it('strips tool_use_error / error / sandbox_violations markup from errors', () => {
+    expect(formatToolResult('Bash', '<tool_use_error>permission denied</tool_use_error>', true)).toBe(
+      'Error: permission denied'
+    )
+    expect(formatToolResult('Bash', '<error>Command was aborted</error>', true)).toBe(
+      'Error: Command was aborted'
+    )
+    expect(
+      formatToolResult(
+        'Bash',
+        'boom<sandbox_violations>write /etc/hosts\nconnect 1.2.3.4</sandbox_violations>',
+        true
+      )
+    ).toBe('Error: boom')
+    // Cancelled: survives unprefixed after unwrapping.
+    expect(formatToolResult('Bash', '<tool_use_error>Cancelled: parallel tool call errored</tool_use_error>', true)).toBe(
+      'Cancelled: parallel tool call errored'
+    )
+  })
+
+  it('collapses InputValidationError to the original one-liner', () => {
+    expect(
+      formatToolResult(
+        'Grep',
+        '<tool_use_error>InputValidationError: Grep failed due to the following issue:\nAn unexpected parameter `n` was provided</tool_use_error>',
+        true
+      )
+    ).toBe('Error searching files')
+    // Non-search tools take the fallback collapse (FallbackToolUseErrorMessage.tsx:39-40).
+    expect(
+      formatToolResult('TodoWrite', '<tool_use_error>InputValidationError: bad</tool_use_error>', true)
+    ).toBe('Invalid tool parameters')
+  })
+
+  // Per-tool renderToolUseErrorMessage ports (tools/*/UI.tsx).
+  it('collapses tagged per-tool errors like the original transcript', () => {
+    expect(formatToolResult('Read', '<tool_use_error>boom</tool_use_error>', true)).toBe('Error reading file')
+    expect(
+      formatToolResult('Read', "File does not exist: /x. Note: your current working directory is /ws.", true)
+    ).toBe('File not found')
+    expect(
+      formatToolResult('Glob', '<tool_use_error>File does not exist. Note: your current working directory is /ws.</tool_use_error>', true)
+    ).toBe('File not found')
+    expect(formatToolResult('Edit', '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>', true)).toBe(
+      'File must be read first'
+    )
+    expect(formatToolResult('Edit', '<tool_use_error>boom</tool_use_error>', true)).toBe('Error editing file')
+    expect(formatToolResult('Write', '<tool_use_error>boom</tool_use_error>', true)).toBe('Error writing file')
+    expect(formatToolResult('NotebookEdit', '<tool_use_error>boom</tool_use_error>', true)).toBe('Error editing notebook')
+    // Untagged thrown errors (formatError parity: raw on the wire) show in full.
+    expect(formatToolResult('Read', "EISDIR: illegal operation on a directory, read '/ws/src'", true)).toBe(
+      "Error: EISDIR: illegal operation on a directory, read '/ws/src'"
+    )
+  })
+
+  it('pluralizes the overflow hint for a single hidden line', () => {
+    const big = Array.from({ length: 11 }, (_, i) => `e${i}`).join('\n')
+
+    expect(formatToolResult('Bash', big, true).split('\n')[10]).toBe('… +1 line (ctrl+o to see all)')
+  })
 })
 
 // ── virtualHeights: multi-line tool entries count rendered rows ──────────────

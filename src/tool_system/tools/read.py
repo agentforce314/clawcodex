@@ -318,6 +318,14 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         raise ToolInputError(message)
 
     if not path.is_file():
+        # Directory: exact TS message (readFileInRange.ts:89-92) — models
+        # know EISDIR from original-CC transcripts and recover by listing.
+        # Other non-files (sockets, FIFOs, devices) keep the generic message:
+        # TS streams those; we refuse (deliberate pre-existing divergence).
+        if path.is_dir():
+            raise ToolInputError(
+                f"EISDIR: illegal operation on a directory, read '{path}'"
+            )
         raise ToolInputError(f"path is not a file: {path}")
 
     offset = tool_input.get("offset")
