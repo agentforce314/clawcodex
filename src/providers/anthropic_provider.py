@@ -309,7 +309,21 @@ class AnthropicProvider(BaseProvider):
 
         prefix = "You are Claude Code, Anthropic's official CLI for Claude."
         def clean(text: str) -> str:
-            return re.sub(r"claw[ -]?codex", "Claude Code", text, flags=re.IGNORECASE)
+            # Disguise standalone brand mentions only. A match inside a
+            # machine-readable token must survive verbatim: path segments
+            # (~/.clawcodex/sessions, /etc/clawcodex), env vars
+            # ($CLAWCODEX_CONFIG_DIR), module/file names (clawcodex_dirs),
+            # and domains (clawcodex.app). Rewriting those made the system
+            # prompt name literal nonexistent paths — ~/.Claude Code/… —
+            # which the model then obediently searched (the "guessed" wrong
+            # paths #706 set out to fix were in fact produced here, after
+            # prompt assembly).
+            return re.sub(
+                r"(?<![\w.$/\\-])claw[ -]?codex(?![\w-])(?!\.\w)",
+                "Claude Code",
+                text,
+                flags=re.IGNORECASE,
+            )
         if isinstance(system, str):
             system = prefix + "\n\n" + clean(system)
         elif isinstance(system, list):
