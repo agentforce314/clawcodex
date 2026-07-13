@@ -345,6 +345,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
   { desc: 'Show the total cost and duration of the current session', name: '/cost' },
+  { desc: 'Toggle Bash-output token compression (RTK-style)', hint: '[on|off|status]', name: '/eco' },
   { desc: 'Undo recent turns', hint: '[<turns>]', name: '/rewind' },
   { desc: 'Toggle extended thinking', hint: '[on|off|toggle]', name: '/thinking' },
   {
@@ -1089,6 +1090,16 @@ export class GatewayClient extends EventEmitter {
         setLastCostSnapshot(r)
 
         return out(formatTotalCost(r))
+      }
+
+      case 'eco': {
+        const r = (await this.controlQuery('eco', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('eco: backend not ready')}
+
+        if (r.ok === false) {return out(`eco: ${r.error ?? 'failed'}`)}
+
+        return out(String(r.text ?? `Eco mode ${r.enabled ? 'on' : 'off'}.`))
       }
 
       case 'effort': {

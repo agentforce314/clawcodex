@@ -706,6 +706,9 @@ class _AgentSession:
         if subtype == "advisor":
             self._do_advisor_command(request_id, inner.get("arg"))
             return
+        if subtype == "eco":
+            self._do_eco_command(request_id, inner.get("arg"))
+            return
         if subtype == "worktree_status":
             await self._do_worktree_status(request_id)
             return
@@ -2503,6 +2506,39 @@ class _AgentSession:
         if result.get("ok"):
             self._worktree_done = True
         self._reply(request_id, result)
+
+    def _do_eco_command(self, request_id: object, arg: object) -> None:
+        """Control handler for /eco — toggle Bash-output token compression.
+
+        Bridges to the command-system implementation (eco_command_call),
+        which owns the grammar (toggle / on / off / status). The state is
+        process-global session state (src/eco/state.py, the ultracode
+        shape) — NOT persisted user settings — so no ``single_session``
+        gate: flipping it affects this worker process only, exactly like
+        ``/effort ultracode``.
+        """
+        try:
+            from src.command_system.eco_command import eco_command_call
+            from src.command_system.types import CommandContext
+
+            ctx = CommandContext(
+                workspace_root=Path(self.cwd),
+                cwd=Path(self.cwd),
+                conversation=getattr(self.session, "conversation", None),
+                cost_tracker=None,
+                history=None,
+            )
+            result = eco_command_call(str(arg or ""), ctx)
+            from src.eco import is_eco_session
+
+            self._reply(request_id, {
+                "ok": True,
+                "enabled": is_eco_session(),
+                "text": str(getattr(result, "value", "") or ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — must not kill the control channel
+            logger.exception("[agent-server] eco command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_advisor_command(self, request_id: object, arg: object) -> None:
         """Control handler for /advisor — configure the reviewer model.
