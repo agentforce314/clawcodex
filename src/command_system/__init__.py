@@ -76,6 +76,7 @@ from .permissions_command import PERMISSIONS_COMMAND, PermissionsCommand
 from .output_style_command import OUTPUT_STYLE_COMMAND, OutputStyleCommand
 from .export_command import EXPORT_COMMAND, ExportCommand
 from .theme_command import THEME_COMMAND, ThemeCommand
+from .eco_command import ECO_COMMAND, eco_command_call
 from .effort_command import EFFORT_COMMAND, EffortCommand
 from .model_command import MODEL_COMMAND, ModelCommand
 from .logo_command import LOGO_COMMAND, LogoCommand
@@ -165,6 +166,8 @@ __all__ = [
     "ExportCommand",
     "THEME_COMMAND",
     "ThemeCommand",
+    "ECO_COMMAND",
+    "eco_command_call",
     "EFFORT_COMMAND",
     "EffortCommand",
     "MODEL_COMMAND",
