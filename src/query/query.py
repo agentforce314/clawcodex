@@ -417,7 +417,7 @@ def _is_hook_stopped_continuation(msg: Message | None) -> bool:
 
 
 _THINKING_ELIGIBLE_MODEL_PATTERN = re.compile(
-    r"claude-(?:sonnet|opus|haiku)-(?:4-\d+|[5-9]\b|\d{2,})",
+    r"claude-(?:sonnet|opus|haiku|fable)-(?:4-\d+|[5-9]\b|\d{2,})",
     re.IGNORECASE,
 )
 
@@ -448,29 +448,45 @@ def _model_supports_adaptive_thinking(model: str | None) -> bool:
     Only a subset of Claude 4 models accept ``thinking={"type": "adaptive"}``;
     the rest support thinking only with an explicit ``budget_tokens``. Sending
     adaptive to a non-adaptive model is rejected with HTTP 400 "adaptive
-    thinking is not supported on this model". Allowlist ported verbatim from
-    TS ``modelSupportsAdaptiveThinking`` (thinking.ts:152-169): Opus 4.6/4.7
-    and Sonnet 4.6. Substring match mirrors the reference's ``.includes()``
-    so dated snapshots (``claude-sonnet-4-6-20250929``) match.
+    thinking is not supported on this model". Allowlist ported from TS
+    ``modelSupportsAdaptiveThinking`` (thinking.ts:152-169): Opus 4.6/4.7
+    and Sonnet 4.6; extended with Opus 4.8 and Fable 5, where adaptive is
+    the ONLY accepted thinking config — the budget fallback below would be
+    a hard 400 on them (``budget_tokens`` is removed on 4.7+; Fable 5 also
+    rejects ``{"type": "disabled"}``, and accepts adaptive or an omitted
+    param). Substring match mirrors the reference's ``.includes()`` so
+    dated snapshots (``claude-sonnet-4-6-20250929``) match.
     """
     if not model:
         return False
     m = model.lower()
-    return "opus-4-7" in m or "opus-4-6" in m or "sonnet-4-6" in m
+    return (
+        "fable-5" in m
+        or "opus-4-8" in m
+        or "opus-4-7" in m
+        or "opus-4-6" in m
+        or "sonnet-4-6" in m
+    )
 
 
 def _model_supports_effort(model: str | None) -> bool:
     """True iff the model accepts ``output_config={"effort": ...}``.
 
-    Narrower than thinking support — Opus 4.6 and Sonnet 4.6 only (TS
-    ``modelSupportsEffort``, effort.ts:32-51). Sending effort to a model that
-    doesn't support it is rejected, so the caller gates on this independently
-    of the thinking type.
+    Narrower than thinking support — Opus 4.6/4.8, Sonnet 4.6, and Fable 5
+    (TS ``modelSupportsEffort``, effort.ts:32-51, plus the 4.8/Fable
+    additions where effort is GA). Sending effort to a model that doesn't
+    support it is rejected, so the caller gates on this independently of
+    the thinking type.
     """
     if not model:
         return False
     m = model.lower()
-    return "opus-4-6" in m or "sonnet-4-6" in m
+    return (
+        "fable-5" in m
+        or "opus-4-8" in m
+        or "opus-4-6" in m
+        or "sonnet-4-6" in m
+    )
 
 
 def _is_overloaded_error(e: Exception) -> bool:
