@@ -351,8 +351,50 @@ def _compute_env_info(cwd: str) -> str:
     parts.append(f"OS: {platform.system()} {platform.release()}")
     # ch17 round-4 — date-only for cache stability (see _build_env_section).
     parts.append(f"Date: {_get_session_start_date_iso()}")
+    data_line = _clawcodex_data_dir_line()
+    if data_line:
+        parts.append(data_line)
 
     return "\n".join(parts)
+
+
+def _clawcodex_data_dir_line() -> str | None:
+    """One-line pointer to clawcodex's session store for the env section.
+
+    clawcodex is a distinct product from the real Claude Code harness and
+    keeps its previous-session state under a rebranded root — never
+    ``~/.claude``, which belongs to the other tool. Without this line the
+    model, when asked to inspect "previous session history", falls back on
+    its trained prior and greps ``~/.claude`` (or even a mangled
+    ``~/.Claude Code/sessions``), landing on the wrong tool's data or
+    nothing at all.
+
+    Anchored on ``Path.home() / ".clawcodex"`` rather than
+    ``get_user_config_dir()``: the ``sessions/`` and ``transcripts/`` stores
+    are hardcoded to ``~/.clawcodex`` in every writer (``agent/session.py``,
+    ``agent/transcript.py``, ``services/session_storage.py``, …) and
+    deliberately do NOT honor ``$CLAWCODEX_CONFIG_DIR``, so this is their
+    invariant location in both the default and the override configuration.
+    (Config/memory/skills DO relocate under the override — but the model
+    doesn't need those to find session history, so we don't name them and
+    avoid emitting a path we can't back up. Anchoring on the override root
+    instead would authoritatively misdirect the model whenever the override
+    is set — strictly worse than the guessing this line replaces.) The value
+    is constant per process, so it is safe to embed in the REQUEST-scoped
+    # Environment block without busting the cache prefix.
+    """
+    try:
+        from pathlib import Path
+
+        root = str(Path.home() / ".clawcodex")
+    except Exception:
+        return None
+    return (
+        f"clawcodex data directory: {root} — this tool's previous session "
+        f"history and transcripts live in the sessions/ and transcripts/ "
+        f"subdirectories here, NOT under ~/.claude (which belongs to a "
+        f"different tool)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1134,11 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
         parts.append(f"- User: {getpass.getuser()}")
     except Exception:
         pass
+    # Tell the model where clawcodex keeps its own state so it stops guessing
+    # the real Claude Code harness's ~/.claude when asked about session history.
+    data_line = _clawcodex_data_dir_line()
+    if data_line:
+        parts.append(f"- {data_line}")
 
     content = "\n".join(parts)
     # Environment changes per request (CWD, date)

@@ -66,6 +66,16 @@ def test_includes_base_sections(tmp_path: Path):
         assert marker in text, f"base section missing: {marker!r}"
 
 
+def test_names_clawcodex_data_dir(tmp_path: Path):
+    """The live prompt tells the model where clawcodex keeps session history,
+    so it stops falling back on the real Claude Code harness's ~/.claude when
+    asked to inspect previous sessions."""
+    ctx = ToolContext(workspace_root=tmp_path)
+    text = _joined(build_effective_system_prompt(_SENTINEL_STYLE, ctx))
+    assert "clawcodex data directory:" in text
+    assert "NOT under ~/.claude" in text
+
+
 def test_appends_the_resolved_style(tmp_path: Path):
     """The resolved output-style prompt is appended (style still applied)."""
     ctx = ToolContext(workspace_root=tmp_path)
