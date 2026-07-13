@@ -41,6 +41,12 @@ _TIER_5_25 = {
     "cache_creation": 6.25 / 1_000_000,
     "cache_read": 0.50 / 1_000_000,
 }
+_TIER_10_50 = {
+    "input": 10.0 / 1_000_000,
+    "output": 50.0 / 1_000_000,
+    "cache_creation": 12.50 / 1_000_000,
+    "cache_read": 1.00 / 1_000_000,
+}
 _TIER_HAIKU_45 = {
     "input": 1.0 / 1_000_000,
     "output": 5.0 / 1_000_000,
@@ -127,7 +133,10 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-3-7-sonnet-20250219": _TIER_3_15,
     "claude-3-5-sonnet-20241022": _TIER_3_15,
     "claude-3-5-sonnet-20240620": _TIER_3_15,
+    # Fable family — frontier tier above Opus (10/50)
+    "claude-fable-5": _TIER_10_50,
     # Opus family — 4.5+ on the 5/25 tier, 4.0/4.1 on 15/75
+    "claude-opus-4-8": _TIER_5_25,
     "claude-opus-4-7": _TIER_5_25,
     "claude-opus-4-6": _TIER_5_25,
     "claude-opus-4-5": _TIER_5_25,
@@ -160,9 +169,11 @@ DEFAULT_PRICING: dict[str, float] = _TIER_3_15
 # tier. Unknown opus-4.x now falls through to None instead of being
 # tagged with the wrong price.
 _FAMILY_PREFIXES: list[tuple[str, dict[str, float]]] = [
+    ("claude-fable-5", _TIER_10_50),
     ("claude-haiku-4", _TIER_HAIKU_45),
     ("claude-3-5-haiku", _TIER_HAIKU_45),
     ("claude-3-haiku", _TIER_HAIKU_3),
+    ("claude-opus-4-8", _TIER_5_25),
     ("claude-opus-4-7", _TIER_5_25),
     ("claude-opus-4-6", _TIER_5_25),
     ("claude-opus-4-5", _TIER_5_25),

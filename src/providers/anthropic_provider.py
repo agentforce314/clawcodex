@@ -133,9 +133,11 @@ def _extract_usage_dict(usage: Any) -> dict[str, Any]:
 # Older Claude 3.x snapshots cap at 4K-8K depending on tier; pulling the
 # default up to 32K would make the API reject those requests with a 400.
 # Detection is by model-name pattern so newer 4.x point releases
-# (e.g. ``claude-opus-4-7-20260201``) opt in automatically.
+# (e.g. ``claude-opus-4-7-20260201``) opt in automatically. ``fable``
+# covers the Claude 5 frontier family (claude-fable-5), which has a
+# 128K output ceiling — well above the 32K default used here.
 _LARGE_MAX_TOKENS_MODEL_PATTERN = re.compile(
-    r"claude-(?:sonnet|opus|haiku)-(?:4-\d+|[5-9]\b|\d{2,})",
+    r"claude-(?:sonnet|opus|haiku|fable)-(?:4-\d+|[5-9]\b|\d{2,})",
     re.IGNORECASE,
 )
 
@@ -774,12 +776,15 @@ class AnthropicProvider(BaseProvider):
             List of model names
         """
         return [
+            # Frontier (above Opus tier)
+            "claude-fable-5",
             # Claude 4 series (latest)
             "claude-sonnet-4-6",
             "claude-sonnet-4-5",
             "claude-sonnet-4-5-20250929",
             "claude-sonnet-4-0",
             "claude-sonnet-4-20250514",
+            "claude-opus-4-8",
             "claude-opus-4-6",
             "claude-opus-4-5",
             "claude-opus-4-5-20251101",
