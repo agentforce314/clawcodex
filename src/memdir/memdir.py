@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-import os
 from pathlib import Path
 from typing import Iterable
+
+from src.utils.clawcodex_dirs import get_sessions_dir
 
 from .memory_types import (
     MEMORY_FRONTMATTER_EXAMPLE,
@@ -211,10 +212,11 @@ def build_searching_past_context_section(auto_mem_dir: str) -> list[str]:
     tool is hidden (ant-native embedded search / REPL script mode); this
     port always ships the Grep tool, so the tool-invocation forms are used
     unconditionally. The transcript target is this port's saved-session
-    store (``~/.clawcodex/sessions/``, ``*.json``) rather than the reference
-    project-transcript dir.
+    store (the ``sessions/`` dir under the clawcodex config root —
+    ``$CLAWCODEX_CONFIG_DIR`` or ``~/.clawcodex`` — ``*.json``) rather than
+    the reference project-transcript dir.
     """
-    sessions_dir = os.path.join(os.path.expanduser("~"), ".clawcodex", "sessions")
+    sessions_dir = str(get_sessions_dir())
     mem_search = (
         f'Grep with pattern="<search term>" path="{auto_mem_dir}" glob="*.md"'
     )

@@ -20,11 +20,17 @@ from pathlib import Path
 from typing import Any
 
 from ..types.messages import Message, message_to_dict, message_from_dict
+from ..utils.clawcodex_dirs import get_sessions_dir
 
 logger = logging.getLogger(__name__)
 
-# Default directories
-SESSIONS_DIR = Path.home() / ".clawcodex" / "sessions"
+# Default directories. Resolved through get_sessions_dir() so the store honors
+# $CLAWCODEX_CONFIG_DIR (default ~/.clawcodex/sessions). Kept as a module
+# attribute — the internal ``sessions_dir or SESSIONS_DIR`` fallbacks and tests
+# that monkeypatch ``SESSIONS_DIR`` both read it. Resolved at import: the
+# override is an env var fixed before process start, so this is correct in
+# production; tests override the attribute directly.
+SESSIONS_DIR = get_sessions_dir()
 CONTENT_DIR_NAME = "content"
 
 # Thresholds
