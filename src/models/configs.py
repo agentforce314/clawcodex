@@ -231,6 +231,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="MiniMax M2.7",
         context_window=204_800,
         max_output_tokens=8_192,
+        supports_vision=False,
         supports_cache=True,
     ),
     "MiniMax-M3": ModelConfig(

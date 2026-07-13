@@ -47,6 +47,23 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(m27["cache_creation"], 0.375 / 1_000_000)
         self.assertEqual(m27["cache_read"], 0.06 / 1_000_000)
 
+    def test_minimax_m3_selects_all_context_and_service_tiers(self) -> None:
+        standard = get_pricing("MiniMax-M3", input_tokens=512_000)
+        standard_long = get_pricing("MiniMax-M3", input_tokens=512_001)
+        priority = get_pricing(
+            "MiniMax-M3", input_tokens=512_000, service_tier="priority"
+        )
+        priority_long = get_pricing(
+            "MiniMax-M3", input_tokens=512_001, service_tier="priority"
+        )
+
+        self.assertEqual(standard["input"], 0.30 / 1_000_000)
+        self.assertEqual(standard_long["input"], 0.60 / 1_000_000)
+        self.assertEqual(priority["input"], 0.45 / 1_000_000)
+        self.assertEqual(priority_long["input"], 0.90 / 1_000_000)
+        self.assertEqual(priority_long["output"], 3.60 / 1_000_000)
+        self.assertEqual(priority_long["cache_read"], 0.18 / 1_000_000)
+
     def test_family_prefix_falls_back_for_future_opus_variant(self) -> None:
         # A model name not in the exact table but matching the
         # ``claude-opus-4-7`` family prefix → 5/25 tier.
@@ -117,6 +134,20 @@ class TestComputeCost(unittest.TestCase):
         })
         # opus-4-7 (5/25 tier): $5 input + $6.25 cache_creation + $0.50 cache_read
         self.assertAlmostEqual(cost, 5.0 + 6.25 + 0.50, places=6)
+
+    def test_minimax_m3_priority_long_context_cost(self) -> None:
+        usage = {
+            "input_tokens": 200_000,
+            "output_tokens": 1_000_000,
+            "cache_creation_input_tokens": 200_000,
+            "cache_read_input_tokens": 200_001,
+            "service_tier": "priority",
+        }
+
+        cost = compute_cost("MiniMax-M3", usage)
+
+        expected = 0.18 + 3.60 + 0.18 + (200_001 * 0.18 / 1_000_000)
+        self.assertAlmostEqual(cost, expected, places=8)
 
     def test_missing_keys_default_to_zero(self) -> None:
         # No tokens at all → free.
