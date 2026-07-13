@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.context_system.prompt_assembly import (
+    _build_env_section,
+    _clawcodex_data_dir_line,
     _compute_env_info,
     _get_local_iso_date,
     append_system_context,
@@ -626,6 +628,76 @@ class TestComputeEnvInfo(unittest.TestCase):
         self.assertIn("CWD:", result)
         self.assertIn("OS:", result)
         self.assertIn("Date:", result)
+
+    def test_includes_clawcodex_data_dir(self):
+        # Regression: the model must be told where clawcodex keeps session
+        # history so it stops guessing the real Claude Code harness's
+        # ~/.claude directory.
+        result = _compute_env_info("/test/path")
+        self.assertIn("clawcodex data directory:", result)
+
+
+class TestClawcodexDataDirLine(unittest.TestCase):
+    """The env-section pointer to clawcodex's session store."""
+
+    def test_names_clawcodex_home_and_ignores_override(self):
+        # sessions/ and transcripts/ are hardcoded to ~/.clawcodex and do NOT
+        # honor $CLAWCODEX_CONFIG_DIR, so the line must name ~/.clawcodex in
+        # BOTH modes — never the override root, which would authoritatively
+        # misdirect the model (worse than the guessing this line replaces).
+        expected = os.path.join(os.path.expanduser("~"), ".clawcodex")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAWCODEX_CONFIG_DIR", None)
+            line_default = _clawcodex_data_dir_line()
+        with patch.dict(os.environ, {"CLAWCODEX_CONFIG_DIR": "/custom/cc"}):
+            line_override = _clawcodex_data_dir_line()
+
+        for line in (line_default, line_override):
+            assert line is not None
+            self.assertIn(expected, line)
+            self.assertIn("sessions/", line)
+            self.assertIn("transcripts/", line)
+        assert line_override is not None
+        self.assertNotIn("/custom/cc", line_override)
+
+    def test_named_root_matches_actual_stores(self):
+        # Drift guard: if EITHER the sessions or the transcripts store is ever
+        # re-homed, this fails loudly rather than letting the system prompt
+        # silently point at a stale location. Both are pinned to their real
+        # production sources (not re-derived here) so the guard has teeth.
+        from pathlib import Path
+
+        from src.agent.transcript import get_agent_transcript_path
+        from src.services.session_storage import SESSIONS_DIR
+
+        line = _clawcodex_data_dir_line()
+        assert line is not None
+        # SESSIONS_DIR = <root>/sessions ; transcripts = <root>/transcripts.
+        # The line names <root>, so each store's *parent* must appear in it.
+        self.assertIn(str(SESSIONS_DIR.parent), line)
+        transcripts_dir = Path(get_agent_transcript_path("drift-probe")).parent
+        self.assertIn(str(transcripts_dir.parent), line)
+
+    def test_steers_away_from_dot_claude(self):
+        line = _clawcodex_data_dir_line()
+        assert line is not None
+        # Must warn against the OTHER tool's directory, and must not point the
+        # model at ~/.claude as the place to look.
+        self.assertIn("NOT under ~/.claude", line)
+
+    def test_live_env_block_carries_the_line(self):
+        section = _build_env_section("/test/path", use_cache=False)
+        assert section is not None
+        self.assertIn("clawcodex data directory:", section.content)
+
+    def test_env_block_stays_cache_stable(self):
+        # The line is a constant string, so two builds must be byte-identical
+        # (the # Environment block is on the REQUEST cache prefix).
+        s1 = _build_env_section("/test/path", use_cache=False)
+        s2 = _build_env_section("/test/path", use_cache=False)
+        assert s1 is not None and s2 is not None
+        self.assertEqual(s1.content, s2.content)
 
 
 class TestClearContextCaches(unittest.TestCase):
