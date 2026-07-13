@@ -416,6 +416,17 @@ def _convert_anthropic_messages_to_openai(
                     # requirement is honoured.
                     flat_content = "[empty tool result]"
 
+                # OpenAI's ``role=tool`` message has no ``is_error`` field,
+                # so error-ness must ride the text: prefix ``Error: `` like
+                # TS convertToolResultContent (openaiShim.ts:309/:349/:356
+                # — every text-shaped emission applies it). Load-bearing
+                # since thrown tool errors are no longer wrapped in
+                # ``<tool_use_error>`` tags (_format_error parity port):
+                # without the prefix an OpenAI-wire model would see a bare
+                # message with no failure signal at all.
+                if tr.get("is_error"):
+                    flat_content = f"Error: {flat_content}"
+
                 result.append({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
