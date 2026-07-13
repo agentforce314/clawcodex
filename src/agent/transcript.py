@@ -51,6 +51,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from src.utils.clawcodex_dirs import get_transcripts_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,14 +62,14 @@ logger = logging.getLogger(__name__)
 
 
 def _transcripts_root() -> Path:
-    """Return ``~/.clawcodex/transcripts/`` (created if absent).
+    """Return the transcripts dir (created if absent).
 
-    Mirrors the directory convention that ``typescript/src/utils/sessionStorage.ts``
-    uses for sidechain transcripts; the Python repo's home-relative
-    ``~/.clawcodex`` matches the bash background dir at
-    ``<tmp>/clawcodex-bg`` philosophically (per-user, not per-workspace).
+    Resolved through ``get_transcripts_dir()`` so it honors
+    ``$CLAWCODEX_CONFIG_DIR`` (default ``~/.clawcodex/transcripts``). Mirrors
+    the directory convention that ``typescript/src/utils/sessionStorage.ts``
+    uses for sidechain transcripts; per-user, not per-workspace.
     """
-    root = Path.home() / ".clawcodex" / "transcripts"
+    root = get_transcripts_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

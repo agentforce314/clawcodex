@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field
 
+from src.utils.clawcodex_dirs import get_sessions_dir
 from src.bootstrap.state import (
     get_model_usage,
     get_session_id,
@@ -56,7 +56,7 @@ class Session:
         usage). Previously this method emitted no cost block; the
         restore reader hit defaults of 0 unconditionally.
         """
-        session_dir = Path.home() / ".clawcodex" / "sessions"
+        session_dir = get_sessions_dir()
         session_dir.mkdir(parents=True, exist_ok=True)
 
         session_file = session_dir / f"{self.session_id}.json"
@@ -81,7 +81,7 @@ class Session:
     @classmethod
     def load(cls, session_id: str) -> Optional['Session']:
         """Load session from disk."""
-        session_file = Path.home() / ".clawcodex" / "sessions" / f"{session_id}.json"
+        session_file = get_sessions_dir() / f"{session_id}.json"
 
         if not session_file.exists():
             return None

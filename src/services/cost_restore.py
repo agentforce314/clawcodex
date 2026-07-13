@@ -25,11 +25,16 @@ from src.bootstrap.state import (
     SessionId,
     set_cost_state_for_restore,
 )
+from src.utils.clawcodex_dirs import get_sessions_dir
 
 
 def _sessions_dir() -> Path:
-    """Persistence directory — extracted so tests can monkeypatch."""
-    return Path.home() / ".clawcodex" / "sessions"
+    """Persistence directory — extracted so tests can monkeypatch.
+
+    Delegates to ``get_sessions_dir()`` so it honors ``$CLAWCODEX_CONFIG_DIR``
+    (default ``~/.clawcodex/sessions``).
+    """
+    return get_sessions_dir()
 
 
 def build_cost_block() -> dict[str, Any]:

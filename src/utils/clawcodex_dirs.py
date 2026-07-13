@@ -72,6 +72,32 @@ def get_legacy_user_config_dir() -> Path:
     return Path.home() / LEGACY_USER_DIR_NAME
 
 
+def get_sessions_dir() -> Path:
+    """User session store: ``<user config dir>/sessions``.
+
+    Resumable per-session state (``*.json`` with the conversation, cost,
+    preview, cwd) lives here. Resolved through ``get_user_config_dir()`` so
+    it honors ``$CLAWCODEX_CONFIG_DIR`` — consistent with config/memory/
+    skills/auth/mcp. (Historically the ~10 session writers each hardcoded
+    ``~/.clawcodex/sessions`` and ignored the override; this is the single
+    source of truth that fixed that.) Not created here — writers ``mkdir``
+    on demand.
+    """
+    return get_user_config_dir() / "sessions"
+
+
+def get_transcripts_dir() -> Path:
+    """User transcript store: ``<user config dir>/transcripts``.
+
+    Append-only per-agent transcript logs (``*.jsonl``) and workflow-run
+    journals (under ``transcripts/workflows/``) live here. Resolved through
+    ``get_user_config_dir()`` so it honors ``$CLAWCODEX_CONFIG_DIR`` — see
+    ``get_sessions_dir`` for the rationale. Not created here — writers
+    ``mkdir`` on demand.
+    """
+    return get_user_config_dir() / "transcripts"
+
+
 __all__ = [
     "CONFIG_DIR_ENV",
     "MANAGED_CONFIG_DIR_ENV",
@@ -82,4 +108,6 @@ __all__ = [
     "get_user_config_dir",
     "get_managed_config_dir",
     "get_legacy_user_config_dir",
+    "get_sessions_dir",
+    "get_transcripts_dir",
 ]
