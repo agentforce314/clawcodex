@@ -29,6 +29,7 @@ from .permissions_command import PERMISSIONS_COMMAND
 from .security_review import SECURITY_REVIEW_COMMAND
 from .statusline import STATUSLINE_COMMAND
 from .theme_command import THEME_COMMAND
+from .eco_command import ECO_COMMAND
 from .effort_command import EFFORT_COMMAND
 from .model_command import MODEL_COMMAND
 from .logo_command import LOGO_COMMAND
@@ -1331,6 +1332,7 @@ def get_builtin_commands() -> list[Command]:
         OUTPUT_STYLE_COMMAND,
         EXPORT_COMMAND,
         THEME_COMMAND,
+        ECO_COMMAND,
         EFFORT_COMMAND,
         MODEL_COMMAND,
         LOGO_COMMAND,

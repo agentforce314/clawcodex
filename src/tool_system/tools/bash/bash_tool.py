@@ -723,11 +723,101 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     if is_silent_command(command):
         output["noOutputExpected"] = True
 
+    # /eco: compress the model-bound rendering. The raw stdout/stderr stay in
+    # the output dict (and, for lossy filters, in the per-session tee file);
+    # note the TUI transcript renders the mapped content, so the user sees
+    # the same compact string the model does. Runs on the full pre-truncation
+    # output so the tee recovery file is complete.
+    _maybe_apply_eco(
+        output,
+        command=command,
+        exit_code=completed_returncode,
+        full_stdout=completed_stdout,
+        full_stderr=completed_stderr,
+        context=context,
+    )
+
     return ToolResult(
         name=BASH_TOOL_NAME,
         output=output,
         is_error=interpretation.is_error,
     )
+
+
+def _assemble_bash_body(stdout: str, stderr: str) -> str:
+    """The stdout+stderr part of the model-bound content (no interrupt
+    marker, no returnCodeInterpretation). Factored out so the eco engine's
+    never-worse guard compares against exactly what the mapper would emit."""
+    processed_stdout = strip_leading_blank_lines(stdout).rstrip() if stdout else ""
+    parts: list[str] = []
+    if processed_stdout:
+        parts.append(processed_stdout)
+    if stderr and stderr.strip():
+        parts.append(stderr.strip())
+    return "\n".join(parts)
+
+
+def _eco_tee_dir(context: ToolContext) -> Path | None:
+    """Per-session directory for eco raw-recovery files, co-located with the
+    Step-11 ``tool-results`` persistence dir (``.../<session>/eco/``)."""
+    try:
+        from src.services.tool_execution.tool_result_persistence import (
+            resolve_tool_results_dir,
+        )
+
+        return resolve_tool_results_dir(context).parent / "eco"
+    except Exception:  # noqa: BLE001 — recovery dir is best-effort
+        return None
+
+
+def _maybe_apply_eco(
+    output: dict[str, Any],
+    *,
+    command: str,
+    exit_code: int,
+    full_stdout: str,
+    full_stderr: str,
+    context: ToolContext,
+) -> None:
+    """When ``/eco`` is on, attach a compressed model-bound rendering.
+
+    Sets ``output["ecoContent"]`` (consumed by ``_bash_map_result_to_api``)
+    plus ``ecoFilter``/``ecoSavedTokens`` metadata. Never raises; never
+    touches the raw stdout/stderr fields, exit code, or error semantics.
+    (The TUI renders the mapped content, so the compact rendering is also
+    what the user sees in the transcript.) Skips image output (the data URI
+    must reach the image mapper intact). The interrupted/timeout/background/
+    cd paths return before this is called.
+    """
+    try:
+        from src.eco import is_eco_session
+
+        if not is_eco_session():
+            return
+        if output.get("isImage"):
+            return
+        from src.eco.engine import compress_bash_output
+
+        baseline = _assemble_bash_body(
+            output.get("stdout", ""), output.get("stderr", "")
+        )
+        if not baseline.strip():
+            return
+        outcome = compress_bash_output(
+            command=command,
+            exit_code=exit_code,
+            full_text=_assemble_bash_body(full_stdout, full_stderr),
+            baseline=baseline,
+            tee_dir=_eco_tee_dir(context),
+        )
+        if outcome is not None:
+            output["ecoContent"] = outcome.content
+            output["ecoFilter"] = outcome.filter_name
+            output["ecoSavedTokens"] = outcome.saved_tokens
+    except Exception:  # noqa: BLE001 — eco must never break the Bash tool
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("[eco] apply failed", exc_info=True)
 
 
 def _bash_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
@@ -759,19 +849,22 @@ def _bash_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
         interpretation = output.get("returnCodeInterpretation")
         interrupted = output.get("interrupted", False)
 
-        processed_stdout = strip_leading_blank_lines(stdout).rstrip() if stdout else ""
+        # /eco: a compressed rendering replaces the stdout+stderr assembly on
+        # the wire only — the display fields stay raw. Interrupt marker and
+        # returnCodeInterpretation append after it either way. (eco is never
+        # set on interrupted results, so the joined string is byte-identical
+        # to the historical assembly whenever ecoContent is absent.)
+        eco_content = output.get("ecoContent")
+        if isinstance(eco_content, str) and eco_content.strip():
+            body = eco_content
+        else:
+            body = _assemble_bash_body(stdout, stderr)
 
         parts: list[str] = []
-        if processed_stdout:
-            parts.append(processed_stdout)
-
-        error_parts: list[str] = []
-        if stderr and stderr.strip():
-            error_parts.append(stderr.strip())
+        if body:
+            parts.append(body)
         if interrupted:
-            error_parts.append("<error>Command was aborted before completion</error>")
-        if error_parts:
-            parts.append("\n".join(error_parts))
+            parts.append("<error>Command was aborted before completion</error>")
 
         if interpretation:
             parts.append(interpretation)
