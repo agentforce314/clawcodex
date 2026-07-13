@@ -112,6 +112,53 @@ def test_provider_uses_bearer_oauth_and_adapts_tools(monkeypatch) -> None:
     assert result.usage["billing_mode"] == "subscription"
 
 
+def test_identity_rewrite_preserves_paths_env_vars_and_domains(monkeypatch) -> None:
+    """The OAuth identity disguise must not corrupt machine-readable tokens.
+
+    Regression for the `.Claude Code` misdirection: rewriting `clawcodex`
+    inside paths turned the #706/#707 prompt lines (and the auto-memory
+    section) into literal nonexistent locations — `~/.Claude Code/sessions`
+    — which the model then searched verbatim.
+    """
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    with patch.object(auth, "get_valid_credentials", return_value=_credentials()), \
+         patch("src.providers.anthropic_provider.anthropic.Anthropic"):
+        provider = AnthropicProvider(api_key="")
+
+    system_blocks = [
+        {"type": "text", "text": (
+            "- clawcodex data directory: /Users/u/.clawcodex — sessions live in "
+            "the sessions/ subdirectory, or under $CLAWCODEX_CONFIG_DIR."
+        )},
+        {"type": "text", "text": (
+            "You have a persistent, file-based memory system at "
+            "`/Users/u/.clawcodex/projects/-Users-u-proj/memory/`.\n"
+            'Grep with pattern="x" path="/Users/u/.clawcodex/sessions/" glob="*.json"\n'
+            "Managed policy lives in /etc/clawcodex; see clawcodex_dirs.py and "
+            "https://clawcodex.app/install.sh. Run clawcodex to start. clawcodex, "
+            "the tool, saves hooks in .clawcodex/settings.json."
+        )},
+    ]
+    _, _, system = provider._prepare_subscription_request([], None, system_blocks)
+
+    assert system[0]["text"].startswith("You are Claude Code")
+    text = "\n".join(b["text"] for b in system[1:])
+    # Machine-readable tokens survive verbatim.
+    assert "/Users/u/.clawcodex — sessions" in text
+    assert "/Users/u/.clawcodex/projects/-Users-u-proj/memory/" in text
+    assert '/Users/u/.clawcodex/sessions/' in text
+    assert "$CLAWCODEX_CONFIG_DIR" in text
+    assert "/etc/clawcodex" in text
+    assert "clawcodex_dirs.py" in text
+    assert "clawcodex.app" in text
+    assert ".clawcodex/settings.json" in text
+    # Nothing is rewritten INTO a bogus path.
+    assert ".Claude Code" not in text
+    # Standalone brand mentions are still disguised.
+    assert "Claude Code data directory:" in text
+    assert "Run Claude Code to start. Claude Code, the tool," in text
+
+
 def test_subscription_usage_is_not_priced_as_api_billing() -> None:
     from src.cost_tracker import record_api_usage
     with patch("src.cost_tracker.add_to_total_cost_state"), \
