@@ -21,12 +21,15 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://api.anthropic.com",
         "default_model": "claude-sonnet-4-6",
         "available_models": [
+            # Frontier (above Opus tier)
+            "claude-fable-5",
             # Claude 4 series (latest)
             "claude-sonnet-4-6",
             "claude-sonnet-4-5",
             "claude-sonnet-4-5-20250929",
             "claude-sonnet-4-0",
             "claude-sonnet-4-20250514",
+            "claude-opus-4-8",
             "claude-opus-4-6",
             "claude-opus-4-5",
             "claude-opus-4-5-20251101",

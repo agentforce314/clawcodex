@@ -51,6 +51,44 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         cost_cache_read_per_mtok=1.50,
     ),
 
+    # Claude Opus 4.8 / Fable 5 (current frontier — 1M context window,
+    # 128K true output cap). Placed AFTER the legacy claude-opus-4-20250514
+    # row on purpose: ``get_model_config``'s prefix fallback iterates in
+    # insertion order and both opus keys share the ``claude-opus-4`` base,
+    # so bare 4.x ids without an exact entry (opus-4-1/4-5/4-6/4-7 and
+    # dated snapshots) keep resolving to the legacy 200K row — under-
+    # estimating the window compacts early, the safe direction (see the
+    # GPT-5 note below). Register future dated 4-8 snapshots explicitly.
+    #
+    # max_output_tokens is the FIRST-ATTEMPT wire ``max_tokens`` for
+    # Anthropic providers (``resolve_max_output_tokens`` step 3), not the
+    # model's capability ceiling: 32_000 keeps the query loop's 64K
+    # truncation-escalation (``ESCALATED_MAX_TOKENS``) meaningful.
+    "claude-opus-4-8": ModelConfig(
+        model_id="claude-opus-4-8",
+        display_name="Claude Opus 4.8",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        supports_thinking=True,
+        supports_computer_use=True,
+        cost_input_per_mtok=5.0,
+        cost_output_per_mtok=25.0,
+        cost_cache_create_per_mtok=6.25,
+        cost_cache_read_per_mtok=0.50,
+    ),
+    "claude-fable-5": ModelConfig(
+        model_id="claude-fable-5",
+        display_name="Claude Fable 5",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        supports_thinking=True,
+        supports_computer_use=True,
+        cost_input_per_mtok=10.0,
+        cost_output_per_mtok=50.0,
+        cost_cache_create_per_mtok=12.50,
+        cost_cache_read_per_mtok=1.00,
+    ),
+
     # Claude 3.7 series
     "claude-3-7-sonnet-20250219": ModelConfig(
         model_id="claude-3-7-sonnet-20250219",
