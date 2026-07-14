@@ -1,5 +1,8 @@
 # Eval — clawcodex vs openclaude on SWE-bench
 
+> Sibling benchmark: [`eval/eco/`](eco/README.md) measures the `/eco`
+> token-compression savings on real command outputs.
+
 This directory drives a side-by-side comparison of **clawcodex** (this repo)
 and **openclaude** (the TypeScript reference) against
 [SWE-bench](https://swe-bench.github.io). The goal is to confirm parity:

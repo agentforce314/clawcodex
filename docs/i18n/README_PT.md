@@ -57,6 +57,29 @@
 
 ***
 
+## 🌿 Compressão de tokens `/eco` — **-80% medidos na saída do Bash**
+
+Ative **`/eco`** e o ClawCodex comprime a renderização enviada ao modelo de cada
+resultado do Bash com filtros determinísticos portados do
+[RTK](https://github.com/rtk-ai/rtk): resumos de testes focados nas falhas, remoção de
+cerimônia (`git`/`pip`/`npm`), deduplicação de logs e truncamento recuperável — a saída
+bruta completa fica em disco atrás de uma dica executável. Garantia **nunca pior**: uma
+compressão que não supera a renderização bruta é descartada, e linhas de erro sempre
+sobrevivem.
+
+Medido (tokens tiktoken `cl100k_base`) em 27 operações reais reproduzidas pelo pipeline
+de produção:
+
+| Operação | Bruto | `/eco` | Ganho |
+|---|---:|---:|---:|
+| `pytest` (com falhas) | 1,347 | 390 | **-71%** |
+| `git clone --progress` | 6,868 | 18 | **-99%** |
+| `ls -R src` | 9,088 | 225 | **-97%** |
+| `log show --last 90s` (34k linhas) | 10,512 | 1,977 | **-81%** |
+| **Corpus completo (27 operações)** | **92,989** | **17,767** | **-80%** |
+
+Tabelas completas e metodologia: [`eval/eco/`](../../eval/eco/README.md).
+
 ## ⭐ Star History
 
 <a href="https://www.star-history.com/?repos=GPT-AGI%2FClaw-Codex&type=date&legend=top-left">
