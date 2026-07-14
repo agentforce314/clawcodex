@@ -34,8 +34,24 @@
 
 One toggle, deterministic filters — failure-focused test summaries, `git`/`pip`/`npm` ceremony
 stripping, log dedup, recoverable head-caps — guarded to be **never worse** than the raw rendering.
-Stacks with the DeepSeek prefix cache: the cache makes your stable prefix nearly free, `/eco`
-shrinks the fresh suffix every turn actually pays for. **[See the measured benchmark ↓](#eco-benchmark)**
+Stacks with the [DeepSeek prefix cache](#-deepseek-prefix-cache): the cache makes your stable
+prefix nearly free, `/eco` shrinks the fresh suffix every turn actually pays for.
+**[See the measured benchmark ↓](#eco-benchmark)**
+
+</div>
+
+***
+
+<div align="center">
+
+# 🐋🔥 DeepSeek Prefix Cache
+
+# Run long agentic coding sessions for *pennies*
+
+### Cache-hit input bills at **`~$0.0435` / 1M tokens** — about **230× cheaper** than Claude Fable 5 (`$10` / 1M).
+
+ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache covers your whole
+`system + tools + history` span across turns. **The longer you code, the more you save.**
 
 </div>
 
@@ -103,7 +119,7 @@ The `session`, `settings`, and `env` blocks are optional — sensible defaults a
 
 ## 📰 News
 
-- **2026-07-13:** **`/eco` token compression — -80% Bash-output tokens, measured, now the headline (#708, #712)** — a new session toggle compresses the model-bound rendering of every Bash result with deterministic filters ported from [RTK](https://github.com/rtk-ai/rtk)'s method set: failure-focused test summaries (kept error lines are never rewritten), `git`/`pip`/`npm` ceremony stripping, log dedup with `[×N]` counts, and a recoverable head-cap — all behind a **never-worse** guard, with every lossy compression teeing the full output to disk behind a runnable recovery hint (#708). A reproducible benchmark (`eval/eco/`) replays 27 real command outputs through the exact production pipeline and counts real tokenizer tokens: **92,989 → 17,767 (-80%)** corpus-wide, -88% on filter hits, plus an honestly conservative recompute of RTK's own 30-minute-session model (-19% under their averaged assumptions — real sessions are fat-tailed) (#712). Full tables: the [`/eco` section](#eco-benchmark) and [`eval/eco/results/`](eval/eco/results/results.md).
+- **2026-07-13:** **`/eco` token compression — -80% Bash-output tokens, measured, now a headline (#708, #712)** — a new session toggle compresses the model-bound rendering of every Bash result with deterministic filters ported from [RTK](https://github.com/rtk-ai/rtk)'s method set: failure-focused test summaries (kept error lines are never rewritten), `git`/`pip`/`npm` ceremony stripping, log dedup with `[×N]` counts, and a recoverable head-cap — all behind a **never-worse** guard, with every lossy compression teeing the full output to disk behind a runnable recovery hint (#708). A reproducible benchmark (`eval/eco/`) replays 27 real command outputs through the exact production pipeline and counts real tokenizer tokens: **92,989 → 17,767 (-80%)** corpus-wide, -88% on filter hits, plus an honestly conservative recompute of RTK's own 30-minute-session model (-19% under their averaged assumptions — real sessions are fat-tailed) (#712). Full tables: the [`/eco` section](#eco-benchmark) and [`eval/eco/results/`](eval/eco/results/results.md).
 - **2026-07-12 (v1.1.0):** **ClawCodex v1.1.0 — run OpenAI *and* Claude models on your subscription, not metered API billing** — the headline of 1.1.0 is **subscription auth for the two biggest model families**, so you can point ClawCodex at a plan you already pay for. **Sign in with ChatGPT (#698):** `clawcodex login → openai → subscription` (browser, device-code, or import from an existing Codex CLI login) routes requests through the ChatGPT Codex backend's Responses API — `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex-spark` on your Plus/Pro allowance, with encrypted-reasoning replay across turns and **$0** metered cost. **Claude Pro/Max (#697):** `clawcodex login → anthropic → subscription` connects a Claude subscription via OAuth (PKCE) with automatic token refresh and the same $0 accounting; follow-ups repaired the login after Anthropic moved its OAuth endpoints to `platform.claude.com` (#702) and stopped sending adaptive thinking to models that don't support it (#699). A configured API key always wins, and subscription usage reports `billing_mode: subscription`. **More models:** a Meta (`api.meta.ai`) provider with the 1M-context `muse-spark-1.1` reasoning model (#692) and refreshed MiniMax parameters (#696). **Workflow & TUI:** `/plan` mode with implicit plan-mode entry/exit (#676), `--worktree/-w` session isolation for parallel runs in separate git worktrees (#672), the `/memory` picker + `$EDITOR` spawn (#693), config/state directories rebranded `.claude → .clawcodex` with a one-time migration (#678), `/logo` startup color schemes (#677), plus TUI polish — Tab accepts the suggested placeholder (#690), past inputs get the Claude-Code highlight band (#691), clickable agent URLs (#694), and a per-terminal link-open affordance (#701). **Quality:** semantic tool-input coercion with parity validation errors (#700) and looser, Claude-Code-faithful permission granting (#673).
 - **2026-07-07:** **`/loop` scheduled tasks now actually fire — full port of Claude Code's session-scoped scheduler (#680)** — the bundled `/loop` skill finally has a real engine behind it: a new `src/scheduled_tasks` module parses standard 5-field cron expressions and fires due prompts **between turns** from the agent-server's idle poll. `CronCreate`/`CronList`/`CronDelete` register real firing jobs (8-char IDs, 50-job cap, deterministic jitter, 7-day recurring expiry with one final fire), and the new **`ScheduleWakeup`** tool drives self-paced `/loop` mode — the model picks each next delay (1 min–1 hr), `stop: true` ends the loop, and a ~20-minute fallback wakeup catches iterations that forget to reschedule. Typed skill slash commands now reach the backend (new `skill_command` control), so `/loop 5m check ci` works from the composer with completion + argument hint; the TUI shows a live countdown indicator (`⟳ loop wakeup in 2m 14s · ⏰ 1 scheduled`) and **Esc while idle stops a waiting loop**. `/clear` drops session tasks, `--resume` restores unexpired ones, `CLAWCODEX_DISABLE_CRON=1` disables the scheduler. 117 new tests; verified live over stdio NDJSON and a real PTY TUI drive (typed dispatch → CronCreate → a real wakeup fire between turns → Esc-stop).
 - **2026-07-07:** **Bounded the ESC-cancel chunk queue in OpenAI-compatible streaming (#278)** — `OpenAICompatibleProvider.chat_stream_response`'s worker-thread queue (added in #148) was an unbounded `queue.Queue`. A non-graceful disconnect from a proxy that keeps sending bytes after ESC (and never closes the SDK iterator) let the orphaned worker thread accumulate chunks in memory indefinitely. The queue is now capped at 64 chunks, so `put()` blocks the worker once full instead of growing without bound.
@@ -260,8 +276,8 @@ rewriting commands.
   interrupted runs are never altered; any filter exception falls back to passthrough.
 
 `/eco status` shows per-filter savings for the session. Compression stacks with the
-**DeepSeek prefix cache** (see [News](#-news), 2026-06-18): the cache makes the stable
-prefix nearly free, `/eco` shrinks the fresh suffix every turn actually pays for. Reproduce:
+[DeepSeek prefix cache](#-deepseek-prefix-cache): the cache makes the stable prefix
+nearly free, `/eco` shrinks the fresh suffix every turn actually pays for. Reproduce:
 
 ```bash
 python3 eval/eco/capture_corpus.py --workdir /tmp/eco-bench   # capture real outputs
