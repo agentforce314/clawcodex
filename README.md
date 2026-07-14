@@ -147,6 +147,125 @@ Reproduce locally — see [`eval/README.md`](eval/README.md) for the full workfl
 
 ***
 
+## 🌿 `/eco` Token Compression — **-80% Bash-output tokens, measured**
+
+Long agentic sessions drown in tool output: failing test logs, `git` progress spam,
+2,000-line listings. Toggle **`/eco`** on and ClawCodex compresses the *model-bound
+rendering* of every Bash result with deterministic filters ported from
+[RTK](https://github.com/rtk-ai/rtk)'s method set — failure-focused test summaries,
+command-scoped ceremony stripping, log deduplication with `[×N]` counts, and a
+recoverable head-cap — while the full raw output stays on disk behind a runnable
+recovery hint. No model in the loop, no command rewriting, nothing to learn.
+
+```text
+$ pytest        # 128 lines → 37 lines, 1,347 → 390 tokens (-71%)
+Pytest: 5 failed, 29 passed in 0.04s
+
+1. [FAIL] test_unknown_sku_message
+   with pytest.raises(OrderError, match="unknown sku 'gold-bar'"):
+   >           o.total()
+   tests/test_orders.py:34:
+   ⋮
+5. [FAIL] test_truncate_one
+   >       assert truncate_words("alpha beta", 1) == "alpha..."
+   E       AssertionError: assert 'alpha beta...' == 'alpha...'
+[full output: ~/.clawcodex/<ws>/<session>/eco/1707_pytest.log]
+Command failed with exit code 1
+```
+
+**Measured, not estimated.** RTK's README models a 30-minute session and *estimates*
+-80%. We ran the experiment instead: a 27-operation corpus of **real command
+outputs** — failing `pytest`/`go test`/`jest` runs, `pip`/`npm` installs, git
+workflows, repo-scale listings, a 34,000-line system log, captured live (RTK's own
+"never synthetic" fixture rule) — replayed through the exact production pipeline,
+counting tiktoken `cl100k_base` tokens of the model-bound text with `/eco` off vs on:
+
+| Operation | Filter | Raw tokens | `/eco` tokens | Saved |
+|---|---|---:|---:|---:|
+| `pytest` (failing run) | failure focus | 1,347 | 390 | **-71%** |
+| `pytest -v` (failing run) | failure focus | 1,925 | 392 | **-79%** |
+| `pytest -v` (green run) | one-line collapse | 359 | 60 | **-83%** |
+| `go test -v ./...` (failing run) | failure focus | 527 | 227 | **-56%** |
+| `npx jest` (failing run) | failure focus | 444 | 175 | **-60%** |
+| `npm install jest` | ceremony strip | 188 | 8 | **-95%** |
+| `pip install flask` | ceremony strip | 514 | 85 | **-83%** |
+| `git clone --progress` | ceremony strip | 6,868 | 18 | **-99%** |
+| `git push --progress` | ceremony strip | 6,458 | 75 | **-98%** |
+| `git status` (dirty tree) | advice strip | 143 | 91 | **-36%** |
+| `git log -n 300` | recoverable head-cap | 7,714 | 946 | **-87%** |
+| `git diff v1.0.0..v1.1.0 -- src` | recoverable head-cap | 7,561 | 748 | **-90%** |
+| `ls -R src` | recoverable head-cap | 9,088 | 225 | **-97%** |
+| `cat` (900-line file) | recoverable head-cap | 6,833 | 552 | **-91%** |
+| `grep -rn 'def ' src/` | recoverable head-cap | 7,582 | 1,219 | **-83%** |
+| `log show --last 90s` (34k lines) | log dedup | 10,512 | 1,977 | **-81%** |
+| **Whole corpus (27 operations)** | | **92,989** | **17,767** | **-80%** |
+
+The corpus also includes 8 operations that (correctly) pass through **byte-identical**
+— a clean `git status`, `docker ps`, `ruff check` findings, a small failing `go test`,
+a 370-line `grep` that sits under the head-cap threshold — because `/eco` guarantees
+**never worse**: a compression that doesn't beat the raw rendering is discarded.
+Full tables: [`eval/eco/results/results.md`](eval/eco/results/results.md).
+
+<details>
+<summary><b>vs RTK's own 30-minute-session model</b> (why our headline is honest)</summary>
+
+<br>
+
+RTK *rewrites commands* into its own CLI (`rtk ls`, `rtk read`, `rtk grep`), so every
+operation in its session model compresses. `/eco` deliberately compresses **results
+only** — the command the model wrote is the command that runs — and small outputs pass
+through untouched. Recomputing RTK's session table with our *measured* ratios (0%
+where our corpus shows passthrough at RTK's assumed sizes):
+
+| Operation | Freq | Standard | rtk (estimated) | clawcodex `/eco` (measured) |
+|---|---:|---:|---:|---:|
+| `ls` / `tree` | 10x | 2,000 | 400 | 2,000 (0%) |
+| `cat` / read | 20x | 40,000 | 12,000 | 40,000 (0%) |
+| `grep` / `rg` | 8x | 16,000 | 3,200 | 16,000 (0%) |
+| `git status` | 10x | 3,000 | 600 | 1,908 (-36%) |
+| `git diff` | 5x | 10,000 | 2,500 | 10,000 (0%) |
+| `git log` | 5x | 2,500 | 500 | 2,500 (0%) |
+| `git add/commit/push` | 8x | 1,600 | 120 | 1,007 (-37%) |
+| `cargo test` / `npm test` | 5x | 25,000 | 2,500 | 9,850 (-60%) |
+| `ruff check` | 3x | 3,000 | 600 | 3,000 (0%) |
+| `pytest` | 4x | 8,000 | 800 | 2,320 (-71%) |
+| `go test` | 3x | 6,000 | 600 | 6,000 (0%) |
+| `docker ps` | 3x | 900 | 180 | 900 (0%) |
+| **Total** | | **~118,000** | **~23,900 (-80%)** | **~95,500 (-19%)** |
+
+Under RTK's *averaged* assumptions (every `cat` ≈ 2,000 tokens, every `ls` ≈ 200) the
+honest number for a results-only compressor is **-19%** — those mid-size outputs are
+exactly what ClawCodex already handles with Read-tool line caps and 30k-char Bash
+truncation. But real sessions aren't averages: they're fat-tailed, and one 2,000-line
+`git log`, one failing suite, or one `npm install` blows more context than fifty small
+commands. `/eco` targets precisely that tail — which is why the measured number on
+real outputs is **-80%**, the same figure RTK estimates, with none of the risk of
+rewriting commands.
+
+</details>
+
+**The RTK safety rules, kept** (see [`src/eco/`](src/eco/)):
+
+- **Never worse** — every compressed rendering is token-checked against the exact
+  baseline it replaces; the baseline wins ties. Worst case is 0% saved, never negative.
+- **Failures survive** — error/failure lines are never rewritten, only ceremony drops;
+  a green summary with a non-zero exit code is treated as untrusted and passed through.
+- **Everything recoverable** — lossy compressions tee the full output to the session
+  dir and append a runnable hint (`[see remaining: tail -n +61 …]`); no tee, no compression.
+- **Semantics untouched** — exit codes, `is_error`, images, background tasks, and
+  interrupted runs are never altered; any filter exception falls back to passthrough.
+
+`/eco status` shows per-filter savings for the session. Compression stacks with the
+[DeepSeek prefix cache](#-deepseek-prefix-cache): the cache makes the stable prefix
+nearly free, `/eco` shrinks the fresh suffix every turn actually pays for. Reproduce:
+
+```bash
+python3 eval/eco/capture_corpus.py --workdir /tmp/eco-bench   # capture real outputs
+.venv/bin/python eval/eco/measure.py                          # replay + count tokens
+```
+
+***
+
 ## ⭐ Star History
 
 [View star history on star-history.com](https://www.star-history.com/?repos=agentforce314%2Fclawcodex&type=date&legend=top-left)
@@ -476,6 +595,7 @@ clawcodex --help           # All flags: -p, --provider, --model, …
 | `/skill` | Skill launcher flow |
 | `/context` | Workspace / prompt context (when available) |
 | `/compact` | Compact or clear conversation (fallback clears if compact unavailable) |
+| `/eco` | Toggle Bash-output token compression (`on` / `off` / `status` for per-filter savings) |
 | `/exit`, `/quit`, `/q` | Exit |
 
 ### Skills (Slash Commands)

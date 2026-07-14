@@ -110,6 +110,93 @@ python -m src.cli --dangerously-skip-permissions   # 启动 REPL
 
 ***
 
+## 🌿 `/eco` Token 压缩 —— **Bash 输出 token 实测 -80%**
+
+长时间的 agentic 会话会被工具输出淹没：失败的测试日志、`git` 进度刷屏、2,000 行的目录列表。打开 **`/eco`** 后，ClawCodex 会用一组从 [RTK](https://github.com/rtk-ai/rtk) 方法集移植的确定性过滤器压缩每个 Bash 结果的*模型侧渲染* —— 聚焦失败的测试摘要、按命令族裁剪仪式性输出、带 `[×N]` 计数的日志去重、可恢复的头部截断 —— 完整原始输出则保留在磁盘上，并附带一条可直接运行的恢复提示。不经过模型、不改写命令、无需学习成本。
+
+```text
+$ pytest        # 128 行 → 37 行，1,347 → 390 tokens（-71%）
+Pytest: 5 failed, 29 passed in 0.04s
+
+1. [FAIL] test_unknown_sku_message
+   with pytest.raises(OrderError, match="unknown sku 'gold-bar'"):
+   >           o.total()
+   tests/test_orders.py:34:
+   ⋮
+5. [FAIL] test_truncate_one
+   >       assert truncate_words("alpha beta", 1) == "alpha..."
+   E       AssertionError: assert 'alpha beta...' == 'alpha...'
+[full output: ~/.clawcodex/<ws>/<session>/eco/1707_pytest.log]
+Command failed with exit code 1
+```
+
+**实测，而非估算。** RTK 的 README 对一个 30 分钟会话做建模并*估算*出 -80%。我们直接做了实验：一个由 27 个操作组成的**真实命令输出**语料 —— 失败的 `pytest`/`go test`/`jest` 运行、`pip`/`npm` 安装、git 工作流、仓库级列举、34,000 行系统日志，全部现场捕获（遵循 RTK 自己的 "never synthetic" 夹具规则）—— 经由生产管线逐字节重放，用 tiktoken `cl100k_base` 统计 `/eco` 关闭与开启时模型侧文本的 token 数：
+
+| 操作 | 过滤器 | 原始 tokens | `/eco` tokens | 节省 |
+|---|---|---:|---:|---:|
+| `pytest`（失败运行） | 失败聚焦 | 1,347 | 390 | **-71%** |
+| `pytest -v`（失败运行） | 失败聚焦 | 1,925 | 392 | **-79%** |
+| `pytest -v`（全绿运行） | 单行折叠 | 359 | 60 | **-83%** |
+| `go test -v ./...`（失败运行） | 失败聚焦 | 527 | 227 | **-56%** |
+| `npx jest`（失败运行） | 失败聚焦 | 444 | 175 | **-60%** |
+| `npm install jest` | 仪式裁剪 | 188 | 8 | **-95%** |
+| `pip install flask` | 仪式裁剪 | 514 | 85 | **-83%** |
+| `git clone --progress` | 仪式裁剪 | 6,868 | 18 | **-99%** |
+| `git push --progress` | 仪式裁剪 | 6,458 | 75 | **-98%** |
+| `git status`（脏工作区） | 建议行裁剪 | 143 | 91 | **-36%** |
+| `git log -n 300` | 可恢复头部截断 | 7,714 | 946 | **-87%** |
+| `git diff v1.0.0..v1.1.0 -- src` | 可恢复头部截断 | 7,561 | 748 | **-90%** |
+| `ls -R src` | 可恢复头部截断 | 9,088 | 225 | **-97%** |
+| `cat`（900 行源文件） | 可恢复头部截断 | 6,833 | 552 | **-91%** |
+| `grep -rn 'def ' src/` | 可恢复头部截断 | 7,582 | 1,219 | **-83%** |
+| `log show --last 90s`（34k 行） | 日志去重 | 10,512 | 1,977 | **-81%** |
+| **整个语料（27 个操作）** | | **92,989** | **17,767** | **-80%** |
+
+语料中还有 8 个操作（正确地）**逐字节原样通过** —— 干净的 `git status`、`docker ps`、`ruff check` 的告警、小规模失败的 `go test`、一个位于头部截断阈值之下的 370 行 `grep` —— 因为 `/eco` 保证**绝不更差**：压不过原始渲染的结果直接弃用。完整表格见 [`eval/eco/results/results.md`](../../eval/eco/results/results.md)。
+
+<details>
+<summary><b>对照 RTK 自己的 30 分钟会话模型</b>（为什么我们的标题数字是诚实的）</summary>
+
+<br>
+
+RTK 会把命令*改写*成它自己的 CLI（`rtk ls`、`rtk read`、`rtk grep`），所以其会话模型中每一行都在压缩。`/eco` 刻意**只压缩结果** —— 模型写的命令就是实际运行的命令 —— 小输出原样通过。用我们的*实测*比例重算 RTK 的会话表（在 RTK 假设的尺寸下语料显示为原样通过的行记 0%）：
+
+| 操作 | 频次 | 标准 | rtk（估算） | clawcodex `/eco`（实测） |
+|---|---:|---:|---:|---:|
+| `ls` / `tree` | 10x | 2,000 | 400 | 2,000（0%） |
+| `cat` / read | 20x | 40,000 | 12,000 | 40,000（0%） |
+| `grep` / `rg` | 8x | 16,000 | 3,200 | 16,000（0%） |
+| `git status` | 10x | 3,000 | 600 | 1,908（-36%） |
+| `git diff` | 5x | 10,000 | 2,500 | 10,000（0%） |
+| `git log` | 5x | 2,500 | 500 | 2,500（0%） |
+| `git add/commit/push` | 8x | 1,600 | 120 | 1,007（-37%） |
+| `cargo test` / `npm test` | 5x | 25,000 | 2,500 | 9,850（-60%） |
+| `ruff check` | 3x | 3,000 | 600 | 3,000（0%） |
+| `pytest` | 4x | 8,000 | 800 | 2,320（-71%） |
+| `go test` | 3x | 6,000 | 600 | 6,000（0%） |
+| `docker ps` | 3x | 900 | 180 | 900（0%） |
+| **合计** | | **~118,000** | **~23,900（-80%）** | **~95,500（-19%）** |
+
+在 RTK 的*平均化*假设下（每个 `cat` ≈ 2,000 tokens、每个 `ls` ≈ 200），只压结果的诚实数字是 **-19%** —— 这些中等尺寸的输出恰好是 ClawCodex 已经用 Read 工具行数上限与 30k 字符 Bash 截断处理掉的部分。但真实会话不是平均值：它是重尾分布，一次 2,000 行的 `git log`、一轮失败的测试套件或一次 `npm install` 烧掉的上下文超过五十条小命令。`/eco` 瞄准的正是这条尾巴 —— 所以在真实输出上的实测数字是 **-80%**，与 RTK 估算的数字相同，却没有任何改写命令的风险。
+
+</details>
+
+**RTK 的安全规则全部保留**（见 [`src/eco/`](../../src/eco/)）：
+
+- **绝不更差** —— 每个压缩渲染都会与其替换的精确基线做 token 比对；平局时基线获胜。最坏情况是节省 0%，绝不为负。
+- **失败信息幸存** —— 错误/失败行从不被改写，只裁剪仪式性输出；绿色摘要 + 非零退出码被视为不可信并原样通过。
+- **一切可恢复** —— 有损压缩会把完整输出 tee 到会话目录并附加可运行的提示（`[see remaining: tail -n +61 …]`）；写不了 tee 就不压缩。
+- **语义不动** —— 退出码、`is_error`、图像、后台任务与中断运行一概不改；过滤器抛出任何异常都会回退为原样通过。
+
+`/eco status` 展示本会话的分过滤器节省。压缩与 **DeepSeek 前缀缓存**（见[新闻](#-新闻) 2026-06-18）叠加：缓存让稳定前缀近乎免费，`/eco` 则缩小每轮真正要付费的新增后缀。复现：
+
+```bash
+python3 eval/eco/capture_corpus.py --workdir /tmp/eco-bench   # 捕获真实输出
+.venv/bin/python eval/eco/measure.py                          # 重放并统计 token
+```
+
+***
+
 ## ⭐ Star 历史
 
 [在 star-history.com 查看 Star 历史图表](https://www.star-history.com/?repos=agentforce314%2Fclawcodex&type=date&legend=top-left)
@@ -394,6 +481,7 @@ clawcodex --help           # 全部参数：-p、--provider、--model 等
 | `/skill` | 技能启动流程 |
 | `/context` | 工作区 / 提示上下文（若可用） |
 | `/compact` | 压缩或清空对话（不可用时回退为清空） |
+| `/eco` | 切换 Bash 输出 token 压缩（`on` / `off` / `status` 查看分过滤器节省） |
 | `/exit`、`/quit`、`/q` | 退出 |
 
 ### Skills（技能 / 斜杠命令）

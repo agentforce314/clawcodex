@@ -57,6 +57,29 @@
 
 ***
 
+## 🌿 Compression de tokens `/eco` — **-80 % mesurés sur la sortie Bash**
+
+Activez **`/eco`** et ClawCodex compresse le rendu côté modèle de chaque résultat Bash
+avec des filtres déterministes portés de [RTK](https://github.com/rtk-ai/rtk) : résumés
+de tests focalisés sur les échecs, suppression du cérémonial (`git`/`pip`/`npm`),
+déduplication de logs et troncature récupérable — la sortie brute complète reste sur
+disque derrière un indice directement exécutable. Garantie **jamais pire** : une
+compression qui ne bat pas le rendu brut est abandonnée, et les lignes d'erreur
+survivent toujours.
+
+Mesuré (tokens tiktoken `cl100k_base`) sur 27 opérations réelles rejouées à travers le
+pipeline de production :
+
+| Opération | Brut | `/eco` | Gain |
+|---|---:|---:|---:|
+| `pytest` (échecs) | 1,347 | 390 | **-71%** |
+| `git clone --progress` | 6,868 | 18 | **-99%** |
+| `ls -R src` | 9,088 | 225 | **-97%** |
+| `log show --last 90s` (34k lignes) | 10,512 | 1,977 | **-81%** |
+| **Corpus complet (27 opérations)** | **92,989** | **17,767** | **-80%** |
+
+Tables complètes et méthodologie : [`eval/eco/`](../../eval/eco/README.md).
+
 ## ⭐ Star History
 
 <a href="https://www.star-history.com/?repos=GPT-AGI%2FClaw-Codex&type=date&legend=top-left">
