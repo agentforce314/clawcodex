@@ -1,0 +1,38 @@
+Pytest: 5 failed, 29 passed in 0.04s
+
+1. [FAIL] test_unknown_sku_message
+   with pytest.raises(OrderError, match="unknown sku 'gold-bar'"):
+   >           o.total()
+   tests/test_orders.py:34:
+   orders.py:30: in total
+   orders.py:30: in <genexpr>
+
+2. [FAIL] test_summary_counts_items
+   >       assert o.summary() == "5 items, total $12.75"
+   E       AssertionError: assert '2 items, total $12.75' == '5 items, total $12.75'
+   E
+   E         - 5 items, total $12.75
+   E         ? ^
+
+3. [FAIL] test_total_with_seasonal_catalog
+   >       assert o.total() == pytest.approx(8.10)
+   tests/test_orders.py:53:
+   orders.py:30: in total
+   orders.py:30: in <genexpr>
+   except KeyError:
+
+4. [FAIL] test_truncate_long
+   >       assert truncate_words("one two three four five", 3) == "one two three..."
+   E       AssertionError: assert 'one two three four...' == 'one two three...'
+   E
+   E         - one two three...
+   E         + one two three four...
+
+5. [FAIL] test_truncate_one
+   >       assert truncate_words("alpha beta", 1) == "alpha..."
+   E       AssertionError: assert 'alpha beta...' == 'alpha...'
+   E
+   E         - alpha...
+   E         + alpha beta...
+[full output: ~/workspace/clawcodex/.claude/worktrees/RTK-token-compression/eval/eco/corpus/.tee/1707_0_11_pytest.log]
+Command failed with exit code 1

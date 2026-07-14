@@ -414,6 +414,23 @@ def test_noise_strip_preserves_errors():
     assert "ERROR: No matching distribution found" in hit.body
 
 
+def test_noise_strip_npm_lowercase_warn():
+    """npm >=9 lowercased its log prefixes ("npm warn deprecated ...");
+    deprecation spam is ceremony, but `npm error` lines must survive."""
+    text = (
+        "added 294 packages in 6s\n"
+        "npm warn deprecated inflight@1.0.6: This module is not supported\n"
+        "npm WARN deprecated abab@2.0.6: Use your platform's native atob()\n"
+        "npm warn deprecated glob@7.2.3: Old versions of glob\n"
+        "npm error code ELIFECYCLE\n"
+    )
+    hit = filter_noise_strip("npm install --no-fund jest", 0, text)
+    assert hit is not None and hit.safe_loss
+    assert "added 294 packages" in hit.body
+    assert "deprecated" not in hit.body  # both npm<9 WARN and npm>=9 warn drop
+    assert "npm error code ELIFECYCLE" in hit.body
+
+
 # ── filters: log_dedup ───────────────────────────────────────────────────────
 
 

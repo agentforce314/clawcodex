@@ -395,7 +395,9 @@ _NOISE_GROUPS: tuple[tuple[re.Pattern[str] | None, tuple[re.Pattern[str], ...]],
     (
         re.compile(r"(^|[\s;&|(])(npm|npx|yarn|pnpm|bun)\b"),
         (
-            re.compile(r"^npm (WARN|notice)\b"),
+            # npm >=9 lowercased its log prefixes ("npm warn deprecated ...");
+            # error lines are deliberately NOT ceremony and must survive.
+            re.compile(r"^npm (WARN|warn|notice)\b"),
             re.compile(r"^\s*reify:"),
             re.compile(r"^Progress: resolved \d+"),
             *_PROGRESS_BAR_PATTERNS,

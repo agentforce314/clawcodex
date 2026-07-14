@@ -139,6 +139,12 @@ out/
 /eval/runs/
 /eval/__pycache__/
 
+# /eco benchmark — captured command outputs are machine-specific (and the
+# macOS `log show` capture carries local system-log lines); regenerate with
+# eval/eco/capture_corpus.py. The measured results/ tables ARE tracked.
+/eval/eco/corpus/
+/eval/eco/__pycache__/
+
 # Stray *.patch / *.diff artifacts the agent occasionally writes via its
 # Write tool during SWE-bench eval (we disable Write/Edit in the wrapper
 # now but old artifacts may persist).
