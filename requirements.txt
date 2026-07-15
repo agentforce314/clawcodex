@@ -1,7 +1,7 @@
 # Runtime dependencies (production install).
 # Dev/test-only tools live in requirements.dev.txt.
 anthropic>=0.116.0
-openai>=1.0.0
+openai>=1.109.1
 python-dotenv>=1.2.2
 rich>=13.9.4
 prompt-toolkit>=3.0.0
