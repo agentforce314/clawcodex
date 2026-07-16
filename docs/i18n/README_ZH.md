@@ -27,14 +27,15 @@
 ## ⚡ 快速安装
 
 ```bash
-git clone https://github.com/agentforce314/clawcodex.git
-cd clawcodex
-python3 -m venv .venv && source .venv/bin/activate   # Python 3.10+
-pip install -r requirements.txt
+# 从 PyPI 安装（推荐）。发行包名是 clawcodex-cli，
+# 安装后的命令仍然是 clawcodex。
+pipx install clawcodex-cli
+# 或：uv tool install clawcodex-cli
+# 或在已激活的虚拟环境中：pip install clawcodex-cli
 
-python -m src.cli login   # 配置写入 ~/.clawcodex/config.json
+clawcodex login   # 配置写入 ~/.clawcodex/config.json
 
-python -m src.cli --dangerously-skip-permissions   # 启动 REPL
+clawcodex --dangerously-skip-permissions   # 启动 REPL
 ```
 
 配置文件保存在 `~/.clawcodex/config.json`。最小示例：
@@ -357,6 +358,18 @@ clawcodex --allow-dangerously-skip-permissions         # 允许之后通过 /per
 ## 🚀 快速开始
 
 ### 安装
+
+```bash
+# 从 PyPI 安装（推荐）。发行包名是 clawcodex-cli，
+# 安装后的命令仍然是 `clawcodex`。
+pipx install clawcodex-cli
+# 或：uv tool install clawcodex-cli
+# 或在已激活的虚拟环境中：pip install clawcodex-cli
+
+clawcodex --help
+```
+
+如需从源码开发：
 
 ```bash
 git clone https://github.com/agentforce314/clawcodex.git

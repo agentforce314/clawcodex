@@ -151,15 +151,27 @@ clawcodex config       # عرض الإعدادات
 ### التثبيت
 
 ```bash
-git clone https://github.com/GPT-AGI/Claw-Codex.git
-cd Claw-Codex
+# التثبيت من PyPI (موصى به). اسم الحزمة هو clawcodex-cli،
+# بينما يبقى اسم الأمر المثبّت clawcodex.
+pipx install clawcodex-cli
+# أو: uv tool install clawcodex-cli
+# أو داخل بيئة افتراضية مفعّلة: pip install clawcodex-cli
+
+clawcodex --help
+```
+
+للتطوير من الشيفرة المصدرية:
+
+```bash
+git clone https://github.com/agentforce314/clawcodex.git
+cd clawcodex
 
 # إنشاء venv (يُوصى بـ uv)
 uv venv --python 3.11
 source .venv/bin/activate
 
-# التثبيت
-uv pip install -r requirements.txt
+# تثبيت الحزمة وأدوات التطوير
+uv pip install -e ".[dev]"
 ```
 
 يتم حفظ ملف التكوين في `~/.clawcodex/config.json`. مثال مبسّط:
