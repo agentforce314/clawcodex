@@ -1,6 +1,5 @@
 include README.md
 include LICENSE
-include CLAUDE.md
-include MVP_PLAN.md
 recursive-include src *.py
 recursive-include src *.json
+prune tests

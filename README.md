@@ -491,6 +491,18 @@ Use `clawcodex config` to check connection status and
 ### Install
 
 ```bash
+# Install the latest release from PyPI (recommended)
+pipx install clawcodex
+# Or: uv tool install clawcodex
+# Or, inside an activated virtual environment: pip install clawcodex
+
+# Run the CLI
+clawcodex --help
+```
+
+For development from a source checkout:
+
+```bash
 git clone https://github.com/agentforce314/clawcodex.git
 cd clawcodex
 
