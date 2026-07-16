@@ -152,15 +152,27 @@ clawcodex config       # Ver configurações
 ### Instalar
 
 ```bash
-git clone https://github.com/GPT-AGI/Claw-Codex.git
-cd Claw-Codex
+# Instalar pelo PyPI (recomendado). O pacote se chama clawcodex-cli,
+# mas o comando instalado continua sendo `clawcodex`.
+pipx install clawcodex-cli
+# Ou: uv tool install clawcodex-cli
+# Ou em um ambiente virtual ativado: pip install clawcodex-cli
+
+clawcodex --help
+```
+
+Para desenvolver a partir do código-fonte:
+
+```bash
+git clone https://github.com/agentforce314/clawcodex.git
+cd clawcodex
 
 # Criar venv (uv recomendado)
 uv venv --python 3.11
 source .venv/bin/activate
 
-# Instalar
-uv pip install -r requirements.txt
+# Instalar o pacote e as ferramentas de desenvolvimento
+uv pip install -e ".[dev]"
 ```
 
 O arquivo de configuração é salvo em `~/.clawcodex/config.json`. Exemplo mínimo:
