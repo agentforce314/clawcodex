@@ -491,10 +491,11 @@ Use `clawcodex config` to check connection status and
 ### Install
 
 ```bash
-# Install the latest release from PyPI (recommended)
-pipx install clawcodex
-# Or: uv tool install clawcodex
-# Or, inside an activated virtual environment: pip install clawcodex
+# Install the latest release from PyPI (recommended). The distribution is
+# named clawcodex-cli; the installed command remains `clawcodex`.
+pipx install clawcodex-cli
+# Or: uv tool install clawcodex-cli
+# Or, inside an activated virtual environment: pip install clawcodex-cli
 
 # Run the CLI
 clawcodex --help

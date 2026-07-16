@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-16
+
+### Changed
+
+- The PyPI distribution is named `clawcodex-cli` because PyPI reserves
+  `clawcodex` as confusingly similar to the unrelated `claw-codex` project.
+  The installed executable remains `clawcodex`.
+
 ## [1.2.0] - 2026-07-16
 
 ### Added
@@ -319,7 +327,8 @@ The focus was on building a solid foundation with clean architecture, comprehens
 
 ---
 
-[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/agentforce314/clawcodex/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/agentforce314/clawcodex/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/agentforce314/clawcodex/compare/v1.0.0...v1.1.0
 [0.1.0]: https://github.com/agentforce314/clawcodex/releases/tag/v0.1.0
