@@ -3,8 +3,8 @@ requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "clawcodex"
-version = "1.2.0"
+name = "clawcodex-cli"
+version = "1.2.1"
 description = "A production-oriented Python rebuild of Claude Code — real architecture, reliable CLI agent"
 readme = "README.md"
 license = "MIT"
