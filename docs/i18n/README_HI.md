@@ -151,15 +151,27 @@ clawcodex config       # सेटिंग्स देखें
 ### इंस्टॉल करें
 
 ```bash
-git clone https://github.com/GPT-AGI/Claw-Codex.git
-cd Claw-Codex
+# PyPI से इंस्टॉल करें (अनुशंसित)। पैकेज का नाम clawcodex-cli है,
+# लेकिन इंस्टॉल होने वाला कमांड `clawcodex` ही रहता है।
+pipx install clawcodex-cli
+# या: uv tool install clawcodex-cli
+# या सक्रिय वर्चुअल एनवायरनमेंट में: pip install clawcodex-cli
+
+clawcodex --help
+```
+
+सोर्स से विकास करने के लिए:
+
+```bash
+git clone https://github.com/agentforce314/clawcodex.git
+cd clawcodex
 
 # venv बनाएं (uv अनुशंसित)
 uv venv --python 3.11
 source .venv/bin/activate
 
-# इंस्टॉल करें
-uv pip install -r requirements.txt
+# पैकेज और डेवलपमेंट टूल इंस्टॉल करें
+uv pip install -e ".[dev]"
 ```
 
 कॉन्फ़िगरेशन फ़ाइल `~/.clawcodex/config.json` में सहेजी जाती है। न्यूनतम उदाहरण:
