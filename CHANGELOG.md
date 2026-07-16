@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-16
+
+### Added
+
+- Added the `/eco` token-compression mode for reducing verbose Bash tool
+  output while preserving actionable information.
+- Added Anthropic Claude Opus 4.8 and Claude Fable 5 model configurations.
+
 ### Changed
 
 - Session history and transcripts (`sessions/`, `transcripts/`) now honor
@@ -17,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.clawcodex/transcripts` if you want them to carry over. The
   `# Environment` system-prompt hint now points at the resolved root so the
   model finds session history in either configuration.
+- Updated OpenAI and prompt-toolkit dependency minimums to the versions used
+  by the current implementation.
+
+### Fixed
+
+- Corrected MiniMax pricing tiers and model modalities.
+- Prevented Anthropic OAuth identity migration from rewriting paths under
+  `.clawcodex`.
+- Restored Claude Code-compatible formatting for thrown tool errors.
 
 ## [1.1.0] - 2026-07-12
 
@@ -302,4 +319,7 @@ The focus was on building a solid foundation with clean architecture, comprehens
 
 ---
 
+[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/agentforce314/clawcodex/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/agentforce314/clawcodex/compare/v1.0.0...v1.1.0
 [0.1.0]: https://github.com/agentforce314/clawcodex/releases/tag/v0.1.0

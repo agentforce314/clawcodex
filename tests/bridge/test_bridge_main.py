@@ -795,6 +795,10 @@ async def test_run_loop_respects_capacity() -> None:
 
     assert len(spawner.spawns) == 1  # capacity 1; second not yet spawned
 
+    # A real child exits after SIGTERM during shutdown. Mirror that behavior
+    # in the fake so this capacity test does not wait the production 30-second
+    # shutdown grace period (the forced-shutdown path is tested separately).
+    spawner.handles[0].complete('interrupted')
     cancel.set()
     await task
 
