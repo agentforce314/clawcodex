@@ -85,4 +85,6 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
   root inside sandboxes (same pattern Harbor uses for Claude Code).
 - The adapter bootstraps `uv` + a managed CPython 3.13 in each container, so
   task images need no preinstalled Python.
-- `harbor view eval/harbor/jobs/<job-name>` serves a local trajectory browser.
+- `harbor view eval/harbor/jobs/<job-name>` serves a local results browser
+  (the trajectory pane stays empty — this adapter doesn't emit ATIF; read
+  `agent/clawcodex.txt` for the full stream-json trajectory).

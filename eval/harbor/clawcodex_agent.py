@@ -28,14 +28,16 @@ through as ``--model`` alone, falling back to clawcodex's own routing.
 
 API keys reach the container two ways, either is sufficient:
 
-* exported in the host environment (the allowlist below is forwarded), or
+* exported in the host environment (the running provider's key vars are
+  forwarded; unknown/absent provider falls back to the full allowlist), or
 * passed explicitly: ``--ae DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"``
   (Harbor wires ``--agent-env`` vars into every agent-phase exec itself).
 
 Agent kwargs (``--ak key=value``):
 
 * ``max_turns`` — clawcodex ``--max-turns`` (default 300 here; the CLI's
-  own default of 50 is too low for terminal-bench tasks).
+  own default of 50 is too low for terminal-bench tasks). The
+  ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
 * ``version`` — pin a ``clawcodex-cli`` PyPI version (default: latest).
 """
 
@@ -53,20 +55,23 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
 
-# Host env vars forwarded into the container when set (clawcodex's builtin
-# provider key candidates — see src/providers/__init__.py in the clawcodex
-# repo). Keys passed via --agent-env are injected by Harbor itself and don't
-# need to appear here.
-_FORWARDED_ENV_VARS: tuple[str, ...] = (
-    "DEEPSEEK_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "ZAI_API_KEY",
-    "Z_AI_API_KEY",
-    "MINIMAX_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
+# Host env vars forwardable into the container (clawcodex's builtin provider
+# key candidates — see src/providers/__init__.py in the clawcodex repo), keyed
+# by provider so an eval only exposes the key(s) of the provider it runs:
+# agents shell out to `env` often enough, and /logs/agent syncs to the host
+# jobs dir. Unknown/absent provider falls back to the full allowlist. Keys
+# passed via --agent-env are injected by Harbor itself and don't appear here.
+_PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "zai": ("ZAI_API_KEY", "Z_AI_API_KEY"),
+    "minimax": ("MINIMAX_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+}
+_ALL_PROVIDER_ENV_VARS: tuple[str, ...] = tuple(
+    dict.fromkeys(key for keys in _PROVIDER_ENV_VARS.values() for key in keys)
 )
 
 _PATH_EXPORT = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"'
@@ -111,9 +116,11 @@ class Clawcodex(BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
-                "command -v curl >/dev/null 2>&1 && [ -d /etc/ssl ] || { "
+                "command -v curl >/dev/null 2>&1 && "
+                "{ [ -f /etc/ssl/certs/ca-certificates.crt ] || "
+                "[ -f /etc/pki/tls/certs/ca-bundle.crt ]; } || { "
                 "if command -v apk >/dev/null 2>&1; then"
-                "  apk add --no-cache curl ca-certificates bash;"
+                "  apk add --no-cache curl ca-certificates;"
                 " elif command -v apt-get >/dev/null 2>&1; then"
                 "  apt-get update && apt-get install -y curl ca-certificates;"
                 " elif command -v yum >/dev/null 2>&1; then"
@@ -145,7 +152,10 @@ class Clawcodex(BaseInstalledAgent):
 
     def _build_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
-        for key in _FORWARDED_ENV_VARS:
+        forwarded = _PROVIDER_ENV_VARS.get(
+            (self._parsed_model_provider or "").lower(), _ALL_PROVIDER_ENV_VARS
+        )
+        for key in forwarded:
             value = self._get_env(key)
             if value:
                 env[key] = value
@@ -179,6 +189,9 @@ class Clawcodex(BaseInstalledAgent):
         if self._parsed_model_provider:
             parts += ["--provider", shlex.quote(self._parsed_model_provider)]
 
+        # NOTE: build_cli_flags() output is NOT shell-quoted by the base
+        # class — safe while every CLI_FLAGS entry is int/enum-typed; quote
+        # at the descriptor level before adding any string-typed flag.
         cli_flags = self.build_cli_flags()
         if cli_flags:
             parts.append(cli_flags)
