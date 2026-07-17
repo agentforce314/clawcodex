@@ -15,9 +15,18 @@ uv tool install harbor
 export DEEPSEEK_API_KEY=sk-...
 ```
 
-If `docker pull` hangs on your machine (Docker Desktop's `credsStore`
-credential helper can wedge, stalling even anonymous pulls of public
-images), point Docker at a helper-free config for the eval:
+If `docker pull` hangs on your machine (Docker Desktop's
+`"credsStore": "desktop"` credential helper can wedge, stalling even
+anonymous pulls of public images), the durable fix is to switch
+`~/.docker/config.json` to the direct keychain helper — with empty
+`auths` there is nothing to migrate:
+
+```bash
+# in ~/.docker/config.json:  "credsStore": "desktop"  ->  "osxkeychain"
+```
+
+Non-invasive alternative (leaves your Docker config untouched): point
+`DOCKER_CONFIG` at a helper-free config for the eval only:
 
 ```bash
 mkdir -p ~/.docker-nocreds
