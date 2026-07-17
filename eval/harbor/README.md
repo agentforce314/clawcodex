@@ -35,9 +35,26 @@ ln -sfn ~/.docker/cli-plugins ~/.docker-nocreds/cli-plugins  # keep compose v2
 export DOCKER_CONFIG=~/.docker-nocreds
 ```
 
-## Evaluate ALL terminal-bench 2.0 tasks
+## Evaluate ALL terminal-bench 2.1 tasks
 
-From the repo root:
+Terminal-bench 2.1 ([harbor-framework/terminal-bench-2-1](https://github.com/harbor-framework/terminal-bench-2-1))
+is the verified iteration of 2.0 — same 89 tasks, 26 of them fixed for
+bugs, timeouts/resources, and reward-hacking robustness. It resolves from
+Harbor Hub under an org-qualified name (no `@version`). From the repo root:
+
+```bash
+PYTHONPATH=$PWD/eval/harbor harbor run \
+  --dataset terminal-bench/terminal-bench-2-1 \
+  --agent clawcodex_agent:Clawcodex \
+  --model deepseek/deepseek-v4-flash \
+  --jobs-dir eval/harbor/jobs \
+  --n-concurrent 4
+```
+
+NOTE: hub datasets namespace task names — filters must match the full
+name: `-i 'terminal-bench/fix-git'` (or use a glob: `-i '*fix-git*'`).
+
+## Evaluate ALL terminal-bench 2.0 tasks
 
 ```bash
 PYTHONPATH=$PWD/eval/harbor harbor run \
@@ -56,7 +73,8 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
 
 ```bash
 # A subset of tasks (repeatable glob filter) — good for smoke tests
-  -i fix-git -i openssl-selfsigned-cert
+  -i fix-git -i openssl-selfsigned-cert          # terminal-bench@2.0
+  -i 'terminal-bench/fix-git'                    # hub datasets (2.1)
 
 # First N tasks only
   --n-tasks 5
