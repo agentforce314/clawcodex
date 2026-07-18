@@ -89,6 +89,46 @@ Notes:
 - In subscription mode the adapter does NOT forward `ANTHROPIC_API_KEY`
   (inside clawcodex an API key would take precedence and bill the API).
 
+## Compare against openclaude (the vendored TS Claude Code)
+
+`openclaude_agent.py` runs the old TypeScript implementation at
+`<repo>/typescript` through the same harness, for apples-to-apples
+comparisons with clawcodex. It uploads the host-built bundle into each
+container plus an `npm install` of its 7 unbundled runtime externals
+(native sharp/ripgrep binaries must match the container platform; the
+ripgrep postinstall downloads from GitHub, so containers need egress).
+Build the bundle once first:
+
+```bash
+cd typescript && bun run build   # produces dist/cli.mjs
+```
+
+Then (same subscription + effort semantics as the clawcodex adapter;
+`--provider anthropic` is always pinned because the any-LLM fork would
+otherwise auto-route to whatever provider credentials it detects):
+
+```bash
+PYTHONPATH=$PWD/eval/harbor harbor run \
+  --dataset terminal-bench/terminal-bench-2-1 \
+  --agent openclaude_agent:OpenClaude \
+  --model anthropic/claude-opus-4-8 \
+  --ak subscription=true \
+  --ak effort=high \
+  --jobs-dir eval/harbor/jobs \
+  --n-concurrent 2
+```
+
+Notes:
+- `typescript/` is gitignored and absent in worktrees — run from the main
+  checkout, or point `OPENCLAUDE_DIST` / `--ak dist=` at a built
+  `cli.mjs`.
+- Subscription auth is env-only (`CLAUDE_CODE_OAUTH_TOKEN` access token,
+  no refresh token, no credential file in the container); the same
+  30-min-runway host refresh as the clawcodex adapter applies.
+- This openclaude snapshot's effort ladder is low|medium|high|max (no
+  xhigh), and its model metadata predates claude-opus-4-8, so it assumes
+  a conservative 128k context for compaction purposes.
+
 ## Evaluate ALL terminal-bench 2.0 tasks
 
 ```bash
