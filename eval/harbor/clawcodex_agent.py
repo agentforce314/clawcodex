@@ -302,7 +302,7 @@ class Clawcodex(BaseInstalledAgent):
                 f"  yum install -y curl ca-certificates{git_pkg};"
                 " else"
                 '  echo "Warning: no known package manager; assuming curl'
-                f'{" and git" if need_git else ""} exist" >&2;'
+                f'{" and git" if need_git else ""} available" >&2;'
                 " fi; }"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},

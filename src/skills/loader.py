@@ -73,7 +73,7 @@ def _get_skill_command_name(file_path: str, base_dir: str) -> str:
 # ----------------------------------------------------------------------
 
 # Mirrors TS ``EFFORT_LEVELS`` (utils/effort.ts).
-EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
+EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 # Mirrors TS ``FRONTMATTER_SHELLS`` (utils/frontmatterParser.ts).
 FRONTMATTER_SHELLS: frozenset[str] = frozenset({"bash", "powershell"})
