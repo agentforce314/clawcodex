@@ -100,7 +100,7 @@ def _headless_args(**overrides):
     base = dict(
         prompt="hi", output_format="text", input_format="text",
         include_partial_messages=False, max_turns=1, model=None,
-        fallback_model=None, provider=None, allowed_tools=None,
+        fallback_model=None, effort=None, provider=None, allowed_tools=None,
         disallowed_tools=None, verbose=False,
         dangerously_skip_permissions=False,
         _resolved_permission_mode="default",
