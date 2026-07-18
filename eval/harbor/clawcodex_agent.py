@@ -38,8 +38,10 @@ Agent kwargs (``--ak key=value``):
 * ``max_turns`` — clawcodex ``--max-turns`` (default 300 here; the CLI's
   own default of 50 is too low for terminal-bench tasks). The
   ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
-* ``effort`` — clawcodex ``--effort`` (low|medium|high|max) for models that
-  support ``output_config.effort`` (Opus 4.6/4.8, Sonnet 4.6, Fable 5).
+* ``effort`` — clawcodex ``--effort`` (low|medium|high|xhigh|max) for
+  models that support ``output_config.effort`` (Opus 4.6/4.8, Sonnet 4.6,
+  Fable 5). ``xhigh`` is model-dependent (opus-4-8 yes; sonnet-4-6/
+  opus-4-6 no) — clawcodex degrades it to ``high`` where rejected.
   ``CLAWCODEX_EFFORT`` host env var works as a fallback.
 * ``version`` — pin a ``clawcodex-cli`` PyPI version (default: latest).
 * ``source`` — full pip-installable spec overriding the PyPI package, e.g.
@@ -215,7 +217,7 @@ class Clawcodex(BaseInstalledAgent):
             "effort",
             cli="--effort",
             type="enum",
-            choices=["low", "medium", "high", "max"],
+            choices=["low", "medium", "high", "xhigh", "max"],
             env_fallback="CLAWCODEX_EFFORT",
         ),
     ]

@@ -32,7 +32,7 @@ from src.query.query import (
     _model_supports_adaptive_thinking,
     _model_supports_effort,
     _model_supports_extended_thinking,
-    _model_supports_max_effort,
+    _model_supports_xhigh_effort,
     query,
     resolve_thinking_effort,
 )
@@ -119,12 +119,13 @@ class TestThinkingAllowlists(unittest.TestCase):
             self.assertEqual(_model_supports_adaptive_thinking(model), adaptive, model)
             self.assertEqual(_model_supports_effort(model), effort, model)
 
-    def test_max_effort_allowlist(self):
-        # TS modelSupportsMaxEffort (effort.ts:65-77): opus-4-6 only.
-        self.assertTrue(_model_supports_max_effort("claude-opus-4-6"))
-        self.assertTrue(_model_supports_max_effort("claude-opus-4-6-20260101"))
-        for model in ("claude-opus-4-8", "claude-sonnet-4-6", "claude-fable-5", None):
-            self.assertFalse(_model_supports_max_effort(model), model)
+    def test_xhigh_effort_allowlist(self):
+        # Wire-probed 2026-07-18: opus-4-8 accepts xhigh; sonnet-4-6 and
+        # opus-4-6 400 on it (fable-5 by analogy with opus-4-8).
+        self.assertTrue(_model_supports_xhigh_effort("claude-opus-4-8"))
+        self.assertTrue(_model_supports_xhigh_effort("claude-fable-5"))
+        for model in ("claude-opus-4-6", "claude-sonnet-4-6", None):
+            self.assertFalse(_model_supports_xhigh_effort(model), model)
 
 
 class TestResolveThinkingEffort(unittest.TestCase):
@@ -151,13 +152,19 @@ class TestResolveThinkingEffort(unittest.TestCase):
         with self._with_settings_effort(""):
             self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
 
-    def test_max_clamped_off_allowlist(self):
-        # Explicit valid values never consult settings — no patch needed.
-        self.assertEqual(resolve_thinking_effort("max", "claude-opus-4-8"), "high")
-        self.assertEqual(resolve_thinking_effort("max", "claude-fable-5"), "high")
+    def test_max_passes_through_everywhere(self):
+        # Wire-probed 2026-07-18: max accepted on sonnet-4-6 and opus-4-8
+        # (opus-4-6 documented; its 400 error for xhigh enumerates max too).
+        for model in ("claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6"):
+            self.assertEqual(resolve_thinking_effort("max", model), "max", model)
 
-    def test_max_passes_through_on_opus_46(self):
-        self.assertEqual(resolve_thinking_effort("max", "claude-opus-4-6"), "max")
+    def test_xhigh_clamped_off_allowlist(self):
+        # Explicit valid values never consult settings — no patch needed.
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-sonnet-4-6"), "high")
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-opus-4-6"), "high")
+
+    def test_xhigh_passes_through_on_opus_48(self):
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-opus-4-8"), "xhigh")
 
     def test_settings_read_failure_falls_back_to_default(self):
         from unittest import mock as _mock
@@ -167,10 +174,10 @@ class TestResolveThinkingEffort(unittest.TestCase):
         ):
             self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
 
-    def test_settings_max_also_clamped_by_model(self):
-        with self._with_settings_effort("max"):
-            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "high")
-            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-6"), "max")
+    def test_settings_xhigh_also_clamped_by_model(self):
+        with self._with_settings_effort("xhigh"):
+            self.assertEqual(resolve_thinking_effort(None, "claude-sonnet-4-6"), "high")
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "xhigh")
 
 
 class TestExtendedThinkingInjection(unittest.TestCase):
@@ -285,10 +292,15 @@ class TestExtendedThinkingInjection(unittest.TestCase):
             kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("output_config"), {"effort": "high"})
 
-    def test_max_effort_clamped_on_wire_for_non_allowlisted_model(self):
-        provider = _make_anthropic_mock("claude-opus-4-8")
-        kw = self._drive_one_turn(provider, thinking_effort="max")
+    def test_xhigh_effort_clamped_on_wire_for_non_allowlisted_model(self):
+        provider = _make_anthropic_mock("claude-sonnet-4-6")
+        kw = self._drive_one_turn(provider, thinking_effort="xhigh")
         self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_xhigh_effort_passes_through_on_opus_48(self):
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        kw = self._drive_one_turn(provider, thinking_effort="xhigh")
+        self.assertEqual(kw.get("output_config"), {"effort": "xhigh"})
 
     def test_explicit_opt_in_overrides_unknown_model(self):
         # An out-of-band model name (e.g. proxy alias) should still get

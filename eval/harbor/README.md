@@ -54,6 +54,37 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 NOTE: hub datasets namespace task names — filters must match the full
 name: `-i 'terminal-bench/fix-git'` (or use a glob: `-i '*fix-git*'`).
 
+## Evaluate with claude-opus-4-8 on a Claude subscription
+
+Uses your Claude Pro/Max subscription (OAuth) instead of an API key.
+One-time prerequisite on the host: `clawcodex login` (writes
+`~/.clawcodex/anthropic-oauth.json`; the adapter refreshes it
+automatically before each trial and never copies it into the synced
+jobs directory).
+
+```bash
+PYTHONPATH=$PWD/eval/harbor harbor run \
+  --dataset terminal-bench/terminal-bench-2-1 \
+  --agent clawcodex_agent:Clawcodex \
+  --model anthropic/claude-opus-4-8 \
+  --ak subscription=true \
+  --ak effort=high \
+  --jobs-dir eval/harbor/jobs \
+  --n-concurrent 2
+```
+
+Notes:
+- `effort=high` maps to `clawcodex --effort high` →
+  `output_config.effort` on effort-capable models (Opus 4.6/4.8,
+  Sonnet 4.6, Fable 5). Requires clawcodex > 1.2.1 in the container —
+  until the next PyPI release, add
+  `--ak source=git+https://github.com/agentforce314/clawcodex@main`.
+- Subscription rate limits are shared with your interactive Claude
+  usage — keep `--n-concurrent` low (2-4) and consider
+  `--max-retries 2 --retry-include ApiRateLimitError`.
+- In subscription mode the adapter does NOT forward `ANTHROPIC_API_KEY`
+  (inside clawcodex an API key would take precedence and bill the API).
+
 ## Evaluate ALL terminal-bench 2.0 tasks
 
 ```bash
@@ -84,7 +115,13 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
 
 # Agent kwargs
   --ak max_turns=100        # clawcodex --max-turns (default 300)
+  --ak effort=high          # clawcodex --effort (low|medium|high|xhigh|max)
+                            # xhigh is model-dependent (opus-4-8 yes,
+                            # sonnet-4-6/opus-4-6 no → degraded to high)
   --ak version=1.2.1        # pin the clawcodex-cli PyPI version
+  --ak source=git+https://github.com/agentforce314/clawcodex@main
+                            # install from git instead of PyPI (unreleased code)
+  --ak subscription=true    # Claude Pro/Max OAuth instead of ANTHROPIC_API_KEY
 
 # Pass the key explicitly instead of exporting it
   --ae DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"

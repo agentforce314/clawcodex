@@ -149,12 +149,11 @@ class QueryParams:
     # Output-effort hint forwarded as ``output_config.effort`` on models
     # that support it. ``None`` = auto: the persisted ``settings.effort``
     # when set, else the historical wire default ``"medium"``. An explicit
-    # value ("low" | "medium" | "high" | "max") wins over settings —
-    # precedence mirrors TS ``parseEffortValue(options.effort) ??
-    # getInitialEffortSetting()`` (main.tsx:2631). "max" is clamped to
-    # "high" on models outside the max-effort allowlist (see
-    # :func:`resolve_thinking_effort`). Only sent when extended thinking
-    # is active.
+    # value ("low" | "medium" | "high" | "xhigh" | "max") wins over
+    # settings — precedence mirrors TS ``parseEffortValue(options.effort)
+    # ?? getInitialEffortSetting()`` (main.tsx:2631). "xhigh" degrades to
+    # "high" on models that reject it (see :func:`resolve_thinking_effort`).
+    # Only sent when extended thinking is active.
     thinking_effort: str | None = None
 
 
@@ -495,19 +494,26 @@ def _model_supports_effort(model: str | None) -> bool:
     )
 
 
-def _model_supports_max_effort(model: str | None) -> bool:
-    """True iff the model accepts ``output_config={"effort": "max"}``.
+def _model_supports_xhigh_effort(model: str | None) -> bool:
+    """True iff the model accepts ``output_config={"effort": "xhigh"}``.
 
-    Port of TS ``modelSupportsMaxEffort`` (effort.ts:65-77): per API docs,
-    ``max`` is Opus 4.6-only among public models — other models reject it,
-    so :func:`resolve_thinking_effort` clamps to ``"high"`` instead of
-    letting the request 400. (The TS 3P-capability-override and
-    ant-internal branches don't apply to this port's first-party path.)
+    The Claude effort ladder is low|medium|high|xhigh|max, but ``xhigh``
+    acceptance is model-dependent. Wire-probed on the first-party API
+    2026-07-18: opus-4-8 accepts it; sonnet-4-6 and opus-4-6 reject it with
+    400 "This model does not support effort level 'xhigh'. Supported
+    levels: high, low, max, medium" — note the same error confirms ``max``
+    is broadly accepted, so only ``xhigh`` needs gating (the vendored TS
+    snapshot's opus-4-6-only ``modelSupportsMaxEffort`` predates this).
+    Fable 5 is included by analogy with opus-4-8 (Claude Code exposes the
+    full ladder on it; unprobed — subscription plans don't carry it).
     """
-    return bool(model) and "opus-4-6" in model.lower()
+    if not model:
+        return False
+    m = model.lower()
+    return "opus-4-8" in m or "fable-5" in m
 
 
-VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "max")
+VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
@@ -517,8 +523,10 @@ def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
     ?? getInitialEffortSetting()``: an explicit per-session value (the
     ``--effort`` flag via ``QueryParams.thinking_effort``) wins over the
     persisted ``settings.effort``; the historical wire default ``"medium"``
-    applies when neither is set. ``"max"`` is clamped to ``"high"`` on
-    models outside :func:`_model_supports_max_effort`'s allowlist.
+    applies when neither is set. ``"xhigh"`` degrades to ``"high"`` on
+    models outside :func:`_model_supports_xhigh_effort`'s allowlist rather
+    than 400ing the request; ``"max"`` passes through everywhere
+    effort-capable (see the probe notes on the allowlist helper).
     """
     value = (explicit or "").strip().lower()
     if value not in VALID_THINKING_EFFORT_LEVELS:
@@ -532,7 +540,10 @@ def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
             value = ""
     if value not in VALID_THINKING_EFFORT_LEVELS:
         value = "medium"
-    if value == "max" and not _model_supports_max_effort(model):
+    if value == "xhigh" and not _model_supports_xhigh_effort(model):
+        logger.debug(
+            "effort xhigh not supported on %s; sending high instead", model
+        )
         return "high"
     return value
 

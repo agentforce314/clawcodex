@@ -84,9 +84,10 @@ class HeadlessOptions:
     # capacity-relief switch after repeated 529s; session-sticky.
     fallback_model: str | None = None
     # ``--effort`` (TS main.tsx:995) — explicit per-session effort level
-    # ("low" | "medium" | "high" | "max"). None = auto (settings.effort,
-    # else the wire default "medium"); resolved per request by
-    # ``resolve_thinking_effort``.
+    # ("low" | "medium" | "high" | "xhigh" | "max"). None = auto
+    # (settings.effort, else the wire default "medium"); resolved per
+    # request by ``resolve_thinking_effort`` (which also degrades xhigh
+    # to high on models that reject it).
     effort: str | None = None
     max_turns: int = 50
     # ``skip_permissions`` is a backward-compat alias for the boolean form

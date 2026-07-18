@@ -478,11 +478,13 @@ Examples:
     # session-wide; the interactive TUI equivalent here is the persisted
     # ``/effort`` setting, so the flag is exposed on the print path where
     # no dialog exists. None = auto (settings.effort, else "medium").
+    # xhigh acceptance is model-dependent — resolve_thinking_effort clamps
+    # it to high on models that reject it.
     noninteractive.add_argument(
         '--effort',
-        choices=('low', 'medium', 'high', 'max'),
+        choices=('low', 'medium', 'high', 'xhigh', 'max'),
         default=None,
-        help='Effort level for the current session (low, medium, high, max)',
+        help='Effort level for the current session (low, medium, high, xhigh, max)',
     )
     noninteractive.add_argument(
         '--allowed-tools',
