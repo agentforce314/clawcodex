@@ -213,7 +213,7 @@ class SettingsSchema:
     max_cost_usd: float = 0.0  # 0 = unlimited
 
     # Effort
-    effort: str = ""  # "", "low", "medium", "high", "max"
+    effort: str = ""  # "", "low", "medium", "high", "xhigh", "max"
 
     # Plan mode
     plan_mode: bool = False

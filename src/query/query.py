@@ -146,10 +146,16 @@ class QueryParams:
     # Mirrors the TS reference which always passes
     # ``thinking: {type: "adaptive"}`` on these models.
     extended_thinking: bool | None = None
-    # Output-effort hint forwarded as ``output_config.effort``. Anthropic
-    # accepts ``"low" | "medium" | "high"``. Only sent when extended
+    # Output-effort hint forwarded as ``output_config.effort`` on models
+    # that support it. ``None`` = auto: the persisted ``settings.effort``
+    # when set, else the parameter is OMITTED and the API applies its model
+    # default (TS parity). An explicit value ("low" | "medium" | "high" |
+    # "xhigh" | "max") wins over settings — precedence mirrors TS
+    # ``parseEffortValue(options.effort) ?? getInitialEffortSetting()``
+    # (main.tsx:2631). "xhigh" degrades to "high" on models that reject it
+    # (see :func:`resolve_thinking_effort`). Only sent when extended
     # thinking is active.
-    thinking_effort: str = "medium"
+    thinking_effort: str | None = None
 
 
 @dataclass
@@ -489,6 +495,68 @@ def _model_supports_effort(model: str | None) -> bool:
     )
 
 
+def _model_supports_xhigh_effort(model: str | None) -> bool:
+    """True iff the model accepts ``output_config={"effort": "xhigh"}``.
+
+    The Claude effort ladder is low|medium|high|xhigh|max, but ``xhigh``
+    acceptance is model-dependent. Wire-probed on the first-party API
+    2026-07-18: opus-4-8 accepts it; sonnet-4-6 and opus-4-6 reject it with
+    400 "This model does not support effort level 'xhigh'. Supported
+    levels: high, low, max, medium" — note the same error confirms ``max``
+    is broadly accepted, so only ``xhigh`` needs gating (the vendored TS
+    snapshot's opus-4-6-only ``modelSupportsMaxEffort`` predates this).
+    Fable 5 is included by analogy with opus-4-8 (Claude Code exposes the
+    full ladder on it; unprobed — subscription plans don't carry it).
+    """
+    if not model:
+        return False
+    m = model.lower()
+    return "opus-4-8" in m or "fable-5" in m
+
+
+# Kept in sync with settings.constants.VALID_EFFORT_VALUES (minus the empty
+# "auto" sentinel) — a dedicated test asserts the two ladders match.
+VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def resolve_thinking_effort(explicit: str | None, model: str | None) -> str | None:
+    """Effective ``output_config.effort`` value for one request, or ``None``
+    to omit the parameter entirely.
+
+    Precedence mirrors TS main.tsx:2631 ``parseEffortValue(options.effort)
+    ?? getInitialEffortSetting()``: an explicit per-session value (the
+    ``--effort`` flag via ``QueryParams.thinking_effort``) wins over the
+    persisted ``settings.effort``. When NEITHER is set the parameter is
+    omitted, matching TS ``configureEffortParams`` (services/api/claude.ts:
+    449-463 — ``effortValue === undefined`` sends no ``outputConfig``) and
+    letting the API apply its own model default (per TS
+    ``getDisplayedEffortLevel`` that default is "high"; the pre-wiring
+    Python hardcode of "medium" was a divergence, not the wire default).
+    ``"xhigh"`` degrades to ``"high"`` on models outside
+    :func:`_model_supports_xhigh_effort`'s allowlist rather than 400ing the
+    request; ``"max"`` passes through everywhere effort-capable (see the
+    probe notes on the allowlist helper).
+    """
+    value = (explicit or "").strip().lower()
+    if value not in VALID_THINKING_EFFORT_LEVELS:
+        # Local import: settings is read at the wire boundary only, keeping
+        # QueryParams construction sites free of hidden global reads.
+        from ..settings.settings import get_settings
+
+        try:
+            value = (get_settings().effort or "").strip().lower()
+        except Exception:  # noqa: BLE001 — settings must never break a request
+            value = ""
+    if value not in VALID_THINKING_EFFORT_LEVELS:
+        return None
+    if value == "xhigh" and not _model_supports_xhigh_effort(model):
+        logger.debug(
+            "effort xhigh not supported on %s; sending high instead", model
+        )
+        return "high"
+    return value
+
+
 def _is_overloaded_error(e: Exception) -> bool:
     """Anthropic 529 / overloaded_error classification (duck-typed so
     test fakes and other providers' shapes participate)."""
@@ -655,7 +723,7 @@ async def _call_model_sync(
     on_text_chunk: Callable[[str], None] | None = None,
     on_thinking_chunk: Callable[[str], None] | None = None,
     extended_thinking: bool | None = None,
-    thinking_effort: str = "medium",
+    thinking_effort: str | None = None,
     sdk_max_retries: int | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
@@ -1007,7 +1075,14 @@ async def _call_model_sync(
                         _max_tok, provider_model,
                     )
             if _model_supports_effort(provider_model):
-                call_kwargs["output_config"] = {"effort": thinking_effort}
+                resolved_effort = resolve_thinking_effort(
+                    thinking_effort, provider_model
+                )
+                # None = nothing requested anywhere — omit the parameter so
+                # the API applies its own model default (TS parity; see
+                # resolve_thinking_effort).
+                if resolved_effort is not None:
+                    call_kwargs["output_config"] = {"effort": resolved_effort}
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams

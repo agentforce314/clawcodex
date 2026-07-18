@@ -32,7 +32,9 @@ from src.query.query import (
     _model_supports_adaptive_thinking,
     _model_supports_effort,
     _model_supports_extended_thinking,
+    _model_supports_xhigh_effort,
     query,
+    resolve_thinking_effort,
 )
 
 
@@ -101,6 +103,8 @@ class TestThinkingAllowlists(unittest.TestCase):
         ("claude-sonnet-4-6", True, True, True),
         ("claude-sonnet-4-6-20250929", True, True, True),
         ("claude-opus-4-6", True, True, True),
+        ("claude-opus-4-8", True, True, True),
+        ("claude-fable-5", True, True, True),
         ("claude-opus-4-7", True, True, False),   # adaptive but NOT effort
         ("claude-sonnet-4-5", True, False, False),
         ("claude-haiku-4-5", True, False, False),
@@ -114,6 +118,76 @@ class TestThinkingAllowlists(unittest.TestCase):
             self.assertEqual(_model_supports_extended_thinking(model), thinking, model)
             self.assertEqual(_model_supports_adaptive_thinking(model), adaptive, model)
             self.assertEqual(_model_supports_effort(model), effort, model)
+
+    def test_xhigh_effort_allowlist(self):
+        # Wire-probed 2026-07-18: opus-4-8 accepts xhigh; sonnet-4-6 and
+        # opus-4-6 400 on it (fable-5 by analogy with opus-4-8).
+        self.assertTrue(_model_supports_xhigh_effort("claude-opus-4-8"))
+        self.assertTrue(_model_supports_xhigh_effort("claude-fable-5"))
+        for model in ("claude-opus-4-6", "claude-sonnet-4-6", None):
+            self.assertFalse(_model_supports_xhigh_effort(model), model)
+
+
+class TestResolveThinkingEffort(unittest.TestCase):
+    """Precedence (explicit > settings > default) + max clamping."""
+
+    def _with_settings_effort(self, value):
+        from unittest import mock as _mock
+        from types import SimpleNamespace
+
+        return _mock.patch(
+            "src.settings.settings.get_settings",
+            return_value=SimpleNamespace(effort=value),
+        )
+
+    def test_explicit_wins_over_settings(self):
+        with self._with_settings_effort("low"):
+            self.assertEqual(resolve_thinking_effort("high", "claude-opus-4-8"), "high")
+
+    def test_settings_fallback_when_no_explicit(self):
+        with self._with_settings_effort("high"):
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "high")
+
+    def test_omitted_when_neither_set(self):
+        # None → the wire site drops output_config so the API default rules.
+        with self._with_settings_effort(""):
+            self.assertIsNone(resolve_thinking_effort(None, "claude-opus-4-8"))
+
+    def test_ladders_stay_in_sync(self):
+        from src.query.query import VALID_THINKING_EFFORT_LEVELS
+        from src.settings.constants import VALID_EFFORT_VALUES
+
+        self.assertEqual(
+            tuple(v for v in VALID_EFFORT_VALUES if v),
+            VALID_THINKING_EFFORT_LEVELS,
+        )
+
+    def test_max_passes_through_everywhere(self):
+        # Wire-probed 2026-07-18: max accepted on sonnet-4-6 and opus-4-8
+        # (opus-4-6 documented; its 400 error for xhigh enumerates max too).
+        for model in ("claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6"):
+            self.assertEqual(resolve_thinking_effort("max", model), "max", model)
+
+    def test_xhigh_clamped_off_allowlist(self):
+        # Explicit valid values never consult settings — no patch needed.
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-sonnet-4-6"), "high")
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-opus-4-6"), "high")
+
+    def test_xhigh_passes_through_on_opus_48(self):
+        self.assertEqual(resolve_thinking_effort("xhigh", "claude-opus-4-8"), "xhigh")
+
+    def test_settings_read_failure_falls_back_to_omitted(self):
+        from unittest import mock as _mock
+
+        with _mock.patch(
+            "src.settings.settings.get_settings", side_effect=RuntimeError("boom")
+        ):
+            self.assertIsNone(resolve_thinking_effort(None, "claude-opus-4-8"))
+
+    def test_settings_xhigh_also_clamped_by_model(self):
+        with self._with_settings_effort("xhigh"):
+            self.assertEqual(resolve_thinking_effort(None, "claude-sonnet-4-6"), "high")
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "xhigh")
 
 
 class TestExtendedThinkingInjection(unittest.TestCase):
@@ -153,17 +227,21 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         return provider.chat.call_args.kwargs
 
     def test_anthropic_opus_4_gets_thinking_by_default(self):
+        # No explicit effort and no settings effort → the parameter is
+        # OMITTED so the API applies its model default (TS parity; the old
+        # hardcoded {"effort": "medium"} was a divergence).
         provider = _make_anthropic_mock("claude-opus-4-6")
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
-        self.assertEqual(kw.get("output_config"), {"effort": "medium"})
+        self.assertNotIn("output_config", kw)
 
-    def test_anthropic_sonnet_46_gets_adaptive_and_effort(self):
-        # Sonnet 4.6 is on both the adaptive and effort allowlists.
+    def test_anthropic_sonnet_46_gets_adaptive_no_effort_by_default(self):
+        # Sonnet 4.6 is on both the adaptive and effort allowlists; with
+        # nothing requested the effort param is omitted (API default).
         provider = _make_anthropic_mock("claude-sonnet-4-6")
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
-        self.assertEqual(kw.get("output_config"), {"effort": "medium"})
+        self.assertNotIn("output_config", kw)
 
     def test_anthropic_sonnet_45_gets_budget_thinking_not_adaptive(self):
         # Sonnet 4.5 supports thinking but NOT the adaptive type, and NOT
@@ -207,6 +285,36 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         kw = self._drive_one_turn(provider, extended_thinking=False)
         self.assertNotIn("thinking", kw)
         self.assertNotIn("output_config", kw)
+
+    def test_thinking_effort_param_reaches_output_config(self):
+        # The --effort/-QueryParams channel: explicit value lands verbatim.
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        kw = self._drive_one_turn(provider, thinking_effort="high")
+        self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_settings_effort_reaches_output_config(self):
+        # The persisted /effort setting is honored when no explicit value.
+        from unittest import mock as _mock
+        from types import SimpleNamespace
+
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        with _mock.patch(
+            "src.settings.settings.get_settings",
+            return_value=SimpleNamespace(effort="high"),
+        ):
+            kw = self._drive_one_turn(provider)
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_xhigh_effort_clamped_on_wire_for_non_allowlisted_model(self):
+        provider = _make_anthropic_mock("claude-sonnet-4-6")
+        kw = self._drive_one_turn(provider, thinking_effort="xhigh")
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_xhigh_effort_passes_through_on_opus_48(self):
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        kw = self._drive_one_turn(provider, thinking_effort="xhigh")
+        self.assertEqual(kw.get("output_config"), {"effort": "xhigh"})
 
     def test_explicit_opt_in_overrides_unknown_model(self):
         # An out-of-band model name (e.g. proxy alias) should still get

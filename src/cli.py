@@ -474,6 +474,23 @@ Examples:
         default=None,
         help='Override the provider (anthropic, openai, zai, minimax, openrouter, deepseek, meta)',
     )
+    # Mirrors TS ``--effort <level>`` (main.tsx:995). TS registers it
+    # session-wide; the interactive TUI equivalent here is the persisted
+    # ``/effort`` setting, so the flag is exposed on the print path where
+    # no dialog exists. None = auto (settings.effort, else the parameter is
+    # omitted and the API applies its model default). xhigh acceptance is
+    # model-dependent — resolve_thinking_effort clamps it to high on models
+    # that reject it. KNOWN LIMIT: the flag governs the MAIN loop only;
+    # subagents (Agent tool) resolve from settings.effort — persist
+    # ``/effort`` (or seed settings) for session-wide coverage.
+    noninteractive.add_argument(
+        '--effort',
+        choices=('low', 'medium', 'high', 'xhigh', 'max'),
+        default=None,
+        help='Effort level for the current session (low, medium, high, xhigh, max). '
+             'Applies to the main agent loop; subagents follow the persisted '
+             '/effort setting.',
+    )
     noninteractive.add_argument(
         '--allowed-tools',
         type=str,
@@ -645,6 +662,7 @@ def _run_print_mode(args) -> int:
         provider_name=args.provider,
         model=args.model,
         fallback_model=args.fallback_model,
+        effort=args.effort,
         max_turns=args.max_turns,
         skip_permissions=bool(args.dangerously_skip_permissions),
         permission_mode=args._resolved_permission_mode,

@@ -52,8 +52,8 @@ from src.settings.settings import get_settings, invalidate_settings_cache
 
 _LOW_DESC = "Quick, straightforward implementation with minimal overhead"
 _HIGH_DESC = "Comprehensive implementation with extensive testing and documentation"
-_MAX_DESC = "Maximum capability with deepest reasoning (Opus 4.6 only)"
-_EXPECTED_OPTION_VALUES = ["auto", "low", "medium", "high", "max"]
+_MAX_DESC = "Maximum capability with deepest reasoning"
+_EXPECTED_OPTION_VALUES = ["auto", "low", "medium", "high", "xhigh", "max"]
 
 
 # --------------------------------------------------------------------------- #
@@ -144,8 +144,8 @@ def test_effort_metadata_mirrors_ts():
     assert EFFORT_COMMAND.name == "effort"
     # Verbatim from typescript/src/commands/effort/index.ts.
     assert EFFORT_COMMAND.description == "Set effort level for model usage"
-    # TS sets argumentHint (unlike /theme); port drops xhigh from the hint.
-    assert EFFORT_COMMAND.argument_hint == "[low|medium|high|max|auto]"
+    # TS sets argumentHint (unlike /theme); full ladder incl. xhigh.
+    assert EFFORT_COMMAND.argument_hint == "[low|medium|high|xhigh|max|auto]"
     # local-jsx -> INTERACTIVE (so the remote/bridge gate blocks it by type).
     assert EFFORT_COMMAND.command_type == CommandType.INTERACTIVE
     assert EFFORT_COMMAND.is_hidden is False
@@ -210,26 +210,27 @@ async def test_invalid_arg_does_not_persist(isolated_settings, monkeypatch):
     tmp_path = isolated_settings
     out = await EFFORT_COMMAND.run("bogus", _ctx(tmp_path, ui=NullUIHost()))
     assert out.message == (
-        "Invalid argument: bogus. Valid options are: low, medium, high, max, auto"
+        "Invalid argument: bogus. Valid options are: low, medium, high, xhigh, max, auto"
     )
     assert out.display == "user"
     assert _persisted_effort() == ""  # unchanged
 
 
-async def test_xhigh_is_invalid(isolated_settings):
-    # Python has no OpenAI-effort path; xhigh is NOT accepted/normalized.
+async def test_xhigh_is_valid_and_persists(isolated_settings):
+    # xhigh is a real Claude effort level (low|medium|high|xhigh|max);
+    # per-model wire acceptance is handled by resolve_thinking_effort,
+    # which degrades it to high on models that reject it.
     tmp_path = isolated_settings
     out = await EFFORT_COMMAND.run("xhigh", _ctx(tmp_path, ui=NullUIHost()))
-    assert out.message.startswith("Invalid argument: xhigh.")
-    assert _persisted_effort() == ""
+    assert out.message.startswith("Set effort level to xhigh")
+    assert _persisted_effort() == "xhigh"
 
 
 @pytest.mark.parametrize("arg", ["help", "-h", "--help"])
 async def test_help_prints_usage_without_writing(isolated_settings, arg):
     tmp_path = isolated_settings
     out = await EFFORT_COMMAND.run(arg, _ctx(tmp_path, ui=NullUIHost()))
-    assert out.message.startswith("Usage: /effort [low|medium|high|max|auto]")
-    assert "xhigh" not in out.message  # OpenAI line dropped
+    assert out.message.startswith("Usage: /effort [low|medium|high|xhigh|max|auto]")
     assert out.display == "user"
     assert _persisted_effort() == ""  # help never persists
 
