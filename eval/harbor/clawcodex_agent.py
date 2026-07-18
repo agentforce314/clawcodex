@@ -463,7 +463,11 @@ class Clawcodex(BaseInstalledAgent):
         # the clawcodex exit code (pipefail is set by the base _exec).
         copy_back = (
             f"mkdir -p {sessions_sync_dir}; "
-            f"for d in sessions transcripts todos; do "
+            # `projects` is where headless runs write per-project session
+            # transcripts (CC-style layout); sessions/transcripts/todos
+            # cover the other writers. Never the config-dir root: that's
+            # where anthropic-oauth.json and config.json live.
+            f"for d in projects sessions transcripts todos; do "
             f'[ -e "{_CONTAINER_CONFIG_DIR}/$d" ] && '
             f'cp -r "{_CONTAINER_CONFIG_DIR}/$d" {sessions_sync_dir}/ '
             f"2>/dev/null; done"
