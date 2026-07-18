@@ -58,9 +58,13 @@ name: `-i 'terminal-bench/fix-git'` (or use a glob: `-i '*fix-git*'`).
 
 Uses your Claude Pro/Max subscription (OAuth) instead of an API key.
 One-time prerequisite on the host: `clawcodex login` (writes
-`~/.clawcodex/anthropic-oauth.json`; the adapter refreshes it
-automatically before each trial and never copies it into the synced
-jobs directory).
+`~/.clawcodex/anthropic-oauth.json`). Before each trial the adapter
+checks that file and refreshes it when under 30 minutes of runway;
+containers receive a refresh-token-free copy on a path outside the
+bind-mounted `/logs` tree, so no credential ever enters the jobs
+directory. When an `effort` kwarg is set it is also seeded into the
+container's settings so subagents inherit it (the `--effort` flag alone
+covers only the main loop).
 
 ```bash
 PYTHONPATH=$PWD/eval/harbor harbor run \

@@ -144,7 +144,7 @@ def test_effort_metadata_mirrors_ts():
     assert EFFORT_COMMAND.name == "effort"
     # Verbatim from typescript/src/commands/effort/index.ts.
     assert EFFORT_COMMAND.description == "Set effort level for model usage"
-    # TS sets argumentHint (unlike /theme); port drops xhigh from the hint.
+    # TS sets argumentHint (unlike /theme); full ladder incl. xhigh.
     assert EFFORT_COMMAND.argument_hint == "[low|medium|high|xhigh|max|auto]"
     # local-jsx -> INTERACTIVE (so the remote/bridge gate blocks it by type).
     assert EFFORT_COMMAND.command_type == CommandType.INTERACTIVE

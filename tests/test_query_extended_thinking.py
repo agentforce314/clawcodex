@@ -148,9 +148,19 @@ class TestResolveThinkingEffort(unittest.TestCase):
         with self._with_settings_effort("high"):
             self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "high")
 
-    def test_default_medium_when_neither_set(self):
+    def test_omitted_when_neither_set(self):
+        # None → the wire site drops output_config so the API default rules.
         with self._with_settings_effort(""):
-            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
+            self.assertIsNone(resolve_thinking_effort(None, "claude-opus-4-8"))
+
+    def test_ladders_stay_in_sync(self):
+        from src.query.query import VALID_THINKING_EFFORT_LEVELS
+        from src.settings.constants import VALID_EFFORT_VALUES
+
+        self.assertEqual(
+            tuple(v for v in VALID_EFFORT_VALUES if v),
+            VALID_THINKING_EFFORT_LEVELS,
+        )
 
     def test_max_passes_through_everywhere(self):
         # Wire-probed 2026-07-18: max accepted on sonnet-4-6 and opus-4-8
@@ -166,13 +176,13 @@ class TestResolveThinkingEffort(unittest.TestCase):
     def test_xhigh_passes_through_on_opus_48(self):
         self.assertEqual(resolve_thinking_effort("xhigh", "claude-opus-4-8"), "xhigh")
 
-    def test_settings_read_failure_falls_back_to_default(self):
+    def test_settings_read_failure_falls_back_to_omitted(self):
         from unittest import mock as _mock
 
         with _mock.patch(
             "src.settings.settings.get_settings", side_effect=RuntimeError("boom")
         ):
-            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
+            self.assertIsNone(resolve_thinking_effort(None, "claude-opus-4-8"))
 
     def test_settings_xhigh_also_clamped_by_model(self):
         with self._with_settings_effort("xhigh"):
@@ -217,17 +227,21 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         return provider.chat.call_args.kwargs
 
     def test_anthropic_opus_4_gets_thinking_by_default(self):
+        # No explicit effort and no settings effort → the parameter is
+        # OMITTED so the API applies its model default (TS parity; the old
+        # hardcoded {"effort": "medium"} was a divergence).
         provider = _make_anthropic_mock("claude-opus-4-6")
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
-        self.assertEqual(kw.get("output_config"), {"effort": "medium"})
+        self.assertNotIn("output_config", kw)
 
-    def test_anthropic_sonnet_46_gets_adaptive_and_effort(self):
-        # Sonnet 4.6 is on both the adaptive and effort allowlists.
+    def test_anthropic_sonnet_46_gets_adaptive_no_effort_by_default(self):
+        # Sonnet 4.6 is on both the adaptive and effort allowlists; with
+        # nothing requested the effort param is omitted (API default).
         provider = _make_anthropic_mock("claude-sonnet-4-6")
         kw = self._drive_one_turn(provider)
         self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
-        self.assertEqual(kw.get("output_config"), {"effort": "medium"})
+        self.assertNotIn("output_config", kw)
 
     def test_anthropic_sonnet_45_gets_budget_thinking_not_adaptive(self):
         # Sonnet 4.5 supports thinking but NOT the adaptive type, and NOT

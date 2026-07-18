@@ -81,8 +81,8 @@ _DESCRIPTIONS: dict[str, str] = {
 _AUTO_PICKER_DESC = "Use default effort level for your model"
 
 # workflow-engine §4.1: `/effort ultracode` enables the session-long workflow
-# auto-orchestration mode (not a persisted effort level — Python's effort
-# pipeline is inert, so this contributes the orchestration mode only).
+# auto-orchestration mode (not a persisted effort level — it contributes the
+# orchestration mode only and never lands in ``settings.effort``).
 _ULTRACODE_ON_MSG = (
     "Ultracode on: I'll plan and run a workflow (fan out subagents + verify) for "
     "substantive tasks this session, instead of working turn by turn. "
@@ -116,7 +116,7 @@ _USAGE = (
 
 
 def _levels() -> tuple[str, ...]:
-    """The persistable effort levels (``low, medium, high, max``) — the single source
+    """The persistable effort levels (``low, medium, high, xhigh, max``) — the single source
     of truth ``VALID_EFFORT_VALUES`` minus the empty ``""`` (which is ``auto``).
 
     Imported lazily so a bare ``import src.command_system`` does not pull the settings

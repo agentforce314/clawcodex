@@ -148,12 +148,13 @@ class QueryParams:
     extended_thinking: bool | None = None
     # Output-effort hint forwarded as ``output_config.effort`` on models
     # that support it. ``None`` = auto: the persisted ``settings.effort``
-    # when set, else the historical wire default ``"medium"``. An explicit
-    # value ("low" | "medium" | "high" | "xhigh" | "max") wins over
-    # settings — precedence mirrors TS ``parseEffortValue(options.effort)
-    # ?? getInitialEffortSetting()`` (main.tsx:2631). "xhigh" degrades to
-    # "high" on models that reject it (see :func:`resolve_thinking_effort`).
-    # Only sent when extended thinking is active.
+    # when set, else the parameter is OMITTED and the API applies its model
+    # default (TS parity). An explicit value ("low" | "medium" | "high" |
+    # "xhigh" | "max") wins over settings — precedence mirrors TS
+    # ``parseEffortValue(options.effort) ?? getInitialEffortSetting()``
+    # (main.tsx:2631). "xhigh" degrades to "high" on models that reject it
+    # (see :func:`resolve_thinking_effort`). Only sent when extended
+    # thinking is active.
     thinking_effort: str | None = None
 
 
@@ -513,20 +514,28 @@ def _model_supports_xhigh_effort(model: str | None) -> bool:
     return "opus-4-8" in m or "fable-5" in m
 
 
+# Kept in sync with settings.constants.VALID_EFFORT_VALUES (minus the empty
+# "auto" sentinel) — a dedicated test asserts the two ladders match.
 VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
-def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
-    """Effective ``output_config.effort`` value for one request.
+def resolve_thinking_effort(explicit: str | None, model: str | None) -> str | None:
+    """Effective ``output_config.effort`` value for one request, or ``None``
+    to omit the parameter entirely.
 
     Precedence mirrors TS main.tsx:2631 ``parseEffortValue(options.effort)
     ?? getInitialEffortSetting()``: an explicit per-session value (the
     ``--effort`` flag via ``QueryParams.thinking_effort``) wins over the
-    persisted ``settings.effort``; the historical wire default ``"medium"``
-    applies when neither is set. ``"xhigh"`` degrades to ``"high"`` on
-    models outside :func:`_model_supports_xhigh_effort`'s allowlist rather
-    than 400ing the request; ``"max"`` passes through everywhere
-    effort-capable (see the probe notes on the allowlist helper).
+    persisted ``settings.effort``. When NEITHER is set the parameter is
+    omitted, matching TS ``configureEffortParams`` (services/api/claude.ts:
+    449-463 — ``effortValue === undefined`` sends no ``outputConfig``) and
+    letting the API apply its own model default (per TS
+    ``getDisplayedEffortLevel`` that default is "high"; the pre-wiring
+    Python hardcode of "medium" was a divergence, not the wire default).
+    ``"xhigh"`` degrades to ``"high"`` on models outside
+    :func:`_model_supports_xhigh_effort`'s allowlist rather than 400ing the
+    request; ``"max"`` passes through everywhere effort-capable (see the
+    probe notes on the allowlist helper).
     """
     value = (explicit or "").strip().lower()
     if value not in VALID_THINKING_EFFORT_LEVELS:
@@ -539,7 +548,7 @@ def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
         except Exception:  # noqa: BLE001 — settings must never break a request
             value = ""
     if value not in VALID_THINKING_EFFORT_LEVELS:
-        value = "medium"
+        return None
     if value == "xhigh" and not _model_supports_xhigh_effort(model):
         logger.debug(
             "effort xhigh not supported on %s; sending high instead", model
@@ -1066,9 +1075,14 @@ async def _call_model_sync(
                         _max_tok, provider_model,
                     )
             if _model_supports_effort(provider_model):
-                call_kwargs["output_config"] = {
-                    "effort": resolve_thinking_effort(thinking_effort, provider_model)
-                }
+                resolved_effort = resolve_thinking_effort(
+                    thinking_effort, provider_model
+                )
+                # None = nothing requested anywhere — omit the parameter so
+                # the API applies its own model default (TS parity; see
+                # resolve_thinking_effort).
+                if resolved_effort is not None:
+                    call_kwargs["output_config"] = {"effort": resolved_effort}
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams

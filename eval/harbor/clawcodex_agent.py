@@ -48,11 +48,14 @@ Agent kwargs (``--ak key=value``):
   ``git+https://github.com/agentforce314/clawcodex@main`` to eval unreleased
   code. Mutually exclusive with ``version``.
 * ``subscription`` — ``true`` to authenticate the Anthropic provider with a
-  Claude Pro/Max subscription instead of an API key. Reads (and refreshes)
-  the host's ``~/.clawcodex/anthropic-oauth.json`` — created by
-  ``clawcodex login`` — and injects it into each container OUTSIDE the
-  synced ``/logs`` tree; ``ANTHROPIC_API_KEY`` is deliberately not
-  forwarded so clawcodex takes the OAuth path.
+  Claude Pro/Max subscription instead of an API key. Reads the host's
+  ``~/.clawcodex/anthropic-oauth.json`` (created by ``clawcodex login``;
+  refreshed here when under 30 min of runway) and injects a
+  refresh-token-free copy into each container OUTSIDE the bind-mounted
+  ``/logs`` tree — the token never touches the host jobs dir.
+  ``ANTHROPIC_API_KEY`` is deliberately not forwarded so clawcodex takes
+  the OAuth path (and combining with ``--ae ANTHROPIC_API_KEY`` is
+  rejected).
 """
 
 import json
@@ -114,10 +117,14 @@ _oauth_refresh_lock = threading.Lock()
 
 
 def _oauth_file() -> Path:
+    """Host credentials path, mirroring clawcodex's ``credentials_path()``
+    chain: CLAWCODEX_OAUTH_FILE > $CLAWCODEX_CONFIG_DIR > ~/.clawcodex."""
     override_path = os.environ.get("CLAWCODEX_OAUTH_FILE")
     if override_path:
         return Path(override_path)
-    return Path.home() / ".clawcodex" / "anthropic-oauth.json"
+    config_dir = os.environ.get("CLAWCODEX_CONFIG_DIR")
+    root = Path(config_dir) if config_dir else Path.home() / ".clawcodex"
+    return root / "anthropic-oauth.json"
 
 
 def _load_host_oauth() -> dict[str, Any] | None:
@@ -140,13 +147,21 @@ def _save_host_oauth(credentials: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+# Refresh when under this much runway. Must exceed the longest agent
+# timeout (terminal-bench tasks: 900s) with margin, because containers get
+# an access token WITHOUT a refresh token (see the injection notes) and so
+# cannot refresh mid-trial.
+_MIN_TOKEN_RUNWAY_SEC = 1800
+
+
 def fresh_subscription_credentials() -> dict[str, Any]:
     """Host-side equivalent of clawcodex's ``get_valid_credentials``.
 
     Returns the credentials dict, refreshing (and persisting back to the
-    host file) when the access token is within 5 minutes of expiry so every
-    trial starts with far more runway than a task's agent timeout. Raises
-    RuntimeError with a remedial message when no usable credentials exist.
+    host file) when the access token has under ``_MIN_TOKEN_RUNWAY_SEC`` of
+    runway, so every trial starts with more runway than its agent timeout.
+    Raises RuntimeError with a remedial message when no usable credentials
+    exist.
     """
     with _oauth_refresh_lock:
         credentials = _load_host_oauth()
@@ -156,7 +171,7 @@ def fresh_subscription_credentials() -> dict[str, Any]:
                 "run `clawcodex login` on the host first (or set "
                 "CLAWCODEX_OAUTH_FILE)."
             )
-        if float(credentials.get("expires_at", 0)) > time.time() + 300:
+        if float(credentials.get("expires_at", 0)) > time.time() + _MIN_TOKEN_RUNWAY_SEC:
             return credentials
 
         request = urllib.request.Request(
@@ -239,6 +254,15 @@ class Clawcodex(BaseInstalledAgent):
             raise ValueError(
                 "Agent kwargs 'source' and 'version' are mutually exclusive"
             )
+        # Harbor injects --agent-env vars into every agent exec itself
+        # (Trial's scoped exec env), bypassing _build_env — and inside
+        # clawcodex an API key outranks OAuth, silently billing the API.
+        if self._subscription and "ANTHROPIC_API_KEY" in self._extra_env:
+            raise ValueError(
+                "subscription=true conflicts with --ae ANTHROPIC_API_KEY=... "
+                "(the key would override OAuth inside clawcodex and bill the "
+                "API); drop one of the two."
+            )
 
     @staticmethod
     @override
@@ -277,7 +301,8 @@ class Clawcodex(BaseInstalledAgent):
                 " elif command -v yum >/dev/null 2>&1; then"
                 f"  yum install -y curl ca-certificates{git_pkg};"
                 " else"
-                '  echo "Warning: no known package manager; assuming curl exists" >&2;'
+                '  echo "Warning: no known package manager; assuming curl'
+                f'{" and git" if need_git else ""} exist" >&2;'
                 " fi; }"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -344,25 +369,61 @@ class Clawcodex(BaseInstalledAgent):
     async def _inject_subscription_credentials(
         self, environment: BaseEnvironment
     ) -> None:
-        """Write freshly-refreshed host OAuth credentials into the container.
+        """Write a freshly-refreshed access token into the container.
 
         The JSON travels via the exec env (never the command string, which
-        is logged) and lands 0600 outside the synced /logs tree.
+        is logged) and lands 0600 outside the synced /logs tree. The
+        container copy carries an EMPTY refresh_token: the host guarantees
+        ≥ ``_MIN_TOKEN_RUNWAY_SEC`` of access-token runway per trial, and
+        fanning the real refresh token out to N concurrent containers risks
+        a rotation invalidating the host's copy (and every sibling's)
+        mid-eval. The key must still be present — clawcodex's
+        ``load_credentials`` requires it — an empty value only fails at
+        refresh time, which the runway guarantee makes unreachable.
+        ``rm -f`` + ``set -C`` (noclobber) defeat a symlink pre-planted in
+        the 1777 config dir by an earlier task process.
         """
+        import asyncio
+
         provider = (self._parsed_model_provider or "anthropic").lower()
         if provider != "anthropic":
             raise RuntimeError(
                 "subscription=true only applies to anthropic/... models "
                 f"(got provider {provider!r})"
             )
-        credentials = fresh_subscription_credentials()
+        credentials = dict(await asyncio.to_thread(fresh_subscription_credentials))
+        credentials["refresh_token"] = ""
+        target = f"{_CONTAINER_CONFIG_DIR}/anthropic-oauth.json"
         await self.exec_as_agent(
             environment,
             command=(
-                'umask 077; printf \'%s\' "$CLAWCODEX_OAUTH_JSON" > '
-                f"{_CONTAINER_CONFIG_DIR}/anthropic-oauth.json"
+                f"umask 077; rm -f {target}; set -C; "
+                f'printf \'%s\' "$CLAWCODEX_OAUTH_JSON" > {target}'
             ),
             env={"CLAWCODEX_OAUTH_JSON": json.dumps(credentials)},
+        )
+
+    async def _seed_container_settings(self, environment: BaseEnvironment) -> None:
+        """Seed ``settings.effort`` in the container's global config.
+
+        clawcodex's ``--effort`` flag governs the MAIN loop only; subagents
+        (Agent tool) resolve effort from ``settings.effort``. Seeding the
+        container's global config (home-anchored ``~/.clawcodex/config.json``
+        — the global-config path deliberately does not follow
+        CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide.
+        """
+        effort = self._resolved_flags.get("effort")
+        if not effort:
+            return
+        payload = json.dumps({"settings": {"effort": effort}})
+        await self.exec_as_agent(
+            environment,
+            command=(
+                'mkdir -p "$HOME/.clawcodex" && '
+                'printf \'%s\' "$CLAWCODEX_SEED_CONFIG" > '
+                '"$HOME/.clawcodex/config.json"'
+            ),
+            env={"CLAWCODEX_SEED_CONFIG": payload},
         )
 
     @with_prompt_template
@@ -372,6 +433,7 @@ class Clawcodex(BaseInstalledAgent):
     ) -> None:
         if self._subscription:
             await self._inject_subscription_credentials(environment)
+        await self._seed_container_settings(environment)
 
         parts: list[str] = [
             "clawcodex",
@@ -395,16 +457,22 @@ class Clawcodex(BaseInstalledAgent):
 
         log_path = (EnvironmentPaths.agent_dir / "clawcodex.txt").as_posix()
         sessions_sync_dir = (EnvironmentPaths.agent_dir / "sessions").as_posix()
+        # ALLOWLIST copy-back: /logs/agent is a live bind mount of the host
+        # trial dir, so the OAuth token file must NEVER transit it — copy
+        # only the debugging artifacts, never the config-dir root. Preserves
+        # the clawcodex exit code (pipefail is set by the base _exec).
+        copy_back = (
+            f"mkdir -p {sessions_sync_dir}; "
+            f"for d in sessions transcripts todos; do "
+            f'[ -e "{_CONTAINER_CONFIG_DIR}/$d" ] && '
+            f'cp -r "{_CONTAINER_CONFIG_DIR}/$d" {sessions_sync_dir}/ '
+            f"2>/dev/null; done"
+        )
         command = (
             f"{_PATH_EXPORT}; "
             f"{' '.join(parts)} -- {shlex.quote(instruction)} "
             f"2>&1 </dev/null | tee {log_path}; rc=$?; "
-            # Copy session/transcript logs back into the synced tree for
-            # host-side debugging — minus the OAuth token file. Preserves
-            # the clawcodex exit code (pipefail is set by the base _exec).
-            f"mkdir -p {sessions_sync_dir} && "
-            f"cp -r {_CONTAINER_CONFIG_DIR}/. {sessions_sync_dir}/ 2>/dev/null; "
-            f"rm -f {sessions_sync_dir}/anthropic-oauth.json; "
+            f"{copy_back}; "
             "exit $rc"
         )
 
