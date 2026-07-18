@@ -146,10 +146,16 @@ class QueryParams:
     # Mirrors the TS reference which always passes
     # ``thinking: {type: "adaptive"}`` on these models.
     extended_thinking: bool | None = None
-    # Output-effort hint forwarded as ``output_config.effort``. Anthropic
-    # accepts ``"low" | "medium" | "high"``. Only sent when extended
-    # thinking is active.
-    thinking_effort: str = "medium"
+    # Output-effort hint forwarded as ``output_config.effort`` on models
+    # that support it. ``None`` = auto: the persisted ``settings.effort``
+    # when set, else the historical wire default ``"medium"``. An explicit
+    # value ("low" | "medium" | "high" | "max") wins over settings —
+    # precedence mirrors TS ``parseEffortValue(options.effort) ??
+    # getInitialEffortSetting()`` (main.tsx:2631). "max" is clamped to
+    # "high" on models outside the max-effort allowlist (see
+    # :func:`resolve_thinking_effort`). Only sent when extended thinking
+    # is active.
+    thinking_effort: str | None = None
 
 
 @dataclass
@@ -489,6 +495,48 @@ def _model_supports_effort(model: str | None) -> bool:
     )
 
 
+def _model_supports_max_effort(model: str | None) -> bool:
+    """True iff the model accepts ``output_config={"effort": "max"}``.
+
+    Port of TS ``modelSupportsMaxEffort`` (effort.ts:65-77): per API docs,
+    ``max`` is Opus 4.6-only among public models — other models reject it,
+    so :func:`resolve_thinking_effort` clamps to ``"high"`` instead of
+    letting the request 400. (The TS 3P-capability-override and
+    ant-internal branches don't apply to this port's first-party path.)
+    """
+    return bool(model) and "opus-4-6" in model.lower()
+
+
+VALID_THINKING_EFFORT_LEVELS = ("low", "medium", "high", "max")
+
+
+def resolve_thinking_effort(explicit: str | None, model: str | None) -> str:
+    """Effective ``output_config.effort`` value for one request.
+
+    Precedence mirrors TS main.tsx:2631 ``parseEffortValue(options.effort)
+    ?? getInitialEffortSetting()``: an explicit per-session value (the
+    ``--effort`` flag via ``QueryParams.thinking_effort``) wins over the
+    persisted ``settings.effort``; the historical wire default ``"medium"``
+    applies when neither is set. ``"max"`` is clamped to ``"high"`` on
+    models outside :func:`_model_supports_max_effort`'s allowlist.
+    """
+    value = (explicit or "").strip().lower()
+    if value not in VALID_THINKING_EFFORT_LEVELS:
+        # Local import: settings is read at the wire boundary only, keeping
+        # QueryParams construction sites free of hidden global reads.
+        from ..settings.settings import get_settings
+
+        try:
+            value = (get_settings().effort or "").strip().lower()
+        except Exception:  # noqa: BLE001 — settings must never break a request
+            value = ""
+    if value not in VALID_THINKING_EFFORT_LEVELS:
+        value = "medium"
+    if value == "max" and not _model_supports_max_effort(model):
+        return "high"
+    return value
+
+
 def _is_overloaded_error(e: Exception) -> bool:
     """Anthropic 529 / overloaded_error classification (duck-typed so
     test fakes and other providers' shapes participate)."""
@@ -655,7 +703,7 @@ async def _call_model_sync(
     on_text_chunk: Callable[[str], None] | None = None,
     on_thinking_chunk: Callable[[str], None] | None = None,
     extended_thinking: bool | None = None,
-    thinking_effort: str = "medium",
+    thinking_effort: str | None = None,
     sdk_max_retries: int | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
@@ -1007,7 +1055,9 @@ async def _call_model_sync(
                         _max_tok, provider_model,
                     )
             if _model_supports_effort(provider_model):
-                call_kwargs["output_config"] = {"effort": thinking_effort}
+                call_kwargs["output_config"] = {
+                    "effort": resolve_thinking_effort(thinking_effort, provider_model)
+                }
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams

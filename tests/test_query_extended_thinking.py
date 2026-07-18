@@ -32,7 +32,9 @@ from src.query.query import (
     _model_supports_adaptive_thinking,
     _model_supports_effort,
     _model_supports_extended_thinking,
+    _model_supports_max_effort,
     query,
+    resolve_thinking_effort,
 )
 
 
@@ -101,6 +103,8 @@ class TestThinkingAllowlists(unittest.TestCase):
         ("claude-sonnet-4-6", True, True, True),
         ("claude-sonnet-4-6-20250929", True, True, True),
         ("claude-opus-4-6", True, True, True),
+        ("claude-opus-4-8", True, True, True),
+        ("claude-fable-5", True, True, True),
         ("claude-opus-4-7", True, True, False),   # adaptive but NOT effort
         ("claude-sonnet-4-5", True, False, False),
         ("claude-haiku-4-5", True, False, False),
@@ -114,6 +118,59 @@ class TestThinkingAllowlists(unittest.TestCase):
             self.assertEqual(_model_supports_extended_thinking(model), thinking, model)
             self.assertEqual(_model_supports_adaptive_thinking(model), adaptive, model)
             self.assertEqual(_model_supports_effort(model), effort, model)
+
+    def test_max_effort_allowlist(self):
+        # TS modelSupportsMaxEffort (effort.ts:65-77): opus-4-6 only.
+        self.assertTrue(_model_supports_max_effort("claude-opus-4-6"))
+        self.assertTrue(_model_supports_max_effort("claude-opus-4-6-20260101"))
+        for model in ("claude-opus-4-8", "claude-sonnet-4-6", "claude-fable-5", None):
+            self.assertFalse(_model_supports_max_effort(model), model)
+
+
+class TestResolveThinkingEffort(unittest.TestCase):
+    """Precedence (explicit > settings > default) + max clamping."""
+
+    def _with_settings_effort(self, value):
+        from unittest import mock as _mock
+        from types import SimpleNamespace
+
+        return _mock.patch(
+            "src.settings.settings.get_settings",
+            return_value=SimpleNamespace(effort=value),
+        )
+
+    def test_explicit_wins_over_settings(self):
+        with self._with_settings_effort("low"):
+            self.assertEqual(resolve_thinking_effort("high", "claude-opus-4-8"), "high")
+
+    def test_settings_fallback_when_no_explicit(self):
+        with self._with_settings_effort("high"):
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "high")
+
+    def test_default_medium_when_neither_set(self):
+        with self._with_settings_effort(""):
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
+
+    def test_max_clamped_off_allowlist(self):
+        # Explicit valid values never consult settings — no patch needed.
+        self.assertEqual(resolve_thinking_effort("max", "claude-opus-4-8"), "high")
+        self.assertEqual(resolve_thinking_effort("max", "claude-fable-5"), "high")
+
+    def test_max_passes_through_on_opus_46(self):
+        self.assertEqual(resolve_thinking_effort("max", "claude-opus-4-6"), "max")
+
+    def test_settings_read_failure_falls_back_to_default(self):
+        from unittest import mock as _mock
+
+        with _mock.patch(
+            "src.settings.settings.get_settings", side_effect=RuntimeError("boom")
+        ):
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "medium")
+
+    def test_settings_max_also_clamped_by_model(self):
+        with self._with_settings_effort("max"):
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-8"), "high")
+            self.assertEqual(resolve_thinking_effort(None, "claude-opus-4-6"), "max")
 
 
 class TestExtendedThinkingInjection(unittest.TestCase):
@@ -207,6 +264,31 @@ class TestExtendedThinkingInjection(unittest.TestCase):
         kw = self._drive_one_turn(provider, extended_thinking=False)
         self.assertNotIn("thinking", kw)
         self.assertNotIn("output_config", kw)
+
+    def test_thinking_effort_param_reaches_output_config(self):
+        # The --effort/-QueryParams channel: explicit value lands verbatim.
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        kw = self._drive_one_turn(provider, thinking_effort="high")
+        self.assertEqual(kw.get("thinking"), {"type": "adaptive"})
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_settings_effort_reaches_output_config(self):
+        # The persisted /effort setting is honored when no explicit value.
+        from unittest import mock as _mock
+        from types import SimpleNamespace
+
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        with _mock.patch(
+            "src.settings.settings.get_settings",
+            return_value=SimpleNamespace(effort="high"),
+        ):
+            kw = self._drive_one_turn(provider)
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
+
+    def test_max_effort_clamped_on_wire_for_non_allowlisted_model(self):
+        provider = _make_anthropic_mock("claude-opus-4-8")
+        kw = self._drive_one_turn(provider, thinking_effort="max")
+        self.assertEqual(kw.get("output_config"), {"effort": "high"})
 
     def test_explicit_opt_in_overrides_unknown_model(self):
         # An out-of-band model name (e.g. proxy alias) should still get

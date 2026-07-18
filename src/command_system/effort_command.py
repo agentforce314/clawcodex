@@ -29,11 +29,12 @@ picker raises there.
 
 **Persistence:** writes ``settings.effort`` via :func:`src.config.set_effort` (the
 validated settings channel, mirroring TS ``updateSettingsForSource('userSettings',
-{effortLevel})``). NOTE — the persisted value is **not yet consumed by inference**:
-Python's effort pipeline is inert end-to-end (``settings.effort`` is read by no request
-builder; ``CallModelOptions.effort`` never reaches the API wire). Wiring the pipeline is a
-separate, deliberately-deferred phase. This command makes ``/effort`` *exist + persist*
-faithfully and is forward-compatible when the pipeline lands.
+{effortLevel})``). The persisted value IS consumed by inference on the Anthropic
+first-party path: ``resolve_thinking_effort`` (src/query/query.py) reads it at the
+wire boundary whenever no explicit per-session effort (``--effort`` /
+``QueryParams.thinking_effort``) is set, and forwards it as ``output_config.effort``
+on effort-capable models. (``CallModelOptions.effort`` in the legacy services layer
+remains unwired.)
 
 **Deliberate divergences (documented for parity review):**
   * **No ``xhigh``/OpenAI-effort path, no ``CLAUDE_CODE_EFFORT_LEVEL`` env override, no

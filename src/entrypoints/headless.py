@@ -83,6 +83,11 @@ class HeadlessOptions:
     # ch04 round-4 GAP B — `--fallback-model` (TS cli/print.ts:473):
     # capacity-relief switch after repeated 529s; session-sticky.
     fallback_model: str | None = None
+    # ``--effort`` (TS main.tsx:995) — explicit per-session effort level
+    # ("low" | "medium" | "high" | "max"). None = auto (settings.effort,
+    # else the wire default "medium"); resolved per request by
+    # ``resolve_thinking_effort``.
+    effort: str | None = None
     max_turns: int = 50
     # ``skip_permissions`` is a backward-compat alias for the boolean form
     # of ``--dangerously-skip-permissions``. ``permission_mode`` and
@@ -510,6 +515,7 @@ def run_headless(options: HeadlessOptions) -> int:
                             system_prompt=effective_system_prompt,
                             max_turns=options.max_turns,
                             fallback_model=options.fallback_model,
+                            thinking_effort=options.effort,
                             # ch05 round-4 GAP A — the production pipeline:
                             # config rebuilt per turn (fresh read-file
                             # fingerprints), tracking RUN-scoped (breaker
