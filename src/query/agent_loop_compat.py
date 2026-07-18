@@ -443,6 +443,7 @@ async def run_query_as_agent_loop(
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
     extended_thinking: bool | None = None,
+    thinking_effort: str | None = None,
     fallback_model: str | None = None,
     # ch11 round-4 WI-1 — session-scoped set of already-surfaced memory
     # file paths (de-dups the LLM recall across turns). The agent-server
@@ -621,6 +622,9 @@ async def run_query_as_agent_loop(
         # C3b /thinking: None = auto (model-gated default), True/False =
         # explicit session override (TS ThinkingToggle semantics).
         extended_thinking=extended_thinking,
+        # None = auto (settings.effort, else "medium") — resolved at the
+        # wire boundary by resolve_thinking_effort().
+        thinking_effort=thinking_effort,
         # Critic-flagged: forward on_text_chunk into QueryParams so
         # the provider's chat_stream_response fires chunks LIVE. The
         # adapter must NOT call on_text_chunk(full_text) once at the

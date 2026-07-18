@@ -45,8 +45,12 @@ DEFAULT_SETTINGS = SettingsSchema(
     session_retention_days=30,
 )
 
-# Known valid effort values
-VALID_EFFORT_VALUES = ("", "low", "medium", "high", "max")
+# Known valid effort values. ``xhigh`` is a real Claude effort level
+# (between high and max) but only some models accept it on the wire —
+# resolve_thinking_effort (src/query/query.py) clamps it to "high" on
+# models that reject it (probed 2026-07-18: opus-4-8 accepts; sonnet-4-6
+# and opus-4-6 return 400 "does not support effort level 'xhigh'").
+VALID_EFFORT_VALUES = ("", "low", "medium", "high", "xhigh", "max")
 
 # Known valid output styles
 # OS-1: the VALID_OUTPUT_STYLES enum was removed — it was invented (rejected

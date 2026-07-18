@@ -17,7 +17,7 @@ from src.permissions.types import EXTERNAL_PERMISSION_MODES, ExternalPermissionM
 
 logger = logging.getLogger(__name__)
 
-EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "max"})
+EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def parse_effort_value(value: Any) -> str | None:
