@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from urllib.parse import urlparse
 
 from .configs import get_model_config
 
@@ -37,7 +38,68 @@ def strip_1m_context_suffix(model_id: str) -> str:
     return model_id
 
 
-def get_context_window_for_model(model_id: str) -> int:
+def _settings_limit(
+    model_id: str, field: str, *, base_url: str | None = None,
+) -> int | None:
+    """Resolve an exact/prefix ``modelLimits`` setting.
+
+    Exact model keys beat prefixes; within either tier a host-qualified key
+    beats a bare key. Invalid/non-positive values are ignored. This mirrors
+    the upstream settings override used for private OpenAI-compatible models.
+    """
+    try:
+        from src.settings.settings import get_settings
+
+        limits = get_settings().model_limits
+    except Exception:
+        return None
+    if not limits or not isinstance(model_id, str):
+        return None
+
+    model = strip_1m_context_suffix(model_id).lower()
+    host = ""
+    if base_url:
+        try:
+            host = (urlparse(base_url).netloc or "").lower()
+        except Exception:
+            host = ""
+
+    exact_host: list[object] = []
+    exact_bare: list[object] = []
+    prefix_host: list[tuple[int, object]] = []
+    prefix_bare: list[tuple[int, object]] = []
+    for raw_key, limit in limits.items():
+        key = str(raw_key).lower()
+        qualified = False
+        candidate = key
+        if host and key.startswith(f"{host}:"):
+            qualified = True
+            candidate = key[len(host) + 1 :]
+        elif ":" in key:
+            continue
+        if candidate == model:
+            (exact_host if qualified else exact_bare).append(limit)
+        elif model.startswith(candidate):
+            (prefix_host if qualified else prefix_bare).append(
+                (len(candidate), limit)
+            )
+
+    selected = None
+    if exact_host:
+        selected = exact_host[0]
+    elif exact_bare:
+        selected = exact_bare[0]
+    elif prefix_host:
+        selected = max(prefix_host, key=lambda item: item[0])[1]
+    elif prefix_bare:
+        selected = max(prefix_bare, key=lambda item: item[0])[1]
+    value = getattr(selected, field, None) if selected is not None else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def get_context_window_for_model(
+    model_id: str, *, base_url: str | None = None,
+) -> int:
     """Get the context window size for a model.
 
     Recognizes the ``[1m]`` opt-in suffix (WI-5.3) and returns 1_000_000
@@ -49,10 +111,15 @@ def get_context_window_for_model(model_id: str) -> int:
     config = get_model_config(model_id)
     if config:
         return config.context_window
+    configured = _settings_limit(model_id, "context_window", base_url=base_url)
+    if configured is not None:
+        return configured
     return DEFAULT_CONTEXT_WINDOW
 
 
-def get_model_max_output_tokens(model_id: str) -> int:
+def get_model_max_output_tokens(
+    model_id: str, *, base_url: str | None = None,
+) -> int:
     """Get the maximum output tokens for a model.
 
     The ``[1m]`` suffix doesn't change max_output_tokens (only the input
@@ -63,11 +130,19 @@ def get_model_max_output_tokens(model_id: str) -> int:
     config = get_model_config(base_id)
     if config:
         return config.max_output_tokens
+    configured = _settings_limit(
+        model_id, "max_output_tokens", base_url=base_url
+    )
+    if configured is not None:
+        return configured
     return DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def resolve_max_output_tokens(
-    override: int | None, model_id: str | None
+    override: int | None,
+    model_id: str | None,
+    *,
+    base_url: str | None = None,
 ) -> int:
     """Resolve the request-path ``max_tokens`` (ch04 round-3 G0).
 
@@ -103,5 +178,5 @@ def resolve_max_output_tokens(
             "ignoring invalid CLAUDE_CODE_MAX_OUTPUT_TOKENS=%r", raw
         )
     if model_id:
-        return get_model_max_output_tokens(model_id)
+        return get_model_max_output_tokens(model_id, base_url=base_url)
     return DEFAULT_MAX_OUTPUT_TOKENS
