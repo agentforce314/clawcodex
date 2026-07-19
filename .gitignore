@@ -36,6 +36,8 @@ env/
 .vscode/
 # ...but the VS Code extension ships its own extension-host launch config
 !vscode-extension/clawcodex-vscode/.vscode/
+# Packaged VS Code extension artifacts (npm run package)
+*.vsix
 *.swp
 *.swo
 *~

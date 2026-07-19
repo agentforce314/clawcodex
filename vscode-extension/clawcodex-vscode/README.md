@@ -76,5 +76,6 @@ To package (optional):
 npm run package
 ```
 
-See `PORT_NOTES.md` for how this extension maps onto the clawcodex backend and where it
-deliberately diverges from the openclaude reference extension it was ported from.
+See `BACKEND_NOTES.md` for how this extension talks to the clawcodex backend — the
+agent-server wire contracts, the on-disk session/config formats it reads, and the
+design decisions behind them.
