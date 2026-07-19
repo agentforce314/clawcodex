@@ -1,0 +1,194 @@
+{
+  "name": "clawcodex-vscode",
+  "displayName": "Clawcodex",
+  "description": "Practical VS Code companion for clawcodex with project-aware launch, Control Center, and chat backed by the clawcodex agent-server.",
+  "version": "0.1.0",
+  "publisher": "clawcodex",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Themes",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:clawcodex.start",
+    "onCommand:clawcodex.startInWorkspaceRoot",
+    "onCommand:clawcodex.openDocs",
+    "onCommand:clawcodex.openSetupDocs",
+    "onCommand:clawcodex.openWorkspaceSettings",
+    "onCommand:clawcodex.openProviderConfig",
+    "onCommand:clawcodex.openControlCenter",
+    "onCommand:clawcodex.newChat",
+    "onCommand:clawcodex.openChat",
+    "onCommand:clawcodex.resumeSession",
+    "onCommand:clawcodex.abortChat",
+    "onView:clawcodex.controlCenter",
+    "onView:clawcodex.chat"
+  ],
+  "main": "./src/extension.js",
+  "files": [
+    "README.md",
+    "PORT_NOTES.md",
+    "media/**",
+    "src/extension.js",
+    "src/presentation.js",
+    "src/state.js",
+    "src/chat/**",
+    "themes/**"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "clawcodex.start",
+        "title": "Clawcodex: Launch in Terminal",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.startInWorkspaceRoot",
+        "title": "Clawcodex: Launch in Workspace Root",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openDocs",
+        "title": "Clawcodex: Open Repository",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openSetupDocs",
+        "title": "Clawcodex: Open Setup Guide",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openWorkspaceSettings",
+        "title": "Clawcodex: Open Project Settings",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openProviderConfig",
+        "title": "Clawcodex: Open Provider Config",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openControlCenter",
+        "title": "Clawcodex: Open Control Center",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.newChat",
+        "title": "Clawcodex: New Chat",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.openChat",
+        "title": "Clawcodex: Open Chat Panel",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.resumeSession",
+        "title": "Clawcodex: Resume Session",
+        "category": "Clawcodex"
+      },
+      {
+        "command": "clawcodex.abortChat",
+        "title": "Clawcodex: Abort Generation",
+        "category": "Clawcodex"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "clawcodex",
+          "title": "Clawcodex",
+          "icon": "media/clawcodex.svg"
+        }
+      ]
+    },
+    "views": {
+      "clawcodex": [
+        {
+          "id": "clawcodex.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "clawcodex.controlCenter",
+          "name": "Control Center",
+          "type": "webview"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "clawcodex.openChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      }
+    ],
+    "configuration": {
+      "title": "Clawcodex",
+      "properties": {
+        "clawcodex.launchCommand": {
+          "type": "string",
+          "default": "clawcodex",
+          "description": "Command run in the integrated terminal when launching Clawcodex. The first word is also the executable used to spawn the chat backend (agent-server)."
+        },
+        "clawcodex.terminalName": {
+          "type": "string",
+          "default": "Clawcodex",
+          "description": "Integrated terminal tab name for Clawcodex sessions."
+        },
+        "clawcodex.permissionMode": {
+          "type": "string",
+          "default": "acceptEdits",
+          "enum": ["default", "acceptEdits", "plan", "bypassPermissions", "auto"],
+          "enumDescriptions": [
+            "Prompt for permission on each tool use (requires manual approval)",
+            "Auto-approve file edits, prompt for other operations (recommended)",
+            "Plan mode — research first, present a plan for approval before editing",
+            "Auto-approve all operations without prompting",
+            "Classifier decides per action whether to prompt"
+          ],
+          "description": "Permission mode for chat sessions (passed to `clawcodex agent-server --permission-mode`). Controls which tool operations are auto-approved."
+        },
+        "clawcodex.provider": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Provider name for chat sessions (passed as `--provider`). Empty uses the `default_provider` from `~/.clawcodex/config.json`."
+        },
+        "clawcodex.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model override for chat sessions (passed as `--model`). Empty uses the provider's `default_model` from `~/.clawcodex/config.json`."
+        }
+      }
+    },
+    "themes": [
+      {
+        "label": "Clawcodex Terminal Black",
+        "uiTheme": "vs-dark",
+        "path": "./themes/Clawcodex-Terminal-Black.json"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node --require ./test/register-vscode-stub.js --test \"src/**/*.test.js\"",
+    "lint": "node scripts/lint.js",
+    "e2e": "node scripts/e2e-agent-server.mjs",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "keywords": [
+    "clawcodex",
+    "terminal",
+    "theme",
+    "cli",
+    "llm",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentforce314/clawcodex"
+  },
+  "license": "MIT"
+}

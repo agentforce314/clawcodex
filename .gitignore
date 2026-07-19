@@ -34,6 +34,8 @@ env/
 # IDE
 .idea/
 .vscode/
+# ...but the VS Code extension ships its own extension-host launch config
+!vscode-extension/clawcodex-vscode/.vscode/
 *.swp
 *.swo
 *~
