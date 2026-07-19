@@ -179,5 +179,118 @@ class TestWatchdogIntegrationWithProvider(unittest.TestCase):
         fake_response.close.assert_called()
 
 
+class TestForceCloseResponse(unittest.TestCase):
+    """``force_close_response`` — the shutdown-then-close contract.
+
+    A bare ``response.close()`` from another thread does NOT wake a
+    consumer blocked in ``recv``/``ssl.read`` (observed live: agent-server
+    ``interrupt`` mid-Anthropic-stream stopped the deltas but the worker
+    thread never unwound). The fix shuts the underlying socket down
+    first — ``shutdown(SHUT_RDWR)`` is the documented cross-thread way
+    to interrupt a blocked read.
+    """
+
+    def test_shuts_socket_down_before_closing(self):
+        from src.utils.stream_watchdog import force_close_response
+        import socket as socket_mod
+
+        calls = []
+        sock = MagicMock()
+        sock.shutdown.side_effect = lambda how: calls.append(("shutdown", how))
+        network_stream = MagicMock()
+        network_stream.get_extra_info.return_value = sock
+        response = MagicMock()
+        response.extensions = {"network_stream": network_stream}
+        response.close.side_effect = lambda: calls.append(("close", None))
+        stream = MagicMock()
+        stream.response = response
+
+        force_close_response(stream)
+
+        network_stream.get_extra_info.assert_called_once_with("socket")
+        self.assertEqual(
+            calls,
+            [("shutdown", socket_mod.SHUT_RDWR), ("close", None)],
+        )
+
+    def test_close_still_runs_without_the_network_stream_extension(self):
+        from src.utils.stream_watchdog import force_close_response
+
+        response = MagicMock()
+        response.extensions = {}
+        stream = MagicMock()
+        stream.response = response
+
+        force_close_response(stream)
+
+        response.close.assert_called_once()
+
+    def test_shutdown_failure_does_not_block_the_close(self):
+        from src.utils.stream_watchdog import force_close_response
+
+        sock = MagicMock()
+        sock.shutdown.side_effect = OSError("already shut down")
+        network_stream = MagicMock()
+        network_stream.get_extra_info.return_value = sock
+        response = MagicMock()
+        response.extensions = {"network_stream": network_stream}
+        stream = MagicMock()
+        stream.response = response
+
+        force_close_response(stream)  # must not raise
+
+        response.close.assert_called_once()
+
+    def test_never_raises_without_a_response(self):
+        from src.utils.stream_watchdog import force_close_response
+
+        force_close_response(MagicMock(response=None))
+        force_close_response(object())  # no .response attribute at all
+
+    def test_unblocks_a_reader_parked_on_a_real_socket(self):
+        """The live-hang regression: a thread blocked in ``recv`` on a real
+        socket must unwind promptly once ``force_close_response`` runs.
+
+        Uses a plain TCP pair (the syscall semantics that caused the hang
+        are at the socket layer; TLS only wraps them) and an httpcore-shaped
+        stub exposing the socket via ``extensions['network_stream']``.
+        """
+        import socket as socket_mod
+
+        from src.utils.stream_watchdog import force_close_response
+
+        server, client = socket_mod.socketpair()
+        self.addCleanup(server.close)
+        self.addCleanup(client.close)
+
+        unwound = threading.Event()
+
+        def blocked_reader():
+            try:
+                client.recv(65536)  # server never sends — blocks
+            except Exception:
+                pass
+            unwound.set()
+
+        reader = threading.Thread(target=blocked_reader, daemon=True)
+        reader.start()
+        time.sleep(0.1)  # let the reader park inside recv
+        self.assertFalse(unwound.is_set(), "reader must be blocked before the close")
+
+        network_stream = MagicMock()
+        network_stream.get_extra_info.return_value = client
+        response = MagicMock()
+        response.extensions = {"network_stream": network_stream}
+        stream = MagicMock()
+        stream.response = response
+
+        force_close_response(stream)
+
+        self.assertTrue(
+            unwound.wait(timeout=2.0),
+            "shutdown(SHUT_RDWR) must wake the blocked recv",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
