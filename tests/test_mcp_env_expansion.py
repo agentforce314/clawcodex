@@ -43,3 +43,10 @@ class TestExpandEnvVarsInString:
         result = expand_env_vars_in_string("${NONEXISTENT:-}")
         assert result.expanded == ""
         assert result.missing_vars == []
+
+    def test_default_preserves_additional_colon_dash_sequences(self) -> None:
+        # Python maxsplit already avoids openclaude #1933's JS split(limit)
+        # truncation bug; keep that parity pinned as upstream evolves.
+        result = expand_env_vars_in_string("${NONEXISTENT:-a:-b}")
+        assert result.expanded == "a:-b"
+        assert result.missing_vars == []
