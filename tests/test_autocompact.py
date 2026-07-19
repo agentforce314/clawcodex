@@ -25,6 +25,7 @@ from src.services.compact.autocompact import (
     MIN_INPUT_TOKENS_FOR_AUTOCOMPACT,
     MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
     AUTOCOMPACT_BUFFER_TOKENS,
+    AUTOCOMPACT_FLOOR_BUFFER_TOKENS,
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
 )
 
@@ -50,7 +51,10 @@ class TestGetEffectiveContextWindowSize(unittest.TestCase):
     def test_floor(self):
         """Effective context has a floor to prevent negative thresholds."""
         effective = get_effective_context_window_size(25_000)
-        self.assertGreaterEqual(effective, MAX_OUTPUT_TOKENS_FOR_SUMMARY + AUTOCOMPACT_BUFFER_TOKENS)
+        self.assertGreaterEqual(
+            effective,
+            MAX_OUTPUT_TOKENS_FOR_SUMMARY + AUTOCOMPACT_FLOOR_BUFFER_TOKENS,
+        )
 
     @patch.dict(os.environ, {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "100000"})
     def test_env_override(self):
@@ -63,10 +67,22 @@ class TestGetAutoCompactThreshold(unittest.TestCase):
     """Tests for get_auto_compact_threshold()."""
 
     def test_basic_threshold(self):
-        """Threshold = effective context window - buffer."""
+        """Large windows use the full earlier-compaction buffer."""
         threshold = get_auto_compact_threshold(200_000)
         effective = get_effective_context_window_size(200_000)
         self.assertEqual(threshold, effective - AUTOCOMPACT_BUFFER_TOKENS)
+
+    def test_small_window_retains_non_negative_floor(self):
+        threshold = get_auto_compact_threshold(25_000)
+        self.assertEqual(threshold, MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+
+    def test_mid_sized_window_ramps_buffer_monotonically(self):
+        thresholds = [
+            get_auto_compact_threshold(window)
+            for window in range(53_000, 90_001, 1_000)
+        ]
+        self.assertEqual(thresholds, sorted(thresholds))
+        self.assertTrue(all(value >= 0 for value in thresholds))
 
     @patch.dict(os.environ, {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"})
     def test_percentage_override(self):

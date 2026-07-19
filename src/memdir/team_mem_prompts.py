@@ -16,6 +16,7 @@ from typing import Iterable
 
 from .memdir import (
     ENTRYPOINT_NAME,
+    MAX_ENTRYPOINT_BYTES,
     MAX_ENTRYPOINT_LINES,
 )
 from .memory_types import (
@@ -141,7 +142,7 @@ def _how_to_save_section(skip_index: bool) -> list[str]:
         "",
         f"**Step 2** — add a pointer to that file in the same directory's `{ENTRYPOINT_NAME}`. Each directory (private and team) has its own `{ENTRYPOINT_NAME}` index — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. They have no frontmatter. Never write memory content directly into a `{ENTRYPOINT_NAME}`.",
         "",
-        f"- Both `{ENTRYPOINT_NAME}` indexes are loaded into your conversation context — lines after {MAX_ENTRYPOINT_LINES} will be truncated, so keep them concise",
+        f"- Both `{ENTRYPOINT_NAME}` indexes are loaded into your conversation context — each is truncated after {MAX_ENTRYPOINT_LINES} lines or about {MAX_ENTRYPOINT_BYTES // 1024}KB, whichever comes first, so keep them concise",
         "- Keep the name, description, and type fields in memory files up-to-date with the content",
         "- Organize memory semantically by topic, not chronologically",
         "- Update or remove memories that turn out to be wrong or outdated",

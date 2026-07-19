@@ -13,7 +13,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.88.0"
+version = "0.117.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -25,9 +25,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/86/68/565f13059c0a6a6fd5f96f306f2a0fb478a0e1174ec18a4df16b5fac9379/anthropic-0.88.0.tar.gz", hash = "sha256:f4c7f6863d08c869913516f08d658fe53caaf8bcc4fbea3218df343d2a876c58", size = 596654, upload-time = "2026-04-01T19:59:05.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/0d/8f71d535edb0d438f023bd825fb65f67c14fa88a2bd6b75f292a58a63de4/anthropic-0.117.0.tar.gz", hash = "sha256:98107f2b76439641e0ae2a1754087534b8f178dbab99d6eb1bc4b7bc8c744496", size = 989933, upload-time = "2026-07-16T19:36:13.07Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/ac/68f646998160c9f2e6f9353a31dd87292ef02b915b455aaf70a52a059a75/anthropic-0.88.0-py3-none-any.whl", hash = "sha256:71898b32332bc75d9739bc10095288d40a29605da6d00da2fe832b1aa036552f", size = 478338, upload-time = "2026-04-01T19:59:03.832Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/4c/917d21d6619a4475cdafc6d13a69fdb3b901ddac57e76caca5a25c117b6d/anthropic-0.117.0-py3-none-any.whl", hash = "sha256:451a0a6905f11dff7663d13e4ee5dbf909eb8942b1d049803c7b937a13ac47ec", size = 998327, upload-time = "2026-07-16T19:36:11.225Z" },
 ]
 
 [[package]]
@@ -297,8 +297,8 @@ wheels = [
 ]
 
 [[package]]
-name = "clawcodex"
-version = "1.1.0"
+name = "clawcodex-cli"
+version = "1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -332,27 +332,27 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic" },
+    { name = "anthropic", specifier = ">=0.116.0" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "httpx-sse", specifier = ">=0.4" },
     { name = "markdownify", specifier = ">=0.11" },
     { name = "mcp", specifier = ">=1.27.0" },
-    { name = "openai" },
+    { name = "openai", specifier = ">=1.109.1" },
     { name = "pathspec", specifier = ">=0.11" },
     { name = "pillow", specifier = ">=10.0" },
-    { name = "prompt-toolkit" },
+    { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.3.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "python-dotenv" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "regex", specifier = ">=2023.0" },
-    { name = "rich" },
+    { name = "rich", specifier = ">=13.9.4" },
     { name = "textual", specifier = ">=0.79" },
     { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.0" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.16.0" },
     { name = "wcwidth", specifier = ">=0.2" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -2069,11 +2069,11 @@ wheels = [
 
 [[package]]
 name = "typing-extensions"
-version = "4.15.0"
+version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
 
 [[package]]

@@ -108,8 +108,8 @@ class TestThreshold(unittest.TestCase):
 
 
 class TestSuccessReset(unittest.TestCase):
-    def test_any_success_resets_all_counters(self):
-        """guard:72-75, 91-94 — one non-error block resets everything."""
+    def test_same_tool_success_resets_its_persistent_counter(self):
+        """A success resets persistent failures for that tool."""
         state = create_tool_failure_loop_guard_state()
         blocks = [_tool_use("t1", "Bash")]
         for _ in range(2):
@@ -121,6 +121,7 @@ class TestSuccessReset(unittest.TestCase):
             _update(state, blocks, [_result("t1", "ok", is_error=False)]).tripped
         )
         self.assertEqual(state.signature_counts, {})
+        self.assertEqual(state.persistent_signature_counts, {})
         # Two more failures still under threshold.
         for _ in range(2):
             self.assertFalse(
@@ -145,12 +146,11 @@ class TestSuccessReset(unittest.TestCase):
         self.assertTrue(decision.tripped)
         self.assertEqual(decision.kind, "signature")
 
-    def test_mixed_batch_with_success_does_not_count_failures(self):
-        """A batch containing any success resets even if it also has
-        failures (TS checks hasSuccess before counting, guard:91-94)."""
+    def test_mixed_batch_counts_failure_for_a_different_tool(self):
+        """An unrelated success must not conceal a repeated failure."""
         state = create_tool_failure_loop_guard_state()
         blocks = [_tool_use("t1", "Bash"), _tool_use("t2", "Read")]
-        for _ in range(5):
+        for attempt in range(3):
             decision = _update(
                 state,
                 blocks,
@@ -159,8 +159,8 @@ class TestSuccessReset(unittest.TestCase):
                     _result("t2", "fine", is_error=False),
                 ],
             )
-            self.assertFalse(decision.tripped)
-        self.assertEqual(state.signature_counts, {})
+            self.assertEqual(decision.tripped, attempt == 2)
+        self.assertEqual(decision.tool_name, "Bash")
 
 
 class TestIgnoredSynthetics(unittest.TestCase):
@@ -282,6 +282,37 @@ class TestPathHandling(unittest.TestCase):
 
 
 class TestTripPrecedence(unittest.TestCase):
+    def test_warns_one_matching_failure_before_stop(self):
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use("t1", "Read")]
+        first = _update(state, blocks, [_result("t1", "ENOENT: gone")])
+        second = _update(state, blocks, [_result("t1", "ENOENT: gone")])
+        self.assertEqual(first.advisories, ())
+        self.assertEqual(len(second.advisories), 1)
+        self.assertIn("failed 2/3 times", second.advisories[0])
+
+    def test_unrelated_success_does_not_hide_repeated_failure(self):
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use("bad", "Read"), _tool_use("ok", "Grep")]
+        mixed = [
+            _result("bad", "ENOENT: gone"),
+            _result("ok", "matches", is_error=False),
+        ]
+        _update(state, blocks, mixed)
+        decision = _update(state, blocks, mixed)
+        self.assertEqual(len(decision.advisories), 1)
+        decision = _update(state, blocks, mixed)
+        self.assertTrue(decision.tripped)
+        self.assertEqual(decision.tool_name, "Read")
+
+    def test_same_tool_success_resets_persistent_signature(self):
+        state = create_tool_failure_loop_guard_state()
+        blocks = [_tool_use("t1", "Read")]
+        _update(state, blocks, [_result("t1", "ENOENT: gone")])
+        _update(state, blocks, [_result("t1", "ok", is_error=False)])
+        decision = _update(state, blocks, [_result("t1", "ENOENT: gone")])
+        self.assertEqual(decision.advisories, ())
+
     def test_signature_trip(self):
         """Same tool+category, different paths → kind='signature'
         (guard:123-137)."""

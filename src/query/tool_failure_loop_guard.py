@@ -29,6 +29,7 @@ _ENV_VAR = "CLAUDE_CODE_TOOL_FAILURE_LOOP_THRESHOLD"
 
 @dataclass
 class ToolFailureLoopGuardState:
+    persistent_signature_counts: dict[str, int] = field(default_factory=dict)
     signature_counts: dict[str, int] = field(default_factory=dict)
     category_counts: dict[str, int] = field(default_factory=dict)
     path_counts: dict[str, int] = field(default_factory=dict)
@@ -37,6 +38,7 @@ class ToolFailureLoopGuardState:
 @dataclass(frozen=True)
 class ToolFailureLoopGuardDecision:
     tripped: bool
+    advisories: tuple[str, ...] = ()
     message: str | None = None
     threshold: int | None = None
     kind: Literal["signature", "category", "path"] | None = None
@@ -86,18 +88,28 @@ def update_tool_failure_loop_guard(
     }
     failures: list[tuple[str, str, str | None]] = []
     has_success = False
+    successful_tool_names: set[str] = set()
+    successful_mutation_paths: set[str] = set()
 
     for block in _get_tool_result_blocks(tool_results):
         content = _tool_result_content_to_string(getattr(block, "content", None))
+        tool_use = tool_use_by_id.get(str(getattr(block, "tool_use_id", "") or ""))
 
         if getattr(block, "is_error", None) is not True:
             has_success = True
+            if tool_use is not None:
+                tool_name = getattr(tool_use, "name", None)
+                if tool_name:
+                    successful_tool_names.add(tool_name)
+                if tool_name in {"Edit", "MultiEdit", "Write", "NotebookEdit"}:
+                    path = _extract_normalized_path(getattr(tool_use, "input", None))
+                    if path:
+                        successful_mutation_paths.add(path)
             continue
 
         if _is_ignored_synthetic_tool_result(content):
             continue
 
-        tool_use = tool_use_by_id.get(str(getattr(block, "tool_use_id", "") or ""))
         tool_name = getattr(tool_use, "name", None) or "unknown"
         error_category = _normalize_error_category(content)
         failures.append((
@@ -106,30 +118,63 @@ def update_tool_failure_loop_guard(
             _extract_normalized_path(getattr(tool_use, "input", None)),
         ))
 
-    if has_success:
-        _reset(state)
-        return _NOT_TRIPPED
+    for tool_name in successful_tool_names:
+        prefix = f"{tool_name}\0"
+        for key in tuple(state.persistent_signature_counts):
+            if key.startswith(prefix):
+                del state.persistent_signature_counts[key]
 
-    for tool_name, error_category, path in failures:
-        signature_count = _increment_counter(
-            state.signature_counts, f"{tool_name}\0{error_category}"
+    advisories: list[str] = []
+    for tool_name, error_category, _path in failures:
+        count = _increment_counter(
+            state.persistent_signature_counts, f"{tool_name}\0{error_category}"
         )
-        category_count = _increment_counter(state.category_counts, error_category)
-        path_count = (
-            _increment_counter(state.path_counts, path) if path else 0
-        )
-
-        if path and path_count >= resolved_threshold:
+        if count >= resolved_threshold:
             return ToolFailureLoopGuardDecision(
                 tripped=True,
-                kind="path",
+                kind="signature",
                 threshold=resolved_threshold,
+                tool_name=tool_name,
+                error_category=error_category,
+                message=_create_trip_message(
+                    kind="signature", threshold=resolved_threshold,
+                    tool_name=tool_name, error_category=error_category,
+                ),
+            )
+        if resolved_threshold > 1 and count == resolved_threshold - 1:
+            advisories.append(_create_advisory_message(
+                threshold=resolved_threshold,
+                tool_name=tool_name,
+                error_category=error_category,
+            ))
+
+    for tool_name, error_category, path in failures:
+        if not path or path in successful_mutation_paths:
+            continue
+        path_count = _increment_counter(state.path_counts, path)
+        if path_count >= resolved_threshold:
+            return ToolFailureLoopGuardDecision(
+                tripped=True, kind="path", threshold=resolved_threshold,
                 path=path,
                 message=_create_trip_message(
                     kind="path", threshold=resolved_threshold, path=path,
                 ),
             )
 
+    if has_success:
+        state.signature_counts.clear()
+        state.category_counts.clear()
+        for path in successful_mutation_paths:
+            state.path_counts.pop(path, None)
+        return ToolFailureLoopGuardDecision(
+            tripped=False, advisories=tuple(advisories)
+        )
+
+    for tool_name, error_category, path in failures:
+        signature_count = _increment_counter(
+            state.signature_counts, f"{tool_name}\0{error_category}"
+        )
+        category_count = _increment_counter(state.category_counts, error_category)
         if signature_count >= resolved_threshold:
             return ToolFailureLoopGuardDecision(
                 tripped=True,
@@ -158,7 +203,9 @@ def update_tool_failure_loop_guard(
                 ),
             )
 
-    return _NOT_TRIPPED
+    return ToolFailureLoopGuardDecision(
+        tripped=False, advisories=tuple(advisories)
+    )
 
 
 def _normalize_threshold(threshold: int | None) -> int:
@@ -175,9 +222,28 @@ def _normalize_threshold(threshold: int | None) -> int:
 
 
 def _reset(state: ToolFailureLoopGuardState) -> None:
+    state.persistent_signature_counts.clear()
     state.signature_counts.clear()
     state.category_counts.clear()
     state.path_counts.clear()
+
+
+def _create_advisory_message(
+    *, threshold: int, tool_name: str, error_category: str,
+) -> str:
+    safe_tool = tool_name if re.fullmatch(r"[A-Za-z0-9_.:-]+", tool_name) else "unknown tool"
+    known_categories = {
+        "InputValidationError", "NoSuchTool", "PermissionError",
+        "NotFound", "FileWriteError",
+    }
+    safe_category = error_category if error_category in known_categories else "unknown error"
+    return (
+        "Warning: repeated tool failures are close to stopping this query.\n\n"
+        f"`{safe_tool}` failed {threshold - 1}/{threshold} times with "
+        f"`{safe_category}`. One more matching failure will stop the query. "
+        "Try a different tool, or verify the path, permissions, and tool "
+        "inputs before retrying."
+    )
 
 
 def _get_tool_result_blocks(messages: list[Any]) -> list[Any]:

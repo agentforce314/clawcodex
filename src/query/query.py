@@ -2293,6 +2293,11 @@ async def query(
             )
             return
 
+        advisory_messages = [
+            UserMessage(content=advisory)
+            for advisory in guard_decision.advisories
+        ]
+
         next_turn_count = turn_count + 1
 
         if params.max_turns and next_turn_count > params.max_turns:
@@ -2316,7 +2321,13 @@ async def query(
             yield inj
 
         state = QueryState(
-            messages=[*messages, *assistant_messages, *tool_results, *injected_messages],
+            messages=[
+                *messages,
+                *assistant_messages,
+                *tool_results,
+                *advisory_messages,
+                *injected_messages,
+            ],
             tool_use_context=tool_use_context,
             auto_compact_tracking=state.auto_compact_tracking,
             turn_count=next_turn_count,
