@@ -81,10 +81,8 @@ def get_context_window_for_model(model: str) -> int:
     registry had 1M but this table didn't, and the display reads this function.
     """
     model_lower = model.lower()
-    for name, window in MODEL_CONTEXT_WINDOWS.items():
-        if name in model_lower:
-            return window
-    # Defer to the canonical model registry for ids not in the local table.
+    # Prefer the canonical registry/settings resolver. The old local-first
+    # order could hide a user-declared 1M limit behind a broad substring row.
     try:
         from ..models.context import (
             DEFAULT_CONTEXT_WINDOW as _REGISTRY_DEFAULT,
@@ -96,6 +94,9 @@ def get_context_window_for_model(model: str) -> int:
             return win
     except Exception:
         pass
+    for name, window in MODEL_CONTEXT_WINDOWS.items():
+        if name in model_lower:
+            return window
     # Try to extract a numeric window from model name (e.g., "gpt-4-32k")
     match = re.search(r'(\d+)k', model_lower)
     if match:

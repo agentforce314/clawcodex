@@ -580,7 +580,13 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
     "advisor_enabled": false,
     "advisor_model": "claude-sonnet-4-6",
     "advisor_client_mode": false,
-    "advisor_provider": "openai"
+    "advisor_provider": "openai",
+    "modelLimits": {
+      "private-1m-model": {
+        "contextWindow": 1000000,
+        "maxOutputTokens": 32768
+      }
+    }
   },
   "env": {
     "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
@@ -598,6 +604,7 @@ The final Messages request URLs are
 
 - **`session`** — REPL session persistence: `auto_save` writes each session automatically; `max_history` caps retained turns.
 - **`settings`** — the advisor (reviewer) feature. **`advisor_enabled` is the master switch — `false` by default, so the advisor is OFF unless you opt in** (set it to `true`, or run `/advisor <provider>:<model>` which flips it on). `advisor_provider` / `advisor_model` pick the reviewer model; `advisor_client_mode` routes the call via the client.
+- **`settings.modelLimits`** — context/output limits for private or gateway models absent from the built-in catalog. Keys may be exact model IDs, model prefixes, or host-qualified IDs such as `localhost:4000:private-model`; exact matches beat prefixes and host-qualified keys beat bare keys within the same match type. Built-in catalog metadata remains authoritative.
 - **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Managed via `clawcodex config`; keys here are exported into the process environment without overriding anything you already set in your shell.
 
 ### Run
