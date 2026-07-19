@@ -344,8 +344,8 @@ class ChatController {
       this._messages.push({ role: 'assistant', text, toolUses: toolUseVms });
 
       // Tool cards go out BEFORE the stream_end that finalizes the bubble,
-      // so text and its tool cards share one assistant bubble (the reference
-      // got the same grouping via content_block_start during streaming).
+      // so text and its tool cards share one assistant bubble instead of
+      // the cards opening a fresh one.
       if (toolBlocks.length > 0) {
         for (const vm of toolUseVms) {
           this._broadcast({ type: 'tool_use', toolUse: vm });
