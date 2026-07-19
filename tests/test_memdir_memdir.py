@@ -63,6 +63,15 @@ class TruncateEntrypointTest(unittest.TestCase):
         body = out.content.split("\n\n> WARNING")[0]
         self.assertTrue(body.startswith("- "))
 
+    def test_multibyte_content_is_measured_and_cut_in_utf8_bytes(self):
+        raw = "界" * (MAX_ENTRYPOINT_BYTES // 2)
+        out = truncate_entrypoint_content(raw)
+        body = out.content.split("\n\n> WARNING")[0]
+        self.assertTrue(out.was_byte_truncated)
+        self.assertGreater(out.byte_count, MAX_ENTRYPOINT_BYTES)
+        self.assertLessEqual(len(body.encode("utf-8")), MAX_ENTRYPOINT_BYTES)
+        self.assertNotIn("\ufffd", body)
+
 
 class EnsureMemoryDirExistsTest(unittest.TestCase):
     def test_creates_directory(self):

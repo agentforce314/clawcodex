@@ -36,8 +36,13 @@ logger = logging.getLogger(__name__)
 # Based on p99.99 of compact summary output being 17,387 tokens.
 MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
-# Buffer between effective context window and autocompact threshold
-AUTOCOMPACT_BUFFER_TOKENS = 13_000
+# Auto-compact earlier so long interactive sessions do not accumulate enough
+# history to make each successive turn progressively slower (openclaude
+# #1949).  Keep the effective-window floor at the old value: coupling the
+# floor to this larger threshold buffer would unnecessarily shrink small
+# context windows.
+AUTOCOMPACT_BUFFER_TOKENS = 30_000
+AUTOCOMPACT_FLOOR_BUFFER_TOKENS = 13_000
 
 # Buffer for token warning states (UI warnings)
 WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
@@ -120,7 +125,7 @@ def get_effective_context_window_size(
     # Floor: effective context must be at least the summary reservation plus a
     # usable buffer. If it goes lower, the auto-compact threshold becomes
     # negative and fires on every message.
-    return max(effective, reserved + AUTOCOMPACT_BUFFER_TOKENS)
+    return max(effective, reserved + AUTOCOMPACT_FLOOR_BUFFER_TOKENS)
 
 
 def get_auto_compact_threshold(
@@ -133,7 +138,17 @@ def get_auto_compact_threshold(
     Port of ``getAutoCompactThreshold`` in autoCompact.ts.
     """
     effective = get_effective_context_window_size(context_window, max_output_tokens)
-    threshold = effective - AUTOCOMPACT_BUFFER_TOKENS
+    # Ramp the buffer from 13k to 30k for mid-sized windows.  A direct jump
+    # would make warning thresholds negative and make a one-token increase in
+    # context size trigger compaction earlier rather than later.
+    buffer = min(
+        AUTOCOMPACT_BUFFER_TOKENS,
+        max(
+            AUTOCOMPACT_FLOOR_BUFFER_TOKENS,
+            effective - AUTOCOMPACT_BUFFER_TOKENS,
+        ),
+    )
+    threshold = effective - buffer
 
     # Override for easier testing of autocompact
     env_pct = _get_env_float("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")

@@ -194,7 +194,7 @@ def _how_to_save_section(skip_index: bool) -> list[str]:
         "",
         f"**Step 2** — add a pointer to that file in `{ENTRYPOINT_NAME}`. `{ENTRYPOINT_NAME}` is an index, not a memory — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. It has no frontmatter. Never write memory content directly into `{ENTRYPOINT_NAME}`.",
         "",
-        f"- `{ENTRYPOINT_NAME}` is always loaded into your conversation context — lines after {MAX_ENTRYPOINT_LINES} will be truncated, so keep the index concise",
+        f"- `{ENTRYPOINT_NAME}` is always loaded into your conversation context — it is truncated after {MAX_ENTRYPOINT_LINES} lines or {_format_file_size(MAX_ENTRYPOINT_BYTES)}, whichever comes first, so keep the index concise (one short line per entry; long or many entries lose the tail)",
         "- Keep the name, description, and type fields in memory files up-to-date with the content",
         "- Organize memory semantically by topic, not chronologically",
         "- Update or remove memories that turn out to be wrong or outdated",
