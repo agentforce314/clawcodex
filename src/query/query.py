@@ -347,6 +347,16 @@ def _get_context_window(provider: BaseProvider) -> int:
     cw = getattr(provider, "context_window", None)
     if isinstance(cw, int) and cw > 0:
         return cw
+    model = getattr(provider, "model", None)
+    if isinstance(model, str) and model:
+        try:
+            from src.models.context import get_context_window_for_model
+
+            return get_context_window_for_model(
+                model, base_url=getattr(provider, "base_url", None)
+            )
+        except Exception:
+            logger.debug("model context-window resolution failed", exc_info=True)
     return 200_000
 
 
@@ -1023,7 +1033,9 @@ async def _call_model_sync(
         from ..models.context import resolve_max_output_tokens
 
         call_kwargs["max_tokens"] = resolve_max_output_tokens(
-            max_output_tokens_override, getattr(provider, "model", None)
+            max_output_tokens_override,
+            getattr(provider, "model", None),
+            base_url=getattr(provider, "base_url", None),
         )
     elif max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override

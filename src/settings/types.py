@@ -83,6 +83,14 @@ class CompactSettings:
 
 
 @dataclass
+class ModelLimitSettings:
+    """User-declared runtime limits for custom/private model IDs."""
+
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+
+@dataclass
 class HookSettings:
     """Hook configuration."""
     enabled: bool = True
@@ -117,6 +125,10 @@ class SettingsSchema:
     # vacuous and let /model mutate provider selection.
     model_provider: str = ""
     small_fast_model: str = ""
+    # Per-model limits for gateways/private deployments whose metadata is not
+    # in the built-in catalog. JSON accepts both modelLimits/contextWindow and
+    # the Python-native snake_case spellings.
+    model_limits: dict[str, ModelLimitSettings] = field(default_factory=dict)
     # /goal turn-budget backstop (src/goals). Claude Code ships the goal
     # loop unbounded; the port pauses the goal after this many evaluated
     # turns so a mis-judging evaluator can't spend unbounded tokens —
@@ -258,6 +270,13 @@ class SettingsSchema:
     def from_dict(cls, data: dict[str, Any]) -> SettingsSchema:
         """Deserialize from dict."""
         import dataclasses
+        data = dict(data)
+        if "modelLimits" in data:
+            # Defaults are materialized in snake_case before user settings are
+            # merged, so both keys can coexist. The explicit camelCase user
+            # value must replace that default rather than being relegated to
+            # ``extra``.
+            data["model_limits"] = data.pop("modelLimits")
         known_fields = {f.name for f in dataclasses.fields(cls)}
         known: dict[str, Any] = {}
         extra: dict[str, Any] = {}
@@ -292,6 +311,21 @@ class SettingsSchema:
             known["spinner_verbs"] = SpinnerVerbsSettings(**known["spinner_verbs"])
         if "compact" in known and isinstance(known["compact"], dict):
             known["compact"] = CompactSettings(**known["compact"])
+        if "model_limits" in known and isinstance(known["model_limits"], dict):
+            converted: dict[str, ModelLimitSettings] = {}
+            for name, value in known["model_limits"].items():
+                if isinstance(value, ModelLimitSettings):
+                    converted[str(name)] = value
+                elif isinstance(value, dict):
+                    converted[str(name)] = ModelLimitSettings(
+                        context_window=value.get(
+                            "contextWindow", value.get("context_window")
+                        ),
+                        max_output_tokens=value.get(
+                            "maxOutputTokens", value.get("max_output_tokens")
+                        ),
+                    )
+            known["model_limits"] = converted
         if "hooks" in known and isinstance(known["hooks"], dict):
             known["hooks"] = HookSettings(**known["hooks"])
         if "tools" in known and isinstance(known["tools"], dict):

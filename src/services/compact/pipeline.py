@@ -70,6 +70,7 @@ class PipelineConfig:
 
     # Layer 5: autocompact
     context_window: int = 200_000
+    max_output_tokens: int | None = None
     autocompact_threshold: float = 0.80
     autocompact_tracking: AutoCompactTracking | None = None
 
@@ -110,9 +111,29 @@ def build_production_pipeline_config(
         for path, fp in fingerprints.items()
         if isinstance(fp, (tuple, list)) and fp
     }
+    model = getattr(provider, "model", "") or ""
+    context_window = 200_000
+    max_output_tokens = None
+    if model:
+        try:
+            from src.models.context import (
+                get_context_window_for_model,
+                get_model_max_output_tokens,
+            )
+
+            context_window = get_context_window_for_model(
+                model, base_url=getattr(provider, "base_url", None)
+            )
+            max_output_tokens = get_model_max_output_tokens(
+                model, base_url=getattr(provider, "base_url", None)
+            )
+        except Exception:
+            logger.debug("model context-window resolution failed", exc_info=True)
     return PipelineConfig(
         provider=provider,
-        model=getattr(provider, "model", "") or "",
+        model=model,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
         read_file_state=read_file_state or None,
         autocompact_tracking=autocompact_tracking,
     )
@@ -239,6 +260,7 @@ class CompressionPipeline:
                     cfg.context_window,
                     cfg.provider,
                     cfg.model,
+                    max_output_tokens=cfg.max_output_tokens,
                     threshold_fraction=cfg.autocompact_threshold,
                     tracking=cfg.autocompact_tracking,
                     custom_instructions=cfg.custom_instructions,
