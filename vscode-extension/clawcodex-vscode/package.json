@@ -30,7 +30,7 @@
   "main": "./src/extension.js",
   "files": [
     "README.md",
-    "PORT_NOTES.md",
+    "BACKEND_NOTES.md",
     "media/**",
     "src/extension.js",
     "src/presentation.js",
