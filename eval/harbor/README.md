@@ -89,6 +89,36 @@ Notes:
 - In subscription mode the adapter does NOT forward `ANTHROPIC_API_KEY`
   (inside clawcodex an API key would take precedence and bill the API).
 
+## Compare against the LATEST official Claude Code
+
+`claude_code_subscription.py` wraps Harbor's own `claude-code` agent
+(which bootstrap-installs the latest official CLI inside each container)
+with the same per-trial subscription-token handling the other adapters
+use: every trial starts with ≥30 min of access-token runway (above the
+900s task timeouts; a single trial >30 min could still outlive its
+token), so multi-hour jobs work without a manually exported token:
+
+```bash
+PYTHONPATH=$PWD/eval/harbor harbor run \
+  --dataset terminal-bench/terminal-bench-2-1 \
+  --agent claude_code_subscription:ClaudeCodeSubscription \
+  --model anthropic/claude-opus-4-8 \
+  --ak reasoning_effort=high \
+  --jobs-dir eval/harbor/jobs \
+  --n-concurrent 2
+```
+
+Notes:
+- Effort uses the parent agent's kwarg name: `--ak reasoning_effort=`
+  (low|medium|high|xhigh|max).
+- Pin the CLI to a leaderboard row's version with `--ak version=2.1.205`
+  (default: latest).
+- `CLAUDE_FORCE_OAUTH` is set by the wrapper, so a host
+  `ANTHROPIC_API_KEY` can never silently take over and bill the API.
+- `--ak subprocess_env_scrub=true` enables the CLI's subprocess-env scrub
+  — only on images with bubblewrap (modern claude-code hard-fails
+  without `bwrap`; default off matches stock harbor/leaderboard runs).
+
 ## Compare against openclaude (the vendored TS Claude Code)
 
 `openclaude_agent.py` runs the old TypeScript implementation at
