@@ -33,8 +33,8 @@ Agent kwargs (``--ak key=value``):
 
 * ``max_turns`` — openclaude ``--max-turns`` (present but hidden from
   ``--help`` in this fork); default 300 mirrors the clawcodex adapter.
-* ``effort`` — openclaude ``--effort`` (low|medium|high|max; this snapshot
-  predates xhigh). The TS flag is session-wide, subagents included.
+* ``effort`` — openclaude ``--effort`` (low|medium|high|xhigh|max as of
+  0.24.0). The TS flag is session-wide, subagents included.
 * ``subscription`` — ``true`` to use the Claude Pro/Max subscription via
   the host's ``~/.clawcodex/anthropic-oauth.json`` (see clawcodex_agent).
 * ``dist`` — host path to ``cli.mjs`` (default:
@@ -43,9 +43,9 @@ Agent kwargs (``--ak key=value``):
   ``typescript/`` (gitignored) — run from the main checkout or point this
   at one.
 
-Caveat for scoring context: this snapshot's model metadata predates
-claude-opus-4-8, so openclaude assumes a conservative 128k context window
-(affects auto-compaction thresholds only; requests themselves are fine).
+Version note: at 0.13.0 the model metadata predated claude-opus-4-8
+(conservative 128k compaction assumption); 0.24.0 registers it properly
+(1M context / 128K output), so rebuilt bundles get correct compaction.
 """
 
 import json
@@ -71,18 +71,23 @@ _CONTAINER_NODE_DIR = "/installed-agent/node22"
 _NODE_VERSION = "22.20.0"
 
 # The CLI bundle keeps these packages external (typescript/scripts/
-# externals.js CLI_EXTERNALS) — native binaries and heavy SDKs resolved from
+# externals.ts CLI_EXTERNALS) — native binaries and heavy SDKs resolved from
 # node_modules at runtime, so each container npm-installs them next to
-# cli.mjs (platform-correct sharp/ripgrep binaries). Versions pinned to the
-# working host tree (typescript/node_modules, 2026-07-18). The externals
-# list also names @aws-sdk/client-bedrock, @aws-sdk/client-sts and
-# @azure/identity, but those are absent from the working host tree too —
-# they're lazily imported per-provider and never load on the Anthropic path.
+# cli.mjs (platform-correct sharp/ripgrep binaries). The full COMMON_EXTERNALS
+# set, pinned to the working host tree (typescript/node_modules @ openclaude
+# 0.24.0, 2026-07-19 — all present there, unlike the 0.13.0 tree where three
+# were absent lazy imports).
 _RUNTIME_EXTERNALS = (
     "sharp@0.34.5",
-    "@aws-sdk/client-bedrock-runtime@3.1045.0",
-    "@aws-sdk/credential-providers@3.1045.0",
-    "google-auth-library@9.15.1",
+    "@aws-sdk/client-bedrock@3.1047.0",
+    "@aws-sdk/client-bedrock-runtime@3.1047.0",
+    "@aws-sdk/client-sts@3.1047.0",
+    "@aws-sdk/credential-provider-node@3.972.41",
+    "@aws-sdk/credential-providers@3.1047.0",
+    "@smithy/core@3.24.3",
+    "@smithy/node-http-handler@4.7.3",
+    "@azure/identity@4.13.1",
+    "google-auth-library@10.6.2",
     "@vscode/ripgrep@1.18.0",
     "@orama/orama@3.1.18",
     "@orama/plugin-data-persistence@3.1.18",
@@ -124,7 +129,9 @@ class OpenClaude(BaseInstalledAgent):
             "effort",
             cli="--effort",
             type="enum",
-            choices=["low", "medium", "high", "max"],
+            # 0.24.0 ladder ("ultracode" — the workflow-orchestration mode —
+            # deliberately excluded for harness comparability).
+            choices=["low", "medium", "high", "xhigh", "max"],
             env_fallback="OPENCLAUDE_EFFORT",
         ),
     ]
