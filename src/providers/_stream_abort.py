@@ -47,29 +47,23 @@ __all__ = ["StreamAbortGuard"]
 
 
 def _close_response_safely(stream: Any) -> None:
-    """Best-effort close of ``stream.response`` — never raises.
+    """Best-effort force-close of ``stream.response`` — never raises.
 
     Both the Anthropic SDK (``client.messages.stream``'s
     ``MessageStream``) and the OpenAI SDK (``Stream`` from
     ``client.chat.completions.create(stream=True)``) expose the
-    underlying httpx ``Response`` as ``stream.response``. Close is
-    idempotent on httpx (``if not self.is_closed`` guard), so a
-    double-close (e.g., listener fires AND the post-loop path also
+    underlying httpx ``Response`` as ``stream.response``. Delegates to
+    :func:`src.utils.stream_watchdog.force_close_response`, which
+    shuts the underlying socket down BEFORE closing — a bare
+    ``response.close()`` from the abort thread does not wake a
+    consumer parked in ``ssl.read()``, so the interrupt would stop
+    the chunks yet leave the turn hung. Shutdown+close is idempotent,
+    so a double-close (listener fires AND the post-loop path also
     closes) is harmless.
-
-    Failures in the listener thread must not propagate — the close is
-    purely defensive; the next-chunk read will eventually fail by
-    other means (timeout, server-side disconnect) even if the close
-    is a no-op.
     """
-    try:
-        response = getattr(stream, "response", None)
-        if response is not None:
-            close = getattr(response, "close", None)
-            if callable(close):
-                close()
-    except Exception:
-        pass
+    from src.utils.stream_watchdog import force_close_response
+
+    force_close_response(stream)
 
 
 class StreamAbortGuard:

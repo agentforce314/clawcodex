@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket as _socket
 import threading
 from typing import Any, Callable
 
@@ -40,7 +41,56 @@ __all__ = [
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
     "StreamWatchdog",
+    "force_close_response",
 ]
+
+
+def force_close_response(stream: Any) -> None:
+    """Force a peer thread blocked on ``stream``'s next-chunk read to unwind.
+
+    ``response.close()`` alone is NOT enough: closing an httpx response
+    from another thread while the consumer is parked inside
+    ``ssl.read()``/``recv()`` does not wake the blocked syscall — the fd
+    stays referenced by the in-flight read, so the consumer hangs until
+    the server happens to drop the connection (observed live: an
+    agent-server ``interrupt`` during an Anthropic stream stopped the
+    deltas but the worker never raised, and even this watchdog's own
+    timeout close could not rescue it; faulthandler showed the consumer
+    in ``ssl.py:read`` minutes later). ``socket.shutdown(SHUT_RDWR)`` is
+    the documented cross-thread way to interrupt a blocked read: the
+    recv returns immediately and the SDK raises in the consumer thread.
+
+    The raw socket rides httpcore's response extensions
+    (``extensions["network_stream"].get_extra_info("socket")``) on both
+    the Anthropic and OpenAI SDK responses (httpx under both). Shutdown
+    first (wakes the reader), then ``close()`` (releases the
+    connection). Both steps are best-effort and idempotent; this helper
+    never raises — it runs on abort-listener and timer threads where an
+    exception would be lost anyway.
+    """
+    try:
+        response = getattr(stream, "response", None)
+        if response is None:
+            return
+        try:
+            extensions = getattr(response, "extensions", None) or {}
+            network_stream = extensions.get("network_stream")
+            sock = (
+                network_stream.get_extra_info("socket")
+                if network_stream is not None
+                else None
+            )
+            if sock is not None:
+                sock.shutdown(_socket.SHUT_RDWR)
+        except Exception:
+            # Already shut down / not a real socket / transport without
+            # the extension — fall through to the plain close.
+            pass
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
 
 
 DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
@@ -222,12 +272,7 @@ class StreamWatchdog:
             stream = self._stream
         # Close the response OUTSIDE the lock — close() may block on
         # network I/O and we shouldn't hold the lock during that.
-        try:
-            response = getattr(stream, "response", None)
-            if response is not None:
-                close = getattr(response, "close", None)
-                if callable(close):
-                    close()
-        except Exception:
-            # Best-effort: never let the close propagate out of the timer.
-            pass
+        # force_close_response shuts the socket down first so the
+        # consumer's blocked read actually returns (a bare close does
+        # not wake it — see the helper's docstring).
+        force_close_response(stream)
