@@ -361,7 +361,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
-  { desc: 'Edit Claude memory files', name: '/memory' },
+  {
+    desc: 'Edit memory files, or manage the bounded memory store',
+    hint: '[status|pending|approve <id|all>|reject <id|all>]',
+    name: '/memory'
+  },
   { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
   { desc: 'Enable plan mode or view the current session plan', hint: '[<description>]', name: '/plan' },
   {
@@ -1039,6 +1043,16 @@ export class GatewayClient extends EventEmitter {
 
         return out(String(r.text ?? r.error ?? 'advisor: no response'))
       }
+      case 'memory': {
+        // Arg-ful /memory (status | pending | approve | reject) — the
+        // bounded-store management surface. The no-arg picker never routes
+        // here (ops.ts opens the overlay directly).
+        const r = (await this.controlQuery('memory_manage', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('memory: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'memory: no response'))
+      }
 
       case 'clear': {
         const r = (await this.controlQuery('clear', {})) as any
@@ -1562,6 +1576,16 @@ export class GatewayClient extends EventEmitter {
           } else if (msg.goal_active === false) {
             this.publish({ payload: { goal: null }, type: 'goal.state' })
           }
+        } else if (msg.subtype === 'review_summary') {
+          // Self-improvement background review finished with committed
+          // writes: forward as the hermes-native review.summary event —
+          // createGatewayEventHandler renders it as a persistent
+          // "💾 Self-improvement review: …" transcript line.
+          this.publish({
+            payload: { text: String(msg.message ?? '') },
+            session_id: this.sessionId,
+            type: 'review.summary'
+          })
         } else if (msg.subtype === 'cron_status') {
           // Scheduled-task transitions (/loop wakeup fired, cron job fired,
           // Esc-cleared, restore): kind:'cron' renders the transcript line;

@@ -263,6 +263,25 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).resolves.toEqual({ output: 'deep-research  [running]  (run: wf_1)', type: 'exec' })
   })
 
+  it('forwards a review_summary system frame as a review.summary event', async () => {
+    proc.line(INIT)
+    await vi.waitFor(() => expect(last('gateway.ready')).toBeTruthy())
+    proc.line({
+      message: '💾 Self-improvement review: Memory updated',
+      session_id: 's1',
+      subtype: 'review_summary',
+      type: 'system'
+    })
+    await vi.waitFor(() => expect(last('review.summary')).toBeTruthy())
+    expect(last('review.summary').payload).toEqual({ text: '💾 Self-improvement review: Memory updated' })
+  })
+
+  it('maps arg-ful /memory to the memory_manage control and prints its text', async () => {
+    const p = gw.request('slash.exec', { command: 'memory status' })
+    await replyToControl('memory_manage', { ok: true, text: 'Memory (MEMORY.md): 2 entries' })
+    await expect(p).resolves.toEqual({ output: 'Memory (MEMORY.md): 2 entries', type: 'exec' })
+  })
+
   it('publishes a session.stats event from the session.clear reply rider', async () => {
     const p = gw.request('session.clear', {})
     await replyToControl('clear', { cost: { total_cost_usd: 0.5 }, count: 0, ok: true, session_turns: 0 })

@@ -165,8 +165,12 @@ NO_PERMISSION_TOOLS: frozenset[str] = frozenset({
     # Read-only / introspection
     "WebSearch", "ToolSearch", "LSP", "advisor", "Brief", "Status",
     "ClipboardRead",
-    # Bookkeeping / harness state (no external side effects)
-    "TodoWrite", "ClipboardWrite", "Sleep",
+    # Bookkeeping / harness state (no external side effects). Memory writes
+    # only the bounded §-stores under <config>/memories/ — same class as
+    # TodoWrite; its memory-specific controls are the strict-scope threat
+    # scan on every write and the optional memory_write_approval gate
+    # (src/memory/write_approval.py), not the generic permission prompt.
+    "TodoWrite", "ClipboardWrite", "Sleep", "Memory",
     "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop",
     # Orchestration / coordination — every sub-action they spawn is itself
     # permission-checked, so the spawn is not the gate.

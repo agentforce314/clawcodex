@@ -115,6 +115,33 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
     ]
     seen: set[str] = {os.path.realpath(user_path), os.path.realpath(project_path)}
 
+    # Bounded persistent-memory stores (hermes-agent port, src/memory):
+    # §-delimited MEMORY.md / USER.md the Memory tool curates. Editable
+    # here too — the store's drift guard protects tool rewrites against
+    # free-form external edits.
+    try:
+        from src.memory import get_memory_dir
+
+        bounded_dir = get_memory_dir()
+        for fname, label in (
+            ("MEMORY.md", "Agent memory (bounded)"),
+            ("USER.md", "User profile (bounded)"),
+        ):
+            bpath = str(bounded_dir / fname)
+            real = os.path.realpath(bpath)
+            if real in seen:
+                continue
+            seen.add(real)
+            options.append(
+                UIOption(
+                    value=bpath,
+                    label=label,
+                    description="§-delimited entries — curated by the Memory tool",
+                )
+            )
+    except Exception:
+        pass  # the bounded store is optional; the picker must still open
+
     # Remaining enumerated files (managed/user/project + rules), deduped by realpath
     # (stronger than TS's exact-path dedup — deliberate). Parented files were
     # @-imported (TS desc); others get no description.

@@ -21,6 +21,7 @@
     "Grep": {"is_read_only": true, "is_concurrency_safe": true},
     "LSP": {"is_read_only": true, "is_concurrency_safe": true},
     "ListMcpResourcesTool": {"is_read_only": true, "is_concurrency_safe": true},
+    "Memory": {"is_read_only": false, "is_concurrency_safe": true},
     "Read": {"is_read_only": true, "is_concurrency_safe": true},
     "ReadMcpResourceTool": {"is_read_only": true, "is_concurrency_safe": true},
     "ScheduleWakeup": {"is_read_only": true, "is_concurrency_safe": true},

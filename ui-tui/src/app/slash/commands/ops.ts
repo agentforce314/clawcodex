@@ -667,15 +667,33 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    // Port of openclaude's /memory (commands/memory/): picker-only — the TS
-    // command ignores arguments, so any arg just opens the same overlay. The
-    // selection flow (ensure-create + $EDITOR spawn) lives in onMemorySelect.
-    // Cancel closes silently like the sibling pickers — the TS "Cancelled
-    // memory editing" line existed only because local-jsx onDone must resolve.
-    help: 'edit memory files (CLAUDE.md) in your editor',
+    // Port of openclaude's /memory (commands/memory/): no-arg opens the file
+    // picker overlay (ensure-create + $EDITOR spawn lives in onMemorySelect;
+    // cancel closes silently like the sibling pickers). With arguments it is
+    // the bounded-store management surface (hermes-agent memory port):
+    // status | pending | approve <id|all> | reject <id|all>, routed to the
+    // backend memory_manage control via slash.exec.
+    argumentHint: '[status|pending|approve <id|all>|reject <id|all>]',
+    help: 'edit memory files, or manage the bounded memory store',
     name: 'memory',
-    run: () => {
-      patchOverlayState({ memoryPicker: true })
+    run: (arg, ctx, cmd) => {
+      if (!arg.trim()) {
+        return patchOverlayState({ memoryPicker: true })
+      }
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
+
+          const text = r?.output || '/memory: no output'
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? ctx.transcript.page(text, 'Memory') : ctx.transcript.sys(text)
+        })
+        .catch(ctx.guardedErr)
     }
   },
 

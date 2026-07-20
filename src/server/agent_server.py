@@ -184,6 +184,15 @@ class _AgentSession:
     # --worktree exit already serviced (keep or remove) — a second
     # worktree_exit is refused so the client can't double-remove.
     _worktree_done: bool = False
+    # Self-improvement background review (hermes-agent port, src/memory).
+    # The worker bumps the counter per completed real user turn and spawns
+    # a memory-review fork every ``memory_review_interval`` turns; a
+    # foreground Memory-tool call resets it (organic writes postpone the
+    # nudge). Hydrated lazily from the restored conversation on the first
+    # post-turn check (donor issue #22357).
+    _turns_since_memory: int = 0
+    _memory_counter_hydrated: bool = False
+    _memory_review_thread: threading.Thread | None = None
     # /loop + Cron* + ScheduleWakeup engine (docs/en/scheduled-tasks port).
     # The worker's idle branch pops due tasks and runs their prompts as
     # internal turns; _build_runtime hands this to tool_context so the
@@ -488,6 +497,20 @@ class _AgentSession:
         if subtype == "memory_targets":
             await self._do_memory_targets(request_id)
             return
+        if subtype == "memory_manage":
+            # /memory <args> — bounded-store status + pending-write review
+            # (src/memory/manage.py). Pure disk/settings reads + pending-file
+            # mutations; safe on the control loop.
+            try:
+                from src.memory.manage import handle_memory_manage
+
+                self._reply(request_id, {
+                    "ok": True,
+                    "text": handle_memory_manage(str(inner.get("arg") or "")),
+                })
+            except Exception as exc:  # noqa: BLE001 — must not kill the control channel
+                self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
         if subtype == "memory_edited":
             # /memory post-editor sync: the memory-file cache keys on cwd only
             # (no mtimes), so an external $EDITOR write stays invisible until a
@@ -777,6 +800,17 @@ class _AgentSession:
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
+                # Fresh conversation, fresh review cadence (the donor's
+                # counters are per-agent-lifetime; a gateway reset builds a
+                # new agent). Hydration stays done — the counter simply
+                # restarts at zero with the emptied history.
+                self._turns_since_memory = 0
+                # /clear is a cache-boundary event (the request prefix
+                # restarts with the emptied conversation) — rebuild the
+                # prompt so the bounded-memory snapshot refreshes and the
+                # fresh context starts with everything learned so far
+                # (design-critic M2).
+                self._rebuild_system_prompt()
                 # Indicator rider (critic R1): only a SUCCESSFUL clear may
                 # hide the client's goal indicator — a rejected /clear
                 # (active turn) reply carries no `goal` field and the
@@ -1654,6 +1688,41 @@ class _AgentSession:
             return
         self._reply(request_id, {"ok": True, "logo_color": name})
 
+    def _rebuild_system_prompt(self) -> bool:
+        """Rebuild the cached system prompt from the live tool context.
+
+        The single idiom for every mid-session cache-boundary event
+        (output-style switch, coordinator-mode flip on resume, /clear,
+        /resume): resolve the active style, run
+        ``build_effective_system_prompt`` (whose memory_store section
+        reloads the bounded-memory snapshot from disk inline — the
+        donor's ``invalidate_system_prompt → load_from_disk`` coupling),
+        and re-compose the /plan section. Returns False when the rebuild
+        wasn't possible (no tool context / build failure); the previous
+        prompt stays in place.
+        """
+        tc = self.tool_context
+        if tc is None:
+            return False
+        try:
+            from src.outputStyles import resolve_output_style
+            from src.query.agent_loop_compat import build_effective_system_prompt
+
+            style_prompt = resolve_output_style(
+                getattr(tc, "output_style_name", None),
+                getattr(tc, "output_style_dir", None),
+            ).prompt
+            self._base_system_prompt = build_effective_system_prompt(
+                style_prompt, tc, provider=self.provider,
+                mcp_servers=self._mcp_server_infos(),
+            )
+            self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+            return True
+        except Exception:  # noqa: BLE001 — keep the old prompt on failure
+            logger.debug("[agent-server] system prompt rebuild failed",
+                         exc_info=True)
+            return False
+
     def _do_set_output_style(self, request_id: object, style: object) -> None:
         """Switch the output style mid-session (the original's /output-style).
         Sets tool_context.output_style_name + rebuilds the system prompt so the
@@ -1685,19 +1754,9 @@ class _AgentSession:
                 self._reply(request_id, {"ok": False, "error": "session not ready"})
                 return
             tc.output_style_name = style
-            # Rebuild the system prompt so the style section takes effect next turn.
-            try:
-                from src.outputStyles import resolve_output_style
-                from src.query.agent_loop_compat import build_effective_system_prompt
-
-                style_prompt = resolve_output_style(style, getattr(tc, "output_style_dir", None)).prompt
-                self._base_system_prompt = build_effective_system_prompt(
-                    style_prompt, tc, provider=self.provider,
-                    mcp_servers=self._mcp_server_infos(),
-                )
-                self.system_prompt = self._compose_with_plan(self._base_system_prompt)
-            except Exception:  # noqa: BLE001 - keep the style set even if rebuild is unavailable
-                logger.debug("[agent-server] system prompt rebuild after set_output_style failed", exc_info=True)
+            # Rebuild the system prompt so the style section takes effect next
+            # turn (keeps the style set even if the rebuild is unavailable).
+            self._rebuild_system_prompt()
             # OS-1 G3 — persist the choice (localSettings analog,
             # Settings/Config.tsx:1600). Best-effort: the in-memory switch
             # above already applies.
@@ -1845,33 +1904,24 @@ class _AgentSession:
                     )
                 except Exception:  # noqa: BLE001 — mode sync must not break resume
                     logger.debug("[agent-server] session-mode sync failed", exc_info=True)
+            # /resume is a cache-boundary event regardless of a mode flip: a
+            # different conversation is loaded (the request prefix restarts),
+            # and the rebuilt prompt recaptures the bounded-memory snapshot —
+            # memory written since this prompt was last built (e.g. by a
+            # background review in the previous conversation) becomes visible
+            # (design-critic M2: "future sessions start corrected" must hold
+            # for in-process session switches, not just new processes).
+            self._rebuild_system_prompt()
+            # Re-hydrate the review cadence from the RESUMED session's
+            # odometer on its next completed turn (donor issue #22357) —
+            # the previous conversation's counter is meaningless here.
+            self._turns_since_memory = 0
+            self._memory_counter_hydrated = False
             if mode_banner:
-                # The flip changes the system prompt and the advertised tool
-                # set. The prompt is CACHED (_base_system_prompt, built at
-                # startup and by set_output_style) — rebuild it with the same
-                # idiom; the tool list was sent once in system/init — re-emit
-                # so the client's cached list tracks the mode (the client's
-                # init handler re-sets session info idempotently).
-                try:
-                    from src.outputStyles import resolve_output_style
-                    from src.query.agent_loop_compat import build_effective_system_prompt
-
-                    tc = self.tool_context
-                    if tc is not None:
-                        style_prompt = resolve_output_style(
-                            getattr(tc, "output_style_name", None),
-                            getattr(tc, "output_style_dir", None),
-                        ).prompt
-                        self._base_system_prompt = build_effective_system_prompt(
-                            style_prompt, tc, provider=self.provider,
-                            mcp_servers=self._mcp_server_infos(),
-                        )
-                        self.system_prompt = self._compose_with_plan(self._base_system_prompt)
-                except Exception:  # noqa: BLE001 - keep the resume even if rebuild fails
-                    logger.debug(
-                        "[agent-server] system prompt rebuild after mode flip failed",
-                        exc_info=True,
-                    )
+                # A mode flip also changes the advertised tool set. The tool
+                # list was sent once in system/init — re-emit so the client's
+                # cached list tracks the mode (the client's init handler
+                # re-sets session info idempotently).
                 try:
                     self.emit_init()
                 except Exception:  # noqa: BLE001
@@ -2706,6 +2756,156 @@ class _AgentSession:
             logger.debug("[agent-server] goal continuation hook failed",
                          exc_info=True)
 
+    def _maybe_spawn_memory_review(
+        self, outcome: dict | None, pre_turn_len: int
+    ) -> None:
+        """Post-turn self-improvement hook (worker thread) — the port of
+        hermes' nudge-counter + background-review spawn
+        (``turn_context.py:289-297`` + ``turn_finalizer.py:444-454``,
+        via ``src/memory``).
+
+        Counts completed REAL user turns only (never btw/internal/goal
+        continuations — matching the donor's per-user-turn cadence).
+        Every ``memory_review_interval``-th turn spawns a daemon-thread
+        fork that replays the conversation snapshot with the parent's
+        pinned system prompt + registry (warm prefix cache) and may save
+        durable facts via the Memory tool; the fork's summary is emitted
+        as ONE ``review_summary`` frame. A foreground Memory call resets
+        the counter (organic writes postpone the nudge); at most one
+        fork runs at a time. Never raises; learning must never compete
+        with the user's task.
+        """
+        try:
+            if not outcome or outcome.get("subtype") != "success":
+                return
+            if not str(outcome.get("response_text") or "").strip():
+                return
+
+            from src.memory.review import (
+                REVIEW_TOOL_NAME,
+                hydrate_turns_since_memory,
+                turn_used_memory_tool,
+            )
+            from src.settings.settings import get_settings
+
+            settings = get_settings()
+            if not bool(getattr(settings, "memory_store_enabled", True)):
+                return
+            interval = int(getattr(settings, "memory_review_interval", 10) or 0)
+            if interval <= 0:
+                return
+            # Coordinator mode narrows the main loop's tool surface and
+            # excludes Memory — the filtered view is what the parent's
+            # requests advertise, so it is also what the fork must use
+            # (tools[] byte-parity, design-critic M4). With Memory absent
+            # the guard below skips the review entirely.
+            from src.coordinator.mode import coordinator_main_loop_registry
+
+            registry = (
+                coordinator_main_loop_registry(self.tool_registry)
+                if self.tool_registry is not None else None
+            )
+            if registry is None or registry.get(REVIEW_TOOL_NAME) is None:
+                return
+
+            messages = list(self.session.conversation.messages)
+
+            # Lazy resume hydration: continue the cadence from the restored
+            # history instead of restarting at zero (donor issue #22357).
+            # ``_stats_turns`` is the session's canonical completed-turn
+            # odometer (resume-seeded, /clear-zeroed, /rewind-recomputed) and
+            # at this point already includes THIS turn — the increment below
+            # counts it, so hydrate from the prior turns only.
+            if not self._memory_counter_hydrated:
+                self._turns_since_memory = hydrate_turns_since_memory(
+                    max(0, self._stats_turns - 1), interval
+                )
+                self._memory_counter_hydrated = True
+
+            # An organic foreground Memory call this turn postpones the
+            # nudge (donor tool_executor.py:318-322).
+            if turn_used_memory_tool(messages[pre_turn_len:]):
+                self._turns_since_memory = 0
+                return
+
+            self._turns_since_memory += 1
+            if self._turns_since_memory < interval:
+                return
+            self._turns_since_memory = 0
+
+            prev = self._memory_review_thread
+            if prev is not None and prev.is_alive():
+                return  # one fork at a time — never stack reviews
+            # (No manual clear needed: a finished/crashed thread reports
+            # is_alive() False, so the guard self-heals.)
+
+            tool_context = self.tool_context
+            system_prompt = self.system_prompt
+            if self.provider is None or tool_context is None:
+                return
+            provider_name = self.provider_name
+            model = getattr(self.provider, "model", None) or self.config.model
+            mode_raw = str(
+                getattr(settings, "memory_notifications", "on") or "on"
+            ).lower()
+            notification_mode = (
+                mode_raw if mode_raw in {"off", "on", "verbose"} else "on"
+            )
+
+            def _review_target() -> None:
+                # The fork constructs its OWN provider instance (same
+                # provider/model/credentials as the session) instead of
+                # sharing ``self.provider`` — the next foreground turn runs
+                # concurrently with this thread, and provider objects carry
+                # per-request mutable state (lazy client, client kwargs,
+                # subscription token). Mirrors the donor's fork, which
+                # re-resolves its runtime rather than sharing the parent's
+                # client (background_review.py:608-655; design-critic B1).
+                # Resolution failure skips the review — never share.
+                from src.memory.review_fork import run_memory_review
+
+                try:
+                    from src.config import get_provider_config
+                    from src.providers import get_provider_class, resolve_api_key
+
+                    provider_cfg = get_provider_config(provider_name)
+                    fork_provider = get_provider_class(provider_name)(
+                        api_key=resolve_api_key(provider_name, provider_cfg),
+                        base_url=provider_cfg.get("base_url"),
+                        model=model or provider_cfg.get("default_model"),
+                    )
+                except Exception:  # noqa: BLE001 — no fork without its own client
+                    logger.debug(
+                        "[agent-server] review provider resolution failed",
+                        exc_info=True,
+                    )
+                    return
+
+                summary = run_memory_review(
+                    provider=fork_provider,
+                    tool_registry=registry,
+                    parent_tool_context=tool_context,
+                    system_prompt=system_prompt,
+                    conversation_snapshot=messages,
+                    notification_mode=notification_mode,
+                )
+                if summary:
+                    self._emit({
+                        "type": "system",
+                        "subtype": "review_summary",
+                        "session_id": self.session_id,
+                        "message": summary,
+                    })
+
+            thread = threading.Thread(
+                target=_review_target, name="bg-review", daemon=True
+            )
+            self._memory_review_thread = thread
+            thread.start()
+        except Exception:  # noqa: BLE001 — the review must never kill the worker
+            logger.debug("[agent-server] memory review hook failed",
+                         exc_info=True)
+
     # ─── worker thread (runs query() turns) ────────────────────────────────
 
     def start(self) -> None:
@@ -2759,8 +2959,12 @@ class _AgentSession:
                 continue
             if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
                 continue
+            pre_turn_len = len(self.session.conversation.messages) if self.session else 0
             outcome = self._run_turn(item)
             self._maybe_continue_goal(outcome)
+            # Self-improvement review — runs AFTER the response is delivered
+            # so it never competes with the user's task for model attention.
+            self._maybe_spawn_memory_review(outcome, pre_turn_len)
             # A task that finished while the turn ran is delivered right after.
             self._deliver_task_notifications()
             # Reflect any Cron*/ScheduleWakeup change the turn made (deduped
