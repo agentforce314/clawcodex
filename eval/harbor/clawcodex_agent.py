@@ -533,10 +533,14 @@ class Clawcodex(BaseInstalledAgent):
                 context.n_output_tokens = usage.get("output_tokens") or 0
 
         try:
-            trajectory = self._build_trajectory(events, result_event)
+            trajectory, cost_usd = self._build_trajectory(events, result_event)
         except Exception as exc:  # noqa: BLE001 — never fail a trial over this
             self.logger.debug(f"clawcodex trajectory build failed: {exc}")
             return
+        # Leaderboard cost column (matches the claude-code agent, which sets
+        # context.cost_usd from its final metrics).
+        if cost_usd is not None:
+            context.cost_usd = cost_usd
         if trajectory is None:
             return
 
@@ -575,28 +579,37 @@ class Clawcodex(BaseInstalledAgent):
         return None
 
     def _final_metrics(
-        self, result_event: dict[str, Any] | None, total_steps: int
+        self,
+        result_event: dict[str, Any] | None,
+        total_steps: int,
+        cost_usd: float | None,
     ) -> FinalMetrics | None:
-        if not result_event:
+        if not result_event and cost_usd is None:
             return None
-        usage = result_event.get("usage")
+        usage = (result_event or {}).get("usage")
         if not isinstance(usage, dict):
             usage = {}
         input_tokens = usage.get("input_tokens") or 0
         cache_read = usage.get("cache_read_input_tokens") or 0
         cache_creation = usage.get("cache_creation_input_tokens") or 0
         extra: dict[str, Any] = {}
-        num_turns = result_event.get("num_turns")
+        num_turns = (result_event or {}).get("num_turns")
         if isinstance(num_turns, int):
             extra["num_turns"] = num_turns
-        duration_ms = result_event.get("duration_ms")
+        duration_ms = (result_event or {}).get("duration_ms")
         if isinstance(duration_ms, (int, float)):
             extra["duration_ms"] = duration_ms
+        # Cost: the --print result event carries no cost field, but the
+        # persisted session's cost block does (Session.save()). Prefer that.
         return FinalMetrics(
             total_prompt_tokens=input_tokens + cache_read + cache_creation,
             total_completion_tokens=usage.get("output_tokens") or 0,
             total_cached_tokens=cache_read,
-            total_cost_usd=result_event.get("total_cost_usd"),
+            total_cost_usd=(
+                cost_usd
+                if cost_usd is not None
+                else (result_event or {}).get("total_cost_usd")
+            ),
             total_steps=total_steps,
             extra=extra or None,
         )
@@ -625,16 +638,17 @@ class Clawcodex(BaseInstalledAgent):
         )
         return agent, session_id
 
-    def _load_session_messages(self) -> list[dict[str, Any]] | None:
-        """The rich persisted conversation (Anthropic-shape messages), if the
-        CLI saved a session under the synced config dir. Returns the newest
-        session's ``conversation.messages`` or ``None``."""
-        roots = [self.logs_dir / "sessions", self.logs_dir]
-        candidates: list[Path] = []
-        for root in roots:
-            if root.is_dir():
-                candidates.extend(root.rglob("*.json"))
-        best: list[dict[str, Any]] | None = None
+    def _load_session_data(self) -> tuple[list[dict[str, Any]] | None, float | None]:
+        """The richest persisted session synced under the logs dir, as
+        ``(conversation.messages, total_cost_usd)``. Picks the session with
+        the most messages; either element may be ``None`` when absent."""
+        # ``self.logs_dir`` is the parent of ``sessions/`` — one root covers
+        # the subtree; a second nested root would just re-parse each file.
+        candidates = (
+            sorted(self.logs_dir.rglob("*.json")) if self.logs_dir.is_dir() else []
+        )
+        best_msgs: list[dict[str, Any]] | None = None
+        best_cost: float | None = None
         best_len = 0
         for path in candidates:
             if path.name == "trajectory.json":
@@ -643,30 +657,48 @@ class Clawcodex(BaseInstalledAgent):
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            conv = data.get("conversation") if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                continue
+            conv = data.get("conversation")
             msgs = conv.get("messages") if isinstance(conv, dict) else None
             if isinstance(msgs, list) and len(msgs) > best_len:
-                best, best_len = msgs, len(msgs)
-        return best
+                best_len = len(msgs)
+                best_msgs = msgs
+                cost = (data.get("cost") or {}).get("total_cost_usd")
+                best_cost = float(cost) if isinstance(cost, (int, float)) else None
+        return best_msgs, best_cost
 
     def _build_trajectory(
-        self, events: list[dict[str, Any]], result_event: dict[str, Any] | None
-    ) -> Trajectory | None:
+        self,
+        events: list[dict[str, Any]],
+        result_event: dict[str, Any] | None,
+    ) -> tuple[Trajectory | None, float | None]:
+        """Returns ``(trajectory, cost_usd)`` — cost is surfaced so the
+        caller can also set it on the AgentContext."""
         agent, session_id = self._agent_meta(events)
-        messages = self._load_session_messages()
+        messages, cost_usd = self._load_session_data()
+        notes = None
         if messages:
             steps = self._steps_from_conversation(messages, agent.model_name)
         else:
             steps = self._steps_from_stream(events, agent.model_name)
+            # No persisted conversation → the stream-json has no per-turn
+            # narration, so agent steps carry only their tool calls.
+            notes = (
+                "Reconstructed from the stream-json log; per-step assistant "
+                "narration is unavailable (no persisted session conversation)."
+            )
         if not steps:
-            return None
-        return Trajectory(
+            return None, cost_usd
+        trajectory = Trajectory(
             schema_version="ATIF-v1.7",
             session_id=session_id or "unknown",
             agent=agent,
             steps=steps,
-            final_metrics=self._final_metrics(result_event, len(steps)),
+            notes=notes,
+            final_metrics=self._final_metrics(result_event, len(steps), cost_usd),
         )
+        return trajectory, cost_usd
 
     @staticmethod
     def _split_content(content: Any) -> tuple[str, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
