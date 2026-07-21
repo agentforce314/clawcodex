@@ -220,6 +220,52 @@ class TestTwoPhaseWatchdog(unittest.TestCase):
         watchdog.disarm()
 
 
+class TestPingAwareLiveness(unittest.TestCase):
+    """Byte progress on the HTTP response keeps the watchdog from killing a
+    healthy-but-slow stream — the pings the SDK drops from the typed stream
+    are still bytes httpx counts. This is the primary terminal-bench fix."""
+
+    def test_byte_progress_prevents_fire(self):
+        from src.utils.stream_watchdog import StreamWatchdog
+
+        response = MagicMock()
+        response.num_bytes_downloaded = 0
+        stream = MagicMock()
+        stream.response = response
+        watchdog = StreamWatchdog(
+            stream, timeout_s=0.08, first_event_timeout_s=0.08
+        )
+        watchdog.arm()
+        # Simulate keepalive pings arriving as bytes across ~5 deadlines,
+        # WITHOUT any typed event (no reset() call).
+        for _ in range(6):
+            time.sleep(0.05)
+            response.num_bytes_downloaded += 128
+        self.assertFalse(watchdog.fired, "byte progress must re-arm, not fire")
+        response.close.assert_not_called()
+        # Once bytes stop, the next deadline fires.
+        time.sleep(0.2)
+        self.assertTrue(watchdog.fired)
+        response.close.assert_called()
+        watchdog.disarm()
+
+    def test_no_byte_progress_still_fires(self):
+        from src.utils.stream_watchdog import StreamWatchdog
+
+        response = MagicMock()
+        response.num_bytes_downloaded = 500  # constant → no progress
+        stream = MagicMock()
+        stream.response = response
+        watchdog = StreamWatchdog(
+            stream, timeout_s=0.08, first_event_timeout_s=0.08
+        )
+        watchdog.arm()
+        time.sleep(0.25)
+        self.assertTrue(watchdog.fired)
+        response.close.assert_called()
+        watchdog.disarm()
+
+
 class TestWatchdogIntegrationWithProvider(unittest.TestCase):
     """End-to-end checks of the watchdog RECOVERY path.
 

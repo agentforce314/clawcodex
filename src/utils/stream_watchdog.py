@@ -3,17 +3,25 @@
 Mirrors TS ``services/api/claude.ts`` (``getStreamIdleTimeoutMs`` /
 ``abortTimedOutStream``; default 90 s via ``openaiShim.ts:140``).
 
-**Two-phase deadline.** The FIRST event gets a longer grace
-(:func:`stream_first_event_timeout_seconds`, default 300 s) because it only
-arrives after the API finishes PROMPT PROCESSING, which scales toward
-minutes as the agentic conversation grows toward the model's 1M window —
-and the Anthropic Python SDK drops the ``ping`` keepalives the API sends
-during that window (``_streaming.py``: ``if sse.event == "ping":
-continue``), so a flat idle timeout on the TYPED event stream can't tell a
-processing request from a hung one. Once events start flowing the deadline
-tightens to the inter-event ``timeout_s`` (90 s). This is the root cause of
-18/89 terminal-bench crashes (2026-07-19): a flat 90 s timeout fired during
-legitimate first-event waits.
+**Ping-aware liveness (primary).** The Anthropic Python SDK drops the
+``ping`` keepalive EVENTS the API sends during long internal work
+(``_streaming.py``: ``if sse.event == "ping": continue``), so ``reset()``
+— driven by the TYPED event stream — goes silent whenever the model spends
+>90 s between typed events: prompt processing on a large context, or a gap
+before/between content blocks under heavy extended thinking. That is the
+root cause of 18/89 terminal-bench crashes (2026-07-19); a flat 90 s idle
+timeout killed healthy-but-slow streams. But the pings are still BYTES on
+the wire that ``httpx.Response.num_bytes_downloaded`` counts, so on each
+deadline the watchdog checks byte progress and RE-ARMS instead of firing
+when bytes advanced — it fires only after a true dead-air window (no bytes
+at all), matching the ping-aware TS watchdog.
+
+**Two-phase deadline (fallback).** When the byte counter is unavailable
+(mocked/non-httpx transport) the watchdog is purely time-based; there the
+FIRST event still gets a longer grace
+(:func:`stream_first_event_timeout_seconds`, default 300 s, for prompt
+processing) before the deadline tightens to the inter-event ``timeout_s``
+(90 s).
 
 When a deadline lapses the watchdog closes the underlying HTTP response,
 interrupting the sync iterator; the provider RETRIES THE STREAM (bounded by
@@ -256,6 +264,12 @@ class StreamWatchdog:
         )
         self._seen_event = False
         self._request_id = request_id
+        # Ping-aware liveness: raw bytes read off the HTTP response at the
+        # moment the current deadline was set. The typed event stream drops
+        # ``ping`` keepalives, but they are still bytes httpx counts, so byte
+        # progress proves the stream is alive even when no typed event has
+        # been yielded (the actual terminal-bench failure mode).
+        self._last_bytes: int | None = None
         self._timer: threading.Timer | None = None
         # ch04 round-4 GAP D — half-time warning timer (TS claude.ts:1898,
         # :1919-1929 warns at timeout/2). Log-only; same reset/cancel
@@ -272,15 +286,30 @@ class StreamWatchdog:
         """True if the timeout fired (i.e., we triggered the stream close)."""
         return self._fired.is_set()
 
+    def _read_bytes_downloaded(self) -> int | None:
+        """Raw bytes read off the streaming HTTP response so far, or ``None``
+        when the transport doesn't expose the counter (a mocked stream, a
+        non-httpx transport). ``httpx.Response.num_bytes_downloaded``
+        advances on every chunk the SDK reads — including the ``ping``
+        keepalive lines it then drops — so this is the liveness signal the
+        typed event stream can't provide."""
+        response = getattr(self._stream, "response", None)
+        n = getattr(response, "num_bytes_downloaded", None)
+        return n if isinstance(n, int) else None
+
+    def _arm_locked(self) -> None:
+        self._cancel_locked()
+        self._last_bytes = self._read_bytes_downloaded()
+        self._timer = self._make_timer_locked()
+        self._timer.start()
+        self._warn_timer = self._make_warn_timer_locked()
+        if self._warn_timer is not None:
+            self._warn_timer.start()
+
     def arm(self) -> None:
         """Start the deadline. Idempotent: re-arming cancels the prior timer."""
         with self._lock:
-            self._cancel_locked()
-            self._timer = self._make_timer_locked()
-            self._timer.start()
-            self._warn_timer = self._make_warn_timer_locked()
-            if self._warn_timer is not None:
-                self._warn_timer.start()
+            self._arm_locked()
 
     def reset(self) -> None:
         """Push the deadline forward — called on every stream event.
@@ -292,12 +321,7 @@ class StreamWatchdog:
             return  # already timed out; reset is a no-op
         with self._lock:
             self._seen_event = True
-            self._cancel_locked()
-            self._timer = self._make_timer_locked()
-            self._timer.start()
-            self._warn_timer = self._make_warn_timer_locked()
-            if self._warn_timer is not None:
-                self._warn_timer.start()
+            self._arm_locked()
 
     def disarm(self) -> None:
         """Cancel the timer (call after the stream completes normally)."""
@@ -382,6 +406,20 @@ class StreamWatchdog:
             if self._timer is not expected_timer:
                 return
             if self._fired.is_set():
+                return
+            # Ping-aware: if raw bytes advanced since this deadline was set,
+            # the stream is alive — keepalive pings (or data the typed
+            # iterator hasn't surfaced) are flowing. Re-arm instead of
+            # killing a healthy-but-slow stream. This is the fix for the
+            # 90s-idle false positives on large-context agentic requests
+            # where the SDK hides the pings.
+            current = self._read_bytes_downloaded()
+            if (
+                current is not None
+                and self._last_bytes is not None
+                and current > self._last_bytes
+            ):
+                self._arm_locked()
                 return
             self._fired.set()
             self._timer = None
