@@ -55,7 +55,7 @@ class TestMemoryTargetsControl(unittest.TestCase):
             cwd.mkdir()
             with (
                 patch("pathlib.Path.home", classmethod(lambda cls: home)),
-                patch("src.context_system.claude_md.get_memory_files", _no_files),
+                patch("src.context_system.clawcodex_md.get_memory_files", _no_files),
                 patch("src.utils.git.get_repo_root", lambda *a, **k: None),
             ):
                 sess, emitted = _make_session(str(cwd))
@@ -64,11 +64,11 @@ class TestMemoryTargetsControl(unittest.TestCase):
             self.assertTrue(reply["ok"])
             targets = reply["targets"]
             self.assertEqual(targets[0]["label"], "User memory")
-            self.assertEqual(targets[0]["path"], str(home / ".clawcodex" / "CLAUDE.md"))
-            self.assertEqual(targets[0]["description"], "Saved in ~/.clawcodex/CLAUDE.md")
+            self.assertEqual(targets[0]["path"], str(home / ".clawcodex" / "CLAWCODEX.md"))
+            self.assertEqual(targets[0]["description"], "Saved in ~/.clawcodex/CLAWCODEX.md")
             self.assertEqual(targets[1]["label"], "Project memory")
-            self.assertEqual(targets[1]["path"], str(cwd / "CLAUDE.md"))
-            self.assertEqual(targets[1]["description"], "Saved in ./CLAUDE.md")
+            self.assertEqual(targets[1]["path"], str(cwd / "CLAWCODEX.md"))
+            self.assertEqual(targets[1]["description"], "Saved in ./CLAWCODEX.md")
 
     def test_targets_error_guard_replies_clean_failure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mem_ctl_") as tmp:
@@ -84,18 +84,18 @@ class TestMemoryTargetsControl(unittest.TestCase):
             self.assertEqual(reply["targets"], [])
 
     def test_memory_edited_busts_memory_file_cache(self) -> None:
-        import src.context_system.claude_md as claude_md
+        import src.context_system.clawcodex_md as clawcodex_md
 
         with tempfile.TemporaryDirectory(prefix="mem_ctl_") as tmp:
-            saved = claude_md._memory_files_cache
+            saved = clawcodex_md._memory_files_cache
             try:
-                claude_md._memory_files_cache = ("stale-key", [])
+                clawcodex_md._memory_files_cache = ("stale-key", [])
                 sess, emitted = _make_session(tmp)
                 _control(sess, "memory_edited")
                 self.assertTrue(_last_reply(emitted)["ok"])
-                self.assertIsNone(claude_md._memory_files_cache)
+                self.assertIsNone(clawcodex_md._memory_files_cache)
             finally:
-                claude_md._memory_files_cache = saved
+                clawcodex_md._memory_files_cache = saved
 
 
 if __name__ == "__main__":

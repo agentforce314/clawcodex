@@ -41,7 +41,7 @@
 | Session message management | ✅ | Supports session history maintenance and serialization |
 | Error recovery / re-login | 🟡 | Basic auth error handling and reconfiguration flow exists |
 | Token / Cost tracking | 🚫 | Chat CLI does not yet have a complete statistics view |
-| Context building | 🟡 | Basic `context_system` supports workspace / git / `CLAUDE.md` injection; still missing README summary, memory, compact |
+| Context building | 🟡 | Basic `context_system` supports workspace / git / `CLAWCODEX.md` injection; still missing README summary, memory, compact |
 | Claude Code Agent Loop | ✅ | Implemented in agent_loop.py, supports tool call loops |
 | `/resume` session recovery | 🚫 | No standalone recovery flow or UI yet |
 | `/compact` conversation compaction | 🚫 | No automatic/manual compaction capability yet |
@@ -114,7 +114,7 @@
 | Tool Execution Engine | ✅ | Tool loading, execution, and result feedback loop implemented |
 | Output Styles | ✅ | Output style loading system implemented |
 | Session Persistence | ✅ | Session save/load capability exists |
-| Context Engine | 🟡 | Basic context building pipeline connected, supports workspace, git, `CLAUDE.md` prompt injection |
+| Context Engine | 🟡 | Basic context building pipeline connected, supports workspace, git, `CLAWCODEX.md` prompt injection |
 | Permission Engine | 🟡 | Framework exists, not fully integrated into tool execution flow |
 | Compaction Engine | 🚫 | No conversation compaction or token management capability |
 | Hook Runtime | 🚫 | No settings-driven hook execution mechanism |
@@ -201,7 +201,7 @@ Goal: Move from "mirrored tool catalog" to "genuinely executable Python Agent".
 Goal: Complete Claude Code's engineering capabilities.
 
 - [ ] Workspace context building improvements
-- [x] git status / file tree / `CLAUDE.md` injection (basic version)
+- [x] git status / file tree / `CLAWCODEX.md` injection (basic version)
 - [ ] README / entry file summary injection
 - [ ] Memory and historical context management
 - [ ] Full permission system integration
@@ -351,7 +351,7 @@ You can introduce the project like this:
 | 会话消息管理 | ✅ | 支持会话历史维护与序列化 |
 | 错误恢复 / 重新登录 | 🟡 | 已有基础认证错误处理与重新配置流程 |
 | Token / Cost 跟踪 | 🚫 | 当前聊天 CLI 尚未形成完整统计视图 |
-| 上下文构建 | 🟡 | 已有 `context_system` 基础版，支持 workspace / git / `CLAUDE.md` 注入，仍缺 README 摘要、memory、compact |
+| 上下文构建 | 🟡 | 已有 `context_system` 基础版，支持 workspace / git / `CLAWCODEX.md` 注入，仍缺 README 摘要、memory、compact |
 | Claude Code Agent Loop | ✅ | 已实现 agent_loop.py，支持工具调用循环 |
 | `/resume` 会话恢复体验 | 🚫 | 暂无独立恢复流程与 UI |
 | `/compact` 对话压缩 | 🚫 | 暂无自动/手动压缩能力 |
@@ -424,7 +424,7 @@ You can introduce the project like this:
 | Tool Execution Engine | ✅ | 已实现工具加载、执行、结果回填闭环 |
 | Output Styles | ✅ | 已实现输出样式加载系统 |
 | Session Persistence | ✅ | 已有会话保存/加载能力 |
-| Context Engine | 🟡 | 已接入基础上下文构建链路，支持 workspace、git、`CLAUDE.md` prompt 注入 |
+| Context Engine | 🟡 | 已接入基础上下文构建链路，支持 workspace、git、`CLAWCODEX.md` prompt 注入 |
 | Permission Engine | 🟡 | 已有框架，未完全集成到工具执行流程 |
 | Compaction Engine | 🚫 | 未形成对话压缩与 token 管理能力 |
 | Hook Runtime | 🚫 | 未接入设置驱动的 hook 执行机制 |
@@ -511,7 +511,7 @@ You can introduce the project like this:
 目标：补齐 Claude Code 的工程化能力。
 
 - [ ] 工作区上下文构建完善
-- [x] git status / 文件树 / `CLAUDE.md` 注入基础版
+- [x] git status / 文件树 / `CLAWCODEX.md` 注入基础版
 - [ ] README / 入口文件摘要注入
 - [ ] memory 与历史上下文管理
 - [ ] 权限系统完全集成

@@ -26,7 +26,7 @@ MemoryType = Literal["Managed", "User", "Project", "Local"]
 
 @dataclass
 class MemoryFileInfo:
-    """A loaded memory/instruction file (CLAUDE.md, rules, etc.)."""
+    """A loaded memory/instruction file (CLAWCODEX.md, rules, etc.)."""
 
     path: str
     type: MemoryType
@@ -47,7 +47,7 @@ class SystemPromptParts:
     """Assembled pieces for the API cache-key prefix."""
 
     default_system_prompt: list[str]
-    user_context: dict[str, str]     # e.g. {"claudeMd": "...", "currentDate": "..."}
+    user_context: dict[str, str]     # e.g. {"clawcodexMd": "...", "currentDate": "..."}
     system_context: dict[str, str]   # e.g. {"gitStatus": "..."}
 
 

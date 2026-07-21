@@ -63,7 +63,7 @@ async def compact_conversation(
             re-inject recently accessed files after compaction.
         plan_file_path: Path to the plan file to restore (and exclude from
             file restoration).
-        memory_paths: Set of memory/CLAUDE.md paths to exclude from file
+        memory_paths: Set of memory/CLAWCODEX.md paths to exclude from file
             restoration (they're loaded separately).
 
     Returns:

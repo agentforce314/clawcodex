@@ -396,7 +396,7 @@ def test_effective_prompt_tags_context_block_request_scope(tmp_path):
 
 
 def test_deepseek_relocates_git_context_out_of_prefix(tmp_path):
-    """The volatile workspace snapshot rides the tail; CLAUDE.md is preserved
+    """The volatile workspace snapshot rides the tail; CLAWCODEX.md is preserved
     there (not dropped) and is NOT left in the prefix."""
     blocks = _effective_blocks(_CTX_GIT_T1, tmp_path)
     system, tail = _split_system_prompt_blocks(blocks, relocate_request_scope=True)
@@ -432,7 +432,7 @@ def test_non_deepseek_keeps_context_block_in_system(tmp_path):
 def test_deepseek_end_to_end_relocates_context_after_history(tmp_path):
     """End-to-end through the exact new-TUI adapter the agent-server uses:
     build_effective_system_prompt -> run_query_as_agent_loop -> _call_model_sync
-    (DeepSeek). Pins the full wire composition: the live workspace/git/CLAUDE.md
+    (DeepSeek). Pins the full wire composition: the live workspace/git/CLAWCODEX.md
     context must be ABSENT from the system message and instead ride a trailing
     user <system-reminder> that lands AFTER the conversation history."""
     import asyncio
@@ -480,7 +480,7 @@ def test_deepseek_end_to_end_relocates_context_after_history(tmp_path):
 
     assert captured, "the DeepSeek provider was never called"
     wire = captured[0]
-    # System message (index 0) is free of the volatile snapshot + CLAUDE.md.
+    # System message (index 0) is free of the volatile snapshot + CLAWCODEX.md.
     assert wire[0]["role"] == "system"
     assert "## Git Context" not in wire[0]["content"]
     assert "CLAUDE_MD_SENTINEL" not in wire[0]["content"]

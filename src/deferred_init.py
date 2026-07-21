@@ -3,7 +3,7 @@ prefetches" (ch02 round-3 GAP B).
 
 Mirrors the minimal core of TS ``startDeferredPrefetches``
 (main.tsx:392-439) and the non-interactive early kicks
-(main.tsx:1973-1990): warm the memoized user context (CLAUDE.md walk)
+(main.tsx:1973-1990): warm the memoized user context (CLAWCODEX.md walk)
 and — when the session is trusted — the system context (git status
 probes) so the first turn's ``fetch_system_prompt_parts`` hits warm
 caches instead of paying the cold filesystem/subprocess cost inside the

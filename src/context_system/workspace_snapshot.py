@@ -15,7 +15,7 @@ _IGNORED_NAMES = {
 }
 _KEY_FILE_CANDIDATES = (
     "README.md",
-    "CLAUDE.md",
+    "CLAWCODEX.md",
     "pyproject.toml",
     "requirements.txt",
     "uv.lock",

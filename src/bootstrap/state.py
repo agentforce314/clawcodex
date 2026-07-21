@@ -203,10 +203,10 @@ class _BootstrapState:
     invoked_skills: dict[str, InvokedSkillInfo] = field(default_factory=dict)
 
     # --- Cache optimization (TS: lines 122-123, 202-205, 207, 256) ---------
-    cached_claude_md_content: str | None = None
+    cached_clawcodex_md_content: str | None = None
     system_prompt_section_cache: dict[str, str | None] = field(default_factory=dict)
     pending_post_compaction: bool = False
-    additional_directories_for_claude_md: list[str] = field(default_factory=list)
+    additional_directories_for_clawcodex_md: list[str] = field(default_factory=list)
 
     # --- Model (TS: lines 68-70) -------------------------------------------
     main_loop_model_override: str | None = None
@@ -772,12 +772,12 @@ def set_cost_state_for_restore(
 # ===========================================================================
 
 
-def get_cached_claude_md_content() -> str | None:
-    return _STATE.cached_claude_md_content
+def get_cached_clawcodex_md_content() -> str | None:
+    return _STATE.cached_clawcodex_md_content
 
 
-def set_cached_claude_md_content(content: str | None) -> None:
-    _STATE.cached_claude_md_content = content
+def set_cached_clawcodex_md_content(content: str | None) -> None:
+    _STATE.cached_clawcodex_md_content = content
 
 
 def get_system_prompt_section_cache() -> dict[str, str | None]:
@@ -806,12 +806,12 @@ def consume_post_compaction() -> bool:
     return was
 
 
-def get_additional_directories_for_claude_md() -> list[str]:
-    return _STATE.additional_directories_for_claude_md
+def get_additional_directories_for_clawcodex_md() -> list[str]:
+    return _STATE.additional_directories_for_clawcodex_md
 
 
-def set_additional_directories_for_claude_md(directories: list[str]) -> None:
-    _STATE.additional_directories_for_claude_md = list(directories)
+def set_additional_directories_for_clawcodex_md(directories: list[str]) -> None:
+    _STATE.additional_directories_for_clawcodex_md = list(directories)
 
 
 # ===========================================================================
@@ -1266,15 +1266,15 @@ __all__ = [
     "is_repl_bridge_active",
     "get_repl_bridge_handle",
     # Cache optimization
-    "get_cached_claude_md_content",
-    "set_cached_claude_md_content",
+    "get_cached_clawcodex_md_content",
+    "set_cached_clawcodex_md_content",
     "get_system_prompt_section_cache",
     "set_system_prompt_section_cache_entry",
     "clear_system_prompt_section_state",
     "mark_post_compaction",
     "consume_post_compaction",
-    "get_additional_directories_for_claude_md",
-    "set_additional_directories_for_claude_md",
+    "get_additional_directories_for_clawcodex_md",
+    "set_additional_directories_for_clawcodex_md",
     # Model
     "get_main_loop_model_override",
     "set_main_loop_model_override",

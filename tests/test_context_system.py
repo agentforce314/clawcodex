@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from src.agent.conversation import Conversation
 from src.context_system import build_context_prompt
-from src.context_system.claude_md import clear_memory_file_caches
+from src.context_system.clawcodex_md import clear_memory_file_caches
 from src.context_system.git_context import clear_git_caches, collect_git_context
 from src.providers.base import ChatResponse
 from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
@@ -30,10 +30,10 @@ class TestContextSystem(unittest.TestCase):
         clear_memory_file_caches()
         clear_git_caches()
 
-    def test_build_context_prompt_includes_workspace_and_claude_md(self) -> None:
+    def test_build_context_prompt_includes_workspace_and_clawcodex_md(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "CLAUDE.md").write_text("Project rule: always add tests.", encoding="utf-8")
+            (root / "CLAWCODEX.md").write_text("Project rule: always add tests.", encoding="utf-8")
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
             (root / "src").mkdir()
@@ -59,7 +59,7 @@ class TestContextSystem(unittest.TestCase):
         registry = build_default_registry(include_user_tools=False)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "CLAUDE.md").write_text("Follow the CLAUDE instructions.", encoding="utf-8")
+            (root / "CLAWCODEX.md").write_text("Follow the CLAUDE instructions.", encoding="utf-8")
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
 
             ctx = ToolContext(workspace_root=root)
@@ -71,7 +71,7 @@ class TestContextSystem(unittest.TestCase):
             # Model a real *generic* (non-DeepSeek) provider: is_deepseek is a
             # real False, not a truthy auto-MagicMock. Otherwise the query layer
             # treats this mock as DeepSeek and relocates the REQUEST-scope
-            # workspace/git/CLAUDE.md context out of the system message into the
+            # workspace/git/CLAWCODEX.md context out of the system message into the
             # trailing prefix-cache tail — which is exactly what this test is
             # asserting does NOT happen for a non-DeepSeek provider.
             provider.is_deepseek = False

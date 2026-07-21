@@ -14,7 +14,7 @@ snapshot. This module supplies that glue with a documented discipline:
   a file that doesn't end in ``\\n`` first);
 * write the note as a ``- `` bullet line unless the user already
   supplied list/heading punctuation — matching the bulleted style the
-  product writes to CLAUDE.md memory files.
+  product writes to CLAWCODEX.md memory files.
 """
 
 from __future__ import annotations

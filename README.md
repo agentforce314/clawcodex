@@ -457,7 +457,7 @@ Use `clawcodex config` to check connection status and
 | Skill System | ✅ | SKILL.md-based slash-command skills with args + tool limits |
 | Cancellation / Abort | ✅ | ESC closes in-flight Bash, Grep/Glob, and streaming HTTP within ~50ms across every provider; subagents get isolated `AbortController`s; `Bash` `tool_result` distinguishes timeout from ESC-abort |
 | Image Handling | ✅ | TS-parity Read pipeline (magic-byte sniff, resize/compress to API limits); `@image.png` @-mentions inline as `ImageBlock`; pre-API base64 size validation in `BaseProvider._prepare_messages`; binary @-mentions (PDF/zip/docx/...) routed to a Read-tool hint instead of mojibake |
-| Context Building | 🟡 | Workspace / git / `CLAUDE.md` injection; richer summaries and memory still evolving |
+| Context Building | 🟡 | Workspace / git / `CLAWCODEX.md` injection; richer summaries and memory still evolving |
 | Permission System | 🟡 | Framework and checks; full integration still in progress |
 | MCP | 🟡 | MCP-oriented tools and wiring; full protocol/runtime polish ongoing |
 
@@ -782,7 +782,7 @@ clawcodex/
 │   ├── tool_system/        # Agent loop, tools, schemas
 │   ├── skills/             # SKILL.md loading and skill tool
 │   ├── services/           # MCP, compact, IDE bridge, tool execution, …
-│   ├── context_system/     # Workspace / git / CLAUDE.md context
+│   ├── context_system/     # Workspace / git / CLAWCODEX.md context
 │   ├── permissions/        # Permission modes and bash parsing
 │   ├── hooks/              # Hook types and execution helpers
 │   └── command_system/     # Slash commands and substitution

@@ -20,7 +20,7 @@ Event-loop ownership patterns the callers use:
     ``@work(thread=False)`` — that would put the loop on Textual's
     main event loop and block UI rendering during model streams.
 
-Also exports ``build_effective_system_prompt`` (CLAUDE.md + style +
+Also exports ``build_effective_system_prompt`` (CLAWCODEX.md + style +
 git status assembly) so the cutover code can pre-build the system
 prompt before calling the adapter — ``query()`` expects it pre-built.
 """
@@ -110,7 +110,7 @@ def run_query_as_agent_loop_sync(
     + on_message persistence boilerplate at every call site. The
     semantics match legacy ``run_agent_loop``:
 
-    * Pre-built effective system prompt (CLAUDE.md + style + git status).
+    * Pre-built effective system prompt (CLAWCODEX.md + style + git status).
     * In-place conversation mutation (legacy contract — multi-prompt
       sessions need this so subsequent turns see prior history).
     * Returns a legacy ``AgentLoopResult`` shape.
@@ -188,7 +188,7 @@ def build_effective_system_prompt(
     (``build_full_system_prompt_blocks`` — intro / # Doing tasks / # Executing
     actions / # Using your tools / # Tone / output-efficiency / env / memory /
     skills / …) with the resolved output-style prompt **appended**, then the
-    existing workspace + git + CLAUDE.md context preserved as a trailing
+    existing workspace + git + CLAWCODEX.md context preserved as a trailing
     (uncached) block.
 
     Why this exists: the TUI (``tui/agent_bridge.py``) and headless
@@ -201,12 +201,12 @@ def build_effective_system_prompt(
     them, mirroring the engine's ``build_full_system_prompt_blocks`` +
     ``append_system_prompt`` shape.
 
-    CLAUDE.md note: ``build_full_system_prompt_blocks``' memory section is
-    *auto-memory* (``MEMORY.md`` via ``load_memory_prompt``), **not** CLAUDE.md.
-    On the engine path CLAUDE.md is injected into the *messages* via
+    CLAWCODEX.md note: ``build_full_system_prompt_blocks``' memory section is
+    *auto-memory* (``MEMORY.md`` via ``load_memory_prompt``), **not** CLAWCODEX.md.
+    On the engine path CLAWCODEX.md is injected into the *messages* via
     ``prepend_user_context``; the cutover does not do that, so we keep
     ``build_context_prompt`` (which emits ``## Project Instructions``) to
-    preserve CLAUDE.md — option (b) in
+    preserve CLAWCODEX.md — option (b) in
     ``my-docs/get-parity-by-folder/live-base-system-prompt-gap-analysis.md``.
     This overlaps the base ``# Environment`` section on CWD/date (a benign,
     documented duplication).
@@ -246,7 +246,7 @@ def build_effective_system_prompt(
         # ``utils/systemPrompt.ts:63-75``, where the coordinator prompt swaps
         # in for defaultSystemPrompt while appendSystemPrompt is preserved).
         # ``style_prompt`` is this builder's append-channel, so it survives;
-        # the trailing workspace/git/CLAUDE.md context block below is also
+        # the trailing workspace/git/CLAWCODEX.md context block below is also
         # kept — TS coordinator sessions keep userContext/systemContext
         # (``QueryEngine.ts:300-306`` replaces only the default prompt).
         from ..coordinator import get_coordinator_system_prompt
@@ -288,8 +288,8 @@ def build_effective_system_prompt(
             skills=skills,
         )
 
-    # Preserve the existing workspace + git + CLAUDE.md context verbatim as a
-    # trailing uncached block (CLAUDE.md is NOT in the base blocks above).
+    # Preserve the existing workspace + git + CLAWCODEX.md context verbatim as a
+    # trailing uncached block (CLAWCODEX.md is NOT in the base blocks above).
     #
     # Tag it REQUEST-scope. This block is a *live workspace snapshot*: it embeds
     # ``git status`` (and file counts / top-level entries) that mutate the moment
@@ -313,7 +313,7 @@ def build_effective_system_prompt(
     if coordinator:
         # workerToolsContext — TS merges this into the per-session userContext
         # (``QueryEngine.ts:300-306``); this port's userContext channel on the
-        # live path is the trailing context block (same route CLAUDE.md / git
+        # live path is the trailing context block (same route CLAWCODEX.md / git
         # status already take), rendered with the ``# {key}\n{value}`` entry
         # idiom of prepend_user_context (prompt_assembly.py:255-256). MCP
         # server names come from the ToolContext's connected-client catalog

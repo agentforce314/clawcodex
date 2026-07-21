@@ -413,7 +413,7 @@ class TestInitCommand(unittest.TestCase):
         """Test that /init has the correct description."""
         init_cmd = self._get_init_command()
         self.assertIsNotNone(init_cmd)
-        self.assertIn("CLAUDE.md", init_cmd.description)
+        self.assertIn("CLAWCODEX.md", init_cmd.description)
         self.assertIn("skills", init_cmd.description)
         self.assertIn("hooks", init_cmd.description)
 
@@ -438,13 +438,13 @@ class TestInitCommand(unittest.TestCase):
         self.assertIn("Step 6", content)
         self.assertIn("Step 7", content)
 
-    def test_init_command_includes_claude_md_instructions(self):
-        """Test that /init prompt includes CLAUDE.md creation instructions."""
+    def test_init_command_includes_clawcodex_md_instructions(self):
+        """Test that /init prompt includes CLAWCODEX.md creation instructions."""
         init_cmd = self._get_init_command()
         self.assertIsNotNone(init_cmd)
         content = init_cmd.markdown_content
-        # Verify it includes key CLAUDE.md content requirements
-        self.assertIn("CLAUDE.md", content)
+        # Verify it includes key CLAWCODEX.md content requirements
+        self.assertIn("CLAWCODEX.md", content)
         self.assertIn("build/test/lint", content.lower())
         self.assertIn("code style", content.lower())
 

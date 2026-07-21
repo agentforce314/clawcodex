@@ -36,12 +36,12 @@ class TestShouldExcludeFromPostCompactRestore(unittest.TestCase):
             )
         )
 
-    def test_claude_md_excluded(self):
+    def test_clawcodex_md_excluded(self):
         self.assertTrue(
-            _should_exclude_from_post_compact_restore("CLAUDE.md")
+            _should_exclude_from_post_compact_restore("CLAWCODEX.md")
         )
         self.assertTrue(
-            _should_exclude_from_post_compact_restore(".claude.md")
+            _should_exclude_from_post_compact_restore(".clawcodex.md")
         )
 
     def test_memory_path_excluded(self):

@@ -77,6 +77,11 @@ _MAX_SKILL_DIR_BYTES = 50 * 1024 * 1024
 _USER_LEVEL_DIRS = ("agents", "workflows", "outputStyles", "plugins", "rules")
 _USER_LEVEL_FILES = ("CLAUDE.md",)
 
+#: Migration renames: the legacy harness's context file lands under the
+#: app's canonical name (clawcodex reads CLAWCODEX.md first; the legacy
+#: name only survives as a read fallback for pre-rename installs).
+_MIGRATE_RENAMES = {"CLAUDE.md": "CLAWCODEX.md"}
+
 #: Project-level items for the explicit ``clawcodex migrate`` command.
 _PROJECT_LEVEL_DIRS = ("skills", "agents", "workflows", "rules")
 _PROJECT_LEVEL_FILES = ("CLAUDE.md", "config.json", "config.local.json", "loop.md")
@@ -281,7 +286,8 @@ def migrate_user_dir_once(*, force: bool = False) -> MigrationReport | None:
     for name in _USER_LEVEL_DIRS:
         _copy_item(src_home / name, dst_home / name, name, report)
     for name in _USER_LEVEL_FILES:
-        _copy_item(src_home / name, dst_home / name, name, report)
+        dst_name = _MIGRATE_RENAMES.get(name, name)
+        _copy_item(src_home / name, dst_home / dst_name, dst_name, report)
     _migrate_project_memories(src_home, dst_home, report)
 
     _write_marker(marker, report)
@@ -314,7 +320,8 @@ def migrate_project_dir(cwd: str | os.PathLike[str]) -> MigrationReport:
     for name in _PROJECT_LEVEL_DIRS:
         _copy_item(src_dir / name, dst_dir / name, name, report)
     for name in _PROJECT_LEVEL_FILES:
-        _copy_item(src_dir / name, dst_dir / name, name, report)
+        dst_name = _MIGRATE_RENAMES.get(name, name)
+        _copy_item(src_dir / name, dst_dir / dst_name, dst_name, report)
     for name in _PROJECT_SKIPPED_SETTINGS:
         if (src_dir / name).exists():
             report.skipped.append(

@@ -1,11 +1,11 @@
 """memory — ``/memory`` memory-file picker (port of TS local-jsx).
 
 Port of ``typescript/src/commands/memory/`` + the core of ``MemoryFileSelector``.
-Presents the CLAUDE.md memory hierarchy — the synthetic **User memory**
-(``~/.clawcodex/CLAUDE.md``) and **Project memory** (nearest loaded ancestor
-``CLAUDE.md``, falling back to ``{cwd}/CLAUDE.md``) candidates, differentiated via
+Presents the CLAWCODEX.md memory hierarchy — the synthetic **User memory**
+(``~/.clawcodex/CLAWCODEX.md``) and **Project memory** (nearest loaded ancestor
+``CLAWCODEX.md``, falling back to ``{cwd}/CLAWCODEX.md``) candidates, differentiated via
 option *descriptions* (the TS selector's real channel), plus the existing files
-enumerated by the ``claude_md`` port — ensure-creates the selected file
+enumerated by the ``clawcodex_md`` port — ensure-creates the selected file
 (exclusive-create; existing content preserved), and reports its path with an editor
 hint.
 
@@ -59,24 +59,26 @@ def _display_path(path: str, cwd: str) -> str:
 
 def _resolve_project_memory_path(files: list, cwd: str) -> str:
     """TS ``getProjectMemoryPathForSelector``: prefer the **nearest** already-loaded
-    root-level Project CLAUDE.md (TS walks cwd upward; ``get_memory_files`` enumerates
-    root→cwd, so iterate reversed — last match = nearest); fall back to
-    ``{cwd}/CLAUDE.md`` only when none exists — so a repo subdirectory still points at
-    the real project memory."""
+    root-level Project CLAWCODEX.md (TS walks cwd upward; ``get_memory_files``
+    enumerates root→cwd, so iterate reversed — last match = nearest); fall back to
+    ``{cwd}/CLAWCODEX.md`` only when none exists — so a repo subdirectory still
+    points at the real project memory."""
+    from src.context_system.clawcodex_md import CONTEXT_MD
+
     for info in reversed(files):
         if (
             getattr(info, "parent", None) is None
             and getattr(info, "type", None) == "Project"
-            and os.path.basename(info.path) == "CLAUDE.md"
+            and os.path.basename(info.path) == CONTEXT_MD
         ):
             return info.path
-    return str(Path(cwd) / "CLAUDE.md")
+    return str(Path(cwd) / CONTEXT_MD)
 
 
 async def build_memory_options(cwd: str) -> list[UIOption]:
     """Public: the memory-target hierarchy, shared by ``/memory`` and
     the C9 ``#`` shortcut so the two pickers can never drift."""
-    from src.context_system.claude_md import (
+    from src.context_system.clawcodex_md import (
         clear_memory_file_caches,
         get_memory_files,
     )
@@ -88,7 +90,7 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
         files = []
 
     home = Path.home()
-    user_path = str(home / ".clawcodex" / "CLAUDE.md")
+    user_path = str(home / ".clawcodex" / "CLAWCODEX.md")
     project_path = _resolve_project_memory_path(files, cwd)
 
     # Git-aware project description (TS: `${isGit ? 'Checked in at' : 'Saved in'} ./…`).
@@ -109,7 +111,7 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
         UIOption(
             value=user_path,
             label="User memory",
-            description="Saved in ~/.clawcodex/CLAUDE.md",  # hardcoded tilde (TS shape)
+            description="Saved in ~/.clawcodex/CLAWCODEX.md",  # hardcoded tilde (TS shape)
         ),
         UIOption(value=project_path, label="Project memory", description=project_desc),
     ]

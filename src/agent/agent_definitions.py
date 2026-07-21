@@ -30,7 +30,7 @@ class AgentDefinition:
     background: bool = False
     color: str | None = None
     memory: str | None = None
-    omit_claude_md: bool = False
+    omit_clawcodex_md: bool = False
     disallowed_tools: list[str] | None = None
     hooks: dict[str, Any] | None = None
     skills: list[str] | None = None
@@ -157,7 +157,7 @@ EXPLORE_AGENT = AgentDefinition(
     disallowed_tools=["Agent", "ExitPlanMode", "Edit", "Write", "NotebookEdit"],
     source="built-in",
     base_dir="built-in",
-    omit_claude_md=True,
+    omit_clawcodex_md=True,
     # ch08 round-4 (critic M1) — Explore is the fast/cheap read-only agent;
     # TS exploreAgent.ts:77 runs it on Haiku. get_agent_model resolves this
     # against the session provider and inherits on providers that don't
@@ -228,7 +228,7 @@ PLAN_AGENT = AgentDefinition(
     source="built-in",
     base_dir="built-in",
     model="inherit",
-    omit_claude_md=True,
+    omit_clawcodex_md=True,
     get_system_prompt=_plan_system_prompt,
 )
 

@@ -68,9 +68,9 @@ def _should_exclude_from_post_compact_restore(
             return True
 
     basename = os.path.basename(filename).lower()
-    if basename in ("claude.md", ".claude.md", "claude_md"):
+    if basename in ("clawcodex.md", ".clawcodex.md"):
         return True
-    if basename.endswith(".claude.md") or basename.endswith("claude.md"):
+    if basename.endswith((".clawcodex.md", "clawcodex.md")):
         return True
 
     return False
@@ -184,7 +184,7 @@ def create_post_compact_file_attachments(
         max_files: Maximum number of files to restore.
         preserved_messages: Messages kept post-compact; Read results here are skipped.
         plan_file_path: Path to the plan file (excluded from restore).
-        memory_paths: Paths to memory/claude.md files (excluded from restore).
+        memory_paths: Paths to memory/context-md files (excluded from restore).
 
     Returns:
         List of UserMessage attachments with file content.

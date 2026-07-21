@@ -35,7 +35,7 @@ def test_parses_all_frontmatter_fields_to_agent_definition():
         background: true
         color: blue
         memory: project
-        omit-claude-md: true
+        omit-clawcodex-md: true
         skills:
           - my-skill
         isolation: worktree
@@ -60,7 +60,7 @@ def test_parses_all_frontmatter_fields_to_agent_definition():
     assert agent.background is True
     assert agent.color == "blue"
     assert agent.memory == "project"
-    assert agent.omit_claude_md is True
+    assert agent.omit_clawcodex_md is True
     assert agent.skills == ["my-skill"]
     assert agent.isolation == "worktree"
     assert agent.required_mcp_servers == ["slack"]
