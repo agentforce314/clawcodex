@@ -853,12 +853,25 @@ def _auto_deny_permission_handler(stderr: IO[str]):
     return handler
 
 
+_NON_INTERACTIVE_ANSWER = (
+    "No interactive user is available (running headless/non-interactive). "
+    "Proceed autonomously with your best judgment and reasonable default "
+    "assumptions; do not ask again."
+)
+
+
 def _noop_ask_user(questions):  # type: ignore[override]
-    # In non-interactive mode, collapse every question to an empty answer.
+    # Non-interactive mode: there is no user to answer. Returning bare
+    # empty strings left the model with no signal about WHY the answer was
+    # empty — observed live (terminal-bench raman-fitting) to make it flail,
+    # re-asking / retrying instead of committing to an approach. Return an
+    # explicit "proceed autonomously" answer so the model moves on
+    # decisively. (The interactive TUI still shows the real dialog; only the
+    # headless surface — which cannot collect input — substitutes this.)
     answers: dict = {}
     for q in questions or []:
         if isinstance(q, dict) and isinstance(q.get("question"), str):
-            answers[q["question"]] = ""
+            answers[q["question"]] = _NON_INTERACTIVE_ANSWER
     return answers
 
 
