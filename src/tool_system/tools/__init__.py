@@ -14,6 +14,7 @@ from .glob import GlobTool
 from .grep import GrepTool
 from .lsp import LSPTool
 from .mcp import MCPTool
+from .memory import MemoryTool
 from .notebook_edit import NotebookEditTool
 from .mcp_resources import ListMcpResourcesTool, ReadMcpResourceTool
 from .misc import ClipboardReadTool, ClipboardWriteTool, StatusTool
@@ -64,6 +65,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
     LSPTool,
     ListMcpResourcesTool,
     MCPTool,
+    MemoryTool,
     NotebookEditTool,
     ReadMcpResourceTool,
     ReadTool,
@@ -116,6 +118,7 @@ __all__ = [
     "LSPTool",
     "ListMcpResourcesTool",
     "MCPTool",
+    "MemoryTool",
     "NotebookEditTool",
     "ReadMcpResourceTool",
     "ReadTool",

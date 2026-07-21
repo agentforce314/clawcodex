@@ -188,6 +188,27 @@ class SettingsSchema:
     # <system-reminder>; the static MEMORY.md index injection is unaffected.
     memory_relevance_prefetch_enabled: bool = False
 
+    # Bounded persistent memory + self-improvement review (hermes-agent
+    # port, src/memory/). Defaults are donor-faithful (hermes ships the
+    # store AND the post-turn review on by default; the review's request is
+    # engineered to hit the parent's warm prompt-cache prefix, every write
+    # is surfaced via a notification line, and the store is a bounded
+    # ≤2,200-char file — visible, reversible, cheap).
+    memory_store_enabled: bool = True       # MEMORY.md snapshot block + Memory tool
+    user_profile_enabled: bool = True       # USER.md snapshot block
+    memory_char_limit: int = 2200           # MEMORY.md budget (chars, not tokens)
+    user_char_limit: int = 1375             # USER.md budget
+    # Fire a background self-improvement review every N real user turns
+    # (0 disables). Donor: memory.nudge_interval, default 10.
+    memory_review_interval: int = 10
+    # Review notification verbosity: off | on | verbose (donor:
+    # display.memory_notifications). "off" suppresses the transcript line
+    # while the review still runs and writes.
+    memory_notifications: str = "on"
+    # Stage memory writes for user approval instead of committing
+    # (src/memory/write_approval.py). Donor default: off.
+    memory_write_approval: bool = False
+
     # Provider
     provider: str = "anthropic"
 

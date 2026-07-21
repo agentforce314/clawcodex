@@ -525,6 +525,11 @@ def build_full_system_prompt(
     if memory_section:
         sections.append(memory_section)
 
+    # 26. Bounded persistent-memory snapshot (hermes-agent port)
+    memory_store_section = _build_memory_store_section()
+    if memory_store_section:
+        sections.append(memory_store_section)
+
     # 30. MCP servers (session-cached name list)
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
     if mcp_section:
@@ -692,6 +697,9 @@ def build_full_system_prompt_blocks(
     memory_section = _build_memory_section()
     if memory_section:
         sections.append(memory_section)
+    memory_store_section = _build_memory_store_section()
+    if memory_store_section:
+        sections.append(memory_store_section)
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
     if mcp_section:
         sections.append(mcp_section)
@@ -1162,6 +1170,77 @@ def _build_memory_section() -> SystemPromptSection | None:
         content=content,
         cache_scope=CacheScope.REQUEST,
         order=25,
+    )
+
+
+#: Behavioral guidance injected alongside the bounded-memory snapshot
+#: (donor: hermes prompt_builder.MEMORY_GUIDANCE, adapted — clawcodex has
+#: no session_search/skill_manage tools yet, so those routes are phrased
+#: as plain "don't save it here" rules).
+_MEMORY_STORE_GUIDANCE = (
+    "You have persistent bounded memory across sessions (distinct from the "
+    "auto-memory directory). Save durable facts using the Memory tool: user "
+    "preferences, environment details, tool quirks, and stable conventions. "
+    "This memory is injected into every session, so keep it compact and "
+    "focused on facts that will still matter later.\n"
+    "Prioritize what reduces future user steering — the most valuable memory "
+    "is one that prevents the user from having to correct or remind you "
+    "again. User preferences and recurring corrections matter more than "
+    "procedural task details.\n"
+    "Do NOT save task progress, session outcomes, completed-work logs, or "
+    "temporary TODO state. Specifically: do not record PR numbers, issue "
+    "numbers, commit SHAs, 'fixed bug X', 'submitted PR Y', 'Phase N done', "
+    "file counts, or any artifact that will be stale in 7 days. If a fact "
+    "will be stale in a week, it does not belong in this memory.\n"
+    "Write memories as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and "
+    "can cause repeated work or override the user's current request."
+)
+
+
+def _build_memory_store_section() -> SystemPromptSection | None:
+    """The bounded persistent-memory snapshot (hermes-agent port).
+
+    Renders the guidance plus the frozen MEMORY.md / USER.md snapshot from
+    ``src.memory`` — reloaded from disk at every *build* so each prompt
+    rebuild (session start, model switch, /clear) captures fresh state,
+    then byte-stable until the next rebuild. SESSION scope keeps it inside
+    the cached prefix: mid-session Memory-tool writes are durable on disk
+    but invisible until the next cache-boundary event — the donor's
+    frozen-snapshot semantics (memory refreshes only where the prefix
+    cache already restarts; ``01-memory-architecture.md``).
+    """
+    try:
+        from src.memory import get_memory_store
+        from src.settings.settings import get_settings
+    except Exception:
+        return None
+    try:
+        settings = get_settings()
+        if not bool(getattr(settings, "memory_store_enabled", True)):
+            return None
+        user_profile_enabled = bool(getattr(settings, "user_profile_enabled", True))
+        store = get_memory_store()
+        store.load_from_disk()
+    except Exception:  # noqa: BLE001 — memory is optional; never break the prompt
+        return None
+
+    parts: list[str] = ["# Persistent Memory\n", _MEMORY_STORE_GUIDANCE]
+    mem_block = store.format_for_system_prompt("memory")
+    if mem_block:
+        parts.append(mem_block)
+    if user_profile_enabled:
+        user_block = store.format_for_system_prompt("user")
+        if user_block:
+            parts.append(user_block)
+
+    return SystemPromptSection(
+        id="memory_store",
+        content="\n\n".join(parts),
+        cache_scope=CacheScope.SESSION,
+        order=26,
     )
 
 
