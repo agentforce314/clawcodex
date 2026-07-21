@@ -144,6 +144,22 @@ _LARGE_MAX_TOKENS_MODEL_PATTERN = re.compile(
 DEFAULT_MAX_OUTPUT_TOKENS_4X = 32000
 DEFAULT_MAX_OUTPUT_TOKENS_LEGACY = 4096
 
+DEFAULT_API_TIMEOUT_S = 600.0
+
+
+def _api_timeout_seconds() -> float:
+    """Per-request API timeout for non-streaming calls.
+
+    Mirrors TS ``getApiTimeoutMs`` (openaiShim.ts:241-248): the
+    ``API_TIMEOUT_MS`` env var (milliseconds, like the TS variable),
+    default 600s (openaiShim.ts:139). Malformed/non-positive values fall
+    back to the default.
+    """
+    raw = os.environ.get("API_TIMEOUT_MS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) / 1000.0
+    return DEFAULT_API_TIMEOUT_S
+
 
 def _default_max_tokens(model: str | None) -> int:
     """Pick a sensible ``max_tokens`` ceiling for the given model.
@@ -491,6 +507,16 @@ class AnthropicProvider(BaseProvider):
             extra_kwargs["tools"] = tools
         self._merge_request_id(kwargs)
 
+        # Explicit per-request timeout (TS API_TIMEOUT_MS, openaiShim.ts:
+        # 241-248; default 600_000 ms). Load-bearing beyond hygiene: the
+        # Anthropic Python SDK REFUSES a non-streaming ``create`` whose
+        # ``max_tokens`` implies >10 minutes of generation UNLESS a timeout
+        # is explicitly set ("Streaming is required for operations that may
+        # take longer than 10 minutes"), so with opus-class 32K defaults
+        # every non-streaming caller (compaction summarize, session title,
+        # judges) was one large request away from a hard ValueError.
+        kwargs.setdefault("timeout", _api_timeout_seconds())
+
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -559,8 +585,14 @@ class AnthropicProvider(BaseProvider):
         WI-5.2: wraps the stream with a ``StreamWatchdog`` that closes the
         underlying HTTP response if no chunks arrive within
         ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` (default 90 s). On timeout the
-        iterator raises; we catch it and fall back to the non-streaming
-        ``chat()`` path so the user gets an answer rather than a hung session.
+        iterator raises; we RETRY THE STREAM (``stream_idle_max_attempts``,
+        default 3 total attempts) and raise ``StreamIdleTimeout`` on
+        exhaustion — TS parity (claude.ts ``abortTimedOutStream`` + retry
+        re-issue). Never recovered via non-streaming ``chat()``: the SDK
+        refuses non-streaming requests at opus-class ``max_tokens``
+        ("Streaming is required for operations that may take longer than
+        10 minutes"), which made the old fallback fatal exactly when it
+        was needed.
 
         ESC-cancellation: when ``abort_signal`` is provided, a listener is
         registered that calls ``stream.response.close()`` when the signal
@@ -613,30 +645,89 @@ class AnthropicProvider(BaseProvider):
             extra_kwargs["tools"] = tools
         request_id = self._merge_request_id(kwargs)
 
-        def _fallback_to_chat() -> ChatResponse:
-            """Re-issue the request without streaming (WI-5.2 recovery path).
+        from src.utils.stream_watchdog import (
+            StreamIdleTimeout,
+            stream_idle_max_attempts,
+            stream_idle_timeout_seconds,
+        )
 
-            Mirrors TS ``streamLatencyWatchdog.ts:resumeViaChatCompletion``.
-            Strips kwargs that ``chat`` already accepts as named args so we
-            don't double-pass them.
-            """
-            forwarded = {
-                k: v
-                for k, v in kwargs.items()
-                if k not in ["model", "max_tokens", "tools"]
-            }
-            # NB ``forwarded`` retains extra_headers with the STREAM's
-            # x-client-request-id; chat()'s setdefault keeps it, so the
-            # hung stream and its recovery request correlate under ONE id
-            # (deliberate; TS supports caller-pre-set ids the same way).
-            return self.chat(
-                messages,
-                tools=tools,
-                **({"system": system} if system else {}),
-                **forwarded,
+        # Watchdog recovery = RETRY THE STREAM (TS parity: claude.ts
+        # ``abortTimedOutStream`` raises and the retry layer re-issues the
+        # STREAMING request). The previous recovery re-issued the request
+        # NON-streaming via chat(), which the Anthropic SDK refuses outright
+        # for opus-class ``max_tokens`` ("Streaming is required for
+        # operations that may take longer than 10 minutes") — so every
+        # watchdog fire on a big-model agentic call became a fatal error
+        # (observed live: 18/89 terminal-bench trials, 2026-07-19). A
+        # retried stream also tends to start fast: attempt 1's prompt
+        # processing warms the prompt cache. NB a retry re-emits text
+        # through ``on_text_chunk`` from scratch; the removed fallback had
+        # the same double-emission semantics, and partial text before 90s
+        # of dead air is rare. The same x-client-request-id is kept across
+        # attempts so the stalled stream and its retries correlate under
+        # one id (the old fallback's deliberate behavior).
+        max_attempts = stream_idle_max_attempts()
+
+        def _idle_timeout_error() -> StreamIdleTimeout:
+            # "Connection timed out" phrasing is deliberate: eval harnesses
+            # (harbor) classify it as a retryable network error.
+            return StreamIdleTimeout(
+                f"stream idle timeout: no stream events for "
+                f"{stream_idle_timeout_seconds():.0f}s on {max_attempts} "
+                f"streaming attempt(s) (Connection timed out; "
+                f"x-client-request-id={request_id or 'n/a'})"
+            )
+
+        for attempt in range(1, max_attempts + 1):
+            response = self._stream_attempt(
+                client=client,
+                guard=guard,
                 model=model,
                 max_tokens=max_tokens,
+                anthropic_messages=anthropic_messages,
+                system=system,
+                extra_kwargs=extra_kwargs,
+                kwargs=kwargs,
+                request_id=request_id,
+                on_text_chunk=on_text_chunk,
+                on_thinking_chunk=on_thinking_chunk,
             )
+            if response is not None:
+                return response
+            if attempt < max_attempts:
+                logger.warning(
+                    "stream idle watchdog fired (attempt %d/%d, "
+                    "x-client-request-id=%s); retrying stream",
+                    attempt,
+                    max_attempts,
+                    request_id or "n/a",
+                )
+                continue
+            raise _idle_timeout_error()
+        raise _idle_timeout_error()  # pragma: no cover — loop always exits
+
+    def _stream_attempt(
+        self,
+        *,
+        client: Any,
+        guard: Any,
+        model: str,
+        max_tokens: int,
+        anthropic_messages: list,
+        system: Any,
+        extra_kwargs: dict,
+        kwargs: dict,
+        request_id: Optional[str],
+        on_text_chunk: TextChunkCallback | None,
+        on_thinking_chunk: TextChunkCallback | None,
+    ) -> Optional[ChatResponse]:
+        """One streaming attempt for :meth:`chat_stream_response`.
+
+        Returns the built response, or ``None`` when the idle watchdog
+        killed the stream (the caller decides retry vs raise). Non-watchdog
+        failures and user aborts propagate unchanged.
+        """
+        from src.utils.stream_watchdog import StreamWatchdog
 
         streamed_text = ""
         watchdog_fired = False
@@ -653,7 +744,7 @@ class AnthropicProvider(BaseProvider):
                 # ``guard.attach`` registered the close-on-abort listener
                 # (see ``_stream_abort.py`` for the race-safe ordering
                 # and the close-via-stream.response.close mechanism).
-                # The provider keeps the watchdog and fallback logic
+                # The provider keeps the watchdog and retry logic
                 # local: they aren't abort-related.
                 watchdog = StreamWatchdog(stream, request_id=request_id)
                 watchdog.arm()
@@ -665,11 +756,8 @@ class AnthropicProvider(BaseProvider):
                     # with no intervening ``text_delta``s while it works
                     # through a hard prompt. ``text_stream`` only yields
                     # on text deltas, so the watchdog (default 90s idle)
-                    # would fire and close the stream mid-thinking — the
-                    # provider then falls back to non-streaming ``chat()``
-                    # which the Anthropic SDK rejects with
-                    # "Streaming is required for operations that may take
-                    # longer than 10 minutes."
+                    # would fire and close the stream mid-thinking,
+                    # burning a retry attempt for no reason."
                     #
                     # Resetting the watchdog on EVERY event type
                     # (thinking deltas, input_json deltas, message_start /
@@ -726,25 +814,17 @@ class AnthropicProvider(BaseProvider):
             # another round-trip).
             guard.reraise_if_aborted(streaming_exc)
 
-            # WI-5.2 fallback path: stream interrupted by the idle
-            # watchdog. Fall back to non-streaming so the user still
-            # gets an answer. If the failure is something else
-            # (network/auth/etc.), re-raise the original.
+            # Idle-watchdog interruption → hand the decision back to the
+            # caller's retry loop (``None``). Anything else (network/auth/
+            # etc.) re-raises unchanged.
             if watchdog_fired:
-                logger.warning(
-                    "stream idle watchdog fired; falling back to "
-                    "non-streaming (x-client-request-id=%s)",
+                logger.debug(
+                    "stream attempt interrupted by idle watchdog "
+                    "(x-client-request-id=%s): %s",
                     request_id or "n/a",
+                    streaming_exc,
                 )
-                try:
-                    return _fallback_to_chat()
-                except Exception as fallback_exc:
-                    # Recovery itself failed — surface BOTH causes so
-                    # observers see the original streaming error AND the
-                    # fallback failure that prevented recovery. Critic
-                    # M3 — bare ``except: pass`` swallowed the fallback
-                    # error and re-raised only the streaming one.
-                    raise fallback_exc from streaming_exc
+                return None
             raise
 
         # Stream completed normally but abort may have fired between
@@ -753,10 +833,10 @@ class AnthropicProvider(BaseProvider):
         guard.raise_if_post_aborted()
 
         if watchdog_fired:
-            # Stream got interrupted but no exception escaped the
-            # with-block (close-side raced the iterator's normal exit).
-            # Fall back to non-streaming for the full answer.
-            return _fallback_to_chat()
+            # Close-side raced the iterator's normal exit. Treat as an
+            # interrupted attempt (caller retries) rather than trusting a
+            # possibly-truncated final message.
+            return None
 
         if final_message is not None:
             return self._build_chat_response(final_message)
