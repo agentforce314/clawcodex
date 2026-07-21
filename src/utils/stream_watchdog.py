@@ -16,12 +16,17 @@ deadline the watchdog checks byte progress and RE-ARMS instead of firing
 when bytes advanced — it fires only after a true dead-air window (no bytes
 at all), matching the ping-aware TS watchdog.
 
-**Two-phase deadline (fallback).** When the byte counter is unavailable
-(mocked/non-httpx transport) the watchdog is purely time-based; there the
-FIRST event still gets a longer grace
+**Two-phase deadline.** The deadline values run on BOTH paths: on the
+httpx path they set the cadence at which byte progress is checked (the
+dead-air window that must elapse with zero bytes before firing); when the
+byte counter is unavailable (mocked/non-httpx transport) they are the pure
+time-based deadline. Either way the FIRST event gets a longer grace
 (:func:`stream_first_event_timeout_seconds`, default 300 s, for prompt
 processing) before the deadline tightens to the inter-event ``timeout_s``
-(90 s).
+(90 s). A genuinely byte-silent window still fires correctly at these
+deadlines; a stream that keeps sending bytes (pings/data) re-arms
+indefinitely, bounded in practice by the caller's own request/agent
+timeout (and httpx's read timeout).
 
 When a deadline lapses the watchdog closes the underlying HTTP response,
 interrupting the sync iterator; the provider RETRIES THE STREAM (bounded by
