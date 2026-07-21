@@ -1,9 +1,18 @@
 """WI-5.2: streaming watchdog for the Anthropic SDK ``messages.stream``.
 
-Mirrors TS ``services/api/claude.ts:1922`` (``CLAUDE_STREAM_IDLE_TIMEOUT_MS``,
-default 90 s). When no chunks arrive for ``timeout_s`` seconds the watchdog
-closes the underlying HTTP response, which interrupts the sync iterator and
-lets the provider fall back to non-streaming ``messages.create``.
+Mirrors TS ``services/api/claude.ts`` (``getStreamIdleTimeoutMs`` /
+``abortTimedOutStream``; default 90 s via ``openaiShim.ts:140``). When no
+chunks arrive for ``timeout_s`` seconds the watchdog closes the underlying
+HTTP response, which interrupts the sync iterator and lets the provider
+RETRY THE STREAM (bounded by :func:`stream_idle_max_attempts`), then raise
+:class:`StreamIdleTimeout`. The TS reference never downgrades to a
+non-streaming request on idle timeout — it aborts and lets the retry layer
+re-issue the streaming call — and neither do we: a non-streaming re-issue
+of an agentic payload is refused outright by the Anthropic Python SDK
+("Streaming is required for operations that may take longer than 10
+minutes") whenever ``max_tokens`` is opus-class, which turned every
+watchdog fire into a fatal error (observed live: 18/89 terminal-bench
+trials, 2026-07-19).
 
 **Why threading.Timer, not asyncio.** The Anthropic Python SDK's
 ``messages.stream()`` is a SYNCHRONOUS context manager (``with``, not
@@ -38,8 +47,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
+    "DEFAULT_STREAM_IDLE_MAX_ATTEMPTS",
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
+    "stream_idle_max_attempts",
     "StreamWatchdog",
     "force_close_response",
 ]
@@ -96,11 +107,36 @@ def force_close_response(stream: Any) -> None:
 DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
 
 
+DEFAULT_STREAM_IDLE_MAX_ATTEMPTS = 3
+
+
+def stream_idle_max_attempts() -> int:
+    """Total streaming attempts per call before :class:`StreamIdleTimeout`.
+
+    ``1 + CLAUDE_STREAM_IDLE_MAX_RETRIES`` (default 2 retries → 3
+    attempts; malformed/negative values fall back). Retrying the STREAM is
+    the TS-parity recovery for an idle timeout — the first attempt's
+    prompt-processing typically warms the prompt cache, so a retry's
+    time-to-first-event is far shorter than the original's.
+    """
+    raw = os.environ.get("CLAUDE_STREAM_IDLE_MAX_RETRIES", "").strip()
+    if not raw:
+        return DEFAULT_STREAM_IDLE_MAX_ATTEMPTS
+    try:
+        retries = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_STREAM_IDLE_MAX_ATTEMPTS
+    if retries < 0:
+        return DEFAULT_STREAM_IDLE_MAX_ATTEMPTS
+    return 1 + retries
+
+
 def stream_idle_timeout_seconds() -> float:
     """Resolve the idle-timeout from ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` env var.
 
     Falls back to ``DEFAULT_STREAM_IDLE_TIMEOUT_S`` (90s) when the env var
-    is unset or malformed. Mirrors TS ``claude.ts:1922``.
+    is unset or malformed. Mirrors TS ``getStreamIdleTimeoutMs``
+    (openaiShim.ts:232-239, default openaiShim.ts:140).
     """
     raw = os.environ.get("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "").strip()
     if not raw:
@@ -115,9 +151,13 @@ def stream_idle_timeout_seconds() -> float:
 
 
 class StreamIdleTimeout(Exception):
-    """Raised on the consumer-thread when the watchdog fires.
+    """Raised when the stream idle watchdog fires.
 
-    The provider catches this and falls back to non-streaming.
+    Internally the watchdog's ``close()`` interrupts the consumer
+    iterator; the provider retries the STREAM up to
+    :func:`stream_idle_max_attempts` times and raises this on
+    exhaustion. Never recovered via a non-streaming re-issue (the SDK
+    refuses those for opus-class ``max_tokens``).
     """
 
 
