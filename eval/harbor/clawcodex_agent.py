@@ -76,6 +76,15 @@ from harbor.agents.installed.base import (
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
+from harbor.models.trajectories import (
+    Agent,
+    FinalMetrics,
+    Observation,
+    ObservationResult,
+    Step,
+    ToolCall,
+    Trajectory,
+)
 
 # Host env vars forwardable into the container (clawcodex's builtin provider
 # key candidates — see src/providers/__init__.py in the clawcodex repo), keyed
@@ -219,6 +228,11 @@ _CONTAINER_CONFIG_DIR = "/installed-agent/clawcodex-config"
 
 class Clawcodex(BaseInstalledAgent):
     """Run the clawcodex CLI headless inside a Harbor task environment."""
+
+    # Emit an ATIF trajectory.json in populate_context_post_run (below), so
+    # Harbor's viewer / leaderboard get a step-by-step trajectory like the
+    # built-in claude-code agent produces.
+    SUPPORTS_ATIF: bool = True
 
     CLI_FLAGS = [
         CliFlag(
@@ -483,15 +497,68 @@ class Clawcodex(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=command, env=self._build_env())
 
     @override
+    # ------------------------------------------------------------------ #
+    # Trajectory (ATIF) + token metrics
+    # ------------------------------------------------------------------ #
+
     def populate_context_post_run(self, context: AgentContext) -> None:
-        """Backfill token metrics from the final stream-json ``result`` event."""
-        stream_path = self.logs_dir / "clawcodex.txt"
+        """Backfill token metrics and write an ATIF ``trajectory.json``.
+
+        Runs on the host after Harbor syncs the container ``/logs/agent``
+        tree back. Two sources, in preference order:
+
+        * the persisted clawcodex session conversation (rich — per-turn
+          assistant narration, reasoning, tool calls AND results), synced
+          under ``<logs>/sessions/`` when the CLI is new enough to save the
+          session in headless mode; and
+        * the stream-json log (``clawcodex.txt``) — always present; carries
+          every tool call + result and the final answer, and is the sole
+          source of authoritative token usage.
+
+        Everything here is best-effort: a trajectory-build failure must
+        never fail the trial (mirrors the built-in claude-code agent).
+        """
+        events = self._parse_stream_events()
+        result_event = self._last_result_event(events)
+
+        # Token metrics — authoritative, from the stream-json result event.
+        if result_event:
+            usage = result_event.get("usage")
+            if isinstance(usage, dict):
+                input_tokens = usage.get("input_tokens") or 0
+                cache_read = usage.get("cache_read_input_tokens") or 0
+                cache_creation = usage.get("cache_creation_input_tokens") or 0
+                context.n_input_tokens = input_tokens + cache_read + cache_creation
+                context.n_cache_tokens = cache_read
+                context.n_output_tokens = usage.get("output_tokens") or 0
+
         try:
-            content = stream_path.read_text(encoding="utf-8")
-        except OSError:
+            trajectory, cost_usd = self._build_trajectory(events, result_event)
+        except Exception as exc:  # noqa: BLE001 — never fail a trial over this
+            self.logger.debug(f"clawcodex trajectory build failed: {exc}")
+            return
+        # Leaderboard cost column (matches the claude-code agent, which sets
+        # context.cost_usd from its final metrics).
+        if cost_usd is not None:
+            context.cost_usd = cost_usd
+        if trajectory is None:
             return
 
-        result_event: dict[str, Any] | None = None
+        path = self.logs_dir / "trajectory.json"
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(trajectory.to_json_dict(), handle, indent=2, ensure_ascii=False)
+            self.logger.debug(f"wrote clawcodex trajectory to {path}")
+        except OSError as exc:
+            self.logger.debug(f"failed to write trajectory {path}: {exc}")
+
+    def _parse_stream_events(self) -> list[dict[str, Any]]:
+        """All JSON objects from the teed stream-json log, in order."""
+        try:
+            content = (self.logs_dir / "clawcodex.txt").read_text(encoding="utf-8")
+        except OSError:
+            return []
+        events: list[dict[str, Any]] = []
         for line in content.splitlines():
             line = line.strip()
             if not line.startswith("{"):
@@ -500,18 +567,302 @@ class Clawcodex(BaseInstalledAgent):
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(event, dict) and event.get("type") == "result":
-                result_event = event
+            if isinstance(event, dict):
+                events.append(event)
+        return events
 
-        if not result_event:
-            return
+    @staticmethod
+    def _last_result_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for event in reversed(events):
+            if event.get("type") == "result":
+                return event
+        return None
 
-        usage = result_event.get("usage")
+    def _final_metrics(
+        self,
+        result_event: dict[str, Any] | None,
+        total_steps: int,
+        cost_usd: float | None,
+    ) -> FinalMetrics | None:
+        if not result_event and cost_usd is None:
+            return None
+        usage = (result_event or {}).get("usage")
         if not isinstance(usage, dict):
-            return
+            usage = {}
         input_tokens = usage.get("input_tokens") or 0
         cache_read = usage.get("cache_read_input_tokens") or 0
         cache_creation = usage.get("cache_creation_input_tokens") or 0
-        context.n_input_tokens = input_tokens + cache_read + cache_creation
-        context.n_cache_tokens = cache_read
-        context.n_output_tokens = usage.get("output_tokens") or 0
+        extra: dict[str, Any] = {}
+        num_turns = (result_event or {}).get("num_turns")
+        if isinstance(num_turns, int):
+            extra["num_turns"] = num_turns
+        duration_ms = (result_event or {}).get("duration_ms")
+        if isinstance(duration_ms, (int, float)):
+            extra["duration_ms"] = duration_ms
+        # Cost: the --print result event carries no cost field, but the
+        # persisted session's cost block does (Session.save()). Prefer that.
+        return FinalMetrics(
+            total_prompt_tokens=input_tokens + cache_read + cache_creation,
+            total_completion_tokens=usage.get("output_tokens") or 0,
+            total_cached_tokens=cache_read,
+            total_cost_usd=(
+                cost_usd
+                if cost_usd is not None
+                else (result_event or {}).get("total_cost_usd")
+            ),
+            total_steps=total_steps,
+            extra=extra or None,
+        )
+
+    def _agent_meta(self, events: list[dict[str, Any]]) -> tuple[Agent, str | None]:
+        """Build the ATIF ``Agent`` header from the system:init event."""
+        init = next(
+            (e for e in events if e.get("type") == "system" and e.get("subtype") == "init"),
+            {},
+        )
+        session_id = init.get("session_id")
+        model_name = init.get("model") or self._parsed_model_name
+        extra: dict[str, Any] = {}
+        for key in ("provider", "cwd", "permission_mode"):
+            if init.get(key):
+                extra[key] = init[key]
+        tools = init.get("tools")
+        agent = Agent(
+            name=self.name(),
+            version=self.version() or "unknown",
+            model_name=model_name,
+            tool_definitions=(
+                [{"name": t} for t in tools] if isinstance(tools, list) else None
+            ),
+            extra=extra or None,
+        )
+        return agent, session_id
+
+    def _load_session_data(self) -> tuple[list[dict[str, Any]] | None, float | None]:
+        """The richest persisted session synced under the logs dir, as
+        ``(conversation.messages, total_cost_usd)``. Picks the session with
+        the most messages; either element may be ``None`` when absent."""
+        # ``self.logs_dir`` is the parent of ``sessions/`` — one root covers
+        # the subtree; a second nested root would just re-parse each file.
+        candidates = (
+            sorted(self.logs_dir.rglob("*.json")) if self.logs_dir.is_dir() else []
+        )
+        best_msgs: list[dict[str, Any]] | None = None
+        best_cost: float | None = None
+        best_len = 0
+        for path in candidates:
+            if path.name == "trajectory.json":
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            conv = data.get("conversation")
+            msgs = conv.get("messages") if isinstance(conv, dict) else None
+            if isinstance(msgs, list) and len(msgs) > best_len:
+                best_len = len(msgs)
+                best_msgs = msgs
+                cost = (data.get("cost") or {}).get("total_cost_usd")
+                best_cost = float(cost) if isinstance(cost, (int, float)) else None
+        return best_msgs, best_cost
+
+    def _build_trajectory(
+        self,
+        events: list[dict[str, Any]],
+        result_event: dict[str, Any] | None,
+    ) -> tuple[Trajectory | None, float | None]:
+        """Returns ``(trajectory, cost_usd)`` — cost is surfaced so the
+        caller can also set it on the AgentContext."""
+        agent, session_id = self._agent_meta(events)
+        messages, cost_usd = self._load_session_data()
+        notes = None
+        if messages:
+            steps = self._steps_from_conversation(messages, agent.model_name)
+        else:
+            steps = self._steps_from_stream(events, agent.model_name)
+            # No persisted conversation → the stream-json has no per-turn
+            # narration, so agent steps carry only their tool calls.
+            notes = (
+                "Reconstructed from the stream-json log; per-step assistant "
+                "narration is unavailable (no persisted session conversation)."
+            )
+        if not steps:
+            return None, cost_usd
+        trajectory = Trajectory(
+            schema_version="ATIF-v1.7",
+            session_id=session_id or "unknown",
+            agent=agent,
+            steps=steps,
+            notes=notes,
+            final_metrics=self._final_metrics(result_event, len(steps), cost_usd),
+        )
+        return trajectory, cost_usd
+
+    @staticmethod
+    def _split_content(content: Any) -> tuple[str, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split an Anthropic-shape message ``content`` into (text, reasoning,
+        tool_use blocks, tool_result blocks)."""
+        if isinstance(content, str):
+            return content.strip(), None, [], []
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_uses: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text" and isinstance(block.get("text"), str):
+                    text_parts.append(block["text"])
+                elif btype in ("thinking", "reasoning") and isinstance(
+                    block.get("thinking") or block.get("text"), str
+                ):
+                    reasoning_parts.append(block.get("thinking") or block.get("text"))
+                elif btype == "tool_use":
+                    tool_uses.append(block)
+                elif btype == "tool_result":
+                    tool_results.append(block)
+        text = "\n\n".join(p.strip() for p in text_parts if p and p.strip())
+        reasoning = "\n\n".join(p.strip() for p in reasoning_parts if p and p.strip())
+        return text, (reasoning or None), tool_uses, tool_results
+
+    @staticmethod
+    def _stringify(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            return str(value)
+
+    def _steps_from_conversation(
+        self, messages: list[dict[str, Any]], default_model: str | None
+    ) -> list[Step]:
+        """Rich path: one ATIF step per assistant turn, with its tool calls;
+        tool_result blocks from the following user message attach back to the
+        matching call as observations (bundled by ``tool_use_id``)."""
+        steps: list[Step] = []
+        pending: dict[str, ToolCall] = {}
+        pending_step: dict[str, Step] = {}
+        for msg in messages:
+            role = msg.get("role")
+            if msg.get("isMeta"):
+                continue
+            text, reasoning, tool_uses, tool_results = self._split_content(
+                msg.get("content")
+            )
+            timestamp = msg.get("timestamp")
+            if role == "assistant":
+                calls: list[ToolCall] = []
+                for tu in tool_uses:
+                    call_id = tu.get("id") or tu.get("tool_use_id")
+                    if not call_id:
+                        continue
+                    args = tu.get("input")
+                    call = ToolCall(
+                        tool_call_id=call_id,
+                        function_name=tu.get("name") or "",
+                        arguments=args if isinstance(args, dict) else {"input": args},
+                    )
+                    calls.append(call)
+                    pending[call_id] = call
+                step = Step(
+                    step_id=len(steps) + 1,
+                    timestamp=timestamp,
+                    source="agent",
+                    model_name=default_model,
+                    message=text,
+                    reasoning_content=reasoning,
+                    tool_calls=calls or None,
+                    llm_call_count=1,
+                )
+                steps.append(step)
+                for c in calls:
+                    pending_step[c.tool_call_id] = step
+            elif role == "user":
+                # tool results attach to the prior call's step; a leading
+                # plain-text user message is the instruction.
+                for tr in tool_results:
+                    call_id = tr.get("tool_use_id")
+                    step = pending_step.get(call_id) if call_id else None
+                    if step is None:
+                        continue
+                    content = tr.get("content")
+                    obs = ObservationResult(
+                        source_call_id=call_id,
+                        content=self._stringify(content) if content is not None else None,
+                        extra={"is_error": True} if tr.get("is_error") else None,
+                    )
+                    if step.observation is None:
+                        step.observation = Observation(results=[obs])
+                    else:
+                        step.observation.results.append(obs)
+                if text and not tool_results:
+                    steps.append(
+                        Step(
+                            step_id=len(steps) + 1,
+                            timestamp=timestamp,
+                            source="user",
+                            message=text,
+                        )
+                    )
+        return steps
+
+    def _steps_from_stream(
+        self, events: list[dict[str, Any]], default_model: str | None
+    ) -> list[Step]:
+        """Fallback path: build steps from the flat stream-json events — one
+        step per tool call (with its result), plus the final answer."""
+        steps: list[Step] = []
+        step_by_call: dict[str, Step] = {}
+        for event in events:
+            etype = event.get("type")
+            if etype == "tool_use":
+                call_id = event.get("tool_use_id")
+                if not call_id:
+                    continue
+                args = event.get("input")
+                step = Step(
+                    step_id=len(steps) + 1,
+                    source="agent",
+                    model_name=default_model,
+                    message="",
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id=call_id,
+                            function_name=event.get("name") or "",
+                            arguments=args if isinstance(args, dict) else {"input": args},
+                        )
+                    ],
+                    llm_call_count=1,
+                )
+                steps.append(step)
+                step_by_call[call_id] = step
+            elif etype == "tool_result":
+                call_id = event.get("tool_use_id")
+                step = step_by_call.get(call_id) if call_id else None
+                if step is None:
+                    continue
+                content = event.get("output")
+                obs = ObservationResult(
+                    source_call_id=call_id,
+                    content=self._stringify(content) if content is not None else None,
+                    extra={"is_error": True} if event.get("is_error") else None,
+                )
+                step.observation = Observation(results=[obs])
+            elif etype == "assistant":
+                text = event.get("text")
+                if isinstance(text, str) and text.strip():
+                    steps.append(
+                        Step(
+                            step_id=len(steps) + 1,
+                            source="agent",
+                            model_name=default_model,
+                            message=text,
+                            llm_call_count=1,
+                        )
+                    )
+        return steps
