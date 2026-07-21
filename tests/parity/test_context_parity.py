@@ -83,9 +83,36 @@ class TestUserContextKeysParity(unittest.TestCase):
 
     def test_expected_user_context_keys(self) -> None:
         expected_keys = set(self.snapshot["user_context_keys"])
-        # claudeMd is optional (only present when CLAUDE.md exists)
+        # clawcodexMd is optional (only present when CLAWCODEX.md exists).
+        # DELIBERATE DIVERGENCE from TS's "claudeMd": the key renders as a
+        # `# <key>` header in the injected reminder, so the context-file
+        # rebrand renames it too (the TS snapshot keeps the old spelling).
         self.assertIn("currentDate", expected_keys)
-        self.assertIn("claudeMd", expected_keys)
+        self.assertIn("claudeMd", expected_keys)  # TS snapshot spelling
+
+    def test_producer_emits_rebranded_key(self) -> None:
+        # Positive pin on the sole behavioral divergence: with a context
+        # file present, get_user_context emits "clawcodexMd" (rendered as
+        # the `# clawcodexMd` reminder header), never the TS "claudeMd".
+        import asyncio
+        import tempfile
+        from pathlib import Path
+
+        from src.context_system.prompt_assembly import (
+            clear_context_caches,
+            get_user_context,
+        )
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "CLAWCODEX.md").write_text("pinned rules", encoding="utf-8")
+            clear_context_caches()
+            try:
+                ctx = asyncio.run(get_user_context(cwd=root))
+            finally:
+                clear_context_caches()
+        self.assertIn("clawcodexMd", ctx)
+        self.assertNotIn("claudeMd", ctx)
+        self.assertIn("pinned rules", ctx["clawcodexMd"])
 
 
 class TestSystemContextKeysParity(unittest.TestCase):
@@ -171,7 +198,7 @@ class TestContextCachesParity(unittest.TestCase):
 
 
 class TestMemoryFileLevelsParity(unittest.TestCase):
-    """Memory file levels match TS CLAUDE.md loading hierarchy."""
+    """Memory file levels match TS CLAWCODEX.md loading hierarchy."""
 
     @classmethod
     def setUpClass(cls) -> None:

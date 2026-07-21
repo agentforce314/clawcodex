@@ -7,7 +7,7 @@ donor's ``/memory pending|approve|reject`` slash handlers
 (``hermes_cli`` / ``gateway/slash_commands.py``; doc 07 §1).
 
 The no-argument ``/memory`` stays the existing file picker (memdir /
-CLAUDE.md editing); these subcommands only run when arguments are given.
+CLAWCODEX.md editing); these subcommands only run when arguments are given.
 """
 
 from __future__ import annotations

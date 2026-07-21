@@ -217,7 +217,7 @@ class QueryEngine:
             await self._build_system_prompt_parts()
         )
 
-        # Prepend user context (CLAUDE.md + date) as <system-reminder>
+        # Prepend user context (CLAWCODEX.md + date) as <system-reminder>
         messages_for_query = prepend_user_context(
             list(self._mutable_messages), user_context,
         )

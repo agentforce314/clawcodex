@@ -42,7 +42,7 @@ class TestAnalyzeContext(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="",
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         self.assertEqual(result.model, "claude-sonnet-4-6")
         self.assertEqual(result.max_tokens, 200_000)
@@ -57,7 +57,7 @@ class TestAnalyzeContext(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="You are a helpful assistant. " * 50,  # ~500 chars
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         system_cat = next((c for c in result.categories if c.name == "System prompt"), None)
         self.assertIsNotNone(system_cat)
@@ -74,7 +74,7 @@ class TestAnalyzeContext(unittest.TestCase):
                 {"name": "Read", "description": "Read a file", "input_schema": {"type": "object"}},
                 {"name": "Write", "description": "Write a file", "input_schema": {"type": "object"}},
             ],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         tool_cat = next((c for c in result.categories if c.name == "System tools"), None)
         self.assertIsNotNone(tool_cat)
@@ -91,7 +91,7 @@ class TestAnalyzeContext(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="",
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         msg_cat = next((c for c in result.categories if c.name == "Messages"), None)
         self.assertIsNotNone(msg_cat)
@@ -105,7 +105,7 @@ class TestAnalyzeContext(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="x",  # minimal
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         free_cat = next((c for c in result.categories if c.name == "Free space"), None)
         self.assertIsNotNone(free_cat)
@@ -121,7 +121,7 @@ class TestAnalyzeContext(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="",
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
             api_usage={
                 "input_tokens": 50000,
                 "output_tokens": 10000,
@@ -146,7 +146,7 @@ class TestFormatContextAsMarkdown(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="You are helpful.",
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         markdown = format_context_as_markdown(result)
         self.assertIn("## Context Usage", markdown)
@@ -162,24 +162,24 @@ class TestFormatContextAsMarkdown(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="You are a helpful assistant. " * 100,
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
         )
         markdown = format_context_as_markdown(result)
         self.assertIn("System prompt", markdown)
 
     def test_shows_memory_files(self):
-        """Memory files section appears when CLAUDE.md is present."""
+        """Memory files section appears when CLAWCODEX.md is present."""
         from src.context_system.context_analyzer import analyze_context, format_context_as_markdown
         result = analyze_context(
             conversation_api_messages=[],
             model="claude-sonnet-4-6",
             system_prompt="",
             tool_schemas=[],
-            claude_md_content="# Project\n\nThis is a project.",
+            clawcodex_md_content="# Project\n\nThis is a project.",
         )
         markdown = format_context_as_markdown(result)
         self.assertIn("### Memory Files", markdown)
-        self.assertIn("CLAUDE.md", markdown)
+        self.assertIn("CLAWCODEX.md", markdown)
 
     def test_shows_api_usage(self):
         """API usage section appears when usage data is provided."""
@@ -189,7 +189,7 @@ class TestFormatContextAsMarkdown(unittest.TestCase):
             model="claude-sonnet-4-6",
             system_prompt="",
             tool_schemas=[],
-            claude_md_content="",
+            clawcodex_md_content="",
             api_usage={
                 "input_tokens": 10000,
                 "output_tokens": 5000,

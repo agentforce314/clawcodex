@@ -1,4 +1,4 @@
-"""Tests for src/context_system/claude_md.py — WS-5 multi-level CLAUDE.md."""
+"""Tests for src/context_system/clawcodex_md.py — WS-5 multi-level CLAWCODEX.md."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.context_system.claude_md import (
+from src.context_system.clawcodex_md import (
     _extract_include_paths,
     _parse_frontmatter_paths,
     _parse_memory_file_content,
     _resolve_include_path,
     clear_memory_file_caches,
-    get_claude_mds,
+    get_clawcodex_mds,
     get_memory_files,
     is_memory_file_path,
     process_md_rules,
@@ -122,7 +122,7 @@ class TestParseFrontmatterPaths(unittest.TestCase):
 class TestParseMemoryFileContent(unittest.TestCase):
     def test_basic_md_file(self):
         info, includes = _parse_memory_file_content(
-            "# Rules\nAlways test.", "/project/CLAUDE.md", "Project",
+            "# Rules\nAlways test.", "/project/CLAWCODEX.md", "Project",
         )
         self.assertIsNotNone(info)
         self.assertEqual(info.type, "Project")
@@ -142,8 +142,8 @@ class TestParseMemoryFileContent(unittest.TestCase):
 
     def test_include_paths_extracted(self):
         info, includes = _parse_memory_file_content(
-            "See @./extra.md for more", "/project/CLAUDE.md", "Project",
-            include_base_path="/project/CLAUDE.md",
+            "See @./extra.md for more", "/project/CLAWCODEX.md", "Project",
+            include_base_path="/project/CLAWCODEX.md",
         )
         self.assertTrue(len(includes) > 0)
 
@@ -151,7 +151,7 @@ class TestParseMemoryFileContent(unittest.TestCase):
 class TestProcessMemoryFile(unittest.TestCase):
     def test_basic_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "CLAUDE.md"
+            f = Path(tmp) / "CLAWCODEX.md"
             f.write_text("# Rules\nAlways test.", encoding="utf-8")
             result = _run(process_memory_file(str(f), "Project", set()))
             self.assertEqual(len(result), 1)
@@ -159,12 +159,12 @@ class TestProcessMemoryFile(unittest.TestCase):
             self.assertIn("Always test", result[0].content)
 
     def test_nonexistent_file(self):
-        result = _run(process_memory_file("/nonexistent/CLAUDE.md", "Project", set()))
+        result = _run(process_memory_file("/nonexistent/CLAWCODEX.md", "Project", set()))
         self.assertEqual(len(result), 0)
 
     def test_circular_reference_prevention(self):
         with tempfile.TemporaryDirectory() as tmp:
-            f = Path(tmp) / "CLAUDE.md"
+            f = Path(tmp) / "CLAWCODEX.md"
             f.write_text(f"Include self: @{f}", encoding="utf-8")
             result = _run(process_memory_file(str(f), "Project", set()))
             # Should process once, not infinitely loop
@@ -172,7 +172,7 @@ class TestProcessMemoryFile(unittest.TestCase):
 
     def test_include_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
-            main = Path(tmp) / "CLAUDE.md"
+            main = Path(tmp) / "CLAWCODEX.md"
             included = Path(tmp) / "extra.md"
             included.write_text("Extra rules.", encoding="utf-8")
             main.write_text(f"Main rules.\n@{included}", encoding="utf-8")
@@ -239,14 +239,14 @@ class TestProcessMdRules(unittest.TestCase):
 
 class TestGetClaudeMds(unittest.TestCase):
     def test_empty_list(self):
-        self.assertEqual(get_claude_mds([]), "")
+        self.assertEqual(get_clawcodex_mds([]), "")
 
     def test_formats_correctly(self):
         files = [
-            MemoryFileInfo(path="/p/CLAUDE.md", type="Project", content="Rule 1"),
-            MemoryFileInfo(path="/home/.clawcodex/CLAUDE.md", type="User", content="Rule 2"),
+            MemoryFileInfo(path="/p/CLAWCODEX.md", type="Project", content="Rule 1"),
+            MemoryFileInfo(path="/home/.clawcodex/CLAWCODEX.md", type="User", content="Rule 2"),
         ]
-        result = get_claude_mds(files)
+        result = get_clawcodex_mds(files)
         self.assertIn("Rule 1", result)
         self.assertIn("Rule 2", result)
         self.assertIn("project instructions", result)
@@ -255,19 +255,19 @@ class TestGetClaudeMds(unittest.TestCase):
 
     def test_empty_content_skipped(self):
         files = [
-            MemoryFileInfo(path="/p/CLAUDE.md", type="Project", content=""),
+            MemoryFileInfo(path="/p/CLAWCODEX.md", type="Project", content=""),
             MemoryFileInfo(path="/p/RULES.md", type="Project", content="Real rule"),
         ]
-        result = get_claude_mds(files)
+        result = get_clawcodex_mds(files)
         self.assertIn("Real rule", result)
-        self.assertNotIn("CLAUDE.md", result)
+        self.assertNotIn("CLAWCODEX.md", result)
 
 
 class TestGetMemoryFiles(unittest.TestCase):
     def test_caching(self):
         clear_memory_file_caches()
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "CLAUDE.md").write_text("test", encoding="utf-8")
+            (Path(tmp) / "CLAWCODEX.md").write_text("test", encoding="utf-8")
             with patch.dict(os.environ, {"CLAUDE_CODE_ORIGINAL_CWD": tmp}):
                 result1 = _run(get_memory_files(cwd=tmp))
                 result2 = _run(get_memory_files(cwd=tmp))
@@ -278,7 +278,7 @@ class TestGetMemoryFiles(unittest.TestCase):
     def test_cache_clearing(self):
         clear_memory_file_caches()
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "CLAUDE.md").write_text("test", encoding="utf-8")
+            (Path(tmp) / "CLAWCODEX.md").write_text("test", encoding="utf-8")
             with patch.dict(os.environ, {"CLAUDE_CODE_ORIGINAL_CWD": tmp}):
                 _run(get_memory_files(cwd=tmp))
                 clear_memory_file_caches()
@@ -290,7 +290,7 @@ class TestGetMemoryFiles(unittest.TestCase):
     def test_bare_mode_disables(self):
         clear_memory_file_caches()
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "CLAUDE.md").write_text("test", encoding="utf-8")
+            (Path(tmp) / "CLAWCODEX.md").write_text("test", encoding="utf-8")
             with patch.dict(os.environ, {
                 "CLAUDE_CODE_BARE_MODE": "true",
                 "CLAUDE_CODE_ADDITIONAL_DIRECTORIES": "",
@@ -307,11 +307,11 @@ class TestGetMemoryFiles(unittest.TestCase):
 
 
 class TestIsMemoryFilePath(unittest.TestCase):
-    def test_claude_md(self):
-        self.assertTrue(is_memory_file_path("/project/CLAUDE.md"))
+    def test_clawcodex_md(self):
+        self.assertTrue(is_memory_file_path("/project/CLAWCODEX.md"))
 
     def test_local_md(self):
-        self.assertTrue(is_memory_file_path("/project/CLAUDE.local.md"))
+        self.assertTrue(is_memory_file_path("/project/CLAWCODEX.local.md"))
 
     def test_rules_file(self):
         self.assertTrue(is_memory_file_path("/project/.clawcodex/rules/style.md"))

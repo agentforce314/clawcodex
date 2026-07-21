@@ -288,17 +288,17 @@ def classify_action_llm(
     budget = max(0, MAX_CLASSIFIER_TRANSCRIPT_CHARS - len(action_repr))
     transcript = serialize_transcript_for_classifier(messages, tool_lookup, budget)
 
-    claude_md = ""
+    clawcodex_md = ""
     try:
-        from src.bootstrap.state import get_cached_claude_md_content
+        from src.bootstrap.state import get_cached_clawcodex_md_content
 
-        claude_md = get_cached_claude_md_content() or ""
+        clawcodex_md = get_cached_clawcodex_md_content() or ""
     except Exception:  # noqa: BLE001
-        claude_md = ""
+        clawcodex_md = ""
 
     user_body = ""
-    if claude_md:
-        user_body += f"<user_claude_md>\n{_truncate(claude_md)}\n</user_claude_md>\n\n"
+    if clawcodex_md:
+        user_body += f"<user_clawcodex_md>\n{_truncate(clawcodex_md)}\n</user_clawcodex_md>\n\n"
     if transcript:
         user_body += f"<transcript>\n{transcript}\n</transcript>\n\n"
     user_body += f"<pending_action>\n{action_repr}\n</pending_action>"

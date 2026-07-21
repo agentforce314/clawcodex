@@ -117,7 +117,7 @@ class QueryParams:
     # via provider.model; never persisted to settings.
     fallback_model: str | None = None
     # ch05 round-4 note — N/A-by-architecture on the LIVE paths: the
-    # adapter's build_effective_system_prompt already injects CLAUDE.md
+    # adapter's build_effective_system_prompt already injects CLAWCODEX.md
     # ("## Project Instructions") and the date via the SYSTEM prompt, so
     # wiring TS's prependUserContext there would double-inject. Only the
     # test-only engine path uses the message-based mechanism

@@ -32,7 +32,7 @@ from src.bootstrap.state import (
     add_to_total_duration_state,
     add_to_total_lines_changed,
     consume_post_compaction,
-    get_cached_claude_md_content,
+    get_cached_clawcodex_md_content,
     get_client_type,
     get_cwd_state,
     get_is_interactive,
@@ -54,7 +54,7 @@ from src.bootstrap.state import (
     reset_cost_state,
     reset_state_for_tests,
     run_with_sdk_context,
-    set_cached_claude_md_content,
+    set_cached_clawcodex_md_content,
     set_client_type,
     set_cost_state_for_restore,
     set_cwd_state,
@@ -314,17 +314,17 @@ class TestModelOverride(unittest.TestCase):
 
 
 class TestCachedClaudeMd(unittest.TestCase):
-    def test_cached_claude_md_starts_none(self) -> None:
-        self.assertIsNone(get_cached_claude_md_content())
+    def test_cached_clawcodex_md_starts_none(self) -> None:
+        self.assertIsNone(get_cached_clawcodex_md_content())
 
-    def test_set_get_cached_claude_md(self) -> None:
-        set_cached_claude_md_content("# Project Notes\nfoo")
-        self.assertEqual(get_cached_claude_md_content(), "# Project Notes\nfoo")
+    def test_set_get_cached_clawcodex_md(self) -> None:
+        set_cached_clawcodex_md_content("# Project Notes\nfoo")
+        self.assertEqual(get_cached_clawcodex_md_content(), "# Project Notes\nfoo")
 
-    def test_clear_cached_claude_md(self) -> None:
-        set_cached_claude_md_content("foo")
-        set_cached_claude_md_content(None)
-        self.assertIsNone(get_cached_claude_md_content())
+    def test_clear_cached_clawcodex_md(self) -> None:
+        set_cached_clawcodex_md_content("foo")
+        set_cached_clawcodex_md_content(None)
+        self.assertIsNone(get_cached_clawcodex_md_content())
 
 
 class TestSdkContext(unittest.TestCase):

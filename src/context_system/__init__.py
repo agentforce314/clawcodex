@@ -9,9 +9,9 @@ from .prompt_assembly import (
     get_user_context,
     prepend_user_context,
 )
-from .claude_md import (
+from .clawcodex_md import (
     clear_memory_file_caches,
-    get_claude_mds,
+    get_clawcodex_mds,
     get_memory_files,
     reset_get_memory_files_cache,
 )
@@ -38,9 +38,9 @@ __all__ = [
     "get_system_context",
     "get_user_context",
     "prepend_user_context",
-    # CLAUDE.md
+    # CLAWCODEX.md
     "clear_memory_file_caches",
-    "get_claude_mds",
+    "get_clawcodex_mds",
     "get_memory_files",
     "reset_get_memory_files_cache",
     # Git context

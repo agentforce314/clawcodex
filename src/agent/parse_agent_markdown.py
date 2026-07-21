@@ -16,8 +16,8 @@ Field mapping (frontmatter → AgentDefinition):
     background              → background
     color                   → color
     memory                  → memory
-    omit-claude-md          → omit_claude_md
-    omitClaudeMd            → omit_claude_md (camelCase alias)
+    omit-clawcodex-md       → omit_clawcodex_md
+    omitClawcodexMd         → omit_clawcodex_md (camelCase alias)
     hooks                   → hooks
     skills                  → skills
     isolation               → isolation
@@ -182,7 +182,9 @@ def parse_agent_from_markdown(
     background = _parse_bool(_first(frontmatter, "background"))
     color = _parse_color(_first(frontmatter, "color"))
     memory = _parse_memory(_first(frontmatter, "memory"), file_path=file_path)
-    omit_claude_md = _parse_bool(_first(frontmatter, "omit-claude-md", "omitClaudeMd"))
+    omit_clawcodex_md = _parse_bool(
+        _first(frontmatter, "omit-clawcodex-md", "omitClawcodexMd")
+    )
     hooks = parse_hooks(_first(frontmatter, "hooks"), owner_name=f"agent {agent_type}")
     skills = parse_string_list(_first(frontmatter, "skills"))
     isolation = _parse_isolation(
@@ -214,7 +216,7 @@ def parse_agent_from_markdown(
         background=background,
         color=color,
         memory=memory,
-        omit_claude_md=omit_claude_md,
+        omit_clawcodex_md=omit_clawcodex_md,
         disallowed_tools=disallowed_tools,
         hooks=hooks,
         skills=skills or None,

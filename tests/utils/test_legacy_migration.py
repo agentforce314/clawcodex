@@ -77,6 +77,8 @@ def test_user_migration_copies_and_preserves_source(fake_home):
     (legacy / "skills" / "greet" / "SKILL.md").write_text("hello")
     (legacy / "agents").mkdir()
     (legacy / "agents" / "critic.md").write_text("agent")
+    # The legacy harness's real file name — migration renames it to the
+    # canonical CLAWCODEX.md at the destination (_MIGRATE_RENAMES).
     (legacy / "CLAUDE.md").write_text("global memory")
     mem = legacy / "projects" / "-repo-a" / "memory"
     mem.mkdir(parents=True)
@@ -89,7 +91,7 @@ def test_user_migration_copies_and_preserves_source(fake_home):
 
     assert report is not None
     assert sorted(report.copied) == [
-        "CLAUDE.md",
+        "CLAWCODEX.md",
         "agents",
         "projects/-repo-a/memory",
         "skills/greet",
@@ -99,7 +101,7 @@ def test_user_migration_copies_and_preserves_source(fake_home):
     dst = fake_home / ".clawcodex"
     assert (dst / "skills" / "greet" / "SKILL.md").read_text() == "hello"
     assert (dst / "agents" / "critic.md").read_text() == "agent"
-    assert (dst / "CLAUDE.md").read_text() == "global memory"
+    assert (dst / "CLAWCODEX.md").read_text() == "global memory"
     assert (dst / "projects" / "-repo-a" / "memory" / "MEMORY.md").read_text() == "index"
     assert not (dst / "projects" / "-repo-a" / "session.jsonl").exists()
 

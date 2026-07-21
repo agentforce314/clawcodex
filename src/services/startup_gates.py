@@ -1,7 +1,7 @@
 """Startup security gates (components C8) — UI-neutral state layer.
 
 Three gates, ported from the TS startup flow (interactiveHelpers.tsx:
-trust :139-143, CLAUDE.md external includes :174-179, bypass
+trust :139-143, CLAWCODEX.md external includes :174-179, bypass
 acceptance :228-232), in that order:
 
 1. **Folder trust** (TS ``TrustDialog`` + ``config.ts
@@ -14,11 +14,11 @@ acceptance :228-232), in that order:
    trust for ``$HOME`` would blanket-trust everything under it.
    Decline exits with code 1.
 
-2. **External CLAUDE.md includes** (TS
+2. **External CLAWCODEX.md includes** (TS
    ``ClaudeMdExternalIncludesDialog`` :120-132): per-project boolean
    pair — ``hasClaudeMdExternalIncludesApproved`` +
    ``hasClaudeMdExternalIncludesWarningShown``. Asked once (yes/no both
-   set WarningShown); the loader (``context_system/claude_md.py``)
+   set WarningShown); the loader (``context_system/clawcodex_md.py``)
    includes externals only when approved. Non-interactive sessions
    never load unapproved externals (TS parity: silent skip — the
    include flag simply stays false).
@@ -211,7 +211,7 @@ def collect_trust_warnings(cwd: str | Path | None = None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Gate 2: external CLAUDE.md includes
+# Gate 2: external CLAWCODEX.md includes
 # ---------------------------------------------------------------------------
 
 def get_external_includes_state(cwd: str | Path | None = None) -> str:
@@ -248,7 +248,7 @@ def record_external_includes_choice(
         # The loader memo AND the assembled-context memo both embed the
         # external-include decision; clear both so an approval recorded
         # mid-session takes effect on the next prompt, not next launch.
-        from src.context_system.claude_md import clear_memory_file_caches
+        from src.context_system.clawcodex_md import clear_memory_file_caches
 
         clear_memory_file_caches()
         try:
@@ -266,7 +266,7 @@ async def list_external_includes(cwd: str | Path | None = None) -> list[str]:
     """Paths of external @includes that WOULD load if approved (TS
     hasExternalClaudeMdIncludes over ``getMemoryFiles(true)``)."""
 
-    from src.context_system.claude_md import (
+    from src.context_system.clawcodex_md import (
         get_memory_files,
         is_external_memory_file,
     )

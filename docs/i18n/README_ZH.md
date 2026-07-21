@@ -326,7 +326,7 @@ clawcodex --allow-dangerously-skip-permissions         # 允许之后通过 /per
 | Skill 系统 | ✅ | 基于 SKILL.md 的斜杠技能：参数与工具白名单 |
 | 取消 / 中止 | ✅ | ESC 可在约 50ms 内中止进行中的 Bash、Grep/Glob 以及所有 provider 的流式 HTTP；子 agent 拥有隔离的 `AbortController`；`Bash` 的 `tool_result` 区分超时与 ESC 中止 |
 | 图像处理 | ✅ | 与 TS 对齐的 Read 管线（魔数嗅探、按 API 限制缩放/压缩）；`@image.png` @-提及内联为 `ImageBlock`；`BaseProvider._prepare_messages` 中调用 API 前的 base64 大小校验；二进制 @-提及（PDF/zip/docx/…）转为 Read 工具提示而非乱码 |
-| 上下文构建 | 🟡 | workspace / git / `CLAUDE.md` 注入；更丰富的摘要与 memory 仍在演进 |
+| 上下文构建 | 🟡 | workspace / git / `CLAWCODEX.md` 注入；更丰富的摘要与 memory 仍在演进 |
 | 权限系统 | 🟡 | 框架与检查逻辑已有；全面集成进行中 |
 | MCP | 🟡 | MCP 相关工具与接线已有；协议层/运行时仍在完善 |
 
@@ -621,7 +621,7 @@ clawcodex/
 │   ├── tool_system/        # Agent loop、工具与 schema
 │   ├── skills/             # SKILL.md 加载与 Skill 工具
 │   ├── services/           # MCP、compact、IDE 桥、工具执行等
-│   ├── context_system/     # workspace / git / CLAUDE.md 上下文
+│   ├── context_system/     # workspace / git / CLAWCODEX.md 上下文
 │   ├── permissions/        # 权限模式与 bash 解析
 │   ├── hooks/              # Hook 类型与执行辅助
 │   └── command_system/     # 斜杠命令与参数替换

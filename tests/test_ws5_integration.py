@@ -2,7 +2,7 @@
 WS-5 Context Management — Integration & Smoke Tests.
 
 Exercises the full context pipeline end-to-end:
-  CLAUDE.md loading → git context → prompt assembly → QueryEngine → API call
+  CLAWCODEX.md loading → git context → prompt assembly → QueryEngine → API call
 
 Uses deterministic FakeProvider — no real API calls.
 """
@@ -28,9 +28,9 @@ from src.context_system import (
     get_user_context,
     prepend_user_context,
 )
-from src.context_system.claude_md import (
+from src.context_system.clawcodex_md import (
     clear_memory_file_caches,
-    get_claude_mds,
+    get_clawcodex_mds,
     get_memory_files,
     process_memory_file,
 )
@@ -84,7 +84,7 @@ class TestWS5SmokeImports(unittest.TestCase):
     def test_context_system_imports(self):
         import src.context_system
         import src.context_system.models
-        import src.context_system.claude_md
+        import src.context_system.clawcodex_md
         import src.context_system.git_context
         import src.context_system.prompt_assembly
         import src.context_system.memory_prefetch
@@ -101,7 +101,7 @@ class TestWS5SmokeImports(unittest.TestCase):
             prepend_user_context,
             clear_context_caches,
             get_memory_files,
-            get_claude_mds,
+            get_clawcodex_mds,
             clear_memory_file_caches,
             collect_git_context,
             format_git_status,
@@ -123,11 +123,11 @@ class TestWS5SmokeTypes(unittest.TestCase):
 
     def test_memory_file_info(self):
         info = MemoryFileInfo(
-            path="/project/CLAUDE.md",
+            path="/project/CLAWCODEX.md",
             type="Project",
             content="Rule: always test.",
         )
-        self.assertEqual(info.path, "/project/CLAUDE.md")
+        self.assertEqual(info.path, "/project/CLAWCODEX.md")
         self.assertEqual(info.type, "Project")
         self.assertIsNone(info.parent)
         self.assertIsNone(info.globs)
@@ -143,11 +143,11 @@ class TestWS5SmokeTypes(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Integration: Full CLAUDE.md → prompt pipeline
+# Integration: Full CLAWCODEX.md → prompt pipeline
 # ---------------------------------------------------------------------------
 
 class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
-    """CLAUDE.md files are loaded and formatted into the prompt correctly."""
+    """CLAWCODEX.md files are loaded and formatted into the prompt correctly."""
 
     def setUp(self):
         clear_memory_file_caches()
@@ -159,10 +159,10 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
         clear_git_caches()
         clear_context_caches()
 
-    def test_project_claude_md_appears_in_user_context(self):
-        """A CLAUDE.md at workspace root appears in get_user_context()."""
+    def test_project_clawcodex_md_appears_in_user_context(self):
+        """A CLAWCODEX.md at workspace root appears in get_user_context()."""
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "CLAUDE.md").write_text(
+            (Path(tmp) / "CLAWCODEX.md").write_text(
                 "Always write tests for every change.", encoding="utf-8",
             )
             with patch.dict(os.environ, {
@@ -175,15 +175,15 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
                 if "claudeMd" in user_ctx:
                     self.assertIn("Always write tests", user_ctx["claudeMd"])
 
-    def test_multi_level_claude_md_priority(self):
+    def test_multi_level_clawcodex_md_priority(self):
         """Files closer to CWD have higher priority (loaded later)."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sub = root / "packages" / "core"
             sub.mkdir(parents=True)
 
-            (root / "CLAUDE.md").write_text("Root rule: use Python 3.12.", encoding="utf-8")
-            (sub / "CLAUDE.md").write_text("Core rule: prefer async.", encoding="utf-8")
+            (root / "CLAWCODEX.md").write_text("Root rule: use Python 3.12.", encoding="utf-8")
+            (sub / "CLAWCODEX.md").write_text("Core rule: prefer async.", encoding="utf-8")
 
             with patch.dict(os.environ, {"CLAUDE_CODE_ORIGINAL_CWD": str(sub)}):
                 files = _run(get_memory_files(cwd=str(sub)))
@@ -226,7 +226,7 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "shared.md").write_text("Shared config.", encoding="utf-8")
-            (root / "CLAUDE.md").write_text(
+            (root / "CLAWCODEX.md").write_text(
                 f"Main rules.\n@{root / 'shared.md'}", encoding="utf-8",
             )
 
@@ -236,14 +236,14 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
                 self.assertIn("Main rules", all_content)
                 self.assertIn("Shared config", all_content)
 
-    def test_get_claude_mds_formatting(self):
-        """get_claude_mds() produces formatted prompt text with type descriptions."""
+    def test_get_clawcodex_mds_formatting(self):
+        """get_clawcodex_mds() produces formatted prompt text with type descriptions."""
         files = [
-            MemoryFileInfo(path="/p/CLAUDE.md", type="Project", content="Rule A"),
-            MemoryFileInfo(path="/home/.clawcodex/CLAUDE.md", type="User", content="Rule B"),
-            MemoryFileInfo(path="/p/CLAUDE.local.md", type="Local", content="Rule C"),
+            MemoryFileInfo(path="/p/CLAWCODEX.md", type="Project", content="Rule A"),
+            MemoryFileInfo(path="/home/.clawcodex/CLAWCODEX.md", type="User", content="Rule B"),
+            MemoryFileInfo(path="/p/CLAWCODEX.local.md", type="Local", content="Rule C"),
         ]
-        result = get_claude_mds(files)
+        result = get_clawcodex_mds(files)
         self.assertIn("Rule A", result)
         self.assertIn("Rule B", result)
         self.assertIn("Rule C", result)
@@ -321,11 +321,11 @@ class TestWS5IntegrationPromptAssembly(unittest.TestCase):
         clear_git_caches()
         clear_context_caches()
 
-    def test_full_pipeline_with_git_and_claude_md(self):
-        """Full context with git repo + CLAUDE.md produces complete parts."""
+    def test_full_pipeline_with_git_and_clawcodex_md(self):
+        """Full context with git repo + CLAWCODEX.md produces complete parts."""
         with tempfile.TemporaryDirectory() as tmp:
             _init_git_repo(tmp)
-            (Path(tmp) / "CLAUDE.md").write_text("Integration test rule.", encoding="utf-8")
+            (Path(tmp) / "CLAWCODEX.md").write_text("Integration test rule.", encoding="utf-8")
 
             with patch.dict(os.environ, {
                 "CLAUDE_CODE_ORIGINAL_CWD": tmp,
@@ -459,8 +459,8 @@ class TestWS5IntegrationQueryEngine(unittest.TestCase):
             tool_uses=None,
         )
 
-        # Create CLAUDE.md in workspace
-        (self.workspace / "CLAUDE.md").write_text(
+        # Create CLAWCODEX.md in workspace
+        (self.workspace / "CLAWCODEX.md").write_text(
             "Test rule: always be helpful.", encoding="utf-8",
         )
 
@@ -493,12 +493,12 @@ class TestWS5IntegrationQueryEngine(unittest.TestCase):
         self.assertTrue(provider.chat.called)
         call_args = provider.chat.call_args
         messages = call_args.args[0] if call_args.args else call_args.kwargs.get("messages", [])
-        # Messages should include a system-reminder with CLAUDE.md content
+        # Messages should include a system-reminder with CLAWCODEX.md content
         all_content = " ".join(
             m.get("content", "") if isinstance(m.get("content"), str) else ""
             for m in messages
         )
-        # The system-reminder with CLAUDE.md should be in the messages
+        # The system-reminder with CLAWCODEX.md should be in the messages
         reminder_msgs = [
             m for m in messages
             if m.get("role") == "user"
@@ -656,7 +656,7 @@ class TestWS5IntegrationCacheInvalidation(unittest.TestCase):
         clear_context_caches()
 
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "CLAUDE.md").write_text("Rule v1", encoding="utf-8")
+            (Path(tmp) / "CLAWCODEX.md").write_text("Rule v1", encoding="utf-8")
             with patch.dict(os.environ, {
                 "CLAUDE_CODE_ORIGINAL_CWD": tmp,
                 "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "",
@@ -669,8 +669,8 @@ class TestWS5IntegrationCacheInvalidation(unittest.TestCase):
                 # Clear all caches
                 clear_context_caches()
 
-                # Update CLAUDE.md
-                (Path(tmp) / "CLAUDE.md").write_text("Rule v2", encoding="utf-8")
+                # Update CLAWCODEX.md
+                (Path(tmp) / "CLAWCODEX.md").write_text("Rule v2", encoding="utf-8")
 
                 # Second fetch should see updated content
                 parts2 = _run(fetch_system_prompt_parts(cwd=tmp))
@@ -717,11 +717,11 @@ class TestWS5IntegrationBackwardCompat(unittest.TestCase):
         clear_git_caches()
         clear_context_caches()
 
-    def test_build_context_prompt_with_claude_md(self):
+    def test_build_context_prompt_with_clawcodex_md(self):
         """Legacy API produces prompt with runtime context + instructions."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "CLAUDE.md").write_text("Legacy compat rule.", encoding="utf-8")
+            (root / "CLAWCODEX.md").write_text("Legacy compat rule.", encoding="utf-8")
             (root / "README.md").write_text("# Test\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "app.py").write_text("pass\n", encoding="utf-8")
@@ -750,7 +750,7 @@ class TestWS5IntegrationBackwardCompat(unittest.TestCase):
 
 class TestWS5SmokeEndToEnd(unittest.TestCase):
     """
-    End-to-end smoke: workspace with git + CLAUDE.md → QueryEngine → response.
+    End-to-end smoke: workspace with git + CLAWCODEX.md → QueryEngine → response.
     Verifies the full chain works without errors.
     """
 
@@ -765,10 +765,10 @@ class TestWS5SmokeEndToEnd(unittest.TestCase):
         clear_context_caches()
 
     def test_full_end_to_end(self):
-        """Complete pipeline: git repo + CLAUDE.md + QueryEngine → assistant response."""
+        """Complete pipeline: git repo + CLAWCODEX.md + QueryEngine → assistant response."""
         with tempfile.TemporaryDirectory() as tmp:
             _init_git_repo(tmp)
-            (Path(tmp) / "CLAUDE.md").write_text(
+            (Path(tmp) / "CLAWCODEX.md").write_text(
                 "E2E rule: always explain your reasoning.", encoding="utf-8",
             )
             workspace = Path(tmp)

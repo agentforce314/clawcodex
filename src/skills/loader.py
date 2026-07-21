@@ -622,13 +622,13 @@ _skill_dir_cache: dict[str, list[Skill]] = {}
 # `isRestrictedToPluginOnly('skills')` gates so the Python loader honors
 # the same env-driven safety flags. We reuse the existing
 # `_is_bare_mode` / `_get_additional_directories` semantics already
-# established by `src/context_system/claude_md.py` rather than inventing
+# established by `src/context_system/clawcodex_md.py` rather than inventing
 # parallel ones.
 # ----------------------------------------------------------------------
 
 
 def _is_bare_mode() -> bool:
-    """True when ``CLAUDE_CODE_BARE_MODE`` is set (matches CLAUDE.md path).
+    """True when ``CLAUDE_CODE_BARE_MODE`` is set (matches CLAWCODEX.md path).
 
     Bare mode skips autodiscovery entirely; only ``--add-dir`` paths
     contribute disk skills. Bundled/MCP skills are unaffected (they go

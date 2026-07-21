@@ -3,7 +3,7 @@ System prompt assembly — aligned with typescript/src/utils/queryContext.ts.
 
 Provides fetch_system_prompt_parts() which concurrently fetches:
   - default system prompt sections
-  - user context (CLAUDE.md + date)
+  - user context (CLAWCODEX.md + date)
   - system context (git status)
 
 Also provides append_system_context() and prepend_user_context() matching
@@ -19,10 +19,10 @@ from typing import Any
 
 from ..types.messages import Message, UserMessage
 from .cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
-from .claude_md import (
-    _should_disable_claude_md,
+from .clawcodex_md import (
+    _should_disable_context_mds,
     clear_memory_file_caches,
-    get_claude_mds,
+    get_clawcodex_mds,
     get_memory_files,
 )
 from .git_context import (
@@ -64,10 +64,10 @@ async def get_user_context(
     cwd: str | None = None,
 ) -> dict[str, str]:
     """
-    Get memoized user context: CLAUDE.md content + current date.
+    Get memoized user context: CLAWCODEX.md content + current date.
 
     Mirrors TS getUserContext from context.ts.
-    Returns dict with keys: claudeMd, currentDate.
+    Returns dict with keys: clawcodexMd, currentDate.
     """
     global _user_context_cache
     if _user_context_cache is not None:
@@ -83,26 +83,26 @@ async def get_user_context(
     # would bust the cache on every turn.
     context["currentDate"] = _get_session_start_date_iso()
 
-    # CLAUDE.md content (skip in --bare mode unless --add-dir used)
-    claude_md_content = ""
-    if not _should_disable_claude_md():
+    # CLAWCODEX.md content (skip in --bare mode unless --add-dir used)
+    clawcodex_md_content = ""
+    if not _should_disable_context_mds():
         try:
             memory_files = await get_memory_files(cwd=cwd)
-            claude_md_content = get_claude_mds(memory_files)
-            if claude_md_content:
-                context["claudeMd"] = claude_md_content
+            clawcodex_md_content = get_clawcodex_mds(memory_files)
+            if clawcodex_md_content:
+                context["clawcodexMd"] = clawcodex_md_content
         except Exception:
             pass
 
-    # Cache CLAUDE.md into the bootstrap singleton (TS context.ts:173-176):
+    # Cache CLAWCODEX.md into the bootstrap singleton (TS context.ts:173-176):
     # the DAG-leaf cache exists to break the classifier→filesystem→
     # permissions→classifier import cycle. The TS consumer (yoloClassifier,
     # the auto-mode transcript classifier) is unported — this is forward
     # provisioning so the cache is real when ch06/ch12 land the consumer.
     try:
-        from ..bootstrap.state import set_cached_claude_md_content
+        from ..bootstrap.state import set_cached_clawcodex_md_content
 
-        set_cached_claude_md_content(claude_md_content or None)
+        set_cached_clawcodex_md_content(clawcodex_md_content or None)
     except Exception:
         pass
 
@@ -245,7 +245,7 @@ def prepend_user_context(
     context: dict[str, str],
 ) -> list[Message]:
     """
-    Prepend a <system-reminder> user message with CLAUDE.md + date.
+    Prepend a <system-reminder> user message with CLAWCODEX.md + date.
 
     Mirrors TS prependUserContext from api.ts.
     """

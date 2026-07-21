@@ -99,7 +99,7 @@ def _scan_memory_content(content: str) -> str | None:
 
     Known tradeoff (design-accepted): strict patterns can false-positive on
     legitimate config-workflow facts (e.g. anything phrased "update …
-    CLAUDE.md"). A foreground write surfaces the error so the model can
+    CLAWCODEX.md"). A foreground write surfaces the error so the model can
     reword; a background-review write is silently dropped (the fork
     swallows rejections) — aggressive scanning wins because this content
     persists into every future system prompt.

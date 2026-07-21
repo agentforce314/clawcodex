@@ -37,8 +37,8 @@ def build_context_prompt(
     if git_section:
         sections.append(git_section)
 
-    # CLAUDE.md context (sync wrapper around async get_memory_files)
-    claude_section = _build_claude_md_section(str(current), root)
+    # CLAWCODEX.md context (sync wrapper around async get_memory_files)
+    claude_section = _build_clawcodex_md_section(str(current), root)
     if claude_section:
         sections.append(claude_section)
 
@@ -98,11 +98,11 @@ def _build_git_section(cwd: str) -> str:
     return ""
 
 
-def _build_claude_md_section(cwd: str, root: Path) -> str:
-    from .claude_md import get_claude_mds, get_memory_files
+def _build_clawcodex_md_section(cwd: str, root: Path) -> str:
+    from .clawcodex_md import get_clawcodex_mds, get_memory_files
     try:
         memory_files = _run_async(get_memory_files(cwd=cwd))
-        content = get_claude_mds(memory_files)
+        content = get_clawcodex_mds(memory_files)
         if content:
             return f"## Project Instructions\n{content}"
     except Exception:

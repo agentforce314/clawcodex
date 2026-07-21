@@ -75,7 +75,7 @@ export interface SlashExecResponse {
 // ── /memory picker (memory_targets control) ─────────────────────────
 
 export interface MemoryTarget {
-  /** Secondary dim text — e.g. "Saved in ~/.clawcodex/CLAUDE.md", "@-imported". */
+  /** Secondary dim text — e.g. "Saved in ~/.clawcodex/CLAWCODEX.md", "@-imported". */
   description?: string
   label: string
   path: string

@@ -110,7 +110,7 @@ subsumed under the bash tool path.
 
 Three tiers, matching the book chapter:
 
-1. **Project-level** — `CLAUDE.md` files in the repo (loaded by
+1. **Project-level** — `CLAWCODEX.md` files in the repo (loaded by
    `src/memdir/memory_scan.py`).
 2. **User-level** — `~/.clawcodex/projects/<project-slug>/memory/MEMORY.md` (loaded by
    `src/memdir/paths.py`).

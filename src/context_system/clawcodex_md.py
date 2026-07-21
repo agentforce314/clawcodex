@@ -1,13 +1,20 @@
 """
-Multi-level CLAUDE.md loading — aligned with typescript/src/utils/claudemd.ts.
+Multi-level CLAWCODEX.md loading — engineering aligned with
+typescript/src/utils/claudemd.ts, file naming clawcodex-branded.
 
 Loading order (reverse priority — later entries take precedence):
-  1. Managed memory (/etc/clawcodex/CLAUDE.md by default)
-  2. User memory (~/.clawcodex/CLAUDE.md)
-  3. Project memory (CLAUDE.md, .clawcodex/CLAUDE.md, .clawcodex/rules/*.md)
-  4. Local memory (CLAUDE.local.md)
+  1. Managed memory (/etc/clawcodex/CLAWCODEX.md by default)
+  2. User memory (~/.clawcodex/CLAWCODEX.md)
+  3. Project memory (CLAWCODEX.md, .clawcodex/CLAWCODEX.md,
+     .clawcodex/rules/*.md)
+  4. Local memory (CLAWCODEX.local.md)
 
 Files closer to CWD have higher priority (loaded later in the list).
+
+``CLAWCODEX.md`` / ``CLAWCODEX.local.md`` are the only names read — the
+pre-rebrand ``CLAUDE.md`` naming is not consulted (the one-time
+``~/.claude`` import migration copies that harness's file in under the
+canonical name; see ``src/utils/legacy_migration.py``).
 
 The @include directive allows memory files to reference other files:
   @path, @./relative, @~/home, @/absolute
@@ -34,6 +41,11 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The app's context-file names.
+CONTEXT_MD = "CLAWCODEX.md"
+CONTEXT_LOCAL_MD = "CLAWCODEX.local.md"
+
 
 # ---------------------------------------------------------------------------
 # Module-level memoize cache for get_memory_files
@@ -79,16 +91,16 @@ def _is_bare_mode() -> bool:
 
 
 def _get_additional_directories() -> list[str]:
-    """Get additional directories for CLAUDE.md discovery (--add-dir)."""
+    """Get additional directories for CLAWCODEX.md discovery (--add-dir)."""
     val = os.environ.get("CLAUDE_CODE_ADDITIONAL_DIRECTORIES", "")
     if not val:
         return []
     return [d.strip() for d in val.split(os.pathsep) if d.strip()]
 
 
-def _should_disable_claude_md() -> bool:
-    """Mirrors TS shouldDisableClaudeMd logic."""
-    if os.environ.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "").lower() in ("1", "true", "yes"):
+def _should_disable_context_mds() -> bool:
+    """Mirrors TS shouldDisableClaudeMd logic (clawcodex-branded switch)."""
+    if os.environ.get("CLAWCODEX_DISABLE_CLAWCODEX_MDS", "").lower() in ("1", "true", "yes"):
         return True
     if _is_bare_mode() and len(_get_additional_directories()) == 0:
         return True
@@ -371,7 +383,7 @@ def is_external_memory_file(
     """TS getExternalClaudeMdIncludes predicate (claudemd.ts:1427-1437):
     a non-User-tier INCLUDED file (has a parent) living outside the
     original cwd. The User tier is excluded — the user's own
-    ~/CLAUDE.md may include anything without triggering the project
+    ~/CLAWCODEX.md may include anything without triggering the project
     gate."""
 
     if info.type == "User" or not info.parent:
@@ -418,13 +430,13 @@ async def get_memory_files(
 
     home = str(Path.home())
 
-    # 1. Managed memory (<managed dir>/CLAUDE.md — /etc/clawcodex by
+    # 1. Managed memory (<managed dir>/CLAWCODEX.md — /etc/clawcodex by
     # default, CLAWCODEX_MANAGED_CONFIG_DIR override like the managed
     # skills/MCP tiers)
     from src.utils.clawcodex_dirs import get_managed_config_dir
 
     managed_base = str(get_managed_config_dir())
-    managed_path = os.path.join(managed_base, "CLAUDE.md")
+    managed_path = os.path.join(managed_base, CONTEXT_MD)
     result.extend(await process_memory_file(
         managed_path, "Managed", processed_paths, include_external,
     ))
@@ -435,10 +447,10 @@ async def get_memory_files(
         conditional_rule=False,
     ))
 
-    # 2. User memory (~/.clawcodex/CLAUDE.md)
-    user_claude_md = os.path.join(home, ".clawcodex", "CLAUDE.md")
+    # 2. User memory (~/.clawcodex/CLAWCODEX.md)
+    user_context_md = os.path.join(home, ".clawcodex", CONTEXT_MD)
     result.extend(await process_memory_file(
-        user_claude_md, "User", processed_paths, True,  # User can always include external
+        user_context_md, "User", processed_paths, True,  # User can always include external
     ))
     # User rules (~/.clawcodex/rules/*.md)
     user_rules_dir = os.path.join(home, ".clawcodex", "rules")
@@ -461,15 +473,15 @@ async def get_memory_files(
 
     # Process from root downward to CWD (reverse so CWD is last = highest priority)
     for d in reversed(dirs):
-        # Project: CLAUDE.md
-        project_path = os.path.join(d, "CLAUDE.md")
+        # Project: CLAWCODEX.md
+        project_path = os.path.join(d, CONTEXT_MD)
         result.extend(await process_memory_file(
             project_path, "Project", processed_paths, include_external,
         ))
-        # Project: .clawcodex/CLAUDE.md
-        dot_claude_path = os.path.join(d, ".clawcodex", "CLAUDE.md")
+        # Project: .clawcodex/CLAWCODEX.md
+        dot_dir_path = os.path.join(d, ".clawcodex", CONTEXT_MD)
         result.extend(await process_memory_file(
-            dot_claude_path, "Project", processed_paths, include_external,
+            dot_dir_path, "Project", processed_paths, include_external,
         ))
         # Project: .clawcodex/rules/*.md
         rules_dir = os.path.join(d, ".clawcodex", "rules")
@@ -477,21 +489,21 @@ async def get_memory_files(
             rules_dir, "Project", processed_paths, include_external,
             conditional_rule=False,
         ))
-        # Local: CLAUDE.local.md
-        local_path = os.path.join(d, "CLAUDE.local.md")
+        # Local: CLAWCODEX.local.md
+        local_path = os.path.join(d, CONTEXT_LOCAL_MD)
         result.extend(await process_memory_file(
             local_path, "Local", processed_paths, include_external,
         ))
 
     # 4. Additional directories (--add-dir)
     for add_dir in _get_additional_directories():
-        project_path = os.path.join(add_dir, "CLAUDE.md")
+        project_path = os.path.join(add_dir, CONTEXT_MD)
         result.extend(await process_memory_file(
             project_path, "Project", processed_paths, include_external,
         ))
-        dot_claude_path = os.path.join(add_dir, ".clawcodex", "CLAUDE.md")
+        dot_dir_path = os.path.join(add_dir, ".clawcodex", CONTEXT_MD)
         result.extend(await process_memory_file(
-            dot_claude_path, "Project", processed_paths, include_external,
+            dot_dir_path, "Project", processed_paths, include_external,
         ))
         rules_dir = os.path.join(add_dir, ".clawcodex", "rules")
         result.extend(await process_md_rules(
@@ -505,10 +517,10 @@ async def get_memory_files(
 
 
 # ---------------------------------------------------------------------------
-# get_claude_mds — format memory files for injection (mirrors TS getClaudeMds)
+# get_clawcodex_mds — format memory files for injection (TS getClaudeMds)
 # ---------------------------------------------------------------------------
 
-def get_claude_mds(memory_files: list[MemoryFileInfo]) -> str:
+def get_clawcodex_mds(memory_files: list[MemoryFileInfo]) -> str:
     """
     Format memory files into the prompt string.
 
@@ -553,7 +565,7 @@ def get_large_memory_files(files: list[MemoryFileInfo]) -> list[MemoryFileInfo]:
 def is_memory_file_path(file_path: str) -> bool:
     """Check if a path looks like a memory file."""
     name = os.path.basename(file_path)
-    if name in ("CLAUDE.md", "CLAUDE.local.md"):
+    if name in (CONTEXT_MD, CONTEXT_LOCAL_MD):
         return True
     if name.endswith(".md") and (os.sep + ".clawcodex" + os.sep + "rules" + os.sep) in file_path:
         return True

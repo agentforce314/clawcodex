@@ -35,7 +35,8 @@ Deviations from the donor (right-sized for clawcodex per
 hermes-specific persistence targets (``~/.hermes/.env``,
 ``.hermes/config.yaml``, ``SOUL.md``) are replaced with the clawcodex
 equivalents (``~/.clawcodex/config.json``, ``.clawcodex/`` settings,
-``CLAUDE.md`` kept — it is this product's context file too); the
+``CLAWCODEX.md`` — the product's canonical context file — plus the
+legacy ``CLAUDE.md`` name the read fallback still honors); the
 agent-env unset pattern gains the ``CLAWCODEX`` token.
 """
 
@@ -100,7 +101,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (r'authorized_keys', "ssh_backdoor", "strict"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
     (r'\$HOME/\.clawcodex/config\.json|\~/\.clawcodex/config\.json', "clawcodex_config", "strict"),
-    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
+    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*(?:AGENTS\.md|CLAWCODEX\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (r'(update|modify|edit|write|change|append|add\s+to)\s+.*\.clawcodex/(config\.json|settings\.json)', "clawcodex_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────

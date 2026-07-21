@@ -4,7 +4,7 @@ Before the fix, the cutover's ``build_effective_system_prompt`` returned only
 ``{style}\n\n{context}`` (no base sections), so the live TUI/headless agent
 received NO operating instructions. The fix makes it return the full base
 prompt as a block list (mirroring the engine/REPL canonical path), with the
-style appended and the workspace/git/CLAUDE.md context preserved.
+style appended and the workspace/git/CLAWCODEX.md context preserved.
 
 See ``my-docs/get-parity-by-folder/live-base-system-prompt-gap-analysis.md``.
 """
@@ -96,19 +96,19 @@ def test_does_not_emit_prose_tool_docs(tmp_path: Path):
     assert "# Available Tools" not in text
 
 
-def test_preserves_claude_md_project_instructions(tmp_path: Path, monkeypatch):
-    """CLAUDE.md must NOT be dropped (critic B1): it is kept via the trailing
+def test_preserves_clawcodex_md_project_instructions(tmp_path: Path, monkeypatch):
+    """CLAWCODEX.md must NOT be dropped (critic B1): it is kept via the trailing
     build_context_prompt block (## Project Instructions), since the base
-    blocks' memory section is MEMORY.md auto-memory, not CLAUDE.md."""
-    # Isolate HOME so global ~/.claude/CLAUDE.md doesn't mask the test file.
+    blocks' memory section is MEMORY.md auto-memory, not CLAWCODEX.md."""
+    # Isolate HOME so global ~/.claude/CLAWCODEX.md doesn't mask the test file.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     marker = "PROJECT_CLAUDE_MD_SENTINEL_xyz"
-    (tmp_path / "CLAUDE.md").write_text(f"# Project rules\n{marker}\n", encoding="utf-8")
+    (tmp_path / "CLAWCODEX.md").write_text(f"# Project rules\n{marker}\n", encoding="utf-8")
 
     ctx = ToolContext(workspace_root=tmp_path)
     text = _joined(build_effective_system_prompt(_SENTINEL_STYLE, ctx))
-    assert marker in text, "CLAUDE.md project instructions were dropped"
+    assert marker in text, "CLAWCODEX.md project instructions were dropped"
 
 
 def test_provider_none_is_safe(tmp_path: Path):

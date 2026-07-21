@@ -475,7 +475,7 @@ class _AgentSession:
             await self._do_mcp_auth(request_id, inner.get("server"))
             return
         if subtype == "external_includes":
-            # External CLAUDE.md @-imports (ClaudeMdExternalIncludesDialog, §6).
+            # External CLAWCODEX.md @-imports (ClaudeMdExternalIncludesDialog, §6).
             try:
                 from src.services.startup_gates import get_external_includes_state, list_external_includes
 
@@ -516,7 +516,7 @@ class _AgentSession:
             # (no mtimes), so an external $EDITOR write stays invisible until a
             # bust — clear so the next turn's prompt assembly re-reads disk.
             try:
-                from src.context_system.claude_md import clear_memory_file_caches
+                from src.context_system.clawcodex_md import clear_memory_file_caches
 
                 clear_memory_file_caches()
                 self._reply(request_id, {"ok": True})
@@ -2088,7 +2088,7 @@ class _AgentSession:
                 # Coordinator-filtered view: token accounting must reflect
                 # the tool schemas actually sent on the wire.
                 tool_schemas=_tool_schemas(coordinator_main_loop_registry(self.tool_registry)),
-                claude_md_content="",
+                clawcodex_md_content="",
             )
             out.update({
                 "total_tokens": data.total_tokens,
@@ -3880,7 +3880,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             except Exception:  # noqa: BLE001 — env repair is best-effort
                 logger.debug("[agent-server] post-trust env apply failed",
                              exc_info=True)
-        # ch02 round-4 WI-2 — warm the context caches (CLAUDE.md walk,
+        # ch02 round-4 WI-2 — warm the context caches (CLAWCODEX.md walk,
         # git status when trusted) during the user's typing window; the
         # first turn's build_context_prompt reads the same underlying
         # caches. Fire-and-forget daemon thread; failures swallowed.

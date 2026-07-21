@@ -136,7 +136,7 @@ def run_headless(options: HeadlessOptions) -> int:
     stdin = options.stdin or sys.stdin
 
     # ch02 round-3 GAP B: warm the user/system context memos now so the
-    # CLAUDE.md walk and git probes overlap with provider + registry
+    # CLAWCODEX.md walk and git probes overlap with provider + registry
     # construction below instead of running inside the first turn.
     # Mirrors TS main.tsx:1973-1990 (non-interactive early kicks; trust
     # is implicit in -p mode and was granted by run_pre_action).
@@ -464,7 +464,7 @@ def run_headless(options: HeadlessOptions) -> int:
                         # Headless is single-shot per prompt and starts
                         # its own event loop, so ``asyncio.run`` is the
                         # right pattern. Pre-build the effective system
-                        # prompt (CLAUDE.md + git status + style) so the
+                        # prompt (CLAWCODEX.md + git status + style) so the
                         # cold-start context reaches query() unchanged
                         # — the legacy run_agent_loop did this inside
                         # the loop; the adapter doesn't.

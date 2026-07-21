@@ -35,7 +35,9 @@ def test_prompt_verbatim_pin():
     from the TS template literal — pin its size and section headers."""
     from src.plugins.karpathy_guidelines import KARPATHY_GUIDELINES_PROMPT as P
 
-    assert len(P) == 2351
+    # 2351 in the TS original; +3 for the deliberate context-file rebrand
+    # in the header (# CLAUDE.md -> # CLAWCODEX.md).
+    assert len(P) == 2354
     for header in (
         "## 1. Think Before Coding",
         "## 2. Simplicity First",

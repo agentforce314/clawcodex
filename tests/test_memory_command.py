@@ -53,7 +53,7 @@ def mem_env(tmp_path, monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "src.context_system.claude_md.get_memory_files", _no_files
+        "src.context_system.clawcodex_md.get_memory_files", _no_files
     )
     cwd = tmp_path / "proj"
     cwd.mkdir()
@@ -82,17 +82,17 @@ async def test_options_synthetic_candidates_with_descriptions(mem_env):
     call = ui.select_calls[0]
     assert call["labels"][0] == "User memory"
     assert call["labels"][1] == "Project memory"
-    assert call["descriptions"][0] == "Saved in ~/.clawcodex/CLAUDE.md"  # verbatim TS
-    assert call["descriptions"][1] == "Saved in ./CLAUDE.md"  # non-git branch
-    assert call["values"][0] == str(home / ".clawcodex" / "CLAUDE.md")
-    assert call["values"][1] == str(cwd / "CLAUDE.md")  # fallback (no loaded ancestor)
+    assert call["descriptions"][0] == "Saved in ~/.clawcodex/CLAWCODEX.md"  # verbatim TS
+    assert call["descriptions"][1] == "Saved in ./CLAWCODEX.md"  # non-git branch
+    assert call["values"][0] == str(home / ".clawcodex" / "CLAWCODEX.md")
+    assert call["values"][1] == str(cwd / "CLAWCODEX.md")  # fallback (no loaded ancestor)
 
 
 async def test_project_memory_resolved_from_ancestor_walk(mem_env, monkeypatch):
     # From a repo SUBDIRECTORY the Project entry must point at the loaded
-    # root-level CLAUDE.md, not {cwd}/CLAUDE.md (critic M2).
+    # root-level CLAWCODEX.md, not {cwd}/CLAWCODEX.md (critic M2).
     home, cwd = mem_env
-    root_claude = cwd / "CLAUDE.md"
+    root_claude = cwd / "CLAWCODEX.md"
     root_claude.write_text("root project mem")
     subdir = cwd / "sub"
     subdir.mkdir()
@@ -100,35 +100,35 @@ async def test_project_memory_resolved_from_ancestor_walk(mem_env, monkeypatch):
     async def _files(cwd=None, **kwargs):
         return [_Info(str(root_claude), type="Project", parent=None)]
 
-    monkeypatch.setattr("src.context_system.claude_md.get_memory_files", _files)
+    monkeypatch.setattr("src.context_system.clawcodex_md.get_memory_files", _files)
     ui = FakeUIHost(pick=None)
     await MEMORY_COMMAND.run("", _ctx(subdir, ui=ui))
     call = ui.select_calls[0]
-    assert call["values"][1] == str(root_claude)  # ancestor-resolved, not sub/CLAUDE.md
+    assert call["values"][1] == str(root_claude)  # ancestor-resolved, not sub/CLAWCODEX.md
     assert call["values"].count(str(root_claude)) == 1  # deduped from the enumeration
     assert "Project memory" in call["labels"]
 
 
 async def test_project_memory_prefers_nearest_ancestor(mem_env, monkeypatch):
-    # Monorepo: /repo/CLAUDE.md + /repo/sub/CLAUDE.md, cwd=/repo/sub/deep ->
+    # Monorepo: /repo/CLAWCODEX.md + /repo/sub/CLAWCODEX.md, cwd=/repo/sub/deep ->
     # the NEAREST loaded ancestor wins (TS walks cwd upward).
     home, cwd = mem_env
-    (cwd / "CLAUDE.md").write_text("root")
+    (cwd / "CLAWCODEX.md").write_text("root")
     sub = cwd / "sub"
     deep = sub / "deep"
     deep.mkdir(parents=True)
-    (sub / "CLAUDE.md").write_text("nearer")
+    (sub / "CLAWCODEX.md").write_text("nearer")
 
     async def _files(cwd=None, **kwargs):
         return [  # enumeration order is root -> cwd
-            _Info(str(mem_env[1] / "CLAUDE.md"), type="Project", parent=None),
-            _Info(str(sub / "CLAUDE.md"), type="Project", parent=None),
+            _Info(str(mem_env[1] / "CLAWCODEX.md"), type="Project", parent=None),
+            _Info(str(sub / "CLAWCODEX.md"), type="Project", parent=None),
         ]
 
-    monkeypatch.setattr("src.context_system.claude_md.get_memory_files", _files)
+    monkeypatch.setattr("src.context_system.clawcodex_md.get_memory_files", _files)
     ui = FakeUIHost(pick=None)
     await MEMORY_COMMAND.run("", _ctx(deep, ui=ui))
-    assert ui.select_calls[0]["values"][1] == str(sub / "CLAUDE.md")
+    assert ui.select_calls[0]["values"][1] == str(sub / "CLAWCODEX.md")
 
 
 async def test_project_desc_git_branch(mem_env, monkeypatch):
@@ -136,7 +136,7 @@ async def test_project_desc_git_branch(mem_env, monkeypatch):
     monkeypatch.setattr("src.utils.git.get_repo_root", lambda *a, **k: str(cwd))
     ui = FakeUIHost(pick=None)
     await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
-    assert ui.select_calls[0]["descriptions"][1] == "Checked in at ./CLAUDE.md"
+    assert ui.select_calls[0]["descriptions"][1] == "Checked in at ./CLAWCODEX.md"
 
 
 async def test_options_extra_files_and_imported_desc(mem_env, monkeypatch):
@@ -148,7 +148,7 @@ async def test_options_extra_files_and_imported_desc(mem_env, monkeypatch):
             _Info(str(home / "imported.md"), type="User", parent=str(home / "extra.md")),
         ]
 
-    monkeypatch.setattr("src.context_system.claude_md.get_memory_files", _files)
+    monkeypatch.setattr("src.context_system.clawcodex_md.get_memory_files", _files)
     ui = FakeUIHost(pick=None)
     await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
     call = ui.select_calls[0]
@@ -164,19 +164,19 @@ async def test_options_extra_files_and_imported_desc(mem_env, monkeypatch):
 # --------------------------------------------------------------------------- #
 async def test_select_user_memory_creates_dir_and_file(mem_env):
     home, cwd = mem_env
-    target = str(home / ".clawcodex" / "CLAUDE.md")
+    target = str(home / ".clawcodex" / "CLAWCODEX.md")
     ui = FakeUIHost(pick=target)
     out = await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
     assert isinstance(out, InteractiveOutcome)
-    assert (home / ".clawcodex" / "CLAUDE.md").exists()
-    assert out.message.startswith("Memory file at ~/.clawcodex/CLAUDE.md. Open it in your editor.")
+    assert (home / ".clawcodex" / "CLAWCODEX.md").exists()
+    assert out.message.startswith("Memory file at ~/.clawcodex/CLAWCODEX.md. Open it in your editor.")
     assert "> To choose an editor, set the $EDITOR or $VISUAL environment variable." in out.message
     assert out.display == "system"
 
 
 async def test_select_preserves_existing_content(mem_env):
     home, cwd = mem_env
-    target = cwd / "CLAUDE.md"
+    target = cwd / "CLAWCODEX.md"
     target.write_text("precious")
     ui = FakeUIHost(pick=str(target))
     await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
@@ -189,7 +189,7 @@ async def test_select_create_failure(mem_env, monkeypatch):
         "src.command_system.memory_command._ensure_file",
         lambda path: (_ for _ in ()).throw(OSError("nope")),
     )
-    ui = FakeUIHost(pick=str(cwd / "CLAUDE.md"))
+    ui = FakeUIHost(pick=str(cwd / "CLAWCODEX.md"))
     out = await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
     assert out.message == "Error opening memory file: nope"
     assert out.display == "user"
@@ -212,7 +212,7 @@ def test_display_path(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     cwd = tmp_path / "w"
     cwd.mkdir()
-    assert _display_path(str(cwd / "CLAUDE.md"), str(cwd)) == "CLAUDE.md"
+    assert _display_path(str(cwd / "CLAWCODEX.md"), str(cwd)) == "CLAWCODEX.md"
     assert _display_path(str(home / "x.md"), str(cwd)) == "~/x.md"
 
 
