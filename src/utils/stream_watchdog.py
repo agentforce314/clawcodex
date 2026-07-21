@@ -254,9 +254,14 @@ class StreamWatchdog:
         self._timeout_s = (
             timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
         )
-        # Two-phase: the FIRST event gets a longer grace (prompt processing /
-        # time-to-first-event), later events the normal inter-event idle.
-        # ``reset()`` flips ``_seen_event`` on the first call.
+        # Two-phase (time-based fallback): the FIRST event gets a longer
+        # grace (prompt processing / time-to-first-event), later events the
+        # normal inter-event idle. ``reset()`` flips ``_seen_event`` on the
+        # first call. NOTE: ``first_event_timeout_s`` is resolved
+        # INDEPENDENTLY of ``timeout_s`` — a caller that passes only
+        # ``timeout_s`` gets the env/default first-event grace (300s), not a
+        # scaled ``timeout_s``. Tests that want a short first phase must pass
+        # both (the ``max(...)`` floor only prevents first < inter).
         self._first_event_timeout_s = (
             first_event_timeout_s
             if first_event_timeout_s is not None

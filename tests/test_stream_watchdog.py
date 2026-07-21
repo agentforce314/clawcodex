@@ -190,12 +190,13 @@ class TestTwoPhaseWatchdog(unittest.TestCase):
         resp = MagicMock()
         stream = MagicMock()
         stream.response = resp
-        # first-event grace 400ms, inter-event 100ms.
+        # first-event grace 800ms, inter-event 100ms (wide slack so a CI
+        # scheduling stall can't flip the "must not fire in grace" assert).
         watchdog = StreamWatchdog(
-            stream, timeout_s=0.1, first_event_timeout_s=0.4
+            stream, timeout_s=0.1, first_event_timeout_s=0.8
         )
         watchdog.arm()
-        time.sleep(0.25)  # past inter-event, within first-event grace
+        time.sleep(0.35)  # past inter-event, comfortably within first grace
         self.assertFalse(watchdog.fired, "must not fire during first-event grace")
         resp.close.assert_not_called()
         watchdog.reset()  # first event arrived → tighten to inter-event
