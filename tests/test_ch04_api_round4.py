@@ -354,7 +354,7 @@ class TestWatchdogWarning(unittest.TestCase):
         from src.utils.stream_watchdog import StreamWatchdog
 
         stream = MagicMock()
-        wd = StreamWatchdog(stream, timeout_s=0.2, request_id="req-1")
+        wd = StreamWatchdog(stream, timeout_s=0.2, first_event_timeout_s=0.2, request_id="req-1")
         with self.assertLogs("src.utils.stream_watchdog", level="WARNING") as logs:
             wd.arm()
             import time
@@ -368,7 +368,7 @@ class TestWatchdogWarning(unittest.TestCase):
         from src.utils.stream_watchdog import StreamWatchdog
 
         stream = MagicMock()
-        wd = StreamWatchdog(stream, timeout_s=0.3)
+        wd = StreamWatchdog(stream, timeout_s=0.3, first_event_timeout_s=0.3)
         import time
 
         # critic m3: assert the warning is actually SUPPRESSED, not just

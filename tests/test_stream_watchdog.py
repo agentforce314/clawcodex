@@ -67,7 +67,7 @@ class TestStreamWatchdogFires(unittest.TestCase):
     def test_timer_fires_after_short_timeout(self):
         """Set a 50ms timeout, don't reset, wait 200ms → fired + close called."""
         stream = MagicMock()
-        watchdog = StreamWatchdog(stream, timeout_s=0.05)
+        watchdog = StreamWatchdog(stream, timeout_s=0.05, first_event_timeout_s=0.05)
         watchdog.arm()
         time.sleep(0.2)  # wait past the deadline
         self.assertTrue(watchdog.fired)
@@ -91,7 +91,7 @@ class TestStreamWatchdogFires(unittest.TestCase):
         """If ``response.close`` raises, the timer thread swallows it."""
         stream = MagicMock()
         stream.response.close.side_effect = RuntimeError("simulated close failure")
-        watchdog = StreamWatchdog(stream, timeout_s=0.05)
+        watchdog = StreamWatchdog(stream, timeout_s=0.05, first_event_timeout_s=0.05)
         watchdog.arm()
         time.sleep(0.2)
         # No exception escaped to this thread — the timer thread swallowed it.
@@ -101,7 +101,7 @@ class TestStreamWatchdogFires(unittest.TestCase):
     def test_disarm_after_fire_is_safe(self):
         """``disarm`` can be called after the timer has already fired."""
         stream = MagicMock()
-        watchdog = StreamWatchdog(stream, timeout_s=0.05)
+        watchdog = StreamWatchdog(stream, timeout_s=0.05, first_event_timeout_s=0.05)
         watchdog.arm()
         time.sleep(0.2)
         watchdog.disarm()  # Must not raise.
@@ -109,7 +109,7 @@ class TestStreamWatchdogFires(unittest.TestCase):
     def test_response_none_safe(self):
         """If the stream has no ``.response`` attribute, the timer no-ops cleanly."""
         stream = object()  # bare object, no response
-        watchdog = StreamWatchdog(stream, timeout_s=0.05)
+        watchdog = StreamWatchdog(stream, timeout_s=0.05, first_event_timeout_s=0.05)
         watchdog.arm()
         time.sleep(0.2)
         self.assertTrue(watchdog.fired)
@@ -155,6 +155,71 @@ def _healthy_empty_stream_cm():
     return stream_cm
 
 
+class TestTwoPhaseWatchdog(unittest.TestCase):
+    """First event gets a longer grace (prompt processing); later events
+    the tighter inter-event idle. This is the terminal-bench fix: a flat
+    90s timeout fired during legitimate time-to-first-event on large
+    (1M-eligible) agentic requests where the SDK hides ping keepalives."""
+
+    def test_first_event_grace_env_resolution(self):
+        from unittest.mock import patch as _patch
+        from src.utils.stream_watchdog import (
+            stream_first_event_timeout_seconds,
+            DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S,
+        )
+
+        with _patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS", None)
+            os.environ.pop("CLAUDE_STREAM_IDLE_TIMEOUT_MS", None)
+            self.assertEqual(
+                stream_first_event_timeout_seconds(),
+                DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S,
+            )
+        with _patch.dict(os.environ, {"CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS": "120000"}):
+            self.assertEqual(stream_first_event_timeout_seconds(), 120.0)
+        # Never stricter than the inter-event timeout.
+        with _patch.dict(os.environ, {
+            "CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS": "10000",
+            "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "90000",
+        }):
+            self.assertEqual(stream_first_event_timeout_seconds(), 90.0)
+
+    def test_survives_first_event_wait_then_fires_on_inter_event_idle(self):
+        from src.utils.stream_watchdog import StreamWatchdog
+
+        resp = MagicMock()
+        stream = MagicMock()
+        stream.response = resp
+        # first-event grace 400ms, inter-event 100ms.
+        watchdog = StreamWatchdog(
+            stream, timeout_s=0.1, first_event_timeout_s=0.4
+        )
+        watchdog.arm()
+        time.sleep(0.25)  # past inter-event, within first-event grace
+        self.assertFalse(watchdog.fired, "must not fire during first-event grace")
+        resp.close.assert_not_called()
+        watchdog.reset()  # first event arrived → tighten to inter-event
+        time.sleep(0.25)  # past inter-event now
+        self.assertTrue(watchdog.fired, "must fire on inter-event idle after start")
+        resp.close.assert_called()
+        watchdog.disarm()
+
+    def test_first_event_timeout_still_fires_a_truly_dead_stream(self):
+        from src.utils.stream_watchdog import StreamWatchdog
+
+        resp = MagicMock()
+        stream = MagicMock()
+        stream.response = resp
+        watchdog = StreamWatchdog(
+            stream, timeout_s=0.1, first_event_timeout_s=0.2
+        )
+        watchdog.arm()
+        time.sleep(0.35)  # never any event; first-event grace lapses
+        self.assertTrue(watchdog.fired)
+        resp.close.assert_called()
+        watchdog.disarm()
+
+
 class TestWatchdogIntegrationWithProvider(unittest.TestCase):
     """End-to-end checks of the watchdog RECOVERY path.
 
@@ -178,7 +243,8 @@ class TestWatchdogIntegrationWithProvider(unittest.TestCase):
 
         provider = AnthropicProvider(api_key="test")
         provider.client = fake_client
-        with _patch.dict(os.environ, {"CLAUDE_STREAM_IDLE_TIMEOUT_MS": "50"}), \
+        with _patch.dict(os.environ, {"CLAUDE_STREAM_IDLE_TIMEOUT_MS": "50",
+                                       "CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS": "50"}), \
              _patch.object(provider, "chat") as mock_chat:
             result = provider.chat_stream_response(
                 messages=[{"role": "user", "content": "hi"}],
@@ -204,7 +270,8 @@ class TestWatchdogIntegrationWithProvider(unittest.TestCase):
 
         provider = AnthropicProvider(api_key="test")
         provider.client = fake_client
-        with _patch.dict(os.environ, {"CLAUDE_STREAM_IDLE_TIMEOUT_MS": "50"}), \
+        with _patch.dict(os.environ, {"CLAUDE_STREAM_IDLE_TIMEOUT_MS": "50",
+                                       "CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS": "50"}), \
              _patch.object(provider, "chat") as mock_chat:
             with self.assertRaises(StreamIdleTimeout) as ctx:
                 provider.chat_stream_response(

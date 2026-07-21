@@ -1,18 +1,29 @@
 """WI-5.2: streaming watchdog for the Anthropic SDK ``messages.stream``.
 
 Mirrors TS ``services/api/claude.ts`` (``getStreamIdleTimeoutMs`` /
-``abortTimedOutStream``; default 90 s via ``openaiShim.ts:140``). When no
-chunks arrive for ``timeout_s`` seconds the watchdog closes the underlying
-HTTP response, which interrupts the sync iterator and lets the provider
-RETRY THE STREAM (bounded by :func:`stream_idle_max_attempts`), then raise
-:class:`StreamIdleTimeout`. The TS reference never downgrades to a
-non-streaming request on idle timeout — it aborts and lets the retry layer
-re-issue the streaming call — and neither do we: a non-streaming re-issue
-of an agentic payload is refused outright by the Anthropic Python SDK
-("Streaming is required for operations that may take longer than 10
-minutes") whenever ``max_tokens`` is opus-class, which turned every
-watchdog fire into a fatal error (observed live: 18/89 terminal-bench
-trials, 2026-07-19).
+``abortTimedOutStream``; default 90 s via ``openaiShim.ts:140``).
+
+**Two-phase deadline.** The FIRST event gets a longer grace
+(:func:`stream_first_event_timeout_seconds`, default 300 s) because it only
+arrives after the API finishes PROMPT PROCESSING, which scales toward
+minutes as the agentic conversation grows toward the model's 1M window —
+and the Anthropic Python SDK drops the ``ping`` keepalives the API sends
+during that window (``_streaming.py``: ``if sse.event == "ping":
+continue``), so a flat idle timeout on the TYPED event stream can't tell a
+processing request from a hung one. Once events start flowing the deadline
+tightens to the inter-event ``timeout_s`` (90 s). This is the root cause of
+18/89 terminal-bench crashes (2026-07-19): a flat 90 s timeout fired during
+legitimate first-event waits.
+
+When a deadline lapses the watchdog closes the underlying HTTP response,
+interrupting the sync iterator; the provider RETRIES THE STREAM (bounded by
+:func:`stream_idle_max_attempts`), then raises :class:`StreamIdleTimeout`.
+The TS reference never downgrades to a non-streaming request on idle
+timeout — it aborts and lets the retry layer re-issue the streaming call —
+and neither do we: a non-streaming re-issue of an agentic payload is
+refused outright by the Anthropic Python SDK ("Streaming is required for
+operations that may take longer than 10 minutes") whenever ``max_tokens``
+is opus-class, which turned every watchdog fire into a fatal error.
 
 **Why threading.Timer, not asyncio.** The Anthropic Python SDK's
 ``messages.stream()`` is a SYNCHRONOUS context manager (``with``, not
@@ -47,9 +58,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
+    "DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S",
     "DEFAULT_STREAM_IDLE_MAX_ATTEMPTS",
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
+    "stream_first_event_timeout_seconds",
     "stream_idle_max_attempts",
     "StreamWatchdog",
     "force_close_response",
@@ -132,11 +145,15 @@ def stream_idle_max_attempts() -> int:
 
 
 def stream_idle_timeout_seconds() -> float:
-    """Resolve the idle-timeout from ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` env var.
+    """Resolve the INTER-EVENT idle timeout from
+    ``CLAUDE_STREAM_IDLE_TIMEOUT_MS``.
 
     Falls back to ``DEFAULT_STREAM_IDLE_TIMEOUT_S`` (90s) when the env var
     is unset or malformed. Mirrors TS ``getStreamIdleTimeoutMs``
-    (openaiShim.ts:232-239, default openaiShim.ts:140).
+    (openaiShim.ts:232-239, default openaiShim.ts:140). This is the gap
+    allowed BETWEEN stream events once the stream has started producing;
+    the FIRST event gets the longer :func:`stream_first_event_timeout_seconds`
+    grace.
     """
     raw = os.environ.get("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "").strip()
     if not raw:
@@ -148,6 +165,43 @@ def stream_idle_timeout_seconds() -> float:
     if ms <= 0:
         return DEFAULT_STREAM_IDLE_TIMEOUT_S
     return ms / 1000.0
+
+
+# The first event on a large-context request arrives only after the API
+# finishes PROMPT PROCESSING (time-to-first-event). In the agentic loop
+# every turn re-sends the whole (growing) conversation, so every stream
+# call pays this cost — and it scales toward minutes as the context
+# approaches the model's 1M window. The Anthropic Python SDK drops the
+# ``ping`` keepalive events the API sends during this window
+# (``_streaming.py``: ``if sse.event == "ping": continue``), so a
+# flat inter-event idle timeout on the TYPED event stream mistakes a
+# healthy-but-processing request for a hung one. This grace covers the
+# first-event wait; it is bounded below the non-streaming request ceiling
+# (``_api_timeout_seconds``, 600s) so a genuinely dead socket is still
+# caught. Root cause of the 18/89 terminal-bench crashes, 2026-07-19.
+DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S = 300.0
+
+
+def stream_first_event_timeout_seconds() -> float:
+    """Resolve the FIRST-event (prompt-processing) grace from
+    ``CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS``.
+
+    Falls back to ``DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S`` (300s) when
+    unset/malformed. Always at least the inter-event timeout — a smaller
+    configured value would make the first event stricter than later ones,
+    which is backwards.
+    """
+    inter = stream_idle_timeout_seconds()
+    raw = os.environ.get("CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS", "").strip()
+    if not raw:
+        return max(DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S, inter)
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return max(DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S, inter)
+    if ms <= 0:
+        return max(DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S, inter)
+    return max(ms / 1000.0, inter)
 
 
 class StreamIdleTimeout(Exception):
@@ -185,12 +239,22 @@ class StreamWatchdog:
         stream: Any,
         *,
         timeout_s: float | None = None,
+        first_event_timeout_s: float | None = None,
         request_id: str | None = None,
     ) -> None:
         self._stream = stream
         self._timeout_s = (
             timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
         )
+        # Two-phase: the FIRST event gets a longer grace (prompt processing /
+        # time-to-first-event), later events the normal inter-event idle.
+        # ``reset()`` flips ``_seen_event`` on the first call.
+        self._first_event_timeout_s = (
+            first_event_timeout_s
+            if first_event_timeout_s is not None
+            else max(stream_first_event_timeout_seconds(), self._timeout_s)
+        )
+        self._seen_event = False
         self._request_id = request_id
         self._timer: threading.Timer | None = None
         # ch04 round-4 GAP D — half-time warning timer (TS claude.ts:1898,
@@ -219,10 +283,15 @@ class StreamWatchdog:
                 self._warn_timer.start()
 
     def reset(self) -> None:
-        """Push the deadline forward — called on every successful chunk."""
+        """Push the deadline forward — called on every stream event.
+
+        The first call also ends the first-event grace: every deadline from
+        here uses the (shorter) inter-event timeout.
+        """
         if self._fired.is_set():
             return  # already timed out; reset is a no-op
         with self._lock:
+            self._seen_event = True
             self._cancel_locked()
             self._timer = self._make_timer_locked()
             self._timer.start()
@@ -234,6 +303,12 @@ class StreamWatchdog:
         """Cancel the timer (call after the stream completes normally)."""
         with self._lock:
             self._cancel_locked()
+
+    def _effective_timeout_locked(self) -> float:
+        """The deadline for the phase we're in: the first-event grace until
+        the first event arrives, the inter-event idle afterward. Called
+        under ``self._lock`` (from arm/reset)."""
+        return self._timeout_s if self._seen_event else self._first_event_timeout_s
 
     def _make_timer_locked(self) -> threading.Timer:
         """Build a new Timer bound to this exact instance for stale-fire
@@ -251,14 +326,15 @@ class StreamWatchdog:
         def _callback() -> None:
             self._on_timeout(timer)
 
-        timer = threading.Timer(self._timeout_s, _callback)
+        timer = threading.Timer(self._effective_timeout_locked(), _callback)
         timer.daemon = True
         return timer
 
     def _make_warn_timer_locked(self) -> threading.Timer | None:
         """Half-time warning timer (GAP D). Same stale-fire closure guard
         as the deadline timer; log-only, never touches the stream."""
-        if self._timeout_s <= 0:
+        effective = self._effective_timeout_locked()
+        if effective <= 0:
             return None
         timer: threading.Timer | None = None
 
@@ -269,12 +345,12 @@ class StreamWatchdog:
                 self._warn_timer = None
             logger.warning(
                 "stream idle for %.0fs (half of the %.0fs timeout)%s",
-                self._timeout_s / 2,
-                self._timeout_s,
+                effective / 2,
+                effective,
                 f" — request_id={self._request_id}" if self._request_id else "",
             )
 
-        timer = threading.Timer(self._timeout_s / 2, _callback)
+        timer = threading.Timer(effective / 2, _callback)
         timer.daemon = True
         return timer
 
