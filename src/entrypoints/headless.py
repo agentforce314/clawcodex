@@ -648,6 +648,21 @@ def run_headless(options: HeadlessOptions) -> int:
     finally:
         restore_sigint()
 
+    # Persist the full session (conversation + cost) to disk at the end of a
+    # headless run. Interactive/TUI runs already persist; the print path did
+    # not, so `-p` sessions could not be `--resume`d and left no structured
+    # transcript. Best-effort: a save failure must never change the exit
+    # code or output. Enables downstream trajectory reconstruction (the
+    # Harbor adapter builds an ATIF trajectory.json from this).
+    try:
+        session.save()
+    except Exception:  # noqa: BLE001 — persistence is best-effort
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "headless session save failed", exc_info=True
+        )
+
     # A -p goal run that ends without achieving the condition (budget pause,
     # evaluator-timeout park, interrupt) exits non-zero so scripts can tell
     # "loop finished" from "condition met". Achieved goals keep exit 0.
