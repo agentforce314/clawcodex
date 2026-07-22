@@ -341,5 +341,57 @@ class TestPerCwdGitCaches(unittest.TestCase):
         self.assertIsNot(asyncio.run(collect_git_context(str(repo_a))), snap_a)
 
 
+class TestEstimatedCostOnSubscription(unittest.TestCase):
+    """``build_cost_block`` carries a list-price ``estimated_cost_usd`` even
+    when the billed ``total_cost_usd`` is $0 under a subscription — an
+    observability figure for downstream trajectory/leaderboard tooling that
+    never feeds the live ``/cost`` display."""
+
+    def setUp(self) -> None:
+        _reset_all()
+
+    def tearDown(self) -> None:
+        _reset_all()
+
+    def test_subscription_run_has_zero_billed_but_nonzero_estimate(self) -> None:
+        from src.cost_tracker import record_api_usage
+        from src.services.cost_restore import build_cost_block
+        from src.services.pricing import compute_cost
+
+        tokens = {
+            "input_tokens": 165812,
+            "output_tokens": 9246,
+            "cache_read_input_tokens": 82608,
+            "cache_creation_input_tokens": 0,
+        }
+        record_api_usage("claude-opus-4-8", {**tokens, "billing_mode": "subscription"})
+        block = build_cost_block()
+
+        # Billed cost stays $0 (subscription consumes plan allowance).
+        self.assertEqual(block["total_cost_usd"], 0.0)
+        self.assertEqual(block["model_usage"]["claude-opus-4-8"]["cost_usd"], 0.0)
+        # The list-price estimate equals compute_cost for the same tokens.
+        self.assertGreater(block["estimated_cost_usd"], 0.0)
+        self.assertAlmostEqual(
+            block["estimated_cost_usd"],
+            compute_cost("claude-opus-4-8", tokens),
+            places=6,
+        )
+
+    def test_metered_run_estimate_equals_billed(self) -> None:
+        from src.cost_tracker import record_api_usage
+        from src.services.cost_restore import build_cost_block
+
+        record_api_usage(
+            "claude-opus-4-8",
+            {"input_tokens": 1000, "output_tokens": 500},  # no billing_mode → metered
+        )
+        block = build_cost_block()
+        self.assertGreater(block["total_cost_usd"], 0.0)
+        self.assertAlmostEqual(
+            block["estimated_cost_usd"], block["total_cost_usd"], places=6
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

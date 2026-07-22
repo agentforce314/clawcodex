@@ -79,6 +79,7 @@ from harbor.models.trial.paths import EnvironmentPaths
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
+    Metrics,
     Observation,
     ObservationResult,
     Step,
@@ -686,12 +687,27 @@ class Clawcodex(BaseInstalledAgent):
             prompt += inp + cread + ccreate
             cached += cread
             completion += usage.get("output_tokens") or 0
-        total_cost = cost.get("total_cost_usd")
+        # Cost: prefer the billed ``total_cost_usd``; when it's 0 (a
+        # subscription run consumes plan allowance, not metered credits, so
+        # the billed cost is $0) fall back to ``estimated_cost_usd`` — the
+        # always-computed list-price figure — so the leaderboard/trajectory
+        # cost column is populated and comparable with the claude-code
+        # agent, which reports a list-price cost on subscription runs too.
+        billed = cost.get("total_cost_usd")
+        estimated = cost.get("estimated_cost_usd")
+        if isinstance(billed, (int, float)) and billed > 0:
+            cost_usd: float | None = float(billed)
+        elif isinstance(estimated, (int, float)) and estimated > 0:
+            cost_usd = float(estimated)
+        elif isinstance(billed, (int, float)):
+            cost_usd = float(billed)
+        else:
+            cost_usd = None
         return {
             "prompt": prompt,
             "completion": completion,
             "cached": cached,
-            "cost": float(total_cost) if isinstance(total_cost, (int, float)) else None,
+            "cost": cost_usd,
         }
 
     def _load_session_data(
@@ -812,6 +828,26 @@ class Clawcodex(BaseInstalledAgent):
         return text, (reasoning or None), tool_uses, tool_results
 
     @staticmethod
+    def _metrics_from_usage(usage: Any) -> Metrics | None:
+        """Per-step ATIF ``Metrics`` from a persisted turn's ``usage`` dict
+        (present since clawcodex persists per-message usage). ``prompt_tokens``
+        follows the billing convention (input + cache_read + cache_creation);
+        ``cached_tokens`` is cache_read. Returns ``None`` when no usage."""
+        if not isinstance(usage, dict) or not usage:
+            return None
+        inp = usage.get("input_tokens") or 0
+        cread = usage.get("cache_read_input_tokens") or 0
+        ccreate = usage.get("cache_creation_input_tokens") or 0
+        out = usage.get("output_tokens") or 0
+        if not any((inp, cread, ccreate, out)):
+            return None
+        return Metrics(
+            prompt_tokens=inp + cread + ccreate,
+            completion_tokens=out,
+            cached_tokens=cread,
+        )
+
+    @staticmethod
     def _stringify(value: Any) -> str:
         if isinstance(value, str):
             return value
@@ -859,6 +895,7 @@ class Clawcodex(BaseInstalledAgent):
                     message=text,
                     reasoning_content=reasoning,
                     tool_calls=calls or None,
+                    metrics=self._metrics_from_usage(msg.get("usage")),
                     llm_call_count=1,
                 )
                 steps.append(step)

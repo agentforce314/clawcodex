@@ -58,8 +58,33 @@ def build_cost_block() -> dict[str, Any]:
         get_total_tool_duration,
     )
 
+    model_usage = get_model_usage()
+    # List-price cost estimate, ALWAYS computed (even under a subscription,
+    # where ``cost_usd`` is $0 because plan allowance is consumed rather than
+    # metered credits — see cost_tracker.record_api_usage's billing_mode
+    # gate). This is an OBSERVABILITY figure — what the tokens would have
+    # cost at metered API rates — mirroring Claude Code, which reports a
+    # non-zero cost on subscription runs. It never feeds the live ``/cost``
+    # display or budget gate (those keep reading the billed ``total_cost_usd``
+    # / ``cost_usd``); it exists so downstream trajectory/leaderboard tooling
+    # has a comparable cost column.
+    from src.services.pricing import compute_cost
+
+    estimated_cost_usd = 0.0
+    for model, u in model_usage.items():
+        estimated_cost_usd += compute_cost(
+            model,
+            {
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+            },
+        )
+
     return {
         "total_cost_usd": get_total_cost_usd(),
+        "estimated_cost_usd": estimated_cost_usd,
         "total_api_duration": get_total_api_duration(),
         "total_api_duration_without_retries":
             get_total_api_duration_without_retries(),
@@ -78,7 +103,7 @@ def build_cost_block() -> dict[str, Any]:
                 "cache_read_input_tokens": u.cache_read_input_tokens,
                 "cost_usd": u.cost_usd,
             }
-            for model, u in get_model_usage().items()
+            for model, u in model_usage.items()
         },
     }
 

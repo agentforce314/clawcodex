@@ -297,12 +297,15 @@ def create_message(
     *,
     timestamp: str | None = None,
     isMeta: bool = False,
+    usage: dict[str, Any] | None = None,
 ) -> Message:
     ts = timestamp or datetime.now().isoformat()
     if role == "user":
         return create_user_message(content, isMeta=isMeta, timestamp=ts)
     if role == "assistant":
-        return create_assistant_message(content)
+        # ``usage`` is the turn's token accounting (input/output/cache);
+        # only assistant messages carry it.
+        return create_assistant_message(content, usage=usage)
     if role == "system":
         return SystemMessage(content=content, timestamp=ts, isMeta=isMeta)
     return Message(role=role, content=content, timestamp=ts, isMeta=isMeta)
@@ -588,6 +591,11 @@ def message_to_dict(message: MessageLike) -> dict[str, Any]:
         "isApiErrorMessage", "apiError", "error", "errorDetails",
         "model", "origin", "toolUseID", "parentToolUseID", "data",
         "imagePasteIds", "summarizeMetadata", "preventContinuation",
+        # Per-turn token usage carried by AssistantMessage. Round-trips:
+        # message_from_dict already loads it. Persisting it lets resumed
+        # sessions and downstream tooling (the Harbor trajectory builder's
+        # per-step Metrics) attribute tokens to the turn that spent them.
+        "usage",
     ):
         val = _get_field(message, attr, None)
         if val is not None and val is not False:

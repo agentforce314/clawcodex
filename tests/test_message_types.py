@@ -106,6 +106,28 @@ class TestMessageTypes(unittest.TestCase):
         self.assertEqual(getattr(restored_messages[2], "subtype", None), "api_error")
         self.assertEqual(getattr(restored_messages[4], "attachments", [])[0]["name"], "diagram.png")
 
+    def test_assistant_usage_round_trips(self):
+        # Per-turn token usage must survive persistence so resumed sessions
+        # and the Harbor trajectory's per-step Metrics can attribute tokens.
+        from src.types.messages import create_assistant_message
+
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 2,
+        }
+        msg = create_assistant_message("hi", usage=usage)
+        payload = message_to_dict(msg)
+        self.assertEqual(payload.get("usage"), usage)
+        restored = message_from_dict(payload)
+        self.assertEqual(getattr(restored, "usage", None), usage)
+
+    def test_no_usage_key_when_absent(self):
+        # A message without usage must not emit a null/empty usage key.
+        msg = create_user_message("test")
+        self.assertNotIn("usage", message_to_dict(msg))
+
     def test_isMeta_field(self):
         msg = create_user_message("test", isMeta=True)
         self.assertTrue(msg.isMeta)
