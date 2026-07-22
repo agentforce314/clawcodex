@@ -16,6 +16,27 @@ MAX_CONTINUATION_NUDGES = 3
 
 NUDGE_MESSAGE = "Continue with the task. Use the appropriate tools to proceed."
 
+EXHAUSTIVE_AUDIT_NUDGE = (
+    "Before finishing, audit the result against the user's exhaustive-result "
+    "requirement. Actively search for additional valid results; do not assume "
+    "the first valid result is the only one. For an enumerable or mechanically "
+    "checkable state space, you MUST use a tool to enumerate or independently "
+    "validate candidates rather than declaring a prose-only audit exhaustive. "
+    "Evaluate the state after each candidate action, including candidates that "
+    "do not have the relevant property before they move. Update the deliverable "
+    "if the audit finds more."
+)
+
+_EXHAUSTIVE_REQUIREMENT = re.compile(
+    r"\b(all|every|multiple|each|exhaustive|complete set|any other|others)\b",
+    re.IGNORECASE,
+)
+
+
+def requests_exhaustive_results(text: str) -> bool:
+    """Whether a user request explicitly asks for a result set audit."""
+    return bool(_EXHAUSTIVE_REQUIREMENT.search(text))
+
 # Don't nudge when the model signaled completion (query.ts:1487).
 _COMPLETION_MARKERS = re.compile(
     r"\b(done|finished|completed|complete|summary|that's all|that is all"

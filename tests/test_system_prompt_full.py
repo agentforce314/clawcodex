@@ -59,6 +59,12 @@ class TestBuildFullSystemPrompt:
         assert "interactive agent" in prompt
         assert "software engineering tasks" in prompt
 
+    def test_task_prompt_requires_requirement_audit_and_exhaustive_results(self):
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "audit the result against every explicit requirement" in prompt
+        assert "all, every, multiple, or an exhaustive set" in prompt
+        assert "stopping after the first one" in prompt
+
     def test_identity_prompt_backward_compat(self):
         """_IDENTITY_PROMPT is an alias for _INTRO_SECTION."""
         assert _IDENTITY_PROMPT is _INTRO_SECTION
