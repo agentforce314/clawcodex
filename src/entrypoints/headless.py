@@ -492,7 +492,15 @@ def run_headless(options: HeadlessOptions) -> int:
                             # the next API call will reject it. Better
                             # to surface now than to debug a 400 later.
                             try:
-                                session.conversation.add_message(msg.role, msg.content)
+                                # Preserve the turn's token usage (assistant
+                                # messages carry it) so the persisted session
+                                # — and the Harbor trajectory's per-step
+                                # Metrics — can attribute tokens per turn.
+                                session.conversation.add_message(
+                                    msg.role,
+                                    msg.content,
+                                    usage=getattr(msg, "usage", None),
+                                )
                             except Exception:
                                 import logging
                                 logging.getLogger(__name__).exception(
