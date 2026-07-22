@@ -1376,7 +1376,17 @@ _NON_INTERACTIVE_PROMPT = (
     "- Do not ask the user for input or confirmation\n"
     "- Make reasonable decisions autonomously\n"
     "- Complete the task to the best of your ability\n"
-    "- Report errors clearly but continue working"
+    "- Report errors clearly but continue working\n"
+    "- Before you finish, re-read the request and confirm your output "
+    "satisfies EVERY part of it. If the task asks for all items meeting a "
+    "condition (all matches, every solution, each occurrence), enumerate "
+    "them exhaustively — do not stop at the first one you find and assume "
+    "it is the only one.\n"
+    "- No one will review your work before it is graded, so verify it "
+    "yourself. When a result can be checked with a tool, script, or test "
+    "(e.g. compute it, run it, diff it against the expected format), do that "
+    "to confirm it rather than relying on a single inspection or reasoning "
+    "alone. Match the exact output format the task specifies."
 )
 
 
