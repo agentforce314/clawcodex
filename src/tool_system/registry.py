@@ -137,28 +137,52 @@ class ToolRegistry:
         when a server sends notifications/tools/list_changed — the registry
         was otherwise append-only, so a re-fetch couldn't reach the agent.
 
-        NB: deliberately NOT named ``unregister`` — ``_filter_registry``
-        (--allowedTools/--disallowedTools, agent_server.py + headless.py)
-        already calls a non-existent ``registry.unregister`` inside a
-        try/except as a silent no-op, so its registry-level filtering has
-        never actually run (the live enforcement is the deny-rule path at
-        assembly). Adding an ``unregister`` here would silently ACTIVATE that
-        untested, security-relevant path; a distinct name keeps this MCP
-        change scoped. Activating that filtering is a separate follow-up."""
-        key = name.lower()
-        tool = self._by_name.pop(key, None)
+        Also backs ``_filter_registry`` (--allowed-tools/--disallowed-tools in
+        agent_server.py + headless.py): those call sites now call this method
+        directly. They historically called a non-existent
+        ``registry.unregister`` inside a try/except, so the registry-level
+        filtering silently no-op'd — the flags removed nothing from the pool
+        the model saw. Both paths only ever REMOVE tools, so activating them
+        can only narrow the toolset.
+
+        Resolving by ``name`` accepts a primary name OR an alias, then drops
+        the tool from ``_tools`` and EVERY ``_by_name`` key that still points
+        at it (canonical + aliases). Removing by an alias therefore also
+        clears the canonical key, so the tool can't stay dispatch-reachable
+        through a sibling key."""
+        tool = self._by_name.get(name.lower())
         if tool is None:
             return False
         self._tools = [t for t in self._tools if t is not tool]
-        for alias in getattr(tool, "aliases", ()) or ():
-            # Only drop the alias if it still points at THIS tool (another
-            # tool may have claimed it — don't clobber that).
-            if self._by_name.get(alias.lower()) is tool:
-                self._by_name.pop(alias.lower(), None)
+        for key in (tool.name, *(getattr(tool, "aliases", ()) or ())):
+            # Only drop a key that still points at THIS tool (another tool may
+            # have claimed an alias — don't clobber that).
+            if self._by_name.get(key.lower()) is tool:
+                self._by_name.pop(key.lower(), None)
         return True
 
     def get(self, name: str) -> Tool | None:
         return self._by_name.get(name.lower())
+
+    def canonicalize_names(self, names: Iterable[str]) -> set[str]:
+        """Resolve each requested name to its tool's lowercased PRIMARY name.
+
+        Backs ``--allowed-tools`` / ``--disallowed-tools`` so they match whether
+        the caller passes a tool's primary name or one of its aliases
+        (e.g. ``KillShell`` -> ``TaskStop``, ``Task`` -> ``Agent``).
+        ``list_tools()`` only yields primary names and ``remove_tool`` cleans a
+        tool's aliases with it, so canonicalizing the request set to primary
+        names is what makes alias-form flags actually filter. Unknown names
+        pass through lowercased — they simply match nothing."""
+        out: set[str] = set()
+        for name in names:
+            if not name or not name.strip():
+                # Skip blanks so a stray "" can't become a match-nothing
+                # allowlist that removes every tool.
+                continue
+            tool = self.get(name)
+            out.add((tool.name if tool else name).lower())
+        return out
 
     def list_tools(self) -> Tools:
         """Tools visible to the agent — excludes disabled-MCP-server tools."""

@@ -1089,11 +1089,21 @@ class _AgentSession:
             provider = provider_cls(api_key=api_key, base_url=provider_cfg.get("base_url"), model=model)
             registry = build_default_registry(provider=provider)
             cfg = self.config
-            if cfg.allowed_tools:
-                allow = {n.lower() for n in cfg.allowed_tools}
+            # Canonicalize up front so alias-form flags (e.g. KillShell ->
+            # TaskStop) resolve while the tool is still registered.
+            allow = (
+                registry.canonicalize_names(cfg.allowed_tools)
+                if cfg.allowed_tools
+                else None
+            )
+            deny = (
+                registry.canonicalize_names(cfg.disallowed_tools)
+                if cfg.disallowed_tools
+                else None
+            )
+            if allow is not None:
                 _filter_registry(registry, keep=lambda n: n.lower() in allow)
-            if cfg.disallowed_tools:
-                deny = {n.lower() for n in cfg.disallowed_tools}
+            if deny is not None:
                 _filter_registry(registry, keep=lambda n: n.lower() not in deny)
             if self._mcp_runtime is not None:  # keep MCP tools across the switch
                 for mtool in self._mcp_runtime.tools:
@@ -4202,6 +4212,12 @@ def _with_ultracode_reminder(prompt):
 
 
 def _filter_registry(registry, *, keep) -> None:
+    """Drop every tool for which ``keep(name)`` is False.
+
+    Backs ``--allowed-tools`` / ``--disallowed-tools``: removing the tool from
+    the registry keeps its schema out of the ``tools=`` param sent to the
+    model, not just blocked at execution time.
+    """
     try:
         entries = list(registry.list_tools())
     except Exception:  # noqa: BLE001
@@ -4210,7 +4226,7 @@ def _filter_registry(registry, *, keep) -> None:
         name = getattr(tool, "name", "")
         if not keep(name):
             try:
-                registry.unregister(name)
+                registry.remove_tool(name)
             except Exception:  # noqa: BLE001
                 continue
 

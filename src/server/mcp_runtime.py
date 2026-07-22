@@ -298,7 +298,7 @@ class McpRuntime:
         server's slice of self.tools/self.servers, and return
         ``(removed_full_names, new_wrapped_tools)`` so the caller can swap
         them in the live agent registry. Returns the FULL
-        ``mcp__server__tool`` names removed (what registry.unregister keys on).
+        ``mcp__server__tool`` names removed (what registry.remove_tool keys on).
         """
         from src.services.mcp.mcp_string_utils import build_mcp_tool_name
 
