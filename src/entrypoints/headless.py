@@ -841,7 +841,13 @@ def _install_sigint_handler(
 
 
 def _filter_registry(registry, *, keep) -> None:
-    """In-place best-effort filter of a ToolRegistry."""
+    """In-place best-effort filter of a ToolRegistry.
+
+    Drops every tool for which ``keep(name)`` is False so that
+    ``--allowedTools`` / ``--disallowedTools`` remove the tool from the pool
+    the model sees (schemas are emitted from ``registry.list_tools()``), not
+    just block it at execution time.
+    """
 
     try:
         entries = list(registry.list_tools())
@@ -851,10 +857,10 @@ def _filter_registry(registry, *, keep) -> None:
         name = getattr(tool, "name", "")
         if not keep(name):
             try:
-                registry.unregister(name)
+                registry.remove_tool(name)
             except Exception:
-                # Registry may not support unregistration; fall back to
-                # marking the tool disallowed through ToolContext.
+                # Best-effort: a registry that cannot drop the tool leaves it
+                # in the pool rather than aborting the whole filter.
                 continue
 
 

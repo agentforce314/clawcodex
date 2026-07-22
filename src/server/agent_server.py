@@ -4202,6 +4202,12 @@ def _with_ultracode_reminder(prompt):
 
 
 def _filter_registry(registry, *, keep) -> None:
+    """Drop every tool for which ``keep(name)`` is False.
+
+    Backs ``--allowedTools`` / ``--disallowedTools``: removing the tool from
+    the registry keeps its schema out of the ``tools=`` param sent to the
+    model, not just blocked at execution time.
+    """
     try:
         entries = list(registry.list_tools())
     except Exception:  # noqa: BLE001
@@ -4210,7 +4216,7 @@ def _filter_registry(registry, *, keep) -> None:
         name = getattr(tool, "name", "")
         if not keep(name):
             try:
-                registry.unregister(name)
+                registry.remove_tool(name)
             except Exception:  # noqa: BLE001
                 continue
 

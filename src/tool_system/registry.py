@@ -137,14 +137,13 @@ class ToolRegistry:
         when a server sends notifications/tools/list_changed — the registry
         was otherwise append-only, so a re-fetch couldn't reach the agent.
 
-        NB: deliberately NOT named ``unregister`` — ``_filter_registry``
-        (--allowedTools/--disallowedTools, agent_server.py + headless.py)
-        already calls a non-existent ``registry.unregister`` inside a
-        try/except as a silent no-op, so its registry-level filtering has
-        never actually run (the live enforcement is the deny-rule path at
-        assembly). Adding an ``unregister`` here would silently ACTIVATE that
-        untested, security-relevant path; a distinct name keeps this MCP
-        change scoped. Activating that filtering is a separate follow-up."""
+        Also backs ``_filter_registry`` (--allowedTools/--disallowedTools in
+        agent_server.py + headless.py): those call sites now call this method
+        directly. They historically called a non-existent
+        ``registry.unregister`` inside a try/except, so the registry-level
+        filtering silently no-op'd — the flags removed nothing from the pool
+        the model saw. Both paths only ever REMOVE tools, so activating them
+        can only narrow the toolset."""
         key = name.lower()
         tool = self._by_name.pop(key, None)
         if tool is None:
