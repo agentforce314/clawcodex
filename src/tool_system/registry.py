@@ -159,6 +159,26 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         return self._by_name.get(name.lower())
 
+    def canonicalize_names(self, names: Iterable[str]) -> set[str]:
+        """Resolve each requested name to its tool's lowercased PRIMARY name.
+
+        Backs ``--allowedTools`` / ``--disallowedTools`` so they match whether
+        the caller passes a tool's primary name or one of its aliases
+        (e.g. ``KillShell`` -> ``TaskStop``, ``Task`` -> ``Agent``).
+        ``list_tools()`` only yields primary names and ``remove_tool`` cleans a
+        tool's aliases with it, so canonicalizing the request set to primary
+        names is what makes alias-form flags actually filter. Unknown names
+        pass through lowercased — they simply match nothing."""
+        out: set[str] = set()
+        for name in names:
+            if not name or not name.strip():
+                # Skip blanks so a stray "" can't become a match-nothing
+                # allowlist that removes every tool.
+                continue
+            tool = self.get(name)
+            out.add((tool.name if tool else name).lower())
+        return out
+
     def list_tools(self) -> Tools:
         """Tools visible to the agent — excludes disabled-MCP-server tools."""
         if not self.disabled_servers:

@@ -173,11 +173,22 @@ def run_headless(options: HeadlessOptions) -> int:
     session = Session.create(provider_name, getattr(provider, "model", model or ""))
 
     tool_registry = build_default_registry(provider=provider)
-    if options.allowed_tools:
-        allow = {name.lower() for name in options.allowed_tools}
+    # Canonicalize BOTH sets up front (before either filter runs) so an alias
+    # form (e.g. --disallowedTools KillShell) resolves while its tool is still
+    # registered.
+    allow = (
+        tool_registry.canonicalize_names(options.allowed_tools)
+        if options.allowed_tools
+        else None
+    )
+    deny = (
+        tool_registry.canonicalize_names(options.disallowed_tools)
+        if options.disallowed_tools
+        else None
+    )
+    if allow is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
-    if options.disallowed_tools:
-        deny = {name.lower() for name in options.disallowed_tools}
+    if deny is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
     # (workspace_root already resolved above, before the prefetch kick.)

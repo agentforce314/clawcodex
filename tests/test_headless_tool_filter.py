@@ -77,3 +77,54 @@ def test_filter_is_idempotent_and_survives_unknown_names():
     # Denying a name that isn't registered must not raise or change anything.
     headless_mod._filter_registry(registry, keep=lambda n: n.lower() != "not_a_tool")
     assert _names(registry) == before
+
+
+def test_denylist_by_alias_removes_tool_from_schema_and_dispatch():
+    """--disallowedTools accepts an ALIAS and still removes the real tool.
+
+    ``TaskStop`` carries the ``KillShell`` alias. Denying the alias must drop
+    ``TaskStop`` from ``list_tools()`` (the schema the model sees) AND make it
+    unreachable via ``get()`` (dispatch), not leave it half-present.
+    """
+    registry = build_default_registry(provider="anthropic")
+    assert registry.get("KillShell") is not None  # alias resolves pre-filter
+    assert "TaskStop" in _names(registry)
+
+    deny = registry.canonicalize_names(["KillShell"])
+    assert deny == {"taskstop"}  # alias resolved to primary
+    headless_mod._filter_registry(registry, keep=lambda n: n.lower() not in deny)
+
+    assert "TaskStop" not in _names(registry), "alias-denied tool still in schema"
+    assert registry.get("TaskStop") is None, "primary still dispatch-reachable"
+    assert registry.get("KillShell") is None, "alias still dispatch-reachable"
+
+
+def test_allowlist_by_alias_keeps_the_real_tool():
+    """--allowedTools with an alias keeps its tool (and drops the rest)."""
+    registry = build_default_registry(provider="anthropic")
+    allow = registry.canonicalize_names(["Task", "Bash"])  # Task -> Agent
+    assert allow == {"agent", "bash"}
+    headless_mod._filter_registry(registry, keep=lambda n: n.lower() in allow)
+
+    remaining = {n.lower() for n in _names(registry)}
+    assert remaining == {"agent", "bash"}
+
+
+def test_canonicalize_passes_unknown_names_through():
+    registry = build_default_registry(provider="anthropic")
+    assert registry.canonicalize_names(["Bash", "NotATool"]) == {"bash", "notatool"}
+
+
+def test_canonicalize_skips_blanks_so_allowlist_cannot_wipe_all():
+    """A stray "" must not become a match-nothing allowlist removing everything."""
+    registry = build_default_registry(provider="anthropic")
+    assert registry.canonicalize_names(["", "  ", "Bash"]) == {"bash"}
+
+    allow = registry.canonicalize_names([""])
+    assert allow == set()
+    # An empty allow set means "no allowlist constraint given" at the call
+    # sites (they gate on truthiness), so nothing is filtered here.
+    before = _names(registry)
+    if allow:
+        headless_mod._filter_registry(registry, keep=lambda n: n.lower() in allow)
+    assert _names(registry) == before
