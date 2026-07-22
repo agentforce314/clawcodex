@@ -445,6 +445,11 @@ class Clawcodex(BaseInstalledAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
+        # Captured so populate_context_post_run can open a stream-json-only
+        # (reconstructed) trajectory with the task instruction as step 1,
+        # like the built-in claude-code agent does. ``@with_prompt_template``
+        # has already rendered any prompt template into ``instruction``.
+        self._captured_instruction = instruction
         if self._subscription:
             await self._inject_subscription_credentials(environment)
         await self._seed_container_settings(environment)
@@ -521,8 +526,23 @@ class Clawcodex(BaseInstalledAgent):
         events = self._parse_stream_events()
         result_event = self._last_result_event(events)
 
-        # Token metrics — authoritative, from the stream-json result event.
-        if result_event:
+        try:
+            trajectory, totals = self._build_trajectory(events, result_event)
+        except Exception as exc:  # noqa: BLE001 — never fail a trial over this
+            self.logger.debug(f"clawcodex trajectory build failed: {exc}")
+            trajectory, totals = None, None
+
+        # Leaderboard token/cost columns. Prefer the session's authoritative
+        # BILLING totals (input + cache, summed per turn — matches
+        # claude-code); fall back to the stream-json usage (incomplete: no
+        # cumulative cache) only when no session cost block was synced.
+        if totals is not None:
+            context.n_input_tokens = totals["prompt"]
+            context.n_cache_tokens = totals["cached"]
+            context.n_output_tokens = totals["completion"]
+            if totals["cost"] is not None:
+                context.cost_usd = totals["cost"]
+        elif result_event:
             usage = result_event.get("usage")
             if isinstance(usage, dict):
                 input_tokens = usage.get("input_tokens") or 0
@@ -532,15 +552,6 @@ class Clawcodex(BaseInstalledAgent):
                 context.n_cache_tokens = cache_read
                 context.n_output_tokens = usage.get("output_tokens") or 0
 
-        try:
-            trajectory, cost_usd = self._build_trajectory(events, result_event)
-        except Exception as exc:  # noqa: BLE001 — never fail a trial over this
-            self.logger.debug(f"clawcodex trajectory build failed: {exc}")
-            return
-        # Leaderboard cost column (matches the claude-code agent, which sets
-        # context.cost_usd from its final metrics).
-        if cost_usd is not None:
-            context.cost_usd = cost_usd
         if trajectory is None:
             return
 
@@ -582,16 +593,29 @@ class Clawcodex(BaseInstalledAgent):
         self,
         result_event: dict[str, Any] | None,
         total_steps: int,
-        cost_usd: float | None,
+        totals: dict[str, Any] | None,
     ) -> FinalMetrics | None:
-        if not result_event and cost_usd is None:
-            return None
+        """``totals`` = authoritative session billing totals (preferred).
+        Falls back to the stream-json usage (incomplete — no cumulative
+        cache) only when no session cost block was synced."""
         usage = (result_event or {}).get("usage")
         if not isinstance(usage, dict):
             usage = {}
-        input_tokens = usage.get("input_tokens") or 0
-        cache_read = usage.get("cache_read_input_tokens") or 0
-        cache_creation = usage.get("cache_creation_input_tokens") or 0
+        if totals is not None:
+            prompt = totals["prompt"]
+            completion = totals["completion"]
+            cached = totals["cached"]
+            cost = totals["cost"]
+        elif result_event:
+            input_tokens = usage.get("input_tokens") or 0
+            cache_read = usage.get("cache_read_input_tokens") or 0
+            cache_creation = usage.get("cache_creation_input_tokens") or 0
+            prompt = input_tokens + cache_read + cache_creation
+            completion = usage.get("output_tokens") or 0
+            cached = cache_read
+            cost = result_event.get("total_cost_usd")
+        else:
+            return None
         extra: dict[str, Any] = {}
         num_turns = (result_event or {}).get("num_turns")
         if isinstance(num_turns, int):
@@ -599,17 +623,11 @@ class Clawcodex(BaseInstalledAgent):
         duration_ms = (result_event or {}).get("duration_ms")
         if isinstance(duration_ms, (int, float)):
             extra["duration_ms"] = duration_ms
-        # Cost: the --print result event carries no cost field, but the
-        # persisted session's cost block does (Session.save()). Prefer that.
         return FinalMetrics(
-            total_prompt_tokens=input_tokens + cache_read + cache_creation,
-            total_completion_tokens=usage.get("output_tokens") or 0,
-            total_cached_tokens=cache_read,
-            total_cost_usd=(
-                cost_usd
-                if cost_usd is not None
-                else (result_event or {}).get("total_cost_usd")
-            ),
+            total_prompt_tokens=prompt,
+            total_completion_tokens=completion,
+            total_cached_tokens=cached,
+            total_cost_usd=cost,
             total_steps=total_steps,
             extra=extra or None,
         )
@@ -638,18 +656,62 @@ class Clawcodex(BaseInstalledAgent):
         )
         return agent, session_id
 
-    def _load_session_data(self) -> tuple[list[dict[str, Any]] | None, float | None]:
+    @staticmethod
+    def _billing_totals_from_cost_block(
+        cost: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Authoritative BILLING token totals from a session ``cost`` block.
+
+        clawcodex's stream-json ``result.usage`` is built for live-CONTEXT
+        measurement, not accounting: ``input_tokens`` is the running sum of
+        NON-cached input and it drops cumulative cache tokens (only a
+        ``last_*`` snapshot survives). For a heavily prompt-cached opus run
+        that under-reports total prompt tokens by orders of magnitude
+        (observed: 6 vs the real ~412 K). The session cost block's
+        ``model_usage`` accumulates the real per-turn billing counters
+        (input + cache_read + cache_creation, summed across turns), which is
+        exactly the convention the built-in claude-code agent reports.
+        Returns ``{prompt, completion, cached, cost}`` or ``None``.
+        """
+        model_usage = cost.get("model_usage")
+        if not isinstance(model_usage, dict) or not model_usage:
+            return None
+        prompt = completion = cached = 0
+        for usage in model_usage.values():
+            if not isinstance(usage, dict):
+                continue
+            inp = usage.get("input_tokens") or 0
+            cread = usage.get("cache_read_input_tokens") or 0
+            ccreate = usage.get("cache_creation_input_tokens") or 0
+            prompt += inp + cread + ccreate
+            cached += cread
+            completion += usage.get("output_tokens") or 0
+        total_cost = cost.get("total_cost_usd")
+        return {
+            "prompt": prompt,
+            "completion": completion,
+            "cached": cached,
+            "cost": float(total_cost) if isinstance(total_cost, (int, float)) else None,
+        }
+
+    def _load_session_data(
+        self,
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
         """The richest persisted session synced under the logs dir, as
-        ``(conversation.messages, total_cost_usd)``. Picks the session with
-        the most messages; either element may be ``None`` when absent."""
+        ``(conversation.messages, billing_totals)`` where billing_totals is
+        ``{prompt, completion, cached, cost}`` from the cost block (or
+        ``None``). Messages and billing are selected INDEPENDENTLY (each by
+        most messages) so a conversation-bearing session without a cost
+        block still contributes its narration."""
         # ``self.logs_dir`` is the parent of ``sessions/`` — one root covers
         # the subtree; a second nested root would just re-parse each file.
         candidates = (
             sorted(self.logs_dir.rglob("*.json")) if self.logs_dir.is_dir() else []
         )
         best_msgs: list[dict[str, Any]] | None = None
-        best_cost: float | None = None
-        best_len = 0
+        best_msgs_len = -1
+        best_totals: dict[str, Any] | None = None
+        best_totals_len = -1
         for path in candidates:
             if path.name == "trajectory.json":
                 continue
@@ -661,44 +723,64 @@ class Clawcodex(BaseInstalledAgent):
                 continue
             conv = data.get("conversation")
             msgs = conv.get("messages") if isinstance(conv, dict) else None
-            if isinstance(msgs, list) and len(msgs) > best_len:
-                best_len = len(msgs)
+            n = len(msgs) if isinstance(msgs, list) else 0
+            if isinstance(msgs, list) and n > best_msgs_len:
+                best_msgs_len = n
                 best_msgs = msgs
-                cost = (data.get("cost") or {}).get("total_cost_usd")
-                best_cost = float(cost) if isinstance(cost, (int, float)) else None
-        return best_msgs, best_cost
+            # Billing from the richest COST-bearing session (== the run's
+            # real session, not a seed) — independent of message selection.
+            cost = data.get("cost")
+            if isinstance(cost, dict) and n > best_totals_len:
+                best_totals_len = n
+                best_totals = self._billing_totals_from_cost_block(cost)
+        return best_msgs, best_totals
 
     def _build_trajectory(
         self,
         events: list[dict[str, Any]],
         result_event: dict[str, Any] | None,
-    ) -> tuple[Trajectory | None, float | None]:
-        """Returns ``(trajectory, cost_usd)`` — cost is surfaced so the
-        caller can also set it on the AgentContext."""
+    ) -> tuple[Trajectory | None, dict[str, Any] | None]:
+        """Returns ``(trajectory, billing_totals)`` — the totals are surfaced
+        so the caller can also set the leaderboard token/cost columns."""
         agent, session_id = self._agent_meta(events)
-        messages, cost_usd = self._load_session_data()
+        messages, totals = self._load_session_data()
         notes = None
         if messages:
             steps = self._steps_from_conversation(messages, agent.model_name)
         else:
             steps = self._steps_from_stream(events, agent.model_name)
             # No persisted conversation → the stream-json has no per-turn
-            # narration, so agent steps carry only their tool calls.
+            # narration, so agent steps carry only their tool calls. Prepend
+            # the task instruction as the opening user step (claude-code's
+            # trajectory opens with it) so the trace isn't headless.
+            instruction_step = self._instruction_step()
+            if instruction_step is not None:
+                for s in steps:
+                    s.step_id += 1
+                steps.insert(0, instruction_step)
             notes = (
                 "Reconstructed from the stream-json log; per-step assistant "
                 "narration is unavailable (no persisted session conversation)."
             )
         if not steps:
-            return None, cost_usd
+            return None, totals
         trajectory = Trajectory(
             schema_version="ATIF-v1.7",
             session_id=session_id or "unknown",
             agent=agent,
             steps=steps,
             notes=notes,
-            final_metrics=self._final_metrics(result_event, len(steps), cost_usd),
+            final_metrics=self._final_metrics(result_event, len(steps), totals),
         )
-        return trajectory, cost_usd
+        return trajectory, totals
+
+    def _instruction_step(self) -> Step | None:
+        """The opening user step carrying the task instruction, if ``run()``
+        captured it. ``step_id`` is fixed up by the caller."""
+        instruction = getattr(self, "_captured_instruction", None)
+        if not isinstance(instruction, str) or not instruction.strip():
+            return None
+        return Step(step_id=1, source="user", message=instruction)
 
     @staticmethod
     def _split_content(content: Any) -> tuple[str, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
