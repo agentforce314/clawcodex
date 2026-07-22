@@ -700,15 +700,18 @@ class Clawcodex(BaseInstalledAgent):
         """The richest persisted session synced under the logs dir, as
         ``(conversation.messages, billing_totals)`` where billing_totals is
         ``{prompt, completion, cached, cost}`` from the cost block (or
-        ``None``). Picks the session with the most messages."""
+        ``None``). Messages and billing are selected INDEPENDENTLY (each by
+        most messages) so a conversation-bearing session without a cost
+        block still contributes its narration."""
         # ``self.logs_dir`` is the parent of ``sessions/`` — one root covers
         # the subtree; a second nested root would just re-parse each file.
         candidates = (
             sorted(self.logs_dir.rglob("*.json")) if self.logs_dir.is_dir() else []
         )
         best_msgs: list[dict[str, Any]] | None = None
+        best_msgs_len = -1
         best_totals: dict[str, Any] | None = None
-        best_len = -1
+        best_totals_len = -1
         for path in candidates:
             if path.name == "trajectory.json":
                 continue
@@ -718,17 +721,17 @@ class Clawcodex(BaseInstalledAgent):
                 continue
             if not isinstance(data, dict):
                 continue
-            cost = data.get("cost")
-            if not isinstance(cost, dict):
-                continue
             conv = data.get("conversation")
             msgs = conv.get("messages") if isinstance(conv, dict) else None
             n = len(msgs) if isinstance(msgs, list) else 0
-            # A session file always has a cost block; prefer the one with the
-            # most messages (== the run's real session, not a seed/empty one).
-            if n > best_len:
-                best_len = n
-                best_msgs = msgs if isinstance(msgs, list) else None
+            if isinstance(msgs, list) and n > best_msgs_len:
+                best_msgs_len = n
+                best_msgs = msgs
+            # Billing from the richest COST-bearing session (== the run's
+            # real session, not a seed) — independent of message selection.
+            cost = data.get("cost")
+            if isinstance(cost, dict) and n > best_totals_len:
+                best_totals_len = n
                 best_totals = self._billing_totals_from_cost_block(cost)
         return best_msgs, best_totals
 
@@ -750,7 +753,7 @@ class Clawcodex(BaseInstalledAgent):
             # narration, so agent steps carry only their tool calls. Prepend
             # the task instruction as the opening user step (claude-code's
             # trajectory opens with it) so the trace isn't headless.
-            instruction_step = self._instruction_step(len(steps))
+            instruction_step = self._instruction_step()
             if instruction_step is not None:
                 for s in steps:
                     s.step_id += 1
@@ -771,7 +774,7 @@ class Clawcodex(BaseInstalledAgent):
         )
         return trajectory, totals
 
-    def _instruction_step(self, _n: int) -> Step | None:
+    def _instruction_step(self) -> Step | None:
         """The opening user step carrying the task instruction, if ``run()``
         captured it. ``step_id`` is fixed up by the caller."""
         instruction = getattr(self, "_captured_instruction", None)

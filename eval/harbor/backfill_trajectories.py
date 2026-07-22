@@ -15,8 +15,9 @@ Usage (from the repo root, in Harbor's venv so ``harbor`` imports resolve)::
 
 Writes ``agent/trajectory.json`` into each trial dir (same location the
 built-in claude-code agent uses), skipping trials that already have one
-unless ``--force`` is passed. Trials whose log is empty/crashed before any
-event produce no trajectory (nothing to reconstruct) and are reported.
+unless ``--force`` is passed. Trials whose log is empty/crashed before any event get a one-step
+"attempted" trajectory (the recovered task instruction) when the
+instruction is available, else none; either way they are reported.
 
 Note: reconstructed trajectories use the stream-json FALLBACK path, so
 per-step assistant narration is absent (the pre-``session.save()`` print
