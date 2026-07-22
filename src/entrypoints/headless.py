@@ -174,7 +174,7 @@ def run_headless(options: HeadlessOptions) -> int:
 
     tool_registry = build_default_registry(provider=provider)
     # Canonicalize BOTH sets up front (before either filter runs) so an alias
-    # form (e.g. --disallowedTools KillShell) resolves while its tool is still
+    # form (e.g. --disallowed-tools KillShell) resolves while its tool is still
     # registered.
     allow = (
         tool_registry.canonicalize_names(options.allowed_tools)
@@ -855,7 +855,7 @@ def _filter_registry(registry, *, keep) -> None:
     """In-place best-effort filter of a ToolRegistry.
 
     Drops every tool for which ``keep(name)`` is False so that
-    ``--allowedTools`` / ``--disallowedTools`` remove the tool from the pool
+    ``--allowed-tools`` / ``--disallowed-tools`` remove the tool from the pool
     the model sees (schemas are emitted from ``registry.list_tools()``), not
     just block it at execution time.
     """

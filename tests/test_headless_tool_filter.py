@@ -115,6 +115,20 @@ def test_canonicalize_passes_unknown_names_through():
     assert registry.canonicalize_names(["Bash", "NotATool"]) == {"bash", "notatool"}
 
 
+def test_remove_tool_by_alias_clears_canonical_dispatch_key():
+    """remove_tool given an ALIAS must also drop the canonical key.
+
+    Defense-in-depth for a now load-bearing method: a future caller passing an
+    alias must not leave the tool dispatch-reachable via its primary name.
+    """
+    registry = build_default_registry(provider="anthropic")
+    assert registry.get("TaskStop") is not None
+    assert registry.remove_tool("KillShell") is True  # removed by ALIAS
+    assert "TaskStop" not in _names(registry)
+    assert registry.get("TaskStop") is None  # canonical key cleared
+    assert registry.get("KillShell") is None  # alias key cleared
+
+
 def test_canonicalize_skips_blanks_so_allowlist_cannot_wipe_all():
     """A stray "" must not become a match-nothing allowlist removing everything."""
     registry = build_default_registry(provider="anthropic")
