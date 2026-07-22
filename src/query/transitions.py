@@ -110,4 +110,7 @@ class QueryState:
     # when the model keeps matching continuation signals without tool calls.
     # Mirrors TS State.continuationNudgeCount at query.ts:218.
     continuation_nudge_count: int = 0
+    # Session-chain latch for the one-time exhaustive-result audit. Unlike
+    # continuation_nudge_count, this survives successful tool rounds.
+    exhaustive_audit_performed: bool = False
     transition: Transition | None = None
