@@ -157,6 +157,16 @@ function todosFromInput(name: string | undefined, input: unknown): undefined | u
   return Array.isArray(todos) ? todos : undefined
 }
 
+type TaskTodo = {
+  activeForm?: string
+  content: string
+  id: string
+  status: 'completed' | 'in_progress' | 'pending'
+}
+
+const taskListLine = /^#(\S+)\s+\[(pending|in_progress|completed)\]\s+(.+)$/
+const createdTaskId = /^Task #(\S+) created successfully:/m
+
 // Per-tool result summaries, matching the original Claude Code transcript
 // (tools/*/UI.tsx): Read → "Read N lines", Grep/Glob → "Found N …", Bash →
 // first 3 stdout lines + overflow hint, errors → red "Error: …" capped at 10
@@ -414,6 +424,10 @@ export class GatewayClient extends EventEmitter {
   private seenSubagents = new Set<string>()
   // Tool inputs by tool_use id, so tool_result can render an Edit/Write diff.
   private toolInputs = new Map<string, { input: any; name: string }>()
+  // TaskV2 mutates one task at a time, unlike TodoWrite which carries the
+  // complete checklist in every call. Keep a session-local projection so the
+  // existing checklist HUD can render both protocols.
+  private taskTodos = new Map<string, TaskTodo>()
   private msgStarted = false
   private pending = new Map<string, Pending>()
   private pendingExit: null | number | undefined
@@ -1620,6 +1634,7 @@ export class GatewayClient extends EventEmitter {
               const isError = Boolean(b.is_error)
               const fullText = typeof b.content === 'string' ? b.content : safeJson(b.content)
               const resultText = formatToolResult(stored?.name, fullText, isError, webSearch)
+              const taskTodos = isError ? undefined : this.taskTodosFromResult(stored?.name, stored?.input, fullText)
               // Read shows no expand hint (the summary loses nothing the user
               // needs — the file is in context), so retain nothing for it.
               const expandable = stored?.name !== 'Read'
@@ -1634,7 +1649,7 @@ export class GatewayClient extends EventEmitter {
                   result_raw: expandable ? rawToolResult(resultText, fullText) : undefined,
                   result_text: resultText,
                   structured_diff: isError ? undefined : structured,
-                  todos: isError ? undefined : todosFromInput(stored?.name, stored?.input),
+                  todos: taskTodos ?? (isError ? undefined : todosFromInput(stored?.name, stored?.input)),
                   tool_id: b.tool_use_id
                 },
                 type: 'tool.complete'
@@ -1692,6 +1707,110 @@ export class GatewayClient extends EventEmitter {
       }
       // keep_alive / streamlined_* → ignored for the basic port
     }
+  }
+
+  private taskTodosFromResult(name: string | undefined, input: unknown, result: string): undefined | TaskTodo[] {
+    if (!name?.startsWith('Task') || !input || typeof input !== 'object') {
+      return undefined
+    }
+
+    const args = input as Record<string, unknown>
+    let parsed: Record<string, any> | undefined
+
+    try {
+      const value = JSON.parse(result)
+
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        parsed = value
+      }
+    } catch {
+      // Older backends emitted the human-readable TaskV2 strings parsed below.
+    }
+
+    if (name === 'TaskCreate') {
+      const id = String(parsed?.task?.id ?? result.match(createdTaskId)?.[1] ?? '').trim()
+      const content = String(args.subject ?? '').trim()
+
+      if (id && content) {
+        const activeForm = String(args.activeForm ?? '').trim()
+        this.taskTodos.set(id, {
+          ...(activeForm && { activeForm }),
+          content,
+          id,
+          status: 'pending'
+        })
+      }
+    } else if (name === 'TaskUpdate') {
+      const id = String(args.taskId ?? '').trim()
+
+      if (parsed?.success === false) {
+        return [...this.taskTodos.values()]
+      } else if (id && args.status === 'deleted') {
+        this.taskTodos.delete(id)
+      } else if (id) {
+        const current = this.taskTodos.get(id)
+
+        if (current) {
+          const content = String(args.subject ?? current.content).trim()
+          const activeForm = String(args.activeForm ?? current.activeForm ?? '').trim()
+          const status =
+            args.status === 'pending' || args.status === 'in_progress' || args.status === 'completed'
+              ? args.status
+              : current.status
+          this.taskTodos.set(id, {
+            ...(activeForm && { activeForm }),
+            content,
+            id,
+            status
+          })
+        }
+      }
+    } else if (name === 'TaskList') {
+      const listed = new Map<string, TaskTodo>()
+
+      if (Array.isArray(parsed?.tasks)) {
+        for (const task of parsed.tasks) {
+          const id = String(task?.id ?? '').trim()
+          const content = String(task?.subject ?? '').trim()
+          const status = task?.status
+
+          if (!id || !content || (status !== 'pending' && status !== 'in_progress' && status !== 'completed')) {
+            continue
+          }
+          const previous = this.taskTodos.get(id)
+          listed.set(id, {
+            ...(previous?.activeForm && { activeForm: previous.activeForm }),
+            content,
+            id,
+            status
+          })
+        }
+      } else {
+        for (const line of result.split('\n')) {
+          const match = line.match(taskListLine)
+
+          if (!match) {continue}
+          const [, id, status, content] = match
+          const previous = this.taskTodos.get(id!)
+          listed.set(id!, {
+            ...(previous?.activeForm && { activeForm: previous.activeForm }),
+            content: content!,
+            id: id!,
+            status: status as TaskTodo['status']
+          })
+        }
+      }
+
+      // "No tasks found" is an authoritative empty list. For other malformed
+      // output, preserve the projection rather than blanking the HUD.
+      if (listed.size || Array.isArray(parsed?.tasks) || result.trim() === 'No tasks found') {
+        this.taskTodos = listed
+      }
+    } else {
+      return undefined
+    }
+
+    return [...this.taskTodos.values()]
   }
 
   private ensureMsgStart(): void {

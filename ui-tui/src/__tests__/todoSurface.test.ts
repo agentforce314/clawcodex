@@ -79,6 +79,60 @@ describe('GatewayClient todo mapping', () => {
 
     gw.kill()
   })
+
+  it('projects TaskV2 lifecycle calls into the checklist', async () => {
+    const proc = new FakeProc()
+    harness.proc = proc
+    const events: any[] = []
+    const gw = new GatewayClient()
+
+    gw.on('event', (e: any) => events.push(e))
+    gw.start()
+    gw.drain()
+
+    const complete = async (id: string, name: string, input: unknown, result: string) => {
+      const expectedCount = events.filter(e => e.type === 'tool.complete').length + 1
+      proc.line({ message: { content: [{ id, input, name, type: 'tool_use' }] }, type: 'assistant' })
+      proc.line({
+        message: { content: [{ content: result, is_error: false, tool_use_id: id, type: 'tool_result' }] },
+        type: 'user'
+      })
+      await vi.waitFor(() => expect(events.filter(e => e.type === 'tool.complete')).toHaveLength(expectedCount))
+
+      return events.filter(e => e.type === 'tool.complete').at(-1).payload.todos
+    }
+
+    expect(
+      await complete(
+        't1',
+        'TaskCreate',
+        { activeForm: 'Fixing auth', description: 'Details', subject: 'Fix auth' },
+        '{"task":{"id":"abc123","subject":"Fix auth"}}'
+      )
+    ).toEqual([{ activeForm: 'Fixing auth', content: 'Fix auth', id: 'abc123', status: 'pending' }])
+
+    expect(
+      await complete('t2', 'TaskUpdate', { status: 'in_progress', taskId: 'abc123' }, 'Updated task #abc123 status')
+    ).toEqual([{ activeForm: 'Fixing auth', content: 'Fix auth', id: 'abc123', status: 'in_progress' }])
+
+    expect(
+      await complete(
+        't3',
+        'TaskList',
+        {},
+        '{"tasks":[{"id":"abc123","subject":"Fix auth","status":"completed"},{"id":"def456","subject":"Add tests","status":"pending"}]}'
+      )
+    ).toEqual([
+      { activeForm: 'Fixing auth', content: 'Fix auth', id: 'abc123', status: 'completed' },
+      { content: 'Add tests', id: 'def456', status: 'pending' }
+    ])
+
+    expect(
+      await complete('t4', 'TaskUpdate', { status: 'deleted', taskId: 'abc123' }, 'Updated task #abc123 deleted')
+    ).toEqual([{ content: 'Add tests', id: 'def456', status: 'pending' }])
+
+    gw.kill()
+  })
 })
 
 // ── turnController: silent completion, no stranded spinner ──────────────────

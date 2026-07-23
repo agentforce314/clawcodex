@@ -192,6 +192,12 @@ TOOL_SUMMARY_MAX_LENGTH = 80
 
 
 def _try_extract_cd(command: str) -> Path | None:
+    """Return the target only for a standalone ``cd <path>`` command.
+
+    Compound commands must run in the shell.  Treating
+    ``cd /work && make`` as a pure directory change silently discards
+    everything after the path.
+    """
     stripped = command.strip()
     if not stripped.startswith("cd "):
         return None
@@ -199,7 +205,7 @@ def _try_extract_cd(command: str) -> Path | None:
         parts = shlex.split(stripped, posix=True)
     except ValueError:
         return None
-    if len(parts) >= 2 and parts[0] == "cd":
+    if len(parts) == 2 and parts[0] == "cd":
         return Path(parts[1])
     return None
 
@@ -449,8 +455,8 @@ def _bash_validate_input(
         return ValidationResult.fail(
             f"Blocked: {sleep_pattern}. Run blocking commands in the background "
             "with run_in_background: true -- you'll get a completion notification "
-            "when done. If you genuinely need a delay (rate limiting, deliberate "
-            "pacing), keep it under 2 seconds.",
+            "when done. If you genuinely need a short delay (rate limiting, "
+            "deliberate pacing), keep it at 5 seconds or less.",
             error_code=10,
         )
     return ValidationResult.ok()

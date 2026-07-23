@@ -167,6 +167,14 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
+    # The agent server is the backend for an interactive TUI/direct-connect
+    # client even though its own stdin/stdout are pipes.  Do not let the
+    # process-level TTY check classify it like ``--print``: TaskV2 is the
+    # interactive task surface, while TodoWrite remains the headless surface.
+    from src.bootstrap.state import set_is_interactive
+
+    set_is_interactive(True)
+
     # In --stdio mode the inbound reader owns stdin, so the EOF watcher (which
     # also reads stdin) must NOT run — EOF is detected by the reader instead.
     if args.exit_on_parent and not args.stdio:
