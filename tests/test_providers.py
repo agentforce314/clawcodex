@@ -72,6 +72,29 @@ class TestAnthropicProvider(unittest.TestCase):
         provider = AnthropicProvider(api_key="test_key", model="claude-3-opus-20240229")
         self.assertEqual(provider.model, "claude-3-opus-20240229")
 
+    def test_beta_names_are_translated_to_anthropic_header(self):
+        kwargs = {
+            "betas": [
+                "advanced-tool-use-2025-11-20",
+                "prompt-caching-scope-2026-01-05",
+            ],
+            "extra_headers": {
+                "anthropic-beta": "advanced-tool-use-2025-11-20",
+                "x-test": "kept",
+            },
+        }
+
+        AnthropicProvider._merge_beta_headers(kwargs)
+
+        self.assertNotIn("betas", kwargs)
+        self.assertEqual(kwargs["extra_headers"], {
+            "anthropic-beta": (
+                "advanced-tool-use-2025-11-20,"
+                "prompt-caching-scope-2026-01-05"
+            ),
+            "x-test": "kept",
+        })
+
     def test_build_response_preserves_signed_thinking_blocks(self):
         provider = AnthropicProvider(api_key="test_key")
         response = SimpleNamespace(

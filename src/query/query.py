@@ -857,10 +857,36 @@ async def _call_model_sync(
                         block_types.append(str(type(b).__name__))
                 logger.warning("[DIAG]   msg[%d] role=%s  blocks=%s", i, role, block_types)
     _t0 = time.monotonic()
-    from ..tool_system.tool_search import filter_tools_for_request
+    from ..tool_system.tool_search import (
+        TOOL_SEARCH_BETA_HEADER_1P,
+        filter_tools_for_request,
+        is_deferred_tool,
+    )
 
     provider_model = getattr(provider, "model", None) or ""
     request_tools = filter_tools_for_request(tools, provider_model, api_messages)
+    deferred_tool_names = sorted(
+        tool.name
+        for tool in tools
+        if is_deferred_tool(tool)
+        and (
+            not callable(getattr(tool, "is_enabled", None))
+            or tool.is_enabled()
+        )
+        and tool not in request_tools
+    )
+    if deferred_tool_names:
+        api_messages = [
+            {
+                "role": "user",
+                "content": (
+                    "<available-deferred-tools>\n"
+                    + "\n".join(deferred_tool_names)
+                    + "\n</available-deferred-tools>"
+                ),
+            },
+            *api_messages,
+        ]
     tool_schemas = []
     for tool in request_tools:
         # Filter out internal/hidden tools (is_enabled=False) so they
@@ -911,6 +937,12 @@ async def _call_model_sync(
     from ..providers.minimax_provider import MinimaxProvider
 
     is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+    if deferred_tool_names and isinstance(provider, AnthropicProvider):
+        has_custom_endpoint = getattr(provider, "has_custom_endpoint", None)
+        if not callable(has_custom_endpoint) or not has_custom_endpoint():
+            call_kwargs.setdefault("betas", []).append(
+                TOOL_SEARCH_BETA_HEADER_1P
+            )
     advisor_instructions_active = advisor_mode != ADVISOR_MODE_INACTIVE
     if is_anthropic:
         # Forward whatever shape the engine produced — str or list[dict].

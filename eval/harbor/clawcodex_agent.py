@@ -379,6 +379,13 @@ class Clawcodex(BaseInstalledAgent):
         # post-run so the host still gets them.
         env["CLAWCODEX_CONFIG_DIR"] = _CONTAINER_CONFIG_DIR
         env["NO_COLOR"] = "1"
+        # The CLI safely defaults experimental Anthropic betas off for
+        # external API-key users. Subscription mode uses Claude's first-party
+        # endpoint, where ToolSearch/tool_reference is supported; explicitly
+        # override the default so deferred schemas actually leave the initial
+        # prompt. ``setdefault`` in cli.py preserves this value.
+        if self._subscription:
+            env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "false"
         return env
 
     async def _inject_subscription_credentials(

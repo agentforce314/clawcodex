@@ -319,6 +319,19 @@ class AnthropicProvider(BaseProvider):
                     name = block.get("name")
                     if isinstance(name, str) and not name.startswith("mcp_"):
                         block["name"] = "mcp_" + name
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    result_content = block.get("content")
+                    if not isinstance(result_content, list):
+                        continue
+                    for item in result_content:
+                        if not (
+                            isinstance(item, dict)
+                            and item.get("type") == "tool_reference"
+                        ):
+                            continue
+                        name = item.get("tool_name")
+                        if isinstance(name, str) and not name.startswith("mcp_"):
+                            item["tool_name"] = "mcp_" + name
         if prepared_tools:
             for tool in prepared_tools:
                 name = tool.get("name")
@@ -497,6 +510,29 @@ class AnthropicProvider(BaseProvider):
         kwargs["extra_headers"] = merged
         return merged["x-client-request-id"]
 
+    @staticmethod
+    def _merge_beta_headers(kwargs: dict[str, Any]) -> None:
+        """Translate query-layer beta names to the SDK's wire header.
+
+        ``messages.create/stream`` do not accept a ``betas=`` keyword; that
+        convenience exists only on ``client.beta.messages``.  The regular
+        client supports the same API contract through ``anthropic-beta``.
+        """
+        raw = kwargs.pop("betas", None)
+        if not raw:
+            return
+        values = [str(value).strip() for value in raw if str(value).strip()]
+        if not values:
+            return
+        merged = dict(kwargs.get("extra_headers") or {})
+        existing = str(merged.get("anthropic-beta", "")).strip()
+        combined = [part.strip() for part in existing.split(",") if part.strip()]
+        for value in values:
+            if value not in combined:
+                combined.append(value)
+        merged["anthropic-beta"] = ",".join(combined)
+        kwargs["extra_headers"] = merged
+
     def chat(
         self,
         messages: list[MessageInput],
@@ -529,6 +565,7 @@ class AnthropicProvider(BaseProvider):
         extra_kwargs: dict[str, Any] = {}
         if tools:
             extra_kwargs["tools"] = tools
+        self._merge_beta_headers(kwargs)
         self._merge_request_id(kwargs)
 
         # Explicit per-request timeout (TS API_TIMEOUT_MS, openaiShim.ts:
@@ -583,6 +620,7 @@ class AnthropicProvider(BaseProvider):
         extra_kwargs: dict[str, Any] = {}
         if tools:
             extra_kwargs["tools"] = tools
+        self._merge_beta_headers(kwargs)
 
         with client.messages.stream(
             model=model,
@@ -667,6 +705,7 @@ class AnthropicProvider(BaseProvider):
         extra_kwargs: dict[str, Any] = {}
         if tools:
             extra_kwargs["tools"] = tools
+        self._merge_beta_headers(kwargs)
         request_id = self._merge_request_id(kwargs)
 
         from src.utils.stream_watchdog import (

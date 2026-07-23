@@ -405,10 +405,19 @@ def run_headless(options: HeadlessOptions) -> int:
         # headless filter application at main.tsx:1871-1879.
         from src.coordinator.mode import coordinator_main_loop_registry
 
-        tools = [
-            tool.name
+        initial_registry_tools = [
+            tool
             for tool in coordinator_main_loop_registry(tool_registry).list_tools()
+            if tool.is_enabled()
         ]
+        from src.tool_system.tool_search import filter_tools_for_request
+
+        initial_registry_tools = filter_tools_for_request(
+            initial_registry_tools,
+            getattr(provider, "model", "") or "",
+            messages=[],
+        )
+        tools = [tool.name for tool in initial_registry_tools]
         writer.write(
             SystemEvent(
                 subtype="init",
