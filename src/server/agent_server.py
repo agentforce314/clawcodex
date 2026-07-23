@@ -4080,7 +4080,10 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             permission_context=perm_setup.context,
             abort_controller=AbortController(),
         )
-        tool_context.options.is_non_interactive_session = True
+        # Agent-server sessions are driven by an interactive TUI/direct-connect
+        # client.  The transport is non-TTY, but the session is not headless
+        # (notably, it must expose TaskV2 rather than TodoWrite).
+        tool_context.options.is_non_interactive_session = False
         # Scheduled tasks (/loop, Cron*, ScheduleWakeup): the tools write to
         # the session's scheduler; the worker's idle branch fires due prompts.
         tool_context.cron_scheduler = sess.cron_scheduler

@@ -197,6 +197,29 @@ class TestBashTool(ToolSystemTests):
         with self.assertRaises(Exception):
             BashTool.call({"command": "sudo echo nope"}, self.ctx)
 
+    def test_bash_standalone_cd_updates_persistent_cwd(self) -> None:
+        child = self.root / "child"
+        child.mkdir()
+
+        out = BashTool.call({"command": f"cd {child}"}, self.ctx).output
+
+        self.assertEqual(out["cwd"], str(child))
+        self.assertEqual(self.ctx.cwd, child)
+
+    def test_bash_compound_cd_executes_remainder_and_updates_cwd(self) -> None:
+        child = self.root / "child"
+        child.mkdir()
+
+        out = BashTool.call(
+            {"command": f"cd {child} && printf executed > marker && pwd"},
+            self.ctx,
+        ).output
+
+        self.assertEqual(out["exit_code"], 0)
+        self.assertEqual(out["stdout"].strip(), str(child))
+        self.assertEqual((child / "marker").read_text(encoding="utf-8"), "executed")
+        self.assertEqual(self.ctx.cwd, child)
+
     def _run_bash_with_pty_parent_stdin(self, tool_input: dict) -> dict:
         # Dup a real pty over fd 0 for the duration of one BashTool.call to
         # simulate clawcodex's REPL inheriting a terminal -- the failure mode
