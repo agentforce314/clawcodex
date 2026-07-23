@@ -512,6 +512,38 @@ def run_headless(options: HeadlessOptions) -> int:
                                     msg.content,
                                     usage=getattr(msg, "usage", None),
                                 )
+                                # Claude Code's stream-json exposes signed
+                                # thinking blocks as assistant content events.
+                                # Emit only the private blocks here; the visible
+                                # final text keeps its existing single
+                                # AssistantEvent below.
+                                if writer is not None and msg.role == "assistant":
+                                    from src.types.content_blocks import (
+                                        RedactedThinkingBlock,
+                                        ThinkingBlock,
+                                        content_block_to_dict,
+                                    )
+
+                                    blocks = (
+                                        msg.content
+                                        if isinstance(msg.content, list)
+                                        else []
+                                    )
+                                    thinking = [
+                                        content_block_to_dict(block)
+                                        for block in blocks
+                                        if isinstance(
+                                            block,
+                                            (ThinkingBlock, RedactedThinkingBlock),
+                                        )
+                                    ]
+                                    if thinking:
+                                        writer.write(AssistantEvent(
+                                            message={
+                                                "role": "assistant",
+                                                "content": thinking,
+                                            }
+                                        ))
                             except Exception:
                                 import logging
                                 logging.getLogger(__name__).exception(

@@ -857,8 +857,12 @@ async def _call_model_sync(
                         block_types.append(str(type(b).__name__))
                 logger.warning("[DIAG]   msg[%d] role=%s  blocks=%s", i, role, block_types)
     _t0 = time.monotonic()
+    from ..tool_system.tool_search import filter_tools_for_request
+
+    provider_model = getattr(provider, "model", None) or ""
+    request_tools = filter_tools_for_request(tools, provider_model, api_messages)
     tool_schemas = []
-    for tool in tools:
+    for tool in request_tools:
         # Filter out internal/hidden tools (is_enabled=False) so they
         # don't leak into the API tools[] alongside the advisor schema
         # we append below. Some callers pass an unfiltered tool list
@@ -1242,6 +1246,15 @@ async def _call_model_sync(
 
     assistant_blocks: list[Any] = []
     tool_use_blocks: list[ToolUseBlock] = []
+
+    # Signed Anthropic thinking must precede the text/tool blocks exactly as
+    # returned.  Keeping it in message history both preserves reasoning state
+    # across tool turns and makes it available to stream-json/session logs.
+    if response.thinking_blocks:
+        from ..types.content_blocks import content_block_from_dict
+
+        for raw in response.thinking_blocks:
+            assistant_blocks.append(content_block_from_dict(raw))
 
     if response.content:
         assistant_blocks.append(TextBlock(text=response.content))
