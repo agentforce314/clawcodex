@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from src.tool_system.tool_search import (
@@ -20,6 +21,12 @@ from src.tool_system.tool_search import (
     model_supports_tool_reference,
 )
 from src.tool_system.build_tool import build_tool
+from src.tool_system.context import ToolContext
+from src.tool_system.defaults import (
+    ESSENTIAL_INITIAL_TOOL_NAMES,
+    build_default_registry,
+)
+from src.tool_system.protocol import ToolCall
 
 
 def _make_tool(name: str, *, should_defer: bool = False, is_mcp: bool = False):
@@ -236,6 +243,68 @@ class TestFilterToolsForRequest(unittest.TestCase):
             result = filter_tools_for_request(tools, "claude-sonnet-4-6", messages=messages)
             names = [t.name for t in result]
             self.assertIn("mcp_tool", names)
+
+    def test_missing_tool_search_keeps_deferred_tools_reachable(self):
+        with patch.dict(os.environ, {
+            "ENABLE_TOOL_SEARCH": "true",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "",
+        }):
+            tools = [
+                _make_tool("Read"),
+                _make_tool("deferred", should_defer=True),
+            ]
+            self.assertEqual(filter_tools_for_request(
+                tools, "claude-opus-4-8", messages=[],
+            ), tools)
+
+
+class TestDefaultInitialToolSet(unittest.TestCase):
+    def test_initial_request_matches_essential_policy(self):
+        registry = build_default_registry(provider=None)
+        tools = [tool for tool in registry.list_tools() if tool.is_enabled()]
+
+        with patch.dict(os.environ, {
+            "ENABLE_TOOL_SEARCH": "true",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "",
+        }):
+            initial = filter_tools_for_request(
+                tools, "claude-opus-4-8", messages=[],
+            )
+
+        self.assertEqual(
+            {tool.name for tool in initial},
+            ESSENTIAL_INITIAL_TOOL_NAMES & {tool.name for tool in tools},
+        )
+
+    def test_tool_search_result_loads_deferred_schema_next_request(self):
+        registry = build_default_registry(provider=None)
+        result = registry.dispatch(
+            ToolCall(
+                name="ToolSearch",
+                input={"query": "select:Grep"},
+                tool_use_id="search-1",
+            ),
+            ToolContext(workspace_root=Path.cwd()),
+        )
+        search_tool = registry.get("ToolSearch")
+        assert search_tool is not None
+        block = search_tool.map_result_to_api(result.output, "search-1")
+
+        self.assertEqual(block["content"], [
+            {"type": "tool_reference", "tool_name": "Grep"},
+        ])
+
+        messages = [{"type": "user", "content": [block]}]
+        tools = [tool for tool in registry.list_tools() if tool.is_enabled()]
+        with patch.dict(os.environ, {
+            "ENABLE_TOOL_SEARCH": "true",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "",
+        }):
+            loaded = filter_tools_for_request(
+                tools, "claude-opus-4-8", messages,
+            )
+
+        self.assertIn("Grep", {tool.name for tool in loaded})
 
 
 if __name__ == "__main__":

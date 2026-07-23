@@ -9,7 +9,35 @@ from ..protocol import ToolResult
 from ..registry import ToolRegistry
 
 
+def _map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
+    """Expose matches as tool_reference blocks so request filtering can load them."""
+    matches = output.get("matches", []) if isinstance(output, dict) else []
+    if not matches:
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": "No matching deferred tools found",
+        }
+    references = [
+        {"type": "tool_reference", "tool_name": name}
+        for name in matches
+        if isinstance(name, str) and name
+    ]
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": references,
+    }
+
+
 def make_tool_search_tool(registry: ToolRegistry) -> Tool:
+    def _deferred_count() -> int:
+        return sum(
+            1
+            for tool in registry.list_tools()
+            if tool.should_defer or tool.is_mcp
+        )
+
     def _tool_search_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         query = tool_input.get("query")
         if not isinstance(query, str) or not query.strip():
@@ -29,7 +57,7 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
                 output={
                     "matches": matches,
                     "query": query,
-                    "total_deferred_tools": 0,
+                    "total_deferred_tools": _deferred_count(),
                 },
             )
 
@@ -44,7 +72,11 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
         matches = [name for _, name in scored[:max_results]]
         return ToolResult(
             name="ToolSearch",
-            output={"matches": matches, "query": query, "total_deferred_tools": 0},
+            output={
+                "matches": matches,
+                "query": query,
+                "total_deferred_tools": _deferred_count(),
+            },
         )
 
     return build_tool(
@@ -59,8 +91,17 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
             "required": ["query"],
         },
         call=_tool_search_call,
-        prompt="Search for available tools by name or keywords.",
-        description="Search for available tools by name or keywords.",
+        map_result_to_api=_map_result_to_api,
+        prompt=(
+            "Fetch full schema definitions for deferred tools. Deferred tools "
+            "are announced by name in <available-deferred-tools>. Use "
+            "'select:ToolName' for an exact tool or capability keywords to "
+            "search. A matched tool becomes callable on the next turn."
+        ),
+        description=(
+            "Fetch full schema definitions for deferred tools by exact name "
+            "or capability keywords."
+        ),
         strict=True,
         max_result_size_chars=100_000,
         is_read_only=lambda _input: True,

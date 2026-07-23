@@ -112,6 +112,32 @@ def test_provider_uses_bearer_oauth_and_adapts_tools(monkeypatch) -> None:
     assert result.usage["billing_mode"] == "subscription"
 
 
+def test_subscription_adapts_deferred_tool_references(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    with patch.object(auth, "get_valid_credentials", return_value=_credentials()), \
+         patch("src.providers.anthropic_provider.anthropic.Anthropic"):
+        provider = AnthropicProvider(api_key="")
+
+    messages = [{
+        "role": "user",
+        "content": [{
+            "type": "tool_result",
+            "tool_use_id": "search-1",
+            "content": [{"type": "tool_reference", "tool_name": "Grep"}],
+        }],
+    }]
+    prepared, tools, _ = provider._prepare_subscription_request(
+        messages,
+        [{"name": "Grep", "description": "search", "input_schema": {}}],
+        None,
+    )
+
+    assert prepared[0]["content"][0]["content"][0]["tool_name"] == "mcp_Grep"
+    assert tools and tools[0]["name"] == "mcp_Grep"
+    # Caller-owned history remains canonical for discovery on future turns.
+    assert messages[0]["content"][0]["content"][0]["tool_name"] == "Grep"
+
+
 def test_identity_rewrite_preserves_paths_env_vars_and_domains(monkeypatch) -> None:
     """The OAuth identity disguise must not corrupt machine-readable tokens.
 

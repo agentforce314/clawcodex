@@ -206,12 +206,25 @@ class TestAdvisorActiveOnFirstPartyAnthropic(unittest.TestCase):
         }):
             _run(provider, [UserMessage(content="x")], tools=[
                 _FakeTool("Read", False),
+                _FakeTool("ToolSearch", False),
                 _FakeTool("EnterPlanMode", True),
             ])
 
         names = [tool["name"] for tool in cap.call_kwargs["tools"]]
         self.assertIn("Read", names)
         self.assertNotIn("EnterPlanMode", names)
+        self.assertIn(
+            "advanced-tool-use-2025-11-20",
+            cap.call_kwargs["betas"],
+        )
+        self.assertEqual(
+            cap.api_messages[0]["content"],
+            (
+                "<available-deferred-tools>\n"
+                "EnterPlanMode\n"
+                "</available-deferred-tools>"
+            ),
+        )
 
     def test_signed_thinking_is_kept_in_assistant_history(self) -> None:
         cap = _Capture()

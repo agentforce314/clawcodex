@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 TOOL_SEARCH_TOOL_NAME = "ToolSearch"
+TOOL_SEARCH_BETA_HEADER_1P = "advanced-tool-use-2025-11-20"
 DEFAULT_AUTO_TOOL_SEARCH_PERCENTAGE = 10  # 10% of context window
 CHARS_PER_TOKEN = 2.5
 
@@ -165,6 +166,10 @@ def is_deferred_tool(tool: Tool) -> bool:
     A tool is deferred if it's an MCP tool or has should_defer=True.
     Mirrors TS isDeferredTool from toolSearch.ts.
     """
+    if getattr(tool, "always_load", False):
+        return False
+    if getattr(tool, "name", "") == TOOL_SEARCH_TOOL_NAME:
+        return False
     if getattr(tool, "is_mcp", False):
         return True
     if getattr(tool, "should_defer", False):
@@ -341,6 +346,9 @@ def filter_tools_for_request(
         return tools
 
     if not model_supports_tool_reference(model):
+        return tools
+
+    if not is_tool_search_tool_available(tools):
         return tools
 
     discovered = extract_discovered_tool_names(messages or [])
