@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.providers import get_provider_class
@@ -70,6 +71,38 @@ class TestAnthropicProvider(unittest.TestCase):
         """Test provider with custom model."""
         provider = AnthropicProvider(api_key="test_key", model="claude-3-opus-20240229")
         self.assertEqual(provider.model, "claude-3-opus-20240229")
+
+    def test_build_response_preserves_signed_thinking_blocks(self):
+        provider = AnthropicProvider(api_key="test_key")
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="thinking",
+                    thinking="",
+                    signature="opaque-signature",
+                ),
+                SimpleNamespace(type="redacted_thinking", data="opaque-data"),
+                SimpleNamespace(type="text", text="done"),
+            ],
+            model="claude-opus-4-8",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            stop_reason="end_turn",
+        )
+
+        result = provider._build_chat_response(response)
+
+        self.assertEqual(result.content, "done")
+        self.assertEqual(
+            result.thinking_blocks,
+            [
+                {
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": "opaque-signature",
+                },
+                {"type": "redacted_thinking", "data": "opaque-data"},
+            ],
+        )
 
     def test_get_available_models(self):
         """Test getting available models."""

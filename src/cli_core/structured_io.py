@@ -61,7 +61,8 @@ class PartialTextEvent(HeadlessEvent):
 @dataclass
 class AssistantEvent(HeadlessEvent):
     type: str = "assistant"
-    text: str = ""
+    text: str | None = None
+    message: dict[str, Any] | None = None
 
 
 @dataclass

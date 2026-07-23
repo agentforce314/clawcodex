@@ -390,9 +390,32 @@ class AnthropicProvider(BaseProvider):
         content_text = ""
         tool_uses: list[dict[str, Any]] = []
         raw_content_blocks: list[dict[str, Any]] = []
+        thinking_blocks: list[dict[str, Any]] = []
 
         for block in response.content:
             block_type = getattr(block, "type", "text")
+            if block_type in ("thinking", "redacted_thinking"):
+                dump = getattr(block, "model_dump", None)
+                if callable(dump):
+                    thinking_blocks.append(
+                        _strip_none_deep(dict(dump(exclude_none=True)))
+                    )
+                elif block_type == "thinking":
+                    thinking_blocks.append({
+                        "type": "thinking",
+                        "thinking": str(getattr(block, "thinking", "")),
+                        **(
+                            {"signature": str(getattr(block, "signature"))}
+                            if getattr(block, "signature", None) is not None
+                            else {}
+                        ),
+                    })
+                else:
+                    thinking_blocks.append({
+                        "type": "redacted_thinking",
+                        "data": str(getattr(block, "data", "")),
+                    })
+                continue
             block_name = getattr(block, "name", None)
             is_advisor = block_type == "advisor_tool_result" or (
                 block_type == "server_tool_use" and block_name == "advisor"
@@ -433,6 +456,7 @@ class AnthropicProvider(BaseProvider):
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
             raw_content_blocks=raw_content_blocks or None,
+            thinking_blocks=thinking_blocks or None,
         )
 
     def _client_for_request(self, kwargs: dict[str, Any]):

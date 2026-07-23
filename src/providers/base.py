@@ -41,6 +41,10 @@ class ChatResponse:
     # when the response had no such blocks. See
     # ``src/utils/advisor.py`` for the policy.
     raw_content_blocks: Optional[list[dict[str, Any]]] = None
+    # Anthropic extended-thinking blocks must be replayed byte-for-byte on
+    # follow-up tool turns.  ``thinking`` text may be empty/redacted while the
+    # signature carries the opaque state the API validates.
+    thinking_blocks: Optional[list[dict[str, Any]]] = None
 
 
 MessageInput: TypeAlias = ChatMessage | dict[str, Any]

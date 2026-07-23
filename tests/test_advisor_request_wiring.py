@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatResponse
 from src.query.query import _call_model_sync
+from src.types.content_blocks import ThinkingBlock
 from src.types.messages import AssistantMessage, UserMessage
 
 
@@ -183,6 +184,59 @@ class TestAdvisorActiveOnFirstPartyAnthropic(unittest.TestCase):
         self.assertEqual(tools[-1]["type"], "advisor_20260301")
         self.assertEqual(tools[-1]["name"], "advisor")
         self.assertEqual(tools[-1]["model"], "claude-opus-4-6")
+
+    def test_request_filter_excludes_undiscovered_deferred_tool(self) -> None:
+        cap = _Capture()
+        provider = _stub_provider_class(AnthropicProvider, cap)
+
+        class _FakeTool:
+            input_schema = {"type": "object", "properties": {}}
+            is_mcp = False
+
+            def __init__(self, name: str, should_defer: bool) -> None:
+                self.name = name
+                self.should_defer = should_defer
+
+            def prompt(self) -> str:
+                return self.name
+
+        with patch.dict(os.environ, {
+            "ENABLE_TOOL_SEARCH": "true",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "",
+        }):
+            _run(provider, [UserMessage(content="x")], tools=[
+                _FakeTool("Read", False),
+                _FakeTool("EnterPlanMode", True),
+            ])
+
+        names = [tool["name"] for tool in cap.call_kwargs["tools"]]
+        self.assertIn("Read", names)
+        self.assertNotIn("EnterPlanMode", names)
+
+    def test_signed_thinking_is_kept_in_assistant_history(self) -> None:
+        cap = _Capture()
+        provider = _stub_provider_class(AnthropicProvider, cap)
+
+        def fake_chat_stream_response(*args, **kwargs):
+            return ChatResponse(
+                content="",
+                model="claude-opus-4-8",
+                usage={"input_tokens": 1, "output_tokens": 1},
+                finish_reason="tool_use",
+                tool_uses=[{"id": "t1", "name": "Bash", "input": {"command": "true"}}],
+                thinking_blocks=[{
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": "opaque-signature",
+                }],
+            )
+
+        provider.chat_stream_response = fake_chat_stream_response
+        messages, _ = _run(provider, [UserMessage(content="x")])
+
+        assistant = next(m for m in messages if isinstance(m, AssistantMessage))
+        thinking = next(b for b in assistant.content if isinstance(b, ThinkingBlock))
+        self.assertEqual(thinking.signature, "opaque-signature")
 
     def test_instructions_appended_to_string_system_prompt(self) -> None:
         cap = _Capture()

@@ -144,8 +144,26 @@ def _run_bash_with_abort(
     # output that buffered before the signal landed.
     try:
         stdout, stderr = proc.communicate(timeout=_KILL_REAP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        stdout, stderr = "", ""
+    except subprocess.TimeoutExpired as exc:
+        # A user command can intentionally detach a descendant without using
+        # ``run_in_background`` (for example ``nohup server ... &``). The
+        # shell exits, but the descendant's intermediary shell may retain our
+        # pipe, so communicate cannot observe EOF. TimeoutExpired still
+        # carries everything already read; preserve it instead of replacing a
+        # successful command's output with "(Bash completed with no output)".
+        def _captured(value: Any) -> str:
+            if isinstance(value, bytes):
+                return value.decode(errors="replace")
+            return value if isinstance(value, str) else ""
+
+        stdout = _captured(exc.output)
+        stderr = _captured(exc.stderr)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
 
     return _BashRunResult(
         returncode=proc.returncode if proc.returncode is not None else -1,

@@ -246,3 +246,20 @@ def test_run_bash_with_abort_natural_exit_sets_neither_flag(tmp_path: Path) -> N
     assert result.timed_out is False
     assert result.returncode == 0
     assert "hello" in result.stdout
+
+
+def test_detached_descendant_does_not_discard_captured_stdout(tmp_path: Path) -> None:
+    """A detached child may keep the output pipe open after Bash exits."""
+    result = _run_bash_with_abort(
+        [
+            "bash",
+            "-lc",
+            "nohup sh -c 'sleep 4' >/dev/null 2>&1 & echo server-started",
+        ],
+        cwd=str(tmp_path),
+        timeout_s=10,
+        abort_signal=None,
+    )
+
+    assert result.returncode == 0
+    assert "server-started" in result.stdout

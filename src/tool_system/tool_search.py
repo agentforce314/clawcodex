@@ -165,9 +165,9 @@ def is_deferred_tool(tool: Tool) -> bool:
     A tool is deferred if it's an MCP tool or has should_defer=True.
     Mirrors TS isDeferredTool from toolSearch.ts.
     """
-    if tool.is_mcp:
+    if getattr(tool, "is_mcp", False):
         return True
-    if tool.should_defer:
+    if getattr(tool, "should_defer", False):
         return True
     return False
 

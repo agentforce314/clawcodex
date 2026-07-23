@@ -171,6 +171,22 @@ def test_stream_json_writer_escapes_line_terminators_in_output():
     assert payload["text"] == "x\u2028y"
 
 
+def test_assistant_event_can_emit_signed_thinking_message():
+    event = AssistantEvent(message={
+        "role": "assistant",
+        "content": [{
+            "type": "thinking",
+            "thinking": "",
+            "signature": "opaque-signature",
+        }],
+    })
+
+    payload = event.to_dict()
+
+    assert "text" not in payload
+    assert payload["message"]["content"][0]["signature"] == "opaque-signature"
+
+
 def test_stream_json_writer_accepts_plain_dict():
     buf = io.StringIO()
     writer = StreamJsonWriter(buf)
