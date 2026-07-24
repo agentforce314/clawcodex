@@ -27,9 +27,17 @@ from src.tool_system.defaults import (
     build_default_registry,
 )
 from src.tool_system.protocol import ToolCall
+from src.tool_system.registry import ToolRegistry
+from src.tool_system.tools.tool_search import make_tool_search_tool
 
 
-def _make_tool(name: str, *, should_defer: bool = False, is_mcp: bool = False):
+def _make_tool(
+    name: str,
+    *,
+    should_defer: bool = False,
+    is_mcp: bool = False,
+    is_enabled=None,
+):
     return build_tool(
         name=name,
         input_schema={"type": "object", "properties": {}},
@@ -37,6 +45,7 @@ def _make_tool(name: str, *, should_defer: bool = False, is_mcp: bool = False):
         prompt=f"Tool {name}",
         should_defer=should_defer,
         is_mcp=is_mcp,
+        is_enabled=is_enabled,
     )
 
 
@@ -181,6 +190,20 @@ class TestExtractDiscoveredToolNames(unittest.TestCase):
         result = extract_discovered_tool_names(msgs)
         self.assertIn("mcp__tool_x", result)
 
+    def test_tool_reference_in_provider_role_message(self):
+        """Provider-ready history uses role=user, not type=user."""
+        msgs = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "123",
+                "content": [
+                    {"type": "tool_reference", "tool_name": "Grep"},
+                ],
+            }],
+        }]
+        self.assertEqual(extract_discovered_tool_names(msgs), {"Grep"})
+
     def test_no_tool_reference(self):
         msgs = [{
             "type": "user",
@@ -244,6 +267,33 @@ class TestFilterToolsForRequest(unittest.TestCase):
             names = [t.name for t in result]
             self.assertIn("mcp_tool", names)
 
+    def test_provider_role_history_loads_discovered_tool(self):
+        """Regression: real API messages use role and previously lost refs."""
+        with patch.dict(os.environ, {
+            "ENABLE_TOOL_SEARCH": "true",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "",
+        }):
+            tools = [
+                _make_tool("Read"),
+                _make_tool("ToolSearch"),
+                _make_tool("Grep", should_defer=True),
+            ]
+            messages = [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "search-1",
+                    "content": [
+                        {"type": "tool_reference", "tool_name": "Grep"},
+                    ],
+                }],
+            }]
+            result = filter_tools_for_request(
+                tools, "claude-opus-4-8", messages=messages,
+            )
+
+        self.assertIn("Grep", {tool.name for tool in result})
+
     def test_missing_tool_search_keeps_deferred_tools_reachable(self):
         with patch.dict(os.environ, {
             "ENABLE_TOOL_SEARCH": "true",
@@ -306,6 +356,29 @@ class TestDefaultInitialToolSet(unittest.TestCase):
 
         self.assertIn("Grep", {tool.name for tool in loaded})
 
+    def test_tool_search_does_not_reference_disabled_tool(self):
+        registry = ToolRegistry([
+            _make_tool(
+                "TodoWrite",
+                should_defer=True,
+                is_enabled=lambda: False,
+            ),
+        ])
+        registry.register(make_tool_search_tool(registry))
+
+        result = registry.dispatch(
+            ToolCall(
+                name="ToolSearch",
+                input={"query": "select:TodoWrite"},
+                tool_use_id="search-1",
+            ),
+            ToolContext(workspace_root=Path.cwd()),
+        )
+        search_tool = registry.get("ToolSearch")
+        assert search_tool is not None
+        block = search_tool.map_result_to_api(result.output, "search-1")
+
+        self.assertEqual(block["content"], "No matching deferred tools found")
 
 if __name__ == "__main__":
     unittest.main()

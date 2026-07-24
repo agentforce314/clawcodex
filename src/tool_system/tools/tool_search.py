@@ -31,11 +31,22 @@ def _map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
 
 
 def make_tool_search_tool(registry: ToolRegistry) -> Tool:
+    def _is_available_tool(tool: Tool | None) -> bool:
+        """Only advertise tools that can be present on the next request."""
+        if tool is None:
+            return False
+        try:
+            return bool(tool.is_enabled())
+        except Exception:
+            # A broken runtime gate must not produce a reference whose schema
+            # the request builder will subsequently omit.
+            return False
+
     def _deferred_count() -> int:
         return sum(
             1
             for tool in registry.list_tools()
-            if tool.should_defer or tool.is_mcp
+            if (tool.should_defer or tool.is_mcp) and _is_available_tool(tool)
         )
 
     def _tool_search_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -51,7 +62,7 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
         if lowered.startswith("select:"):
             name = q.split(":", 1)[1].strip()
             tool = registry.get(name)
-            matches = [tool.name] if tool else []
+            matches = [tool.name] if _is_available_tool(tool) else []
             return ToolResult(
                 name="ToolSearch",
                 output={
@@ -63,6 +74,8 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
 
         scored: list[tuple[int, str]] = []
         for t in registry.list_tools():
+            if not _is_available_tool(t):
+                continue
             hay = f"{t.name}\n{t.prompt()}".lower()
             if lowered in t.name.lower():
                 scored.append((0, t.name))

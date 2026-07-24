@@ -275,7 +275,16 @@ def extract_discovered_tool_names(messages: list[Any]) -> set[str]:
     discovered: set[str] = set()
 
     for msg in messages:
-        msg_type = getattr(msg, "type", None) or (msg.get("type") if isinstance(msg, dict) else None)
+        msg_type = getattr(msg, "type", None)
+        if isinstance(msg, dict):
+            # Internal Message objects use ``type`` while provider-ready API
+            # messages use ``role``.  _call_model_sync passes the latter into
+            # filter_tools_for_request(), so ignoring ``role`` made every
+            # freshly returned tool_reference invisible on the next request.
+            # The reference remained in history but its schema stayed
+            # filtered out, causing providers to reject the dangling
+            # reference as an invalid request.
+            msg_type = msg_type or msg.get("type") or msg.get("role")
 
         # Compact boundary carries pre-compact discovered set
         if msg_type == "system":
