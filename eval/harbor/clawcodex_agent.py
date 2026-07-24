@@ -86,6 +86,7 @@ from harbor.models.trajectories import (
     ToolCall,
     Trajectory,
 )
+from time_budget import build_deadline_prompt, resolve_agent_timeout_seconds
 
 # Host env vars forwardable into the container (clawcodex's builtin provider
 # key candidates — see src/providers/__init__.py in the clawcodex repo), keyed
@@ -427,19 +428,30 @@ class Clawcodex(BaseInstalledAgent):
             env={"CLAWCODEX_OAUTH_JSON": json.dumps(credentials)},
         )
 
-    async def _seed_container_settings(self, environment: BaseEnvironment) -> None:
-        """Seed ``settings.effort`` in the container's global config.
+    async def _seed_container_settings(
+        self,
+        environment: BaseEnvironment,
+        *,
+        deadline_prompt: str | None = None,
+    ) -> None:
+        """Seed session-wide effort and deadline guidance in global config.
 
         clawcodex's ``--effort`` flag governs the MAIN loop only; subagents
         (Agent tool) resolve effort from ``settings.effort``. Seeding the
         container's global config (home-anchored ``~/.clawcodex/config.json``
         — the global-config path deliberately does not follow
-        CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide.
+        CLAWCODEX_CONFIG_DIR) makes the requested effort session-wide and
+        appends Harbor's real wall-clock deadline to the model instructions.
         """
+        settings: dict[str, Any] = {}
         effort = self._resolved_flags.get("effort")
-        if not effort:
+        if effort:
+            settings["effort"] = effort
+        if deadline_prompt:
+            settings["append_system_prompt"] = deadline_prompt
+        if not settings:
             return
-        payload = json.dumps({"settings": {"effort": effort}})
+        payload = json.dumps({"settings": settings})
         await self.exec_as_agent(
             environment,
             command=(
@@ -462,7 +474,19 @@ class Clawcodex(BaseInstalledAgent):
         self._captured_instruction = instruction
         if self._subscription:
             await self._inject_subscription_credentials(environment)
-        await self._seed_container_settings(environment)
+        timeout_seconds = resolve_agent_timeout_seconds(
+            environment.environment_dir.parent / "task.toml",
+            environment.trial_paths.lock_path,
+        )
+        deadline_prompt = (
+            build_deadline_prompt(timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
+        await self._seed_container_settings(
+            environment,
+            deadline_prompt=deadline_prompt,
+        )
 
         parts: list[str] = [
             "clawcodex",
