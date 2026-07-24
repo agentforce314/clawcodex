@@ -59,4 +59,3 @@ def build_deadline_prompt(
         "than consuming the remaining budget. You can use `date -u` to compare "
         "the current time with these timestamps."
     )
-
