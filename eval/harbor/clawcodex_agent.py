@@ -157,11 +157,13 @@ def _save_host_oauth(credentials: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-# Refresh when under this much runway. Must exceed the longest agent
-# timeout (terminal-bench tasks: 900s) with margin, because containers get
-# an access token WITHOUT a refresh token (see the injection notes) and so
-# cannot refresh mid-trial.
-_MIN_TOKEN_RUNWAY_SEC = 1800
+# Refresh when under this much runway. Containers intentionally receive an
+# access token WITHOUT a refresh token (see the injection notes), so the
+# token must outlive the whole trial. Long problem-solving evaluations can
+# legitimately run beyond the benchmark's original 15-60 minute budgets;
+# keep two hours available so callers can raise Harbor's agent timeout
+# without introducing an unrelated mid-trial authentication failure.
+_MIN_TOKEN_RUNWAY_SEC = 2 * 60 * 60
 
 
 def fresh_subscription_credentials() -> dict[str, Any]:
@@ -169,7 +171,7 @@ def fresh_subscription_credentials() -> dict[str, Any]:
 
     Returns the credentials dict, refreshing (and persisting back to the
     host file) when the access token has under ``_MIN_TOKEN_RUNWAY_SEC`` of
-    runway, so every trial starts with more runway than its agent timeout.
+    runway, so long-running trials do not inherit a nearly-expired token.
     Raises RuntimeError with a remedial message when no usable credentials
     exist.
     """
