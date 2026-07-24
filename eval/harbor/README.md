@@ -74,16 +74,13 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
   --ak subscription=true \
   --ak effort=high \
   --jobs-dir eval/harbor/jobs \
-  --agent-timeout-multiplier 2 \
   --n-concurrent 2
 ```
 
 Notes:
-- The long-run profile doubles only the agent phase timeout. This gives
-  complex tasks room for compilation, training, simulation, and iterative
-  debugging without weakening verifier or environment-setup limits. Omit
-  `--agent-timeout-multiplier 2` when reproducing a benchmark's stock
-  wall-clock policy exactly.
+- Official Terminal-Bench submissions may not modify task timeouts or
+  resources. Keep Harbor's default timeout policy for leaderboard-comparable
+  runs; use timeout multipliers only for explicitly labeled diagnostics.
 - `effort=high` maps to `clawcodex --effort high` →
   `output_config.effort` on effort-capable models (Opus 4.6/4.8,
   Sonnet 4.6, Fable 5). Requires clawcodex > 1.2.1 in the container —
