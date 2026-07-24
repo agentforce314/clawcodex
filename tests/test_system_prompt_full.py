@@ -65,6 +65,28 @@ class TestBuildFullSystemPrompt:
         assert "all, every, multiple, or an exhaustive set" in prompt
         assert "stopping after the first one" in prompt
 
+    def test_task_prompt_prioritizes_evidence_and_cheap_discriminating_checks(self):
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "small set of plausible hypotheses" in prompt
+        assert "cheapest check that can distinguish" in prompt
+        assert "Broaden the investigation only when results rule them out" in prompt
+        assert "exhaustive search of the environment" in prompt
+
+    def test_task_prompt_uses_proportionate_verification_and_stops(self):
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "narrowest sufficient verification" in prompt
+        assert "Do not create multiple temporary tests" in prompt
+        assert "Stop when the explicit requirements are satisfied" in prompt
+        assert "Do not re-run passing checks" in prompt
+        assert "material risk" in prompt
+
+    def test_task_prompt_groups_related_mechanical_edits(self):
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "same well-understood mechanical change" in prompt
+        assert "coherent grouped edit" in prompt
+        assert "long sequence of tiny edits" in prompt
+        assert "Keep unrelated or semantically distinct changes separate" in prompt
+
     def test_identity_prompt_backward_compat(self):
         """_IDENTITY_PROMPT is an alias for _INTRO_SECTION."""
         assert _IDENTITY_PROMPT is _INTRO_SECTION
