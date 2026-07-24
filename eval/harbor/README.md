@@ -78,6 +78,9 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 ```
 
 Notes:
+- Official Terminal-Bench submissions may not modify task timeouts or
+  resources. Keep Harbor's default timeout policy for leaderboard-comparable
+  runs; use timeout multipliers only for explicitly labeled diagnostics.
 - `effort=high` maps to `clawcodex --effort high` →
   `output_config.effort` on effort-capable models (Opus 4.6/4.8,
   Sonnet 4.6, Fable 5). Requires clawcodex > 1.2.1 in the container —
