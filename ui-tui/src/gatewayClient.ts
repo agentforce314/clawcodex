@@ -43,6 +43,13 @@ const RPC_TIMEOUT_MS = 5_000
  *  leaving a half-deleted directory. The prompt shows an interim
  *  "Removing worktree…" state while this runs. */
 const WORKTREE_RPC_TIMEOUT_MS = 600_000
+
+/** Image attach/clipboard RPCs need more than the 5 s default: the backend
+ *  shells out to osascript/xclip (~1.5 s for a large clipboard image on macOS,
+ *  per the reference implementation's own measurement) and then decodes and
+ *  downsamples through Pillow. A timeout here would drop an image the user
+ *  watched themselves paste. */
+const IMAGE_RPC_TIMEOUT_MS = 30_000
 // clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
 // sync with the installer (install.sh INSTALLER_VERSION).
 const CLAWCODEX_VERSION = '1.1.0'
@@ -1005,6 +1012,35 @@ export class GatewayClient extends EventEmitter {
         })
 
         return Promise.resolve({ ok: true } as T)
+
+      // ── image attachment ─────────────────────────────────────────────────
+      // The composer and /image have called these since the port; without a
+      // case here they hit the `default` below and resolved `{}`, so every
+      // image paste silently degraded to pasting the path as literal text.
+      //
+      // The backend queues the decoded image and attaches it to the next user
+      // message, so these responses carry metadata only, never base64 — the
+      // client has nothing to hold and nothing to re-send.
+      case 'image.attach':
+        // Longer deadline than a normal RPC: reading + downsampling a large
+        // screenshot is Pillow work, and osascript alone is ~1.5s.
+        return this.controlQuery(
+          'attach_image',
+          { path: String(p.path ?? '') },
+          IMAGE_RPC_TIMEOUT_MS
+        ).then(r => (r ?? {}) as T)
+
+      case 'image.clipboard':
+        return this.controlQuery('clipboard_image', {}, IMAGE_RPC_TIMEOUT_MS).then(
+          r => (r ?? {}) as T
+        )
+
+      case 'input.detect_drop':
+        return this.controlQuery(
+          'detect_file_drop',
+          { text: String(p.text ?? '') },
+          IMAGE_RPC_TIMEOUT_MS
+        ).then(r => (r ?? {}) as T)
 
       default:
         // Unhandled RPC (Phase 2): resolve empty so the app degrades gracefully.

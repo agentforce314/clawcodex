@@ -499,10 +499,14 @@ export interface TerminalResizeResponse {
 // ── Image attach ─────────────────────────────────────────────────────
 
 export interface ImageAttachResponse {
+  /** Set when the image could not be read; `name` is then absent. */
+  error?: string
   height?: number
   name?: string
   remainder?: string
   token_estimate?: number
+  /** Set when the platform has no clipboard-image tooling (xclip/wl-clipboard). */
+  unavailable?: boolean
   width?: number
 }
 

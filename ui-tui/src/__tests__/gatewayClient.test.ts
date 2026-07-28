@@ -785,6 +785,69 @@ describe('GatewayClient NDJSON adapter', () => {
     const resp = sent.find(m => m.type === 'control_response')?.response?.response
     expect(resp.chosen_updates[0]).toEqual(bundle) // whole bundle, untouched
   })
+
+  // ── image attachment ──────────────────────────────────────────────────────
+  // These three RPCs were called by the composer and /image from the start but
+  // had no case here, so they fell to `default` and resolved `{}`. The composer
+  // read that as "not an image" and pasted the path as literal text; Ctrl+V with
+  // a screenshot did nothing at all.
+
+  it('maps image.attach to the attach_image control and returns its metadata', async () => {
+    const p = gw.request('image.attach', { path: '/tmp/shot.png' })
+    await replyToControl('attach_image', {
+      height: 914, name: 'shot.png', token_estimate: 976, width: 1568
+    })
+    await expect(p).resolves.toEqual({
+      height: 914, name: 'shot.png', token_estimate: 976, width: 1568
+    })
+  })
+
+  it('forwards the pasted path verbatim so the backend can unescape it', async () => {
+    // Shell escapes and file:// percent-encoding are the backend's job; mangling
+    // the text here would make a dragged screenshot miss on disk.
+    const raw = 'file:///var/T/Screenshot%202026-04-21%20at%201.04.43%20PM.png'
+
+    void gw.request('image.attach', { path: raw })
+    await vi.waitFor(() => {
+      seen.push(...stdinFrames())
+      const req = seen.find(f => f.request?.subtype === 'attach_image')
+      expect(req?.request?.path).toBe(raw)
+    })
+  })
+
+  it('maps image.clipboard to the clipboard_image control', async () => {
+    const p = gw.request('image.clipboard', {})
+    await replyToControl('clipboard_image', {
+      height: 220, name: 'clipboard image', token_estimate: 300, width: 760
+    })
+    await expect(p).resolves.toMatchObject({ name: 'clipboard image' })
+  })
+
+  it('resolves image.clipboard to {} when the clipboard holds no image', async () => {
+    // The composer needs a falsy `name` here to fall back to a text paste.
+    const p = gw.request('image.clipboard', {})
+    await replyToControl('clipboard_image', {})
+    await expect(p).resolves.toEqual({})
+  })
+
+  it('maps input.detect_drop to the detect_file_drop control', async () => {
+    const p = gw.request('input.detect_drop', { text: '/tmp/data.csv' })
+    await replyToControl('detect_file_drop', {
+      is_image: false, matched: true, name: 'data.csv', text: '@/tmp/data.csv'
+    })
+    await expect(p).resolves.toMatchObject({
+      is_image: false, matched: true, text: '@/tmp/data.csv'
+    })
+  })
+
+  it('never resolves an image RPC to undefined', async () => {
+    // The composer does `attached?.name`, but `input.detect_drop`'s caller reads
+    // `dropped.matched` after a truthiness check — a bare undefined from a
+    // backend that predates these controls must still be an object.
+    const p = gw.request('image.clipboard', {})
+    await replyToControl('clipboard_image', null)
+    await expect(p).resolves.toEqual({})
+  })
 })
 
 describe('approvalCommandText — the human-reviewable action, not a JSON dump', () => {

@@ -12,11 +12,28 @@ export const imageTokenMeta = (info?: ImageMeta | null) => {
     .join(' · ')
 }
 
-export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null) => {
-  const meta = imageTokenMeta(info)
-  const label = info?.name ? `📎 Attached image: ${info.name}` : '📎 Attached image'
+export const attachedImageNotice = (
+  info?: ({ error?: string; name?: string; unavailable?: boolean } & ImageMeta) | null
+) => {
+  // A failed attach must not print an attach confirmation. The backend
+  // distinguishes "couldn't read it" (error) from "no clipboard tooling"
+  // (unavailable) and both used to render as a bare "📎 Attached image", so a
+  // failure looked identical to a success.
+  if (info?.unavailable) {
+    return '⚠ Cannot read clipboard images here — install xclip or wl-clipboard'
+  }
 
-  return `${label}${meta ? ` · ${meta}` : ''}`
+  if (info?.error) {
+    return `⚠ Image not attached: ${info.error}`
+  }
+
+  if (!info?.name) {
+    return '⚠ Image not attached'
+  }
+
+  const meta = imageTokenMeta(info)
+
+  return `📎 Attached image: ${info.name}${meta ? ` · ${meta}` : ''}`
 }
 
 export const userDisplay = (text: string) => {

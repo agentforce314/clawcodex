@@ -57,3 +57,29 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
   })
 })
+
+// `useSubmission` runs `input.detect_drop` on SUBMITTED prompts, and that RPC
+// only became live when its gatewayClient case was added. Every prompt this
+// predicate lets through reaches a backend that may resolve it to a real file
+// and REWRITE the prompt to `@<abspath>`. These are the strings that must never
+// get that far.
+describe('looksLikeDroppedPath — submit-path gate', () => {
+  it('rejects ordinary prompts that name a real file', () => {
+    expect(looksLikeDroppedPath('README.md')).toBe(false)
+    expect(looksLikeDroppedPath('package.json')).toBe(false)
+    expect(looksLikeDroppedPath('src/gatewayClient.ts')).toBe(false)
+    expect(looksLikeDroppedPath('fix the bug in main.py')).toBe(false)
+    expect(looksLikeDroppedPath('explain README.md to me')).toBe(false)
+  })
+
+  it('rejects questions and prose that merely end in an extension', () => {
+    expect(looksLikeDroppedPath('what is wrong with logo.png')).toBe(false)
+    expect(looksLikeDroppedPath('why does test.py fail')).toBe(false)
+  })
+
+  it('still lets a genuine dragged path through', () => {
+    expect(looksLikeDroppedPath('/Users/me/Desktop/shot.png')).toBe(true)
+    expect(looksLikeDroppedPath('~/Desktop/shot.png')).toBe(true)
+    expect(looksLikeDroppedPath('./shot.png')).toBe(true)
+  })
+})

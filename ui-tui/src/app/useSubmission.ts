@@ -18,6 +18,7 @@ import type { Msg } from '../types.js'
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { looksLikeDroppedPath } from './useComposerState.js'
 
 const DOUBLE_ENTER_MS = 450
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
@@ -126,9 +127,19 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sys('session not ready yet')
       }
 
-      // Always ask the backend whether this looks like a file drop.
-      // The backend's _detect_file_drop handles paths with spaces, quotes,
-      // Windows drive letters, and escaped characters correctly.
+      // Gate on the same predicate the paste path uses before consulting the
+      // backend. This RPC used to be unwired (it resolved `{}`), so asking
+      // unconditionally was free; now that it is live, an ungated call means
+      // every prompt pays a round-trip AND — worse — any prompt the backend
+      // resolves to a real file gets REWRITTEN to `@<abspath>` below. Typing
+      // `README.md` would have replaced the prompt with a path.
+      //
+      // The backend applies the same rule (image_paste.looks_like_dropped_path);
+      // the two are deliberate mirrors, so keep them in sync.
+      if (!looksLikeDroppedPath(text)) {
+        return startSubmit(text, expand(text), showUserMessage)
+      }
+
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {

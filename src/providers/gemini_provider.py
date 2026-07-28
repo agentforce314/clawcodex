@@ -12,6 +12,7 @@ content-part schemas that reject our typical message payloads.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Generator, Optional
 
 try:
@@ -23,6 +24,8 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
+logger = logging.getLogger(__name__)
+
 
 def _ensure_sdk() -> None:
     if genai is None:
@@ -30,6 +33,52 @@ def _ensure_sdk() -> None:
             "google-genai package is not installed. Run "
             "`pip install google-genai` to use GeminiProvider."
         )
+
+
+class _GeminiImageUnsupported(Exception):
+    """The installed SDK exposes no way to send inline image bytes."""
+
+
+def _gemini_image_part(block: dict[str, Any]):
+    """Anthropic base64 image block -> a Gemini inline-data Part, or None.
+
+    Returns ``None`` for a MALFORMED block (no base64 source, empty or
+    undecodable data) and raises :class:`_GeminiImageUnsupported` when the SDK
+    itself cannot carry inline images. Two distinct failures with two distinct
+    remedies: telling someone with a corrupt payload to "switch models" is
+    useless advice, so the caller must be able to tell them apart.
+
+    ``Part.from_bytes`` is the documented modern entry point; the
+    ``inline_data``/``Blob`` form is the older shape, kept as a fallback so an
+    SDK pin doesn't silently disable image input.
+    """
+    source = block.get("source")
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None
+    data = source.get("data")
+    mime = str(source.get("media_type") or "image/png")
+    if not isinstance(data, str) or not data:
+        return None
+    import base64
+
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception:  # noqa: BLE001 — a corrupt payload is not a capability gap
+        return None
+    if not raw:
+        return None
+
+    from_bytes = getattr(genai_types.Part, "from_bytes", None)
+    if callable(from_bytes):
+        return from_bytes(data=raw, mime_type=mime)
+    blob = getattr(genai_types, "Blob", None)
+    if blob is not None:
+        return genai_types.Part(inline_data=blob(data=raw, mime_type=mime))
+    raise _GeminiImageUnsupported(
+        "This model cannot receive images: the installed google-genai SDK "
+        "exposes neither Part.from_bytes nor Blob. Switch to an Anthropic or "
+        "OpenAI-compatible model to send images."
+    )
 
 
 def _text_from_anthropic_block(block: dict[str, Any]) -> str:
@@ -194,6 +243,25 @@ class GeminiProvider(BaseProvider):
                         text = block.get("text", "")
                         if text:
                             parts.append(genai_types.Part.from_text(text=str(text)))
+                    elif btype == "image":
+                        # Without this branch an image block fell through to
+                        # nothing at all: the block was skipped, the request went
+                        # out text-only, and because pasted images also carry an
+                        # "[Image: source: …]" metadata line the model received a
+                        # DESCRIPTION of an image it never saw and confabulated an
+                        # answer instead of failing. Silent wrong answers are the
+                        # worst failure mode available here.
+                        # A capability gap raises out of here (see
+                        # _gemini_image_part); a malformed block returns None and
+                        # is skipped with a warning rather than killing the turn.
+                        part = _gemini_image_part(block)
+                        if part is None:
+                            logger.warning(
+                                "skipping a malformed image block (no decodable "
+                                "base64 source) on the Gemini wire"
+                            )
+                        else:
+                            parts.append(part)
                     elif btype == "tool_use":
                         # Assistant message asking to call a tool — Gemini calls
                         # this a FunctionCall part. ``input`` becomes ``args``.

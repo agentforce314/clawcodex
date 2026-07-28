@@ -59,8 +59,17 @@ function insertAtCursor(value: string, cursor: number, text: string): { cursor: 
 /**
  * Quick client-side heuristic to detect text that looks like a dropped file path.
  * When this returns true the composer sends RPC calls to the server for actual
- * validation. Keep in sync with _detect_file_drop() in cli.py — see that
- * function for the canonical prefix list.
+ * validation.
+ *
+ * Keep in sync with `looks_like_dropped_path` in `src/utils/image_paste.py`,
+ * which is a deliberate mirror of this function. (This comment used to point at
+ * `_detect_file_drop() in cli.py`, which never existed — and the absence of a
+ * real counterpart is how the two rules drifted far enough apart that the
+ * backend gate accepted `README.md` as a path.)
+ *
+ * It also gates the SUBMIT path (`useSubmission.ts`), not just pastes, so
+ * loosening it means ordinary prompts get sent to the backend for path
+ * resolution and can be rewritten to `@<abspath>`.
  */
 export function looksLikeDroppedPath(text: string): boolean {
   const trimmed = text.trim()
@@ -95,6 +104,50 @@ export function looksLikeDroppedPath(text: string): boolean {
   }
 
   return false
+}
+
+/** What a Ctrl+V/Cmd+V hotkey paste resolved to. */
+export type HotkeyPasteDecision =
+  | { image: ImageAttachResponse; kind: 'image' }
+  | { kind: 'none' }
+  | { kind: 'text'; text: string }
+
+/**
+ * Decide what a hotkey paste should do, given the clipboard text and a way to
+ * ask the backend for a clipboard image.
+ *
+ * Pure and exported so the ORDERING is testable against the real code. The
+ * ordering is the whole point and it is a performance contract, not just
+ * behaviour: the image probe shells out to osascript/xclip (~1.5 s for a large
+ * clipboard image), so it must run ONLY when the clipboard has no usable text.
+ * A test against a reimplementation of this branch would stay green if the two
+ * were ever swapped, which is exactly the regression worth preventing.
+ *
+ * Usable text wins outright. A copied image FILE is not the image case — it
+ * carries its path as text, and the dropped-path branch in handleResolvedPaste
+ * handles it.
+ */
+export async function resolveHotkeyPaste({
+  probeClipboardImage,
+  text
+}: {
+  probeClipboardImage: () => Promise<ImageAttachResponse | null>
+  text: null | string
+}): Promise<HotkeyPasteDecision> {
+  if (isUsableClipboardText(text)) {
+    return { kind: 'text', text }
+  }
+
+  const image = await probeClipboardImage().catch(() => null)
+
+  // A `name` means attached. An `error`/`unavailable` is worth surfacing too —
+  // otherwise Ctrl+V appears to do nothing at all. A plain `{}` means "no image
+  // on the clipboard", which is not a failure and falls through to 'none'.
+  if (image?.name || image?.error || image?.unavailable) {
+    return { image, kind: 'image' }
+  }
+
+  return { kind: 'none' }
 }
 
 export function useComposerState({
@@ -250,8 +303,24 @@ export function useComposerState({
             })
 
         return readPreferredText.then(async preferredText => {
-          if (isUsableClipboardText(preferredText)) {
-            return handleResolvedPaste({ bracketed: false, cursor, text: preferredText, value })
+          const decision = await resolveHotkeyPaste({
+            probeClipboardImage: () =>
+              gw.request<ImageAttachResponse>('image.clipboard', {}).catch(() => null),
+            text: preferredText
+          })
+
+          if (decision.kind === 'text') {
+            return handleResolvedPaste({
+              bracketed: false, cursor, text: decision.text, value
+            })
+          }
+
+          if (decision.kind === 'image') {
+            // The backend holds the bytes and attaches them to the next prompt;
+            // nothing goes into the composer text.
+            onImageAttached?.(decision.image)
+
+            return null
           }
 
           void onClipboardPaste(false)
@@ -262,7 +331,7 @@ export function useComposerState({
 
       return handleResolvedPaste({ bracketed: !!bracketed, cursor, text, value })
     },
-    [handleResolvedPaste, onClipboardPaste, querier]
+    [gw, handleResolvedPaste, onClipboardPaste, onImageAttached, querier]
   )
 
   const openEditor = useCallback(async () => {

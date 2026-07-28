@@ -163,6 +163,12 @@ class _AgentSession:
     # real turn (inside the async context; _build_runtime runs sync in an
     # executor with no live loop). Guarded so it fires exactly once.
     _session_start_fired: bool = False
+    # Images attached (clipboard paste, /image, dropped path) but not yet sent.
+    # Drained into the NEXT user message as image content blocks -- the client
+    # holds no bytes, it only shows the "📎 Attached image" notice, so the
+    # pending list is the single source of truth. Cleared by /clear so a reset
+    # conversation cannot smuggle an image from the previous one.
+    _pending_images: list = field(default_factory=list)
     # Completed user turns — the "turns: N" odometer on the client's session
     # stats line (the deleted REPL's ``_stats_turns``, repl/core.py). Counts
     # successful non-internal, non-btw turns; /resume seeds it from the
@@ -285,6 +291,14 @@ class _AgentSession:
             content = _extract_prompt_content(msg)  # str, or blocks for multimodal
             mm = msg.get("message")
             ephemeral = bool(msg.get("ephemeral") or (isinstance(mm, dict) and mm.get("ephemeral")))
+            # Attached-but-unsent images ride along with this prompt. Drained
+            # (not copied) so a resend cannot duplicate them.
+            #
+            # NOT for an ephemeral "btw" message: ``_run_turn(btw=True)`` restores
+            # a pre-turn snapshot afterwards, so draining here would consume the
+            # image and then throw it away. Leave it queued for the real turn.
+            if not ephemeral:
+                content = self._drain_pending_images(content)
             self._inbox.put({"__btw__": True, "content": content} if ephemeral else content)
             return
         if msg_type == "control_response":
@@ -541,6 +555,15 @@ class _AgentSession:
         if subtype == "set_effort":
             self._do_set_effort(request_id, inner.get("effort"))
             return
+        if subtype == "attach_image":
+            await self._do_attach_image(request_id, inner.get("path"))
+            return
+        if subtype == "clipboard_image":
+            await self._do_clipboard_image(request_id)
+            return
+        if subtype == "detect_file_drop":
+            await self._do_detect_file_drop(request_id, inner.get("text"))
+            return
         if subtype == "workflows":
             self._do_workflows(request_id)
             return
@@ -764,6 +787,11 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
+                # An image attached but never sent belongs to the conversation
+                # the user just discarded; carrying it into the fresh one would
+                # silently attach it to an unrelated prompt.
+                with self._lock:
+                    self._pending_images = []
                 # /clear starts a FRESH plan file (TS clearAllPlanSlugs on
                 # clear — plans.ts:75-86): drop every session's slug so the
                 # next plan-mode turn mints a new file instead of appending
@@ -859,6 +887,209 @@ class _AgentSession:
     def _ack(self, request_id: object) -> None:
         if isinstance(request_id, str):
             self._reply(request_id, {"ok": True})
+
+    # ─── image attachment (clipboard paste / /image / dropped path) ────────
+
+    def _drain_pending_images(self, content):
+        """Prepend any attached images to this prompt's content.
+
+        Returns ``content`` untouched when nothing is pending, so the common
+        text-only path keeps sending a plain string (which
+        ``_extract_prompt_content`` and ``add_user_message`` both prefer).
+
+        Block order is images, then the USER'S TEXT, then the coordinate-mapping
+        metadata. The metadata matters for screenshots (a downsampled image needs
+        the scale factor or the model's pixel coordinates are wrong, see
+        ``create_image_metadata_text``) but it must not come first, because three
+        consumers flatten content by concatenating text blocks with no separator
+        (``_extract_prompt_text``) and then read the FRONT of the result:
+
+        * ``_parse_turn_budget`` -- its regexes are ``^``-anchored, so a leading
+          ``[Image: source: …]`` makes a ``+500k`` directive silently no-op.
+        * ``_first_prompt_preview`` -- takes the first text block, so ``/resume``
+          and branch names would show the metadata instead of the prompt.
+        * UserPromptSubmit hooks -- any ``^``-anchored or ``startswith`` matcher
+          stops firing.
+
+        Images stay first (the API prefers image-before-question).
+        """
+        with self._lock:
+            pending = self._pending_images
+            self._pending_images = []
+        if not pending:
+            return content
+
+        from src.utils.image_processor import create_image_metadata_text
+
+        blocks: list[dict] = []
+        trailing: list[dict] = []
+        for image in pending:
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": image.base64,
+                },
+            })
+            meta = create_image_metadata_text(image.dimensions, image.source_path)
+            if meta:
+                trailing.append({"type": "text", "text": meta})
+
+        if isinstance(content, list):
+            return blocks + content + trailing
+        text = content if isinstance(content, str) else str(content or "")
+        if text:
+            blocks.append({"type": "text", "text": text})
+        return blocks + trailing
+
+    #: Cap on images queued for one prompt. Without it, N pastes all go out in a
+    #: single request, the API 400s on total size, and because the drain is
+    #: destructive the images are already gone -- the user sees an opaque error
+    #: and has lost the attachments. Refusing the (N+1)th with a clear message is
+    #: strictly better than losing all N.
+    MAX_PENDING_IMAGES = 8
+
+    def _queue_image(self, image) -> bool:
+        """Append under the lock, honoring the cap. False when already full.
+
+        Single entry point so every producer (clipboard, ``/image``, dropped
+        path) is capped -- an inline append in one of them would silently bypass
+        it.
+        """
+        with self._lock:
+            if len(self._pending_images) >= self.MAX_PENDING_IMAGES:
+                return False
+            self._pending_images.append(image)
+            return True
+
+    def _too_many_images_error(self) -> dict:
+        return {
+            "error": (
+                f"already holding {self.MAX_PENDING_IMAGES} attached images "
+                "— send them or run /clear before attaching another"
+            ),
+        }
+
+    def _attach_image(
+        self, request_id: object, image, *, remainder: str = "", extra: dict | None = None
+    ) -> None:
+        """Queue ``image`` and reply in the client's ImageAttachResponse shape."""
+        from src.utils.image_paste import dimensions_to_wire
+
+        if not self._queue_image(image):
+            # Spread ``extra`` into the error too: the drop routes key on
+            # ``matched``, so an error reply without it reads as "not a file
+            # drop" and the cap message never reaches the user — the paste
+            # silently inserts the path as text instead.
+            self._reply(request_id, {**(extra or {}), **self._too_many_images_error()})
+            return
+        name = Path(image.source_path).name if image.source_path else "clipboard image"
+        self._reply(request_id, {
+            "name": name,
+            "token_estimate": image.token_estimate,
+            "remainder": remainder,
+            **dimensions_to_wire(image.dimensions),
+            **(extra or {}),
+        })
+
+    async def _do_attach_image(self, request_id: object, raw_path: object) -> None:
+        """``/image <path>`` and the dropped-path paste route."""
+        from src.utils.image_paste import as_image_file_path, try_read_image_from_path
+
+        text = str(raw_path or "").strip()
+        if not text:
+            self._reply(request_id, {"error": "no path given"})
+            return
+        if as_image_file_path(text) is None:
+            # Not an image path at all -- decline so the caller falls through to
+            # its generic file-drop / plain-text handling rather than reporting
+            # a phantom attachment.
+            self._reply(request_id, {})
+            return
+        try:
+            image = await asyncio.to_thread(
+                try_read_image_from_path, text, cwd=Path(self.cwd or ".")
+            )
+        except Exception as exc:  # noqa: BLE001 — a bad paste must not kill the session
+            logger.debug("[agent-server] attach_image failed", exc_info=True)
+            self._reply(request_id, {"error": str(exc)})
+            return
+        if image is None:
+            self._reply(request_id, {"error": f"could not read image: {text}"})
+            return
+        self._attach_image(request_id, image)
+
+    async def _do_clipboard_image(self, request_id: object) -> None:
+        """Ctrl+V / Cmd+V with an image on the clipboard."""
+        from src.utils.image_paste import (
+            clipboard_tooling_available,
+            get_image_from_clipboard,
+        )
+
+        if not clipboard_tooling_available():
+            # Distinguishable from "no image": the client falls back to a text
+            # paste either way, but only this case is worth telling the user
+            # about (install xclip / wl-clipboard).
+            self._reply(request_id, {"unavailable": True})
+            return
+        try:
+            image = await asyncio.to_thread(get_image_from_clipboard)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[agent-server] clipboard_image failed", exc_info=True)
+            self._reply(request_id, {"error": str(exc)})
+            return
+        if image is None:
+            self._reply(request_id, {})  # no image on the clipboard
+            return
+        self._attach_image(request_id, image)
+
+    async def _do_detect_file_drop(self, request_id: object, raw_text: object) -> None:
+        """Classify a paste that looks like a dragged-in path.
+
+        Images are ATTACHED here (so a dropped screenshot works with one paste);
+        non-image files are only reported, and the caller decides what to insert.
+        """
+        from src.utils.image_paste import (
+            as_image_file_path,
+            looks_like_dropped_path,
+            resolve_dropped_file,
+            try_read_image_from_path,
+        )
+
+        text = str(raw_text or "")
+        if not looks_like_dropped_path(text):
+            self._reply(request_id, {"matched": False})
+            return
+        cwd = Path(self.cwd or ".")
+        if as_image_file_path(text) is not None:
+            try:
+                image = await asyncio.to_thread(
+                    try_read_image_from_path, text, cwd=cwd
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] detect_file_drop image read failed", exc_info=True)
+                image = None
+            if image is not None:
+                # Same queue-and-reply as /image, plus the drop-specific fields.
+                # ``text: ""`` because an attached image inserts nothing into the
+                # composer -- the notice is the whole feedback.
+                self._attach_image(
+                    request_id, image, extra={"matched": True, "is_image": True, "text": ""}
+                )
+                return
+        resolved = await asyncio.to_thread(resolve_dropped_file, text, cwd=cwd)
+        if resolved is None:
+            self._reply(request_id, {"matched": False})
+            return
+        # A real non-image file: hand back an @-reference the model can read
+        # with the Read tool, which is what the path was pasted for.
+        self._reply(request_id, {
+            "matched": True,
+            "is_image": False,
+            "name": resolved.name,
+            "text": f"@{resolved}",
+        })
 
     def _reply(self, request_id: object, response: dict) -> None:
         if not isinstance(request_id, str):
@@ -1931,6 +2162,11 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
+            # Same reasoning as /clear: an image attached but never sent belongs
+            # to the conversation being switched away from. Carrying it over
+            # would attach it to the first prompt of the resumed session.
+            with self._lock:
+                self._pending_images = []
             # Seed the turns odometer so the stats line continues where the
             # resumed session left off (its token/cost siblings restore below
             # via restore_cost_state). Prefer the exact persisted counter
