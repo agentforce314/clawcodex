@@ -4390,6 +4390,10 @@ def _display_tool_result(value: Any) -> dict | None:
       (language/shebang detection only; the original uses the pre-edit first
       line — differs only when line 1 itself changed); create-type keeps
       ``content`` for the file preview.
+    * Read-an-image (``type: "image"`` + ``file``) — reduced to ``originalSize``,
+      the only input the one-line render needs ("Read image (12.3KB)", UI.tsx
+      renderToolResultMessage). The base64 payload is dropped: it belongs on the
+      model-facing tool_result content, never on a display envelope.
     * WebSearch (``query``/``results``/``duration_seconds``) — reduced to the
       two numbers the original's one-line render needs (UI.tsx
       renderToolResultMessage: "Did N searches in Xs"): ``searchCount`` per
@@ -4416,6 +4420,28 @@ def _display_tool_result(value: Any) -> dict | None:
                 1 for r in value["results"] if r is not None and not isinstance(r, str)
             ),
         }
+    if value.get("type") == "image":
+        # Read-an-image: forward ONLY the byte count the one-line render needs
+        # (UI.tsx renderToolResultMessage: "Read image (12.3KB)"). The base64
+        # payload is deliberately dropped -- it belongs on the tool_result
+        # content bound for the model, never on the display envelope. Without
+        # this branch the function returned None, the client had no display
+        # data to key on, and its content fallback JSON-dumped the whole
+        # base64 image into the transcript.
+        file_data = value.get("file")
+        if not isinstance(file_data, dict):
+            return None
+        size = file_data.get("originalSize")
+        # ``int`` only, and never ``bool`` (an int subclass -- a True here means a
+        # buggy producer, not 1 byte). Deliberately not accepting ``float``:
+        # ``int(nan)``/``int(inf)`` RAISE, and this runs inside ``_sdk_envelope``
+        # whose caller ``on_message`` has no guard, so a stray non-finite would
+        # be turn-fatal. Every other malformed input here declines with None; a
+        # float size does too. The real producer passes ``stat.st_size``
+        # (read.py), already an int.
+        if not isinstance(size, int) or isinstance(size, bool):
+            return None
+        return {"type": "image", "originalSize": size}
     if value.get("type") not in ("create", "update"):
         return None
     if not isinstance(value.get("filePath"), str) or not isinstance(value.get("structuredPatch"), list):

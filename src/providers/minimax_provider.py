@@ -54,7 +54,20 @@ class MinimaxProvider(BaseProvider):
     def _ensure_client(self):
         if self.client is not None:
             return self.client
-        self.client = anthropic.Anthropic(**self._client_kwargs)
+        # Minimax speaks the Anthropic wire through the same SDK, the same
+        # ``_stream_abort`` guard and the same query-loop retry lane, so it has
+        # the same exposure to the SDK's tight 5s connect default that made a
+        # routine TLS hiccup fail a whole turn. Share the phase-split timeout
+        # rather than re-deriving it. (Deliberately NOT sharing
+        # ``add_cache_breakpoints`` -- that asymmetry is documented in
+        # ``anthropic_provider.chat_stream_response``.)
+        from .anthropic_provider import _client_timeout
+
+        client_kwargs = dict(self._client_kwargs)
+        timeout = _client_timeout()
+        if timeout is not None:
+            client_kwargs.setdefault("timeout", timeout)
+        self.client = anthropic.Anthropic(**client_kwargs)
         return self.client
 
     def _prepare_messages(self, messages: list[Any]) -> list[dict[str, Any]]:

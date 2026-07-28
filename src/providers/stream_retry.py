@@ -58,6 +58,22 @@ def is_transient_stream_drop(exc: BaseException) -> bool:
     # Anything carrying an HTTP status is a server verdict, not a drop.
     if getattr(exc, "status_code", None) is not None:
         return False
+    # Exact class name, NOT the MRO -- and that exclusion is deliberate, not an
+    # oversight. ``anthropic.APITimeoutError`` subclasses the listed
+    # ``APIConnectionError``, so an MRO walk would admit timeouts here. Timeouts
+    # are owned by the query-loop lane instead (``categorize_retryable_api_error``
+    # -> ``is_transport_error``), for two reasons:
+    #
+    #   * Contract: this predicate answers "did a stream die mid-response?" A
+    #     connect timeout never established a stream, so it isn't ours.
+    #   * Budget: this lane re-attempts up to ``stream_idle_max_attempts`` with
+    #     no backoff, and the query lane independently retries up to
+    #     ``DEFAULT_MAX_RETRIES``. Both owning the same error class multiplies
+    #     (3 x 11 = 33 wire attempts), turning a dead network into ~13 minutes
+    #     of silent waiting instead of one bounded, user-visible retry series.
+    #
+    # So: do not "fix" this into an isinstance/MRO check without moving the
+    # timeout family out of the query lane first.
     if type(exc).__name__ in _TRANSIENT_STREAM_DROP_TYPES:
         return True
     text = str(exc).lower()

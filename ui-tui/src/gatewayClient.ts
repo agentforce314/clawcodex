@@ -196,6 +196,94 @@ function webSearchSummary(result: string, webSearch?: WebSearchDisplay): string 
   return s === undefined ? line : `${line} in ${s >= 1 ? `${Math.round(s)}s` : `${Math.round(s * 1000)}ms`}`
 }
 
+/** Image-read display data forwarded by the agent-server (`tool_use_result`
+ *  trimmed to the byte count the one-liner needs). Carries no base64 —
+ *  the payload travels on the model-facing tool_result content only. */
+export type ImageDisplay = { originalSize?: number }
+
+/** Exact port of typescript/src/utils/format.ts formatFileSize. */
+export function formatFileSize(sizeInBytes: number): string {
+  const kb = sizeInBytes / 1024
+
+  if (kb < 1) {
+    return `${sizeInBytes} bytes`
+  }
+
+  // Compare the rounded magnitude so values that round up to 1024 roll over to
+  // the next unit (e.g. 1048575 bytes → "1MB", not "1024KB").
+  if (Number(kb.toFixed(1)) < 1024) {
+    return `${kb.toFixed(1).replace(/\.0$/, '')}KB`
+  }
+
+  const mb = kb / 1024
+
+  if (Number(mb.toFixed(1)) < 1024) {
+    return `${mb.toFixed(1).replace(/\.0$/, '')}MB`
+  }
+
+  const gb = mb / 1024
+
+  return `${gb.toFixed(1).replace(/\.0$/, '')}GB`
+}
+
+// Port of FileReadTool/UI.tsx renderToolResultMessage `case 'image'`:
+// "Read image (12.3KB)". The size comes from the envelope; a backend that
+// predates it leaves the count unknown, so say only what we know rather than
+// inventing a number.
+//
+// The "Read" in the label is hardcoded, where the original earns it structurally
+// (renderToolResultMessage is per-tool, so the string cannot escape
+// FileReadTool). Here the backend's `_display_tool_result` is shape-keyed and
+// global, so a future tool emitting `{type:"image", file:{originalSize}}` would
+// borrow this wording. Read is the only producer of that shape today; give the
+// label a tool-aware branch if a second one appears.
+function imageSummary(image?: ImageDisplay): string {
+  const size = image?.originalSize
+  // Guard finiteness HERE, not only in imageDisplay: formatFileSize divides and
+  // toFixed()s, so a non-finite size renders "NaNGB". imageDisplay already
+  // filters the wire path, but this function is also reachable with a
+  // hand-built envelope, and an unknown size should read as unknown.
+  const known = typeof size === 'number' && Number.isFinite(size)
+
+  return known ? `Read image (${formatFileSize(size)})` : 'Read image'
+}
+
+/** Flatten Anthropic tool_result content for DISPLAY.
+ *
+ *  `content` is either a string or an array of content blocks. The array form
+ *  used to go through `safeJson`, which dumped megabytes of base64 into the
+ *  transcript the moment a tool returned an image block — the observed bug was
+ *  `Read` on a PNG printing
+ *  `[{"type":"image","source":{"type":"base64","data":"/9j/4AAQ…"}}]` as text.
+ *
+ *  Binary-bearing blocks are replaced by a short placeholder instead of being
+ *  serialized. Applies to every tool that can emit them (Read, PDF page
+ *  extraction, Bash image output), not just Read. */
+export function flattenToolResultContent(content: unknown): string {
+  if (typeof content === 'string') {return content}
+
+  if (!Array.isArray(content)) {return safeJson(content)}
+
+  return content
+    .map(block => {
+      if (typeof block === 'string') {return block}
+
+      if (!block || typeof block !== 'object') {return safeJson(block)}
+
+      const type = (block as { type?: unknown }).type
+
+      if (type === 'text') {return String((block as { text?: unknown }).text ?? '')}
+
+      if (type === 'image') {return '[image]'}
+
+      if (type === 'document') {return '[document]'}
+
+      return safeJson(block)
+    })
+    .filter(part => part.length > 0)
+    .join('\n')
+}
+
 // Shared with the backend Read tool (read.py FILE_NOT_FOUND_CWD_NOTE) and the
 // original (utils/file.ts:213) — the marker the per-tool error renderers key
 // "File not found" on.
@@ -244,7 +332,8 @@ export function formatToolResult(
   name: string | undefined,
   result: string,
   isError = false,
-  webSearch?: WebSearchDisplay
+  webSearch?: WebSearchDisplay,
+  image?: ImageDisplay
 ): string {
   if (isError) {
     const summary = toolSpecificErrorSummary(name, result ?? '')
@@ -285,6 +374,13 @@ export function formatToolResult(
     }
 
     return msg
+  }
+
+  // Shape-keyed ahead of the `!result` bail: an image read's display text comes
+  // entirely from the envelope, and its flattened content ("[image]") carries
+  // nothing worth printing.
+  if (image) {
+    return imageSummary(image)
   }
 
   if (!result) {return result}
@@ -1457,6 +1553,15 @@ export class GatewayClient extends EventEmitter {
     return { durationSeconds: num(value.durationSeconds), searchCount: num(value.searchCount) }
   }
 
+  private imageDisplay(value: any): ImageDisplay | undefined {
+    if (!value || typeof value !== 'object' || value.type !== 'image') {return undefined}
+    const size = value.originalSize
+
+    return {
+      originalSize: typeof size === 'number' && Number.isFinite(size) ? size : undefined
+    }
+  }
+
   // Legacy fallback (agent-server predating tool_use_result): a fake unified
   // diff from the Edit/Write tool *input* so the app can render at least a
   // colored ```diff block. No line numbers/context — superseded by
@@ -1643,6 +1748,7 @@ export class GatewayClient extends EventEmitter {
           // pin the same patch onto every result.
           let structured = this.structuredDiff(msg.tool_use_result)
           let webSearch = this.webSearchDisplay(msg.tool_use_result)
+          let image = this.imageDisplay(msg.tool_use_result)
 
           for (const b of content) {
             if (b?.type === 'tool_result') {
@@ -1650,8 +1756,8 @@ export class GatewayClient extends EventEmitter {
               // A failed edit must not render a diff at all — neither the
               // real patch nor a fabricated one for an edit that never ran.
               const isError = Boolean(b.is_error)
-              const fullText = typeof b.content === 'string' ? b.content : safeJson(b.content)
-              const resultText = formatToolResult(stored?.name, fullText, isError, webSearch)
+              const fullText = flattenToolResultContent(b.content)
+              const resultText = formatToolResult(stored?.name, fullText, isError, webSearch, image)
               const taskTodos = isError ? undefined : this.taskTodosFromResult(stored?.name, stored?.input, fullText)
               // Read shows no expand hint (the summary loses nothing the user
               // needs — the file is in context), so retain nothing for it.
@@ -1674,6 +1780,7 @@ export class GatewayClient extends EventEmitter {
               })
               structured = undefined
               webSearch = undefined
+              image = undefined
               this.toolInputs.delete(String(b.tool_use_id))
             }
           }

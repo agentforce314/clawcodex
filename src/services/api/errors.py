@@ -123,6 +123,81 @@ def is_invalid_api_key(error: Exception) -> bool:
     return status == 401
 
 
+#: Exception type names meaning "the request never reached an HTTP verdict":
+#: DNS/TLS/connect failures, socket timeouts, and mid-flight drops.
+#:
+#: Matched by MRO type name rather than ``isinstance`` so this module stays free
+#: of provider-SDK imports. ``errors.py`` sits in the fast-path CLI import graph
+#: (``clawcodex --help`` reaches it), and importing ``anthropic``/``openai``/
+#: ``httpx`` just to run a classification check would put a heavy SDK on that
+#: path -- the same reasoning that keeps ``providers/stream_retry.py``
+#: dependency-free.
+#:
+#: The builtin ``ConnectionError``/``TimeoutError``/``OSError`` check is not
+#: sufficient on its own, which is the bug this set fixes: the Anthropic and
+#: OpenAI SDKs derive their transport errors from their own ``APIError`` base
+#: (plain ``Exception``) and httpx derives its timeouts from
+#: ``httpx.TransportError``. None of them subclass a builtin, and only
+#: ``APIStatusError`` carries ``status_code``, so every one of them fell through
+#: to ``retryable=False, error_type="unknown"``. That silently removed the
+#: retries the interactive lane depends on: ``query.py`` passes
+#: ``sdk_max_retries=0`` on foreground turns precisely so this manual lane owns
+#: them, so a misclassification here left a foreground turn with *fewer*
+#: attempts than a stock SDK client -- a 5s connect blip the SDK would have
+#: absorbed silently became a hard, user-visible ``APITimeoutError``.
+_TRANSPORT_ERROR_TYPES = frozenset({
+    # anthropic + openai SDKs (identical class names in both)
+    "APIConnectionError",
+    "APITimeoutError",
+    # httpx
+    "TimeoutException",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "ConnectError",
+    "ReadError",
+    "WriteError",
+    "RemoteProtocolError",
+    # requests, for any future call path that uses it
+    "ChunkedEncodingError",
+})
+#: Deliberately NOT listed: bare ``ProtocolError``. ``httpx.LocalProtocolError``
+#: subclasses it and means *this client* emitted something illegal (malformed
+#: header, bad body/method combination, invalid state transition). That is
+#: deterministic -- retrying reproduces it ten times and then fails anyway.
+#: ``RemoteProtocolError`` (the peer misbehaved, which a re-issue can survive) is
+#: listed explicitly above, so nothing is lost by keeping the base name out.
+#:
+#: Kept in sync by hand with ``_TRANSIENT_STREAM_DROP_TYPES`` in
+#: ``src/providers/stream_retry.py``, which answers the narrower question "is
+#: this a mid-stream drop worth re-issuing?" and so deliberately omits the
+#: timeout family -- see the lane-ownership note there. Two sets, two questions;
+#: divergence between them is exactly what produced this bug, so change them
+#: together.
+
+
+def is_transport_error(error: BaseException) -> bool:
+    """True for a failure that produced no HTTP verdict, so retrying is sound.
+
+    Walks the MRO so a *subclass* of a listed type matches too. That is the
+    exact trap this guards: ``anthropic.APITimeoutError`` subclasses the listed
+    ``APIConnectionError``, so a name-only check on ``type(error).__name__``
+    misses it.
+
+    Anything carrying a status is a server verdict, not a transport failure --
+    those are classified by the status branches in
+    :func:`categorize_retryable_api_error`, which run before this one.
+    """
+    if getattr(error, "status", getattr(error, "status_code", None)) is not None:
+        return False
+    if isinstance(error, (ConnectionError, TimeoutError, OSError)):
+        return True
+    return any(
+        klass.__name__ in _TRANSPORT_ERROR_TYPES for klass in type(error).__mro__
+    )
+
+
 def is_media_size_error(raw: str) -> bool:
     return (
         ("image exceeds" in raw and "maximum" in raw)
@@ -215,7 +290,7 @@ def categorize_retryable_api_error(error: Exception) -> ErrorClassification:
             message=f"Server error ({status})",
         )
 
-    if isinstance(error, (ConnectionError, TimeoutError, OSError)):
+    if is_transport_error(error):
         return ErrorClassification(
             retryable=True,
             error_type="connection_error",

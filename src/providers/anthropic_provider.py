@@ -16,6 +16,8 @@ from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    import httpx
+
     from src.utils.abort_controller import AbortSignal
 
 
@@ -161,6 +163,59 @@ def _api_timeout_seconds() -> float:
     return DEFAULT_API_TIMEOUT_S
 
 
+#: Seconds allowed to establish the TCP+TLS connection. The Anthropic SDK's
+#: stock default is 5s (``anthropic._constants.DEFAULT_TIMEOUT``), which is
+#: tight enough that an ordinary DNS or TLS hiccup -- a VPN waking up, a
+#: roaming laptop, a cold resolver -- fails the request outright. The stock SDK
+#: hides that behind 2 automatic retries, but foreground turns disable those
+#: (``sdk_max_retries=0``, query.py) so the manual lane can own retry
+#: accounting. Widening the handshake budget removes the spurious failure at
+#: the source instead of paying a retry round-trip for it.
+DEFAULT_API_CONNECT_TIMEOUT_S = 15.0
+
+
+def _api_connect_timeout_seconds() -> float:
+    """Connect-phase timeout, env-tunable via ``API_CONNECT_TIMEOUT_MS``."""
+    raw = os.environ.get("API_CONNECT_TIMEOUT_MS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) / 1000.0
+    return DEFAULT_API_CONNECT_TIMEOUT_S
+
+
+def _client_timeout() -> "httpx.Timeout | None":
+    """httpx timeout for Anthropic requests on both the streaming and
+    non-streaming paths.
+
+    Without this the client inherits the SDK default
+    ``Timeout(connect=5.0, read=600, write=600, pool=600)``. Two problems with
+    leaving it implicit:
+
+    * ``connect=5.0`` is the aggressive value documented on
+      :data:`DEFAULT_API_CONNECT_TIMEOUT_S`.
+    * only the non-streaming ``chat()`` path passed an explicit per-request
+      ``timeout``; the streaming (agentic) path -- i.e. every interactive turn
+      -- passed none at all, so its timeouts were whatever the SDK happened to
+      default to rather than anything this repo chose.
+
+    A bare float would set all four phases at once, giving ``connect`` the full
+    600s and letting a black-holed SYN hang for ten minutes, so build a real
+    ``httpx.Timeout`` and keep the phases separate.
+
+    The import guard is load-bearing, not defensive boilerplate: the module
+    ``__getattr__`` above substitutes a ``_MissingAnthropic`` stub when the SDK
+    is absent, whose job is to raise one clear "anthropic package is not
+    installed" message. httpx is an anthropic dependency, so it is missing in
+    exactly that situation -- returning ``None`` here keeps that clear message
+    intact instead of replacing it with an ImportError from this helper.
+    """
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001 — never fail client creation over timeout cfg
+        return None
+    total = _api_timeout_seconds()
+    return httpx.Timeout(total, connect=_api_connect_timeout_seconds())
+
+
 # Mid-stream drop classification is shared with the OpenAI-compatible
 # wire (src/providers/stream_retry.py) — DeepSeek trials were dying on the
 # exact error this path already survived. Re-exported under the original
@@ -253,7 +308,16 @@ class AnthropicProvider(BaseProvider):
         # are visible. The first access triggers the PEP 562
         # ``__getattr__`` lazy-load above.
         mod = sys.modules[__name__]
-        self.client = mod.anthropic.Anthropic(**self._client_kwargs)
+        # Phase-split timeout for every request on this client, streaming
+        # included (see ``_client_timeout``). Applied here rather than stored in
+        # ``_client_kwargs`` so the env overrides are read when the client is
+        # actually built, and so ``_client_kwargs`` keeps holding only auth /
+        # header config that callers and tests inspect directly.
+        client_kwargs = dict(self._client_kwargs)
+        timeout = _client_timeout()
+        if timeout is not None:
+            client_kwargs.setdefault("timeout", timeout)
+        self.client = mod.anthropic.Anthropic(**client_kwargs)
         return self.client
 
     def _prepare_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
@@ -586,7 +650,15 @@ class AnthropicProvider(BaseProvider):
         # take longer than 10 minutes"), so with opus-class 32K defaults
         # every non-streaming caller (compaction summarize, session title,
         # judges) was one large request away from a hard ValueError.
-        kwargs.setdefault("timeout", _api_timeout_seconds())
+        #
+        # Pass the phase-split ``httpx.Timeout``, never a bare float: httpx
+        # expands a float across ALL four phases, so the previous
+        # ``_api_timeout_seconds()`` here silently reset ``connect`` from the
+        # client-level 15s back to 600s. A black-holed SYN on a compaction
+        # summarize would then hang for ten minutes. Falls back to the float if
+        # httpx is unavailable, which still satisfies the SDK's "timeout must be
+        # set" requirement described above.
+        kwargs.setdefault("timeout", _client_timeout() or _api_timeout_seconds())
 
         response = client.messages.create(
             model=model,

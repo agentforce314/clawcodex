@@ -379,12 +379,27 @@ class TestChatExplicitTimeout(unittest.TestCase):
             provider.chat(messages=[{"role": "user", "content": "hi"}])
         return fake_client.messages.create.call_args.kwargs
 
+    # The value is a phase-split ``httpx.Timeout``, not a bare float. httpx
+    # expands a float across all four phases, so passing one here silently reset
+    # ``connect`` from the client-level 15s back to the 600s read budget — a
+    # black-holed SYN on a compaction summarize then hung for ten minutes.
+    # Assert per phase; the class's contract (a timeout IS set, so the SDK
+    # accepts large-``max_tokens`` non-streaming calls) is unchanged.
     def test_default_timeout_is_600s(self):
-        self.assertEqual(self._chat_create_kwargs().get("timeout"), 600.0)
+        from src.providers.anthropic_provider import DEFAULT_API_CONNECT_TIMEOUT_S
+
+        timeout = self._chat_create_kwargs().get("timeout")
+        self.assertEqual(timeout.read, 600.0)
+        self.assertEqual(timeout.connect, DEFAULT_API_CONNECT_TIMEOUT_S)
 
     def test_api_timeout_ms_env_override(self):
+        from src.providers.anthropic_provider import DEFAULT_API_CONNECT_TIMEOUT_S
+
         kwargs = self._chat_create_kwargs(env={"API_TIMEOUT_MS": "120000"})
-        self.assertEqual(kwargs.get("timeout"), 120.0)
+        timeout = kwargs.get("timeout")
+        self.assertEqual(timeout.read, 120.0)
+        # The env var governs the generation budget only, not the handshake.
+        self.assertEqual(timeout.connect, DEFAULT_API_CONNECT_TIMEOUT_S)
 
     def test_caller_supplied_timeout_wins(self):
         from src.providers.anthropic_provider import AnthropicProvider

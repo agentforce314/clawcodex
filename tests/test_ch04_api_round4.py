@@ -384,3 +384,121 @@ class TestWatchdogWarning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTransportErrorRetryLane(unittest.TestCase):
+    """End-to-end: a transient transport failure must not kill the turn.
+
+    The unit tests in ``test_transport_error_retry_classification.py`` pin the
+    predicates; these pin the property the user actually experienced. The live
+    incident was a foreground turn dying on the Anthropic SDK's raw
+    "Request timed out or interrupted..." text, with the next two prompts doing
+    the same, because ``categorize_retryable_api_error`` classified the SDK's
+    transport errors as ``unknown``/non-retryable and ``query.py`` re-raised.
+
+    Without an end-to-end pin, a future guard added anywhere in the lane can
+    silently un-fix this while every predicate test still passes.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ws = Path(self._tmp.name)
+        self._sleep = patch("src.query.query.asyncio.sleep", new=_fast_sleep)
+        self._sleep.start()
+
+    def tearDown(self):
+        self._sleep.stop()
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _sdk_timeout():
+        import httpx
+        from anthropic import APITimeoutError
+
+        return APITimeoutError(
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        )
+
+    def test_sdk_timeout_then_success_completes_the_turn(self):
+        provider = _FlakyProvider([self._sdk_timeout()])
+        params = _make_params(workspace=self.ws, provider=provider)
+        messages, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "completed")
+        self.assertEqual(provider.calls, 2)
+        statuses = [
+            m for m in messages
+            if isinstance(m, SystemMessage) and m.subtype == "api_retry"
+        ]
+        self.assertEqual(len(statuses), 1)
+
+    def test_httpx_connect_timeout_then_success_completes_the_turn(self):
+        import httpx
+
+        provider = _FlakyProvider([httpx.ConnectTimeout("timed out")])
+        params = _make_params(workspace=self.ws, provider=provider)
+        _, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "completed")
+        self.assertEqual(provider.calls, 2)
+
+    def test_local_protocol_error_fails_immediately(self):
+        """A deterministic client-side fault must not burn the retry budget."""
+        import httpx
+
+        provider = _FlakyProvider([httpx.LocalProtocolError("illegal header")])
+        params = _make_params(workspace=self.ws, provider=provider)
+        _, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "model_error")
+        self.assertEqual(provider.calls, 1)
+
+    def test_transport_budget_exhausts_rather_than_looping(self):
+        provider = _FlakyProvider([self._sdk_timeout()] * (DEFAULT_MAX_RETRIES + 5))
+        params = _make_params(workspace=self.ws, provider=provider)
+        _, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "model_error")
+        self.assertLessEqual(provider.calls, DEFAULT_MAX_RETRIES + 1)
+
+    def test_aborted_request_is_never_reissued(self):
+        """The highest-stakes property: ESC must not be laundered into a retry.
+
+        The SDK's own message names "request cancellation" as a cause of
+        ``APITimeoutError``, and ESC-abort closes the stream underneath the
+        consumer, so a cancelled turn can surface as a now-retryable transport
+        error. If the abort guards ever regress, the agent would silently
+        re-issue work the user explicitly cancelled.
+
+        The pinned property is NO RE-ISSUE (``query.py`` checks
+        ``signal.aborted`` before consulting the classification). The terminal
+        reason here is ``model_error`` rather than an abort reason only because
+        this scripted provider raises the SDK error directly; the real provider
+        converts it via ``StreamAbortGuard.reraise_if_aborted``, which
+        ``tests/test_stream_abort_guard.py`` covers. Asserting on the reason
+        would pin the harness, not the behaviour.
+        """
+        provider = _FlakyProvider([self._sdk_timeout()] * 3)
+        params = _make_params(workspace=self.ws, provider=provider)
+        params.abort_controller.abort("user_interrupt")
+        _run(run_query(params))
+        self.assertEqual(provider.calls, 1, "an aborted request must never be re-issued")
+
+    def test_abort_raised_mid_request_is_never_reissued(self):
+        """Same guard, but the signal trips DURING the call, not before it.
+
+        Stronger than the pre-turn variant: it proves the lane reads the signal's
+        CURRENT state in the except block rather than a snapshot taken at loop
+        entry. A refactor that hoisted ``aborted`` out of the handler would pass
+        the pre-turn test and fail this one. This is also the real ESC shape —
+        the user interrupts a request already on the wire.
+        """
+        controller = AbortController()
+        errors = [self._sdk_timeout() for _ in range(3)]
+
+        class _AbortMidFlight(_FlakyProvider):
+            def chat_stream_response(self, *a, **k):
+                controller.abort("user_interrupt")
+                return super().chat_stream_response(*a, **k)
+
+        provider = _AbortMidFlight(errors)
+        params = _make_params(workspace=self.ws, provider=provider)
+        params.abort_controller = controller
+        _run(run_query(params))
+        self.assertEqual(provider.calls, 1, "an aborted request must never be re-issued")

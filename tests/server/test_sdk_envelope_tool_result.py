@@ -193,3 +193,84 @@ class TestDiffUtilsNormalization:
         after = "x\ny\n++i;\n".splitlines(keepends=True)
         hunks = unified_diff_hunks(difflib.unified_diff(before, after, fromfile="a", tofile="b", n=3, lineterm=""))
         assert hunks[0]["lines"] == [" x", "--- sql comment", " y", "+++i;"]
+
+
+class TestDisplayToolResultImage:
+    """Read-an-image forwards a byte count and nothing else.
+
+    Regression: ``_display_tool_result`` recognized only create/update and
+    web_search, so an image read returned ``None``. With no display envelope to
+    key on, the client fell back to serializing the tool_result *content* --
+    which for an image is ``[{"type":"image","source":{"type":"base64",...}}]``
+    -- and printed the whole base64 payload into the transcript.
+    """
+
+    IMAGE_OUTPUT = {
+        "type": "image",
+        "file": {
+            "filePath": "/tmp/blog-sources.png",
+            "base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAK",
+            "type": "image/jpeg",
+            "originalSize": 128_000,
+            "dimensions": {
+                "originalWidth": 1920,
+                "originalHeight": 1080,
+                "displayWidth": 960,
+                "displayHeight": 540,
+            },
+        },
+    }
+
+    def test_image_forwards_only_the_size(self):
+        assert _display_tool_result(self.IMAGE_OUTPUT) == {
+            "type": "image",
+            "originalSize": 128_000,
+        }
+
+    def test_base64_never_reaches_the_display_envelope(self):
+        trimmed = _display_tool_result(self.IMAGE_OUTPUT)
+        assert "base64" not in repr(trimmed)
+        assert "/9j/4AAQ" not in repr(trimmed)
+
+    def test_source_output_is_not_mutated(self):
+        original = copy.deepcopy(self.IMAGE_OUTPUT)
+        _display_tool_result(self.IMAGE_OUTPUT)
+        assert self.IMAGE_OUTPUT == original
+
+    def test_missing_size_declines_rather_than_guessing(self):
+        out = {"type": "image", "file": {"base64": "abc", "type": "image/png"}}
+        assert _display_tool_result(out) is None
+
+    def test_bool_size_rejected(self):
+        # bool is an int subclass; a True here means a buggy producer, not 1 byte.
+        out = {"type": "image", "file": {"originalSize": True}}
+        assert _display_tool_result(out) is None
+
+    def test_float_sizes_rejected_rather_than_coerced(self):
+        """``float`` is refused on purpose -- widening it back is turn-fatal.
+
+        ``int(nan)`` raises ValueError and ``int(inf)`` raises OverflowError, and
+        this runs inside ``_sdk_envelope`` whose caller ``on_message`` has no
+        guard, so a stray non-finite would kill the turn rather than decline.
+        Every other malformed input here returns None; these do too. A plain
+        ``128000.0`` is refused for the same reason -- accepting it would mean
+        re-admitting ``float``, and with it nan/inf.
+        """
+        for bad in (float("nan"), float("inf"), float("-inf"), 128_000.0):
+            out = {"type": "image", "file": {"originalSize": bad}}
+            assert _display_tool_result(out) is None, f"{bad!r} must decline"
+
+    def test_non_numeric_sizes_rejected(self):
+        for bad in ("128000", None, [128_000], {"bytes": 1}):
+            out = {"type": "image", "file": {"originalSize": bad}}
+            assert _display_tool_result(out) is None, f"{bad!r} must decline"
+
+    def test_non_dict_file_declines(self):
+        assert _display_tool_result({"type": "image", "file": "nope"}) is None
+
+    def test_reaches_the_wire_envelope(self):
+        msg = create_user_message("ok")
+        msg.toolUseResult = self.IMAGE_OUTPUT
+        env = _sdk_envelope(msg, "sess")
+        assert env["tool_use_result"] == {"type": "image", "originalSize": 128_000}
+        assert "/9j/4AAQ" not in repr(env)
