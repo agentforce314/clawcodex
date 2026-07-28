@@ -169,6 +169,14 @@ _TRANSPORT_ERROR_TYPES = frozenset({
 #: ``RemoteProtocolError`` (the peer misbehaved, which a re-issue can survive) is
 #: listed explicitly above, so nothing is lost by keeping the base name out.
 #:
+#: Also deliberately NOT listed: ``StreamIdleTimeout`` (or any ``TimeoutError``
+#: base that would catch it). It reads like a timeout, so it looks like it
+#: belongs -- but the provider's idle lane ALREADY re-attempts it up to
+#: ``stream_idle_max_attempts``. Adding it here would stack this lane's budget on
+#: top of that one: 3 x 11 = 33 attempts at a 90s idle deadline, a 45-minute
+#: silent hang. It is a plain ``Exception`` today, which is what keeps the two
+#: budgets from composing; keep it that way.
+#:
 #: Kept in sync by hand with ``_TRANSIENT_STREAM_DROP_TYPES`` in
 #: ``src/providers/stream_retry.py``, which answers the narrower question "is
 #: this a mid-stream drop worth re-issuing?" and so deliberately omits the
