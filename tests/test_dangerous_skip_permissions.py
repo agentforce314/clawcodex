@@ -174,19 +174,62 @@ def test_has_allow_bypass_reads_global_tier(_tiered_configs):
     assert has_allow_bypass_permissions_mode() is True
 
 
-def test_has_allow_bypass_reads_local_tier(_tiered_configs):
+def test_has_allow_bypass_ignores_local_tier(_tiered_configs):
+    # SECURITY: the local tier is <git-root>/.clawcodex/config.local.json —
+    # get_local_config_path is GIT-ROOT relative, not home relative, so it is
+    # exactly as committable as the project tier below. `.local` names a
+    # convention in your own .gitignore, not a trust boundary.
+    #
+    # This is a deliberate divergence from the TS reference, which does read the
+    # local tier: availability is not a minor capability. check.py's
+    # `should_bypass` is `mode == "bypassPermissions" or (mode == "plan" and
+    # is_bypass_permissions_mode_available)`, and the same disjunction in
+    # tool_system/context.py lifts working-root containment — so a committed
+    # file could turn `plan` into a write-anywhere bypass, with `clawcodex -p`
+    # never reaching the folder-trust gate.
     _, _, local_path = _tiered_configs
     _write_perms_config(local_path, True)
-    assert has_allow_bypass_permissions_mode() is True
+    assert has_allow_bypass_permissions_mode() is False
 
 
 def test_has_allow_bypass_ignores_project_tier(_tiered_configs):
-    # SECURITY: the committable <git-root>/.claude/config.json must NOT be able
-    # to auto-enable bypass availability (parity with the TS projectSettings
-    # exclusion). Only the project tier is set here.
+    # SECURITY: the committable <git-root>/.clawcodex/config.json must NOT be
+    # able to auto-enable bypass availability (parity with the TS
+    # projectSettings exclusion). Only the project tier is set here.
     _, project_path, _ = _tiered_configs
     _write_perms_config(project_path, True)
     assert has_allow_bypass_permissions_mode() is False
+
+
+def test_a_repo_granted_availability_cannot_lift_plan_containment(_tiered_configs):
+    """The end-to-end consequence, through the real gate.
+
+    Availability + `plan` is a full bypass, so a repo-writable source for it
+    would defeat the headline property that `/plan` restrains.
+    """
+    from src.permissions.check import has_permissions_to_use_tool
+    from src.permissions.modes import resolve_interactive_permission_state
+    from src.permissions.types import ToolPermissionContext
+    from src.tool_system.tools.write import WriteTool
+
+    _, project_path, local_path = _tiered_configs
+    _write_perms_config(local_path, True)
+    _write_perms_config(project_path, True)
+
+    mode, available, _sel = resolve_interactive_permission_state(
+        permission_mode_cli="plan",
+        dangerously_skip_permissions=False,
+        allow_dangerously_skip_permissions=False,
+        implicit_full_access=False,
+    )
+    assert available is False
+    ctx = ToolPermissionContext(
+        mode=mode, is_bypass_permissions_mode_available=available,
+    )
+    decision = has_permissions_to_use_tool(
+        WriteTool, {"file_path": "/etc/evil.txt", "content": "x"}, ctx,
+    )
+    assert decision.behavior != "allow"
 
 
 def test_has_allow_bypass_false_when_all_tiers_absent(_tiered_configs):
@@ -432,15 +475,68 @@ def test_resolve_permission_state_stashes_resolved_mode_on_args():
     assert args._resolved_is_bypass_available is True
 
 
-def test_resolve_permission_state_default_mode_when_no_flag():
+def _as_tty(monkeypatch):
+    """Make the process look like it is attached to a terminal.
+
+    The loose default is TTY-gated, and pytest runs with pipes — so without this
+    every "interactive" assertion would silently test the non-TTY path instead.
+    """
+    import sys as _sys
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: True, raising=False)
+
+
+def test_resolve_permission_state_full_access_when_no_flag_interactive(monkeypatch):
+    """A bare interactive `clawcodex` starts in Full Access.
+
+    This replaced the previous `default`: the permission UX was reworked so the
+    tool is loose by default and `/permissions` dials it back. Note what does
+    NOT change — engine bypass AVAILABILITY stays False, because that flag also
+    relaxes plan mode (`check.py` `should_bypass`) and `/plan` must keep
+    restraining even in a full-access session.
+    """
+    from src.cli import _build_parser, _resolve_permission_state
+
+    _as_tty(monkeypatch)
+    parser = _build_parser()
+    args = parser.parse_args([])
+    _resolve_permission_state(args)
+    assert args._resolved_permission_mode == "bypassPermissions"
+    assert args._resolved_is_bypass_available is False
+    # …but the picker can still offer Full Access, which is a separate capability.
+    assert args._resolved_bypass_selectable is True
+
+
+def test_resolve_permission_state_non_tty_launch_is_not_loose():
+    """"Not --print" is not the same as "a human is sitting there".
+
+    A piped/automated launch that merely omits -p must not take the loose floor
+    — `_gate_folder_trust` grants trust implicitly on non-TTY stdin, so nothing
+    downstream would stop it either. pytest's own pipes make this the default
+    state here, which is exactly the case being pinned.
+    """
     from src.cli import _build_parser, _resolve_permission_state
 
     parser = _build_parser()
     args = parser.parse_args([])
     _resolve_permission_state(args)
     assert args._resolved_permission_mode == "default"
-    # is_bypass_available depends on settings; default config has no bypass.
-    assert isinstance(args._resolved_is_bypass_available, bool)
+    assert args._resolved_bypass_selectable is False
+
+
+def test_resolve_permission_state_print_mode_keeps_default():
+    """`--print` / headless is deliberately excluded from the loose default:
+    CI and the Harbor eval harness drive it, and silently changing what a
+    benchmark run is permitted to do is not acceptable."""
+    from src.cli import _build_parser, _resolve_permission_state
+
+    parser = _build_parser()
+    args = parser.parse_args(["--print", "hello"])
+    _resolve_permission_state(args)
+    assert args._resolved_permission_mode == "default"
+    assert args._resolved_is_bypass_available is False
+    assert args._resolved_bypass_selectable is False
 
 
 def test_resolve_permission_state_allow_dangerously_only_does_not_flip_mode():

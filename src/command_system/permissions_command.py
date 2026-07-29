@@ -1,5 +1,22 @@
 """permissions — interactive ``/permissions`` command (port of TS local-jsx).
 
+.. warning::
+
+   **Test-only reachable.** The live ``/permissions`` is the Ink TUI's local
+   slash command (``ui-tui/src/app/slash/commands/session.ts``), which routes
+   through the agent-server's gated ``set_permission_mode`` control. This one is
+   still registered (``builtins.py``) but its two original surfaces — the Rich
+   REPL and the Textual TUI — were deleted in the UI consolidation, and the Ink
+   client never dispatches unknown slashes to the Python registry. It survives
+   because ``tests/test_interactive_bridge.py`` uses it as the reference command
+   for the whole interactive-command bridge.
+
+   Do not wire it to a live surface as-is: it writes ``AppState.permission_mode``
+   through the store and never touches ``tool_context``, so it applies no mode to
+   the live permission gate **and enforces no bypass gate** — it would be an
+   ungated ``bypassPermissions`` selector. Route any new surface through
+   ``set_permission_mode`` instead.
+
 Reference command for the P0-3 interactive-command bridge (see
 my-docs/get-parity-by-folder/commands-phase2-interactive-bridge-plan.md): a
 single ``select`` over the user-facing permission modes, backed by the reactive
@@ -28,30 +45,33 @@ from .types import (
     UIOption,
 )
 
-# User-facing permission modes, in the Shift+Tab cycle order
-# (``src/permissions/cycle.py``). The internal modes (dontAsk / auto / bubble)
-# are deliberately excluded from the picker — they're not user-addressable.
+def _option_for(mode: str, fallback_label: str, fallback_description: str) -> UIOption:
+    """Build a :class:`UIOption` from :mod:`src.permissions.levels` when the mode
+    is one of the three user-facing levels, else from the supplied fallback.
+
+    Labels/descriptions come from the shared catalog so this command and the Ink
+    TUI's ``/permissions`` picker never present two different vocabularies for
+    the same modes. ``plan`` has no level row (it is a workflow mode, not a point
+    on the looseness ladder) and keeps its own wording.
+    """
+    from src.permissions.levels import level_for_mode
+
+    level = level_for_mode(mode)
+    return UIOption(
+        value=mode,
+        label=level.label if level else fallback_label,
+        description=level.description if level else fallback_description,
+    )
+
+
+# In Shift+Tab cycle order (``src/permissions/cycle.py``). The internal modes
+# (dontAsk / auto / bubble) are deliberately excluded — they're not
+# user-addressable.
 _PERMISSION_MODE_OPTIONS: list[UIOption] = [
-    UIOption(
-        value="default",
-        label="default",
-        description="Prompt before each tool's first use",
-    ),
-    UIOption(
-        value="acceptEdits",
-        label="acceptEdits",
-        description="Auto-accept file edits in the workspace",
-    ),
-    UIOption(
-        value="plan",
-        label="plan",
-        description="Plan only — no edits or commands",
-    ),
-    UIOption(
-        value="bypassPermissions",
-        label="bypassPermissions",
-        description="Skip all permission prompts",
-    ),
+    _option_for("default", "default", "Prompt before each tool's first use"),
+    _option_for("acceptEdits", "acceptEdits", "Auto-accept file edits in the workspace"),
+    _option_for("plan", "Plan mode", "Plan only — no edits or commands"),
+    _option_for("bypassPermissions", "bypassPermissions", "Skip all permission prompts"),
 ]
 
 

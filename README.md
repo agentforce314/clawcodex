@@ -85,7 +85,7 @@ Then configure a provider and start coding:
 
 ```bash
 clawcodex login   # interactive provider + API key setup → ~/.clawcodex/config.json
-clawcodex --dangerously-skip-permissions         # start the REPL in any project
+clawcodex         # start it in any project — Full Access by default, /permissions to change
 ```
 
 The installer also ships `clawcodex` lifecycle helpers — `doctor` (diagnose your
@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 python -m src.cli login   # writes config to ~/.clawcodex/config.json
 
-python -m src.cli --dangerously-skip-permissions   # start the REPL
+python -m src.cli   # start it (Full Access by default; /permissions to change)
 ```
 
 </details>
@@ -400,11 +400,57 @@ clawcodex -p --output-format stream-json --input-format stream-json < events.ndj
 clawcodex --provider anthropic --model claude-sonnet-4-6 -p "Hi"
 clawcodex --max-turns 10 --allowed-tools Read,Grep -p "Find TODOs"
 
-# Permission control (REPL, TUI, and -p all honor these)
-clawcodex --permission-mode plan                       # plan / acceptEdits / dontAsk
+# Permission control (TUI and -p both honor these)
+clawcodex --permission-mode plan                       # plan / default / acceptEdits / dontAsk
 clawcodex --dangerously-skip-permissions -p "ls"       # bypass all permission checks
-clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode bypass later
+clawcodex --allow-dangerously-skip-permissions         # Full Access selectable, but don't start in it
 ```
+
+### Permissions
+
+An interactive `clawcodex` starts in **Full Access** — it can edit any file and
+run any command without asking. Use `/permissions` at any time to pick a level:
+
+| Level | What it allows |
+| ----- | -------------- |
+| **Ask for approval** | Read files and run read-only commands freely. Editing files, running other commands, or touching anything outside the workspace asks first. |
+| **Approve for me** | Auto-accept file edits in the workspace and a small set of safe shell commands. Everything else still asks. |
+| **Full Access** *(default)* | Edit any file and run any command without asking, except where you configured a deny or ask rule. |
+
+The level you pick is saved to `permissions.defaultMode` in
+`~/.clawcodex/settings.json` and applies to later sessions, so dialing
+permissions down sticks. `--permission-mode` and
+`--dangerously-skip-permissions` override it for a single run without changing
+it.
+
+`clawcodex -p` (headless) is **not** loose by default — it stays in `default`
+unless you say otherwise, and a *saved* Full Access does not change that:
+persistence dials headless down, never up. Say otherwise explicitly with
+`--dangerously-skip-permissions` or `--permission-mode`. The same applies to
+any launch that isn't attached to a terminal.
+
+To start in a lower level every time, either pick it once with `/permissions`
+or set it directly:
+
+```json
+// ~/.clawcodex/settings.json
+{ "permissions": { "defaultMode": "default" } }
+```
+
+A repo can ship `.clawcodex/settings.json` (or `settings.local.json`) with a
+`defaultMode` to *tighten* permissions for anyone who opens it. Repo-supplied
+values are restricted to `default` and `dontAsk` — note `dontAsk` denies
+anything that would otherwise prompt, so a repo can make the agent refuse
+actions rather than ask about them — and are ignored if they'd be looser than
+what would otherwise apply, so a cloned repo can never widen yours. (`plan` is
+excluded deliberately: combined with bypass availability it is a full bypass,
+not a restriction.) Administrators can disable Full Access outright with
+`disableBypassPermissionsMode` in `~/.clawcodex/config.json` or managed policy.
+
+`/plan` keeps restraining edits even in a Full Access session — unless you
+launched with `--allow-dangerously-skip-permissions` or set
+`allowBypassPermissionsMode` in your user config, both of which relax plan mode
+by design.
 
 ### Claude Pro/Max subscription login
 
@@ -446,9 +492,12 @@ Use `clawcodex config` to check connection status and
 `clawcodex logout openai` to delete the stored OAuth credentials.
 
 > **`--dangerously-skip-permissions`** disables every tool permission check
-> for the session. Recommended only inside sandboxed containers/VMs with no
-> internet access. The flag is refused when the process is running as
-> root/sudo unless `IS_SANDBOX=1` or `CLAUDE_CODE_BUBBLEWRAP=1` is set.
+> for the session — the same thing an interactive `clawcodex` now does by
+> default (see [Permissions](#permissions)). Recommended only inside sandboxed
+> containers/VMs with no internet access. The *flag* is refused when the
+> process is running as root/sudo unless `IS_SANDBOX=1` or
+> `CLAUDE_CODE_BUBBLEWRAP=1` is set; under root the implicit default quietly
+> falls back to `default` instead, so `sudo clawcodex` still starts.
 
 ***
 

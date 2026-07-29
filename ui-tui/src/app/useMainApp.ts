@@ -1128,6 +1128,14 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/logo ${value}`)
   }, [])
 
+  // /permissions picker choice → re-enter the slash command with the chosen
+  // LEVEL KEY so the single command path owns the RPC, the persist and the
+  // transcript line (the /model + /logo picker pattern).
+  const onPermissionsSelect = useCallback((levelKey: string) => {
+    patchOverlayState({ permissionsPicker: false })
+    slashRef.current(`/permissions ${levelKey}`)
+  }, [])
+
   // /memory picker choice → the memory.tsx flow: ensure-create, $EDITOR under
   // the alt-screen suspend, "Opened memory file at …" system line, and a
   // memory_edited cache bust so the next turn re-reads the file.
@@ -1250,6 +1258,7 @@ export function useMainApp(gw: GatewayClient) {
       onLogoSelect,
       onMemorySelect,
       onModelSelect,
+      onPermissionsSelect,
       // Resuming a cold session from the overlay CLOSES the current one, so it
       // must respect the busy guard just like the `/resume` slash path.
       // (Switching between live sessions and `+ new` keep the current session
@@ -1275,6 +1284,7 @@ export function useMainApp(gw: GatewayClient) {
       onLogoSelect,
       onMemorySelect,
       onModelSelect,
+      onPermissionsSelect,
       session
     ]
   )

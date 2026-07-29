@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Permissions are now loose by default and easy to change.** `/mode` is
+  renamed `/permissions` (the old name still works as an alias) and bare
+  `/permissions` opens a three-option picker — *Ask for approval*, *Approve for
+  me*, *Full Access* — instead of requiring a raw mode name. A bare interactive
+  `clawcodex` now starts in **Full Access**, equivalent to
+  `--dangerously-skip-permissions`. The chosen level persists to
+  `permissions.defaultMode` in `~/.clawcodex/settings.json`, so dialing
+  permissions *down* survives a relaunch.
+
+  Scope and safety of the new default:
+
+  - Only a real terminal gets it. `--print`/headless is unchanged (`default`) —
+    CI and the eval harness drive it — and so is any non-TTY launch, even
+    without `-p`. A persisted `defaultMode` applies to every surface, with one
+    exception in the safe direction: a saved *Full Access* is interactive-only
+    (see below).
+  - Explicit intent always wins: `--permission-mode`,
+    `--dangerously-skip-permissions`, and a persisted `defaultMode` all outrank
+    the implicit default, and `--allow-dangerously-skip-permissions` (which
+    means "available without starting in it") suppresses it.
+  - Suppressed entirely under a `disableBypassPermissionsMode` lockdown, and
+    under root outside a sandbox — where it degrades to `default` rather than
+    refusing to start, and also clamps a persisted `bypassPermissions` and
+    settings-granted bypass availability.
+  - **Plan mode still restrains.** Choosing Full Access sets the mode only and
+    never grants engine bypass *availability*, which is what relaxes `plan`, so
+    `/plan` keeps asking in a full-access session.
+  - Repository settings files (`.clawcodex/settings.json` and
+    `settings.local.json` — both are committable, whatever the `.local` name
+    suggests) may only supply `default` or `dontAsk`, and only when that would
+    not loosen what applies anyway. A cloned repo cannot widen your
+    permissions. `plan` is excluded on purpose: with bypass availability it is
+    a full bypass, not a restriction.
+  - A saved Full Access applies only to interactive sessions. Persistence
+    exists so dialing *down* survives a relaunch; it never dials `-p` up.
+  - `permissions.allowBypassPermissionsMode` is now read from the user config
+    only. It was also read from `<git-root>/.clawcodex/config.local.json`,
+    which — despite the `.local` name — is a committable repo file, so a
+    checked-out repository could grant itself bypass *availability* and thereby
+    turn `/plan` into a write-anywhere bypass. Operators who kept that key in a
+    repo-local config must move it to `~/.clawcodex/config.json`.
+  - Running as root outside a sandbox now also drops bypass availability, and
+    ignores a *saved* Full Access. An explicit `--permission-mode` is still
+    honored there; only the implicit and saved paths are clamped.
+  - `setMode` arriving inside a permission-ask reply (`chosen_updates`) is now
+    gated by the same capability as `/permissions`, and refused entirely for
+    persisted destinations — previously it was an ungated second door to
+    `bypassPermissions` for any non-TUI agent-server client.
+
 ## [1.3.0] - 2026-07-29
 
 ### Added

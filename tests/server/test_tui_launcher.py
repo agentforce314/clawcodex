@@ -74,6 +74,61 @@ def test_agent_server_cmd_forwards_effort():
     assert "--effort" not in _agent_server_cmd(_NoEffort())
 
 
+def test_agent_server_cmd_forwards_bypass_selectable():
+    """``--allow-select-bypass`` is what makes `/permissions full` work.
+
+    Same class of bug as the dropped ``--effort`` hop: the launcher resolves it
+    and the SERVER enforces it, so a missing hop is invisible until a user picks
+    Full Access and is told it "is not available in this session".
+
+    It must stay SEPARATE from ``--allow-dangerously-skip-permissions``: that
+    one grants engine bypass availability, which also relaxes plan mode.
+    """
+    from src.entrypoints.tui_launcher import _agent_server_cmd
+
+    class _Selectable:
+        permission_mode = "bypassPermissions"
+        provider = None
+        model = None
+        effort = None
+        is_bypass_available = False
+        bypass_selectable = True
+
+    cmd = _agent_server_cmd(_Selectable())
+    assert "--allow-select-bypass" in cmd
+    assert "--allow-dangerously-skip-permissions" not in cmd
+
+    class _Neither:
+        permission_mode = "default"
+        provider = None
+        model = None
+        effort = None
+
+    assert "--allow-select-bypass" not in _agent_server_cmd(_Neither())
+
+
+def test_print_connect_forwards_bypass_selectable():
+    """The ``--print-connect`` route builds its own argv — the hop historically
+    missed (cf. the --effort test below)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    seen: dict = {}
+
+    with patch(
+        "src.entrypoints.tui_launcher.run_agent_server_subcommand",
+        lambda argv: seen.setdefault("argv", argv) and 0 or 0,
+    ):
+        from src.entrypoints.tui_launcher import _print_connect
+
+        _print_connect(SimpleNamespace(
+            workspace=None, permission_mode="default", is_bypass_available=False,
+            bypass_selectable=True, provider=None, model=None, effort=None,
+        ))
+
+    assert "--allow-select-bypass" in seen["argv"]
+
+
 def test_print_connect_forwards_effort():
     """The ``--print-connect`` route runs the server in-process, so it needs
     the flag on its own argv list — a separate hop from _agent_server_cmd."""

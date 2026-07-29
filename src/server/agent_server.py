@@ -113,6 +113,15 @@ class AgentServerConfig:
     # isBypassPermissionsModeAvailable in
     # typescript/src/utils/permissions/permissionSetup.ts:941.
     is_bypass_available: bool = False
+    # bypassPermissions SELECTABILITY — whether `/permissions` may choose Full
+    # Access. Strictly weaker than is_bypass_available above, and deliberately a
+    # SEPARATE field: availability ALSO relaxes plan mode (check.py
+    # `should_bypass`), so reusing it to make the picker work would silently turn
+    # /plan into full access in every session that defaults to Full Access.
+    # Resolved once at the interactive launch boundary and forwarded via
+    # --allow-select-bypass; never derived from settings here (see the
+    # multi-tenant --http note in _build_runtime).
+    bypass_selectable: bool = False
     max_turns: int = DEFAULT_MAX_TURNS
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
@@ -426,20 +435,25 @@ class _AgentSession:
                 self._reply(request_id, {"ok": False, "error": "session not ready"})
                 return
             # bypassPermissions is only settable when the session made it
-            # available (--dangerously-skip-permissions / --allow-…). Same
-            # guard the Shift+Tab cycle enforces (get_next_permission_mode) —
-            # without it, /mode bypassPermissions silently disabled the whole
+            # available (--dangerously-skip-permissions / --allow-…) or
+            # SELECTABLE (--allow-select-bypass, set by the interactive
+            # launchers so `/permissions full` works). Without a guard,
+            # `/permissions bypassPermissions` silently disabled the whole
             # permission gate in any session. Mirrors the onSetPermissionMode
             # contract in typescript/src/bridge/replBridge.ts:182-193.
+            #
+            # Selecting bypass sets the MODE only — it never flips the engine
+            # availability flag, so a later /plan still restrains (that flag
+            # also relaxes plan mode; see AgentServerConfig.bypass_selectable).
             pc = self.tool_context.permission_context
-            if mode == "bypassPermissions" and not getattr(
-                pc, "is_bypass_permissions_mode_available", False
+            if mode == "bypassPermissions" and not (
+                getattr(pc, "is_bypass_permissions_mode_available", False)
+                or self.config.bypass_selectable
             ):
                 self._reply(request_id, {
                     "ok": False,
-                    "error": "bypassPermissions is not available in this "
-                             "session — launch with "
-                             "--dangerously-skip-permissions or "
+                    "error": "Full Access is not available in this session — "
+                             "launch with --dangerously-skip-permissions or "
                              "--allow-dangerously-skip-permissions",
                 })
                 return
@@ -448,7 +462,20 @@ class _AgentSession:
             # tool_context.permission_context; the store dispatch runs
             # the centralized seams (listeners; future persistence).
             _dispatch_app_state(self, permission_mode=mode)
-            self._reply(request_id, {"ok": True, "mode": mode})
+            # `persist` is set only by `/permissions` choosing one of the three
+            # LEVELS — a standing preference that must survive relaunch, so a
+            # user who deliberately dials DOWN to "Ask for approval" is not
+            # silently returned to Full Access next launch. Shift+Tab cycling and
+            # the raw-mode escape hatch stay transient.
+            persisted = False
+            if inner.get("persist") and self._may_persist_mode(mode):
+                try:
+                    from src.permissions.modes import set_settings_default_mode
+
+                    persisted = bool(set_settings_default_mode(mode))  # type: ignore[arg-type]
+                except Exception:  # noqa: BLE001 — a failed write must not fail the set
+                    logger.debug("[agent-server] defaultMode persist failed", exc_info=True)
+            self._reply(request_id, {"ok": True, "mode": mode, "persisted": persisted})
             return
         if subtype == "cycle_permission_mode":
             # ch13 round-4 (critic B1) — shift+tab cycling MUST be computed
@@ -465,7 +492,12 @@ class _AgentSession:
             from src.permissions.cycle import get_next_permission_mode
 
             pc = self.tool_context.permission_context
-            new_mode = get_next_permission_mode(pc)
+            # Pass selectability: a session that defaults to Full Access has
+            # availability False on purpose, so without this the first Shift+Tab
+            # was a one-way exit out of the default mode.
+            new_mode = get_next_permission_mode(
+                pc, can_select_bypass=self.config.bypass_selectable,
+            )
             _set_mode(self.tool_context, new_mode)
             _dispatch_app_state(self, permission_mode=new_mode)
             self._reply(request_id, {"ok": True, "mode": new_mode})
@@ -2647,9 +2679,18 @@ class _AgentSession:
                 pc = getattr(self.tool_context, "permission_context", None)
                 wire_request["plan"] = get_plan()
                 wire_request["plan_file_path"] = str(get_plan_file_path())
+                # Same disjunction as the set_permission_mode gate — NOT the
+                # engine availability flag alone. This drives which elevated
+                # option the approval box offers (prompts.tsx: "Yes, and bypass
+                # permissions" vs "Yes, auto-accept edits"). With availability
+                # alone, a session that started in Full Access and ran /plan
+                # would be offered only "auto-accept edits", whose chosen_updates
+                # setMode pre-empts ExitPlanMode's pre_plan_mode restore — so
+                # approving a plan silently DOWNGRADED the session out of full
+                # access with no notice and no way back but /permissions.
                 wire_request["bypass_available"] = bool(
                     getattr(pc, "is_bypass_permissions_mode_available", False)
-                )
+                ) or bool(self.config.bypass_selectable)
             except Exception:  # noqa: BLE001 — degrade to the generic box
                 logger.debug("[agent-server] plan payload failed", exc_info=True)
         self._emit({
@@ -2666,33 +2707,138 @@ class _AgentSession:
             return PermissionAskReply(
                 behavior="deny", message="permission request timed out"
             )
-        reply = pending.reply or {"behavior": "deny"}
-        behavior = reply.get("behavior")
-        if behavior == "allow":
-            updated = reply.get("updatedInput")
-            if not isinstance(updated, dict):
-                updated = reply.get("updated_input")
-            # ch13 round-4 — read the user's chosen "don't ask again" rules
-            # back off the reply and return them so handle_permission_ask /
-            # the can_use_tool adapter PERSIST them (registry.py:169 →
-            # _apply_and_persist_updates → settings). This is what makes
-            # "always allow" actually stick.
-            chosen_raw = reply.get("chosen_updates") or reply.get("chosenUpdates")
-            chosen: tuple = ()
-            if isinstance(chosen_raw, list):
-                deserialized = [
-                    _deserialize_permission_update(u)
-                    for u in chosen_raw if isinstance(u, dict)
-                ]
-                chosen = tuple(u for u in deserialized if u is not None)
+        return self._permission_reply(pending.reply or {"behavior": "deny"})
+
+    def _permission_reply(self, reply: dict) -> Any:
+        """Turn a client's permission-ask reply into a :class:`PermissionAskReply`.
+
+        Extracted from :meth:`permission_handler` so the ``chosen_updates`` gate
+        below is directly testable — it is a privilege boundary, and the only
+        alternative was driving it through a blocking wire round-trip.
+        """
+        from src.permissions.types import PermissionAskReply
+
+        if reply.get("behavior") != "allow":
             return PermissionAskReply(
-                behavior="allow",
-                updated_input=updated if isinstance(updated, dict) else None,
-                chosen_updates=chosen,
+                behavior="deny",
+                message=str(reply.get("message", "")) or "denied by user",
+            )
+        updated = reply.get("updatedInput")
+        if not isinstance(updated, dict):
+            updated = reply.get("updated_input")
+        # ch13 round-4 — read the user's chosen "don't ask again" rules
+        # back off the reply and return them so handle_permission_ask /
+        # the can_use_tool adapter PERSIST them (registry.py:169 →
+        # _apply_and_persist_updates → settings). This is what makes
+        # "always allow" actually stick.
+        chosen_raw = reply.get("chosen_updates") or reply.get("chosenUpdates")
+        chosen: tuple = ()
+        if isinstance(chosen_raw, list):
+            deserialized = [
+                _deserialize_permission_update(u)
+                for u in chosen_raw if isinstance(u, dict)
+            ]
+            chosen = tuple(
+                u for u in deserialized
+                if u is not None and self._permission_update_allowed(u)
             )
         return PermissionAskReply(
-            behavior="deny", message=str(reply.get("message", "")) or "denied by user"
+            behavior="allow",
+            updated_input=updated if isinstance(updated, dict) else None,
+            chosen_updates=chosen,
         )
+
+    def _may_persist_mode(self, mode: str) -> bool:
+        """Whether a wire request may write ``permissions.defaultMode`` to disk.
+
+        The SINGLE policy for both doors into persistence: this control's
+        ``persist`` flag and a ``chosen_updates`` setMode with a non-session
+        destination. Persisting is a HOST-WIDE, durable change — the value is
+        read at every future launch, in every project, including headless — so
+        it is restricted to sessions with ``bypass_selectable``.
+
+        The exact predicate, since it is broader than "an interactive launcher
+        owns this process": ``bypass_selectable`` is set by ``src/cli.py`` /
+        ``tui_launcher`` AND is False under a ``disableBypassPermissionsMode``
+        lockdown or when running as root outside a sandbox. So in a locked-down
+        or elevated interactive session a level choice applies but does not
+        persist. That is an accidental coupling rather than a designed one, but
+        it fails safe — those sessions already floor at ``default``, so the only
+        thing lost is persisting a LOOSENING — and splitting a separate
+        settings-writable carrier is not worth the wire surface today.
+
+        Without this, a ``--print-connect`` / ``--http`` client could answer with
+        ``{mode: "acceptEdits", persist: true}`` and silently overwrite a user
+        who had deliberately chosen "Ask for approval", or install a durable
+        ``dontAsk`` the user has to find in a settings file to undo.
+
+        Only modes the READER accepts are written: ``EXTERNAL_PERMISSION_MODES``
+        excludes ``auto``, which ``set_permission_mode`` otherwise allows — so
+        persisting it would clobber a real prior choice with a value
+        ``read_settings_default_mode`` silently ignores.
+        """
+        from src.permissions.types import EXTERNAL_PERMISSION_MODES
+
+        if mode not in EXTERNAL_PERMISSION_MODES:
+            logger.debug("[agent-server] refusing to persist non-external mode %r", mode)
+            return False
+        if not self.config.bypass_selectable:
+            logger.warning(
+                "[agent-server] refusing to persist permissions.defaultMode=%r — "
+                "this session was not launched by an interactive client", mode,
+            )
+            return False
+        return True
+
+    def _permission_update_allowed(self, update: Any) -> bool:
+        """Gate a permission update that arrived inside a permission-ask REPLY.
+
+        ``chosen_updates`` is the "always allow Bash(ls:*)" channel, but it also
+        carries ``setMode`` (the plan-approval dialog's "Yes, and bypass
+        permissions" arm). That made it a SECOND door to ``bypassPermissions``,
+        bypassing the ``set_permission_mode`` gate entirely — a client could
+        answer any prompt with a setMode and take Full Access in a session where
+        ``bypass_selectable`` is False. The honest TUI never does this, but the
+        agent-server also serves ``--print-connect`` / ``--http`` clients, which
+        is exactly the population the selectability split exists to bound.
+
+        Two rules for a wire-supplied ``setMode``:
+
+        * ``bypassPermissions`` needs the same capability ``set_permission_mode``
+          requires;
+        * a persisted destination needs :meth:`_may_persist_mode` — the same
+          policy the ``set_permission_mode`` ``persist`` flag goes through.
+          Writing ``permissions.defaultMode`` into the HOST's settings file makes
+          one message from a remote client a permanent host-wide setting, since
+          that value is read at every launch.
+
+        Non-``setMode`` updates (rule grants) are unaffected.
+        """
+        from src.permissions.types import PermissionUpdateSetMode
+
+        if not isinstance(update, PermissionUpdateSetMode):
+            return True
+        if getattr(update, "destination", "session") != "session" and not (
+            self._may_persist_mode(update.mode)
+        ):
+            logger.warning(
+                "[agent-server] refusing chosen_updates setMode with "
+                "destination=%r", getattr(update, "destination", None),
+            )
+            return False
+        if update.mode != "bypassPermissions":
+            return True
+        pc = getattr(self.tool_context, "permission_context", None)
+        allowed = bool(
+            getattr(pc, "is_bypass_permissions_mode_available", False)
+            or self.config.bypass_selectable
+        )
+        if not allowed:
+            logger.warning(
+                "[agent-server] refusing chosen_updates setMode:bypassPermissions "
+                "— Full Access is not available in this session",
+            )
+        return allowed
 
     # ─── /goal — completion-condition loop (src/goals) ─────────────────────
 
@@ -4506,7 +4652,16 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         # single-session stdio case) and carried in. Availability alone does
         # NOT enter bypass; it only unlocks it for Shift+Tab /
         # set_permission_mode. Mirrors permissionSetup.ts:941-945.
-        bypass = mode == "bypassPermissions" or cfg.is_bypass_available
+        #
+        # NOT `or mode == "bypassPermissions"`: availability also relaxes PLAN
+        # mode (check.py `should_bypass`), so deriving it from the launch mode
+        # meant a session started in Full Access — now the interactive default —
+        # had /plan silently permitting every edit and command. Availability is
+        # flag/settings-derived only, matching TS isBypassPermissionsModeAvailable
+        # and the headless path (headless.py), which never had a mode-implies-
+        # availability rule. A session may still START in bypass without it: the
+        # engine's own `mode == "bypassPermissions"` clause covers that.
+        bypass = cfg.is_bypass_available
         perm_setup = setup_permissions(
             cwd=str(workspace_root),
             mode=mode,  # type: ignore[arg-type]

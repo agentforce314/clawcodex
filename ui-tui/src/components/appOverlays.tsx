@@ -5,7 +5,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { argumentHintFor } from '../app/slash/argumentHints.js'
-import { $uiLogoPalette, $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { $uiLogoPalette, $uiPermissionMode, $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -15,6 +15,7 @@ import { MaskedPrompt } from './maskedPrompt.js'
 import { MemoryPicker } from './memoryPicker.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { PermissionsPicker } from './permissionsPicker.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, PlanApprovalPrompt } from './prompts.js'
@@ -146,6 +147,7 @@ export function FloatingOverlays({
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
+  onPermissionsSelect,
   onResumeSelect,
   pagerPageSize
 }: Pick<
@@ -160,6 +162,7 @@ export function FloatingOverlays({
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
+  | 'onPermissionsSelect'
   | 'onResumeSelect'
   | 'pagerPageSize'
 >) {
@@ -168,11 +171,13 @@ export function FloatingOverlays({
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
   const logoPalette = useStore($uiLogoPalette)
+  const permissionMode = useStore($uiPermissionMode)
 
   const hasAny =
     overlay.logoPicker ||
     overlay.memoryPicker ||
     overlay.modelPicker ||
+    overlay.permissionsPicker ||
     overlay.pager ||
     overlay.petPicker ||
     overlay.sessions ||
@@ -227,6 +232,17 @@ export function FloatingOverlays({
             current={logoPalette}
             onClose={() => patchOverlayState({ logoPicker: false })}
             onSelect={onLogoSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.permissionsPicker && (
+        <FloatBox color={theme.color.border}>
+          <PermissionsPicker
+            current={permissionMode}
+            onClose={() => patchOverlayState({ permissionsPicker: false })}
+            onSelect={onPermissionsSelect}
             t={theme}
           />
         </FloatBox>

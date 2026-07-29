@@ -232,6 +232,7 @@ def main():
         effort=args.effort,
         permission_mode=args._resolved_permission_mode,
         is_bypass_available=args._resolved_is_bypass_available,
+        bypass_selectable=args._resolved_bypass_selectable,
         workspace=(worktree_session.worktree_path if worktree_session else None),
         worktree=worktree_session,
     )
@@ -580,41 +581,49 @@ def _resolve_permission_state(args) -> None:
     from src.permissions.dangerous_safety import (
         enforce_dangerous_skip_permissions_safety,
     )
-    from src.permissions.modes import (
-        has_allow_bypass_permissions_mode,
-        initial_permission_mode_from_cli,
-        is_bypass_permissions_mode_disabled,
-    )
+    from src.permissions.modes import resolve_interactive_permission_state
 
     dangerously = bool(getattr(args, 'dangerously_skip_permissions', False))
     allow_dangerously = bool(getattr(args, 'allow_dangerously_skip_permissions', False))
     permission_mode_cli = getattr(args, 'permission_mode', None)
 
-    # Safety gate first — refuse to run as root outside a sandbox.
+    # Safety gate first — refuse to run as root outside a sandbox. Applies to the
+    # EXPLICIT flags only; the implicit full-access default degrades to `default`
+    # under the same condition instead of aborting (see
+    # modes.resolve_interactive_permission_state), because `sudo clawcodex` with
+    # no flags must still start.
     enforce_dangerous_skip_permissions_safety(
         bypass_requested=dangerously or allow_dangerously,
     )
 
-    mode = initial_permission_mode_from_cli(
-        permission_mode_cli=permission_mode_cli,
-        dangerously_skip_permissions=dangerously,
+    # The loose default is scoped to the INTERACTIVE launch — "the user typed
+    # clawcodex in a terminal". `--print`/headless keeps `default` because CI
+    # and the Harbor eval harness drive it, and silently altering benchmark runs
+    # is not acceptable. A persisted `permissions.defaultMode` still applies to
+    # both, so an explicit user choice is never honored on one surface and
+    # ignored on the other.
+    #
+    # "not --print" is NOT sufficient: a TTY check is what makes "a human is
+    # sitting there" true. Without it any piped/automated launch that merely
+    # omits -p would take the loose floor — and `_gate_folder_trust` grants
+    # trust implicitly on non-TTY stdin, so nothing else would stop it either.
+    interactive = (
+        not bool(getattr(args, 'print', False))
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
     )
 
-    # TS isBypassPermissionsModeAvailable (permissionSetup.ts:941-946):
-    # (bypass-requested OR allow-key) AND NOT disabled. The negative guard was
-    # dropped in the port → an operator's disableBypassPermissionsMode lockdown
-    # was silently ignored (critic C12, a live fail-open). A disable overrides
-    # even an explicit --dangerously-skip-permissions, matching TS's
-    # unconditional `&& !settingsDisableBypassPermissionsMode`.
-    is_bypass_available = (
-        dangerously
-        or allow_dangerously
-        or has_allow_bypass_permissions_mode()
-    ) and not is_bypass_permissions_mode_disabled()
+    mode, is_bypass_available, bypass_selectable = resolve_interactive_permission_state(
+        permission_mode_cli=permission_mode_cli,
+        dangerously_skip_permissions=dangerously,
+        allow_dangerously_skip_permissions=allow_dangerously,
+        implicit_full_access=interactive,
+    )
 
     # Stash on args so downstream entrypoints don't need to re-derive.
     args._resolved_permission_mode = mode
     args._resolved_is_bypass_available = is_bypass_available
+    args._resolved_bypass_selectable = bypass_selectable
 
     if dangerously or allow_dangerously:
         _logging.getLogger("clawcodex.permissions").info(

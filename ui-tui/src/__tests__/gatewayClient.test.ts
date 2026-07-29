@@ -296,28 +296,35 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(last('session.stats')).toBeUndefined()
   })
 
-  it('confirms the applied mode from the server reply on /mode', async () => {
-    const p = gw.request('slash.exec', { command: 'mode acceptEdits' })
-    await replyToControl('set_permission_mode', { mode: 'acceptEdits', ok: true })
-    await expect(p).resolves.toEqual({ output: 'Permission mode: acceptEdits.', type: 'exec' })
-  })
-
-  it('treats bare /mode as a no-op query, not an empty set', async () => {
-    // No arg → must NOT send an empty mode the server would reject; report
-    // unchanged instead (the pre-hardening behavior).
-    const p = gw.request('slash.exec', { command: 'mode' })
-    const r: any = await p
-    expect(r).toEqual({ output: 'Permission mode: (unchanged).', type: 'exec' })
-    // And it must not have hit the backend at all.
-    expect(stdinFrames().some(f => f.request?.subtype === 'set_permission_mode')).toBe(false)
-  })
+  // `/mode` is gone — `/permissions` replaced it as a LOCAL slash command
+  // (app/slash/commands/session.ts), so dispatchSlash no longer has a case for
+  // either name. What remains on the gateway is the RPC that command uses.
 
   it('reflects the server rejection through config.set permission_mode', async () => {
-    // The settings-panel write path must not report success when the server
-    // refuses (bypassPermissions gated on availability).
+    // The write path must not report success when the server refuses (Full
+    // Access is gated on selectability), and must hand back the REASON so
+    // /permissions can print it rather than a generic failure.
     const p = gw.request('config.set', { key: 'permission_mode', value: 'bypassPermissions' })
     await replyToControl('set_permission_mode', { error: 'not available', ok: false })
-    await expect(p).resolves.toEqual({ ok: false })
+    await expect(p).resolves.toMatchObject({ error: 'not available', ok: false })
+  })
+
+  it('returns the applied mode from config.set permission_mode', async () => {
+    // /permissions badges `mode` from the reply, not the arg it sent.
+    const p = gw.request('config.set', { key: 'permission_mode', value: 'acceptEdits' })
+    await replyToControl('set_permission_mode', { mode: 'acceptEdits', ok: true, persisted: true })
+    await expect(p).resolves.toMatchObject({ mode: 'acceptEdits', ok: true, persisted: true })
+  })
+
+  it('forwards the persist flag on config.set permission_mode', async () => {
+    // persist is what makes a deliberate down-shift to "Ask for approval"
+    // survive relaunch; it must reach the control request, not be dropped.
+    void gw.request('config.set', { key: 'permission_mode', persist: true, value: 'default' })
+    await vi.waitFor(() => {
+      const f = stdinFrames().find(x => x.request?.subtype === 'set_permission_mode')
+
+      expect(f?.request?.persist).toBe(true)
+    })
   })
 
   it('routes config.set logoColor to the set_logo_color control and echoes the value', async () => {
@@ -386,21 +393,6 @@ describe('GatewayClient NDJSON adapter', () => {
       ok: false
     })
     await expect(p).rejects.toThrow("model 'm' expects provider 'other' but this session is on 'deepseek'")
-  })
-
-  it('surfaces the server rejection when /mode bypassPermissions is unavailable', async () => {
-    // The server gates bypassPermissions on availability (same guard as the
-    // Shift+Tab cycle) — the client must show the refusal, not pretend the
-    // mode changed.
-    const p = gw.request('slash.exec', { command: 'mode bypassPermissions' })
-    await replyToControl('set_permission_mode', {
-      error: 'bypassPermissions is not available in this session',
-      ok: false
-    })
-    const r: any = await p
-    expect(r.type).toBe('exec')
-    expect(r.output).toContain('not available')
-    expect(r.output).not.toContain('Permission mode:')
   })
 
   it('dispatches an unknown slash as a backend workflow command (send)', async () => {
@@ -538,12 +530,12 @@ describe('GatewayClient NDJSON adapter', () => {
       ok: true
     })
     const r = await p
-    expect(r.hints['/mode']).toBe('[default|plan|acceptEdits|dontAsk|bypassPermissions]')
     expect(r.hints['/deep-research']).toBe('<question>')
     // Names shadowed by TUI-local commands carry no gateway hint — the local
     // registry's argumentHint is the truthful one (dispatch order).
     expect(r.hints['/compact']).toBeUndefined()
     expect(r.hints['/model']).toBeUndefined()
+    expect(r.hints['/permissions']).toBeUndefined()
   })
 
   it('skills.manage list groups backend skills by category', async () => {

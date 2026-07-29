@@ -14,7 +14,11 @@ from .updates import apply_permission_update
 from .types import PermissionUpdateSetMode
 
 
-def get_next_permission_mode(context: ToolPermissionContext) -> PermissionMode:
+def get_next_permission_mode(
+    context: ToolPermissionContext,
+    *,
+    can_select_bypass: bool = False,
+) -> PermissionMode:
     """Return the next mode when the user presses Shift+Tab.
 
     Mirrors ``getNextPermissionMode`` in
@@ -24,11 +28,22 @@ def get_next_permission_mode(context: ToolPermissionContext) -> PermissionMode:
 
     - ``default`` → ``acceptEdits``
     - ``acceptEdits`` → ``plan``
-    - ``plan`` → ``bypassPermissions`` (when available) else ``default``
+    - ``plan`` → ``bypassPermissions`` (when reachable) else ``default``
     - ``bypassPermissions`` → ``default``
     - ``dontAsk`` / ``auto`` / ``bubble`` → ``default`` (escape hatch — these
       modes are not part of the user-facing cycle but we still need a defined
       transition so Shift+Tab never strands the user.)
+
+    ``can_select_bypass`` is the agent-server's ``bypass_selectable``: whether
+    ``/permissions`` may choose Full Access. It is a SECOND way to reach the
+    bypass stop, because the sessions that default to Full Access deliberately
+    leave ``is_bypass_permissions_mode_available`` False (that flag also relaxes
+    plan mode). Without it, a default session's very first Shift+Tab dropped out
+    of Full Access with no way back through the same key — while the footer
+    badge kept advertising "(shift+tab to cycle)".
+
+    Reaching bypass this way sets the MODE only; availability is untouched, so a
+    later ``plan`` still restrains.
     """
     mode = context.mode
     if mode == "default":
@@ -36,7 +51,7 @@ def get_next_permission_mode(context: ToolPermissionContext) -> PermissionMode:
     if mode == "acceptEdits":
         return "plan"
     if mode == "plan":
-        if context.is_bypass_permissions_mode_available:
+        if context.is_bypass_permissions_mode_available or can_select_bypass:
             return "bypassPermissions"
         return "default"
     if mode == "bypassPermissions":

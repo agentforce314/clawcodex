@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, lobster, LOBSTER_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { levelForMode } from '../lib/permissionLevels.js'
 import { flat } from '../lib/text.js'
 import { getWorktreeSession } from '../lib/worktree.js'
 import type { Theme } from '../theme.js'
@@ -196,6 +197,9 @@ const MAX_USERNAME_LENGTH = 20
 // Row labels. Kept as constants because the width budgets are measured off them.
 const MODEL_LABEL = 'Model '
 const PATH_LABEL = 'Path '
+const PERMS_LABEL = 'Perms '
+/** Names the command that changes it — the row doubles as discoverability. */
+const PERMS_HINT = ' · /permissions'
 /** Columns between the top-left corner and the title. */
 const TITLE_OFFSET = 3
 
@@ -365,7 +369,24 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
   const rawCwd = info.cwd || process.cwd()
   const cwdLine = truncatePath(rawCwd, MAX_LEFT_WIDTH - LEFT_COLUMN_SLACK - PATH_LABEL.length)
 
-  const leftW = optimalLeftWidth([welcome, `${MODEL_LABEL}${modelLine}`, `${PATH_LABEL}${cwdLine}`], heroW)
+  // Off-ladder modes (plan/dontAsk/auto) have no level, so they render under
+  // their raw name rather than being mislabeled as one of the three — but they
+  // still render. Omitting them hid the case that matters most: a repository
+  // settings file may force `dontAsk`, which DENIES everything that would
+  // prompt, and the composer badge (the only other indicator) hides while the
+  // user types. A user whose agent silently refuses every action needs
+  // something on screen to trace it to.
+  const startLevel = levelForMode(info.permission_mode)
+  const permsLabel = startLevel?.label ?? info.permission_mode ?? ''
+  const permsLine = permsLabel ? `${PERMS_LABEL}${permsLabel}${PERMS_HINT}` : ''
+
+  const leftW = optimalLeftWidth(
+    // The perms row is in the sizing set, not just rendered into it: sized off
+    // the other rows it truncated to "…/permission…", which is exactly the row
+    // that must stay legible now that Full Access is the default.
+    [welcome, `${MODEL_LABEL}${modelLine}`, `${PATH_LABEL}${cwdLine}`, permsLine],
+    heroW
+  )
   const wide = fitsHorizontal(cols, leftW)
   // Stacked: the column IS the interior (border + paddingX = BORDER_PADDING).
   // Flooring this at MIN_RIGHT_WIDTH would overflow a narrow box — that floor
@@ -602,6 +623,30 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
         <Text color={t.color.muted}>{PATH_LABEL}</Text>
         <Text color={t.color.muted}>{shownCwd}</Text>
       </Text>
+
+      {/* Launch-time permission level. Worth a row of its own because full
+          access is the default: the composer badge is the LIVE indicator but
+          hides while the user types (composerFooter suppressHint), so this
+          states it once, unmissably, and names the command that changes it.
+          Like Model above, this is a committed transcript row the renderer
+          never re-emits — it describes the session's STARTING state and does
+          not follow a later /permissions change; the badge is what tracks
+          "right now". */}
+      {permsLabel && (
+        <Text wrap="truncate-end">
+          <Text color={t.color.muted}>{PERMS_LABEL}</Text>
+          <Text
+            color={
+              info.permission_mode === 'bypassPermissions' || info.permission_mode === 'dontAsk'
+                ? t.color.error
+                : t.color.accent
+            }
+          >
+            {permsLabel}
+          </Text>
+          <Text color={t.color.muted}>{PERMS_HINT}</Text>
+        </Text>
+      )}
 
       {worktree && (
         <Text wrap="truncate-end">

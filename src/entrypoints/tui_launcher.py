@@ -57,7 +57,11 @@ def run_tui_launcher(argv: list[str]) -> int:
     parser.add_argument("--effort", default=None,
                         choices=("low", "medium", "high", "xhigh", "max"),
                         help="Reasoning effort — seeds the session's /effort level")
-    parser.add_argument("--permission-mode", default="default", dest="permission_mode")
+    # default=None (not "default") so "flag absent" is distinguishable from an
+    # explicit `--permission-mode default`: the former gets the loose interactive
+    # floor, the latter is an explicit request for prompts. src/cli.py's parser
+    # already uses None.
+    parser.add_argument("--permission-mode", default=None, dest="permission_mode")
     parser.add_argument(
         "--dangerously-skip-permissions", action="store_true",
         dest="dangerously_skip_permissions",
@@ -67,8 +71,8 @@ def run_tui_launcher(argv: list[str]) -> int:
     parser.add_argument(
         "--allow-dangerously-skip-permissions", action="store_true",
         dest="allow_dangerously_skip_permissions",
-        help="Make bypassPermissions available (Shift+Tab / /mode) without "
-             "starting in it.",
+        help="Make bypassPermissions available (Shift+Tab / /permissions) "
+             "without starting in it.",
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
@@ -94,31 +98,32 @@ def run_tui_launcher(argv: list[str]) -> int:
         return 2
 
     # Same resolution the default `clawcodex` entry runs in
-    # src/cli.py::_resolve_permission_state — safety gate first, then
-    # flag > --permission-mode priority, then availability.
+    # src/cli.py::_resolve_permission_state — one shared resolver so the two
+    # interactive entrypoints cannot drift.
     from src.permissions.dangerous_safety import (
         enforce_dangerous_skip_permissions_safety,
     )
-    from src.permissions.modes import (
-        has_allow_bypass_permissions_mode,
-        initial_permission_mode_from_cli,
-    )
+    from src.permissions.modes import resolve_interactive_permission_state
 
     dangerously = bool(args.dangerously_skip_permissions)
     allow_dangerously = bool(args.allow_dangerously_skip_permissions)
     enforce_dangerous_skip_permissions_safety(
         bypass_requested=dangerously or allow_dangerously,
     )
-    mode = initial_permission_mode_from_cli(
+    # --print-connect starts a listening agent-server, prints a token, and waits
+    # for a remote client: nobody is at the terminal, so the "the user typed
+    # clawcodex and is sitting there" premise behind the loose default does not
+    # hold. That surface stays opt-in via the explicit flags. Same TTY reasoning
+    # as src/cli.py::_resolve_permission_state.
+    mode, is_bypass_available, bypass_selectable = resolve_interactive_permission_state(
         permission_mode_cli=args.permission_mode,
         dangerously_skip_permissions=dangerously,
+        allow_dangerously_skip_permissions=allow_dangerously,
+        cwd=args.workspace,
+        implicit_full_access=(
+            not args.print_connect and sys.stdin.isatty() and sys.stdout.isatty()
+        ),
     )
-    # ... AND NOT disabled (critic C12 — the dropped negative guard;
-    # an operator lockdown must override even --dangerously-skip-permissions).
-    from src.permissions.modes import is_bypass_permissions_mode_disabled
-    is_bypass_available = (
-        dangerously or allow_dangerously or has_allow_bypass_permissions_mode()
-    ) and not is_bypass_permissions_mode_disabled()
 
     # --worktree: the trust gate already ran in cli.py::_run_tui_subcommand
     # (against the original cwd) before this launcher was invoked. Create or
@@ -148,6 +153,7 @@ def run_tui_launcher(argv: list[str]) -> int:
     if args.print_connect:
         args.permission_mode = mode
         args.is_bypass_available = is_bypass_available
+        args.bypass_selectable = bypass_selectable
         if worktree_session is not None:
             # run_agent_server_subcommand runs IN THIS process; exporting the
             # session here is exactly how the server's worktree controls see
@@ -160,6 +166,7 @@ def run_tui_launcher(argv: list[str]) -> int:
         effort=args.effort,
         permission_mode=mode,
         is_bypass_available=is_bypass_available,
+        bypass_selectable=bypass_selectable,
         workspace=args.workspace,
         tui_dir=args.tui_dir,
         worktree=worktree_session,
@@ -173,6 +180,7 @@ def launch_ink_tui(
     effort: str | None = None,
     permission_mode: str = "default",
     is_bypass_available: bool = False,
+    bypass_selectable: bool = False,
     workspace: str | None = None,
     tui_dir: str | None = None,
     worktree=None,
@@ -190,6 +198,12 @@ def launch_ink_tui(
     agent-server, which owns the Shift+Tab cycle and set_permission_mode
     guards. Without it, availability resolved by the CLI was silently dropped
     and bypass could never be reached at runtime.
+
+    ``bypass_selectable`` is the DIFFERENT, weaker capability that lets
+    ``/permissions`` choose Full Access. It is deliberately not the same flag:
+    ``is_bypass_available`` also relaxes **plan mode** (``check.py``
+    ``should_bypass``), so setting it just to make the picker work would turn
+    ``/plan`` into full access for every session.
     """
     args = SimpleNamespace(
         provider=provider,
@@ -197,6 +211,7 @@ def launch_ink_tui(
         effort=effort,
         permission_mode=permission_mode,
         is_bypass_available=is_bypass_available,
+        bypass_selectable=bypass_selectable,
         workspace=workspace,
         tui_dir=tui_dir,
         print_connect=False,
@@ -259,8 +274,13 @@ def _agent_server_cmd(args) -> list[str]:
     if getattr(args, "is_bypass_available", False):
         # Availability only — the launch mode above decides whether the
         # session STARTS in bypass; this keeps bypass reachable via
-        # Shift+Tab / /mode either way.
+        # Shift+Tab / /permissions either way.
         cmd += ["--allow-dangerously-skip-permissions"]
+    if getattr(args, "bypass_selectable", False):
+        # The weaker capability: /permissions may CHOOSE Full Access. Kept
+        # separate from availability above because that one also relaxes plan
+        # mode; see launch_ink_tui's docstring.
+        cmd += ["--allow-select-bypass"]
     if args.provider:
         cmd += ["--provider", args.provider]
     if args.model:
@@ -316,6 +336,8 @@ def _print_connect(args) -> int:
         "--permission-mode", args.permission_mode,
         *(["--allow-dangerously-skip-permissions"]
           if getattr(args, "is_bypass_available", False) else []),
+        *(["--allow-select-bypass"]
+          if getattr(args, "bypass_selectable", False) else []),
         *(["--provider", args.provider] if args.provider else []),
         *(["--model", args.model] if args.model else []),
         *(["--effort", args.effort] if getattr(args, "effort", None) else []),

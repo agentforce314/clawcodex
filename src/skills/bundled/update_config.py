@@ -63,7 +63,8 @@ Model/provider selection and related runtime knobs live under the `"settings"` k
 - `allow` / `deny` / `ask` are arrays of **rule strings** — the enforced permission set (read at startup).
 - Rule syntax: `Tool` alone (e.g. `Read`) matches all uses of that tool; `Tool(specifier)` scopes it. For `Bash`, `Bash(cmd:*)` is a prefix match (`Bash(git:*)` matches `git status`, `git commit`, …); `Bash(npm run test)` is exact. For file tools, `Edit(src/**)` / `Write(*.env)` match by path glob.
 - `additionalWorkingDirectories` (a **top-level** list of path strings) grants access to paths outside the workspace root — this is the key the port reads at startup (NOT a `permissions.additionalDirectories` key).
-- The permission MODE is `default`, `plan`, `acceptEdits`, `bypassPermissions`, or `dontAsk`, but set it via the `--permission-mode` flag or the `/mode` command — a `defaultMode` key is not yet read back at startup, so writing it to settings.json has no effect today.
+- `permissions.defaultMode` sets the mode a session STARTS in: `default`, `plan`, `acceptEdits`, `bypassPermissions`, or `dontAsk`. It IS read at startup (from `~/.clawcodex/settings.json`, `.clawcodex/settings{,.local}.json`, and managed policy), and it is what the `/permissions` command writes when the user picks a level. `--permission-mode` and `--dangerously-skip-permissions` are per-run overrides that outrank it without rewriting it. Interactive sessions with none of these set start in `bypassPermissions` (Full Access).
+- A **committable** project `settings.json` may only TIGHTEN `defaultMode` — a value looser than what would otherwise apply is ignored, so a cloned repo cannot widen the reader's permissions. `settings.local.json` (gitignored) and the user file are honored in either direction.
 
 ## Environment variables (`.clawcodex/settings.json`)
 

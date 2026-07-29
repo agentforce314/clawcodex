@@ -454,7 +454,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Switch the model', name: '/model' },
   { desc: 'Set the output style', hint: '[<name>]', name: '/output-style' },
   { desc: 'Change the startup logo color scheme', name: '/logo' },
-  { desc: 'Set the permission mode', hint: '[default|plan|acceptEdits|dontAsk|bypassPermissions]', name: '/mode' },
+  { desc: 'Choose what clawcodex is allowed to do', name: '/permissions' },
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
   { desc: 'Show the total cost and duration of the current session', name: '/cost' },
@@ -736,10 +736,20 @@ export class GatewayClient extends EventEmitter {
 
         if (key === 'permission_mode') {
           // The server can reject this (bypassPermissions is gated on
-          // availability); reflect its verdict so a settings-panel write
-          // doesn't falsely report success while the server refused.
-          return this.controlQuery('set_permission_mode', { mode: value })
-            .then(r => ({ ok: (r as any)?.ok !== false } as T))
+          // selectability); reflect its FULL verdict — `/permissions` needs the
+          // applied mode and the rejection text, not just a boolean, so a
+          // refused set can neither flip the badge nor report success.
+          return this.controlQuery('set_permission_mode', { mode: value, persist: Boolean(p.persist) })
+            .then(r => {
+              const res = (r ?? {}) as { error?: string; mode?: string; ok?: boolean; persisted?: boolean }
+
+              return {
+                error: res.error,
+                mode: res.mode,
+                ok: res.ok !== false,
+                persisted: res.persisted
+              } as T
+            })
         }
 
         if (key === 'model') {return this.setModel(String(value ?? '')) as Promise<T>}
@@ -1329,28 +1339,10 @@ export class GatewayClient extends EventEmitter {
         return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.${note}`)
       }
 
-      case 'mode': {
-        // Bare `/mode` is a no-op query, not a set — don't send an empty mode
-        // (the server would reject it as invalid). Matches the prior behavior.
-        if (arg == null || arg.trim() === '') {return out('Permission mode: (unchanged).')}
-
-        // The server validates the mode and gates bypassPermissions on
-        // availability (same guard as the Shift+Tab cycle) — surface its
-        // verdict instead of echoing the arg as if it took effect.
-        const r = (await this.controlQuery('set_permission_mode', { mode: arg.trim() })) as any
-
-        if (r && r.ok === false) {return out(`mode: ${r.error ?? 'invalid mode'}`)}
-
-        // Only badge the mode the server actually confirmed — a rejected set
-        // must not flip the composer's permission-mode indicator.
-        const mode = typeof r?.mode === 'string' ? r.mode : arg.trim()
-
-        if (mode) {
-          this.publish({ payload: { mode: String(mode) }, type: 'permission.mode' })
-        }
-
-        return out(`Permission mode: ${mode}.`)
-      }
+      // `/permissions` (formerly `/mode`) is a LOCAL slash command
+      // (app/slash/commands/session.ts) — createSlashHandler resolves the local
+      // registry first and returns, so a gateway case here would be unreachable.
+      // The RPC it uses is `config.set{key:'permission_mode'}` above.
 
       case 'model':
         await this.controlQuery('set_model', { model: arg })

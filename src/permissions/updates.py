@@ -357,9 +357,11 @@ def persist_permission_update(
         permissions["additionalDirectories"] = [d for d in existing if d not in target]
 
     elif isinstance(update, PermissionUpdateSetMode):
-        # Write-only today: setup_permissions does not read defaultMode
-        # back at startup (mode comes from CLI/config). Asymmetry noted in
-        # the C1 review; wire the read side with the C8 mode-gate work.
+        # The read side is :func:`src.permissions.modes.read_settings_default_mode`,
+        # which the interactive launchers consult so `/permissions` choices
+        # survive a relaunch. (This was write-only for a long time — the C1
+        # review's noted asymmetry — so anything asserting "defaultMode has no
+        # effect" is stale.)
         permissions["defaultMode"] = update.mode
 
     return _write_json(path, settings)

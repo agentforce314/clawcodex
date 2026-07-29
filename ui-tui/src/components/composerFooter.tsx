@@ -22,10 +22,13 @@ interface ModeBadge {
 
 // Original PermissionMode.ts symbols/titles: ⏸ (U+23F8) for plan, ▶▶
 // (U+25B6 ×2) for the rest.
-const MODE_BADGES: Record<string, ModeBadge> = {
-  acceptEdits: { color: t => t.color.autoAccept, label: 'accept edits on', symbol: '▶▶' },
+// Labels track the /permissions picker's vocabulary (lib/permissionLevels.ts)
+// so the badge and the picker never name the same mode two different ways.
+// `plan` / `dontAsk` / `auto` have no picker row and keep their own wording.
+export const MODE_BADGES: Record<string, ModeBadge> = {
+  acceptEdits: { color: t => t.color.autoAccept, label: 'approve for me on', symbol: '▶▶' },
   auto: { color: t => t.color.warn, label: 'auto mode on', symbol: '▶▶' },
-  bypassPermissions: { color: t => t.color.error, label: 'bypass permissions on', symbol: '▶▶' },
+  bypassPermissions: { color: t => t.color.error, label: 'full access on', symbol: '▶▶' },
   dontAsk: { color: t => t.color.error, label: "don't ask on", symbol: '▶▶' },
   plan: { color: t => t.color.planMode, label: 'plan mode on', symbol: '⏸' }
 }

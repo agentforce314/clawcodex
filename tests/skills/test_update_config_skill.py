@@ -9,6 +9,7 @@ internal keys.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -79,12 +80,20 @@ class TestPortCorrectShapes:
         assert "additionalWorkingDirectories" in p
         assert '"additionalDirectories"' not in p  # never as a JSON key
 
-    def test_default_mode_caveated_as_write_only(self):
-        # critic MA3: defaultMode is not read back at startup — must be caveated,
-        # not taught as a functional settings.json key.
+    def test_default_mode_is_taught_as_functional(self):
+        # The old caveat ("not yet read back at startup") became FALSE when
+        # `/permissions` started persisting the user's chosen level and the
+        # launchers started reading it. Teaching the stale caveat would send
+        # users to a flag when the settings key now works.
         p = UPDATE_CONFIG_PROMPT
-        assert "--permission-mode" in p and "/mode" in p
-        assert "not yet read back at startup" in p
+        assert "defaultMode" in p
+        assert "not yet read back at startup" not in p
+        assert "/permissions" in p
+        # The renamed command. Word-boundary: `/model` legitimately appears.
+        assert not re.search(r"/mode\b", p)
+        # The direction rule matters more than the key: a cloned repo must not
+        # be able to widen the reader's permissions.
+        assert "TIGHTEN" in p
 
     def test_permission_example_rules_parse_with_semantics(self):
         # critic N1: assert the SEMANTICS (the parser never returns None, so the

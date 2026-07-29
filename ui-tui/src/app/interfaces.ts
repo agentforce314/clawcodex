@@ -144,6 +144,7 @@ export interface OverlayState {
   memoryPicker: boolean
   modelPicker: boolean
   pager: null | PagerState
+  permissionsPicker: boolean
   petPicker: boolean
   planApproval: null | PlanApprovalReq
   pluginsHub: boolean
@@ -417,6 +418,7 @@ export interface AppLayoutActions {
   onLogoSelect: (value: string) => void
   onMemorySelect: (path: string) => void
   onModelSelect: (value: string) => void
+  onPermissionsSelect: (levelKey: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
 }
@@ -484,6 +486,7 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
+  onPermissionsSelect: (levelKey: string) => void
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void

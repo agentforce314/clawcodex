@@ -254,8 +254,15 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  /** Server-side rejection reason (permission_mode: invalid / unavailable). */
+  error?: string
   history_reset?: boolean
   info?: SessionInfo
+  /** permission_mode only: the mode the server actually applied. */
+  mode?: string
+  ok?: boolean
+  /** permission_mode only: whether the choice was written to settings.json. */
+  persisted?: boolean
   value?: string
   warning?: string
 }

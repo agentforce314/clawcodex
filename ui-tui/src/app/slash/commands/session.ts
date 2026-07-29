@@ -12,6 +12,7 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { isLogoPaletteName, LOGO_PALETTE_LABELS, LOGO_PALETTE_NAMES } from '../../../lib/logoPalettes.js'
+import { levelForKey, levelForMode, PERMISSION_LEVEL_KEYS } from '../../../lib/permissionLevels.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -418,6 +419,62 @@ export const sessionCommands: SlashCommand[] = [
             patchUiState({ logoPalette: name })
             // TS-verbatim (logo.tsx onDone).
             ctx.transcript.sys(`Startup logo set to ${LOGO_PALETTE_LABELS[name]}. Visible on next launch.`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['mode'],
+    argumentHint: `[${PERMISSION_LEVEL_KEYS.join('|')}]`,
+    help: 'choose what clawcodex is allowed to do',
+    name: 'permissions',
+    usage: `/permissions [${PERMISSION_LEVEL_KEYS.join('|')}]`,
+    // Bare /permissions opens the three-level picker (lib/permissionLevels.ts);
+    // an argument applies directly. The arg accepts a level KEY (ask|approve|
+    // full) or a RAW engine mode, so `plan` / `dontAsk` — real modes with no
+    // picker row — stay reachable without one. `mode` is kept as an alias for
+    // the command's former name.
+    //
+    // persist is deliberately LEVEL-only: choosing one of the three is a
+    // standing preference and is written to settings.json, but the raw-mode
+    // escape hatch is session-scoped. Persisting `/permissions plan` would make
+    // every future session start in plan mode, which nobody means by it.
+    //
+    // Keyed off the resolved MODE, not just the key, so `/permissions default`
+    // — the spelling a user copies out of settings.json — is as durable as
+    // `/permissions ask`. Same end state, so it should have the same durability.
+    run: (arg, ctx) => {
+      const raw = arg.trim()
+
+      if (!raw) {
+        return patchOverlayState({ permissionsPicker: true })
+      }
+
+      const level = levelForKey(raw)
+      const mode = level ? level.mode : raw
+      const persist = Boolean(level ?? levelForMode(mode))
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'permission_mode', persist, value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (r.ok === false) {
+              return ctx.transcript.sys(r.error ?? `Could not set permissions to ${mode}.`)
+            }
+
+            // Badge only what the server confirmed — a rejected set must not
+            // flip the composer indicator.
+            const applied = r.mode ?? mode
+
+            patchUiState({ permissionMode: applied })
+
+            const appliedLevel = levelForMode(applied)
+
+            ctx.transcript.sys(
+              appliedLevel ? `Permissions: ${appliedLevel.label}.` : `Permission mode: ${applied}.`
+            )
           })
         )
         .catch(ctx.guardedErr)

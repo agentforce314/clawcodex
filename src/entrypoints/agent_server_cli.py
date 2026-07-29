@@ -88,8 +88,8 @@ def _sanitize_agent_server_mode(args: Any, dangerously: bool) -> None:
 
     The agent-server subcommand sets the mode STRAIGHT into AgentServerConfig
     (it does NOT route through ``initial_permission_mode_from_cli``, so that
-    function's candidate-skip doesn't apply). ``check.py:456`` bypasses on the
-    mode ALONE, so BOTH ``--dangerously-skip-permissions`` and a directly-passed
+    function's candidate-skip doesn't apply). ``check.py``'s ``should_bypass``
+    bypasses on the mode ALONE, so BOTH ``--dangerously-skip-permissions`` and a directly-passed
     ``--permission-mode bypassPermissions`` must be sanitized here or they defeat
     a managed ``disableBypassPermissionsMode: "disable"`` lockdown. Downgrade
     -and-warn (TS ``continue`` semantics), never a hard error."""
@@ -155,8 +155,16 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     parser.add_argument(
         "--allow-dangerously-skip-permissions", action="store_true",
         dest="allow_dangerously_skip_permissions",
-        help="Make bypassPermissions AVAILABLE (Shift+Tab / /mode) without "
-             "starting in it.",
+        help="Make bypassPermissions AVAILABLE (Shift+Tab / /permissions) "
+             "without starting in it. Also relaxes plan mode.",
+    )
+    parser.add_argument(
+        "--allow-select-bypass", action="store_true",
+        dest="allow_select_bypass",
+        help="Let /permissions CHOOSE Full Access. Weaker than "
+             "--allow-dangerously-skip-permissions: it does not relax plan "
+             "mode and is not inherited as bypass availability. Set by the "
+             "interactive launchers; this server is a carrier, not a resolver.",
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
@@ -216,7 +224,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     # bypass AVAILABILITY. Flags always count. Trusted settings
     # (permissions.allowBypassPermissionsMode) count only on the
     # single-session --stdio transport: this server serves exactly the
-    # operator who launched it, so their own user/local settings apply. On
+    # operator who launched it, so their own user settings apply. On
     # the multi-session --http transport, folding host settings in would
     # unlock bypass for every remote client — resolve that per-launch
     # upstream and pass a flag instead.
@@ -232,6 +240,24 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         if is_bypass_permissions_mode_disabled():
             is_bypass_available = False
 
+    # bypass SELECTABILITY — whether /permissions may choose Full Access. This
+    # server is a CARRIER, not a resolver: the value is decided once at the
+    # interactive launch boundary (src/cli.py, tui_launcher) and forwarded, never
+    # re-derived from settings here. Re-reading settings would let the --http
+    # server host's own config unlock Full Access for every remote client
+    # session (the same hazard documented at agent_server._build_runtime).
+    # Availability implies selectability; a lockdown revokes both.
+    #
+    # Bounded claim: this keeps SELECTABILITY off the host's settings. It does
+    # not isolate the starting MODE — the launcher that spawned this server
+    # already resolved that from the host's own `permissions.defaultMode`, so a
+    # multi-tenant deployment still inherits the host's configured mode.
+    bypass_selectable = bool(getattr(args, "allow_select_bypass", False)) or is_bypass_available
+    if bypass_selectable and not is_bypass_available:
+        from src.permissions.modes import is_bypass_permissions_mode_disabled
+        if is_bypass_permissions_mode_disabled():
+            bypass_selectable = False
+
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
     if args.fallback_model and args.fallback_model == args.model:
@@ -245,6 +271,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         fallback_model=args.fallback_model,
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,
+        bypass_selectable=bypass_selectable,
         max_turns=args.max_turns,
     )
 

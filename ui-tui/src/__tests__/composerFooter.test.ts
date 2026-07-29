@@ -10,7 +10,8 @@ vi.hoisted(() => {
   delete process.env.NO_COLOR
 })
 
-import { ComposerFooter } from '../components/composerFooter.js'
+import { ComposerFooter, MODE_BADGES } from '../components/composerFooter.js'
+import { PERMISSION_LEVELS } from '../lib/permissionLevels.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -76,15 +77,34 @@ describe('ComposerFooter', () => {
     // hint coexists with the badge
     expect(stripAnsi(plan)).toContain('? for shortcuts')
 
+    // Labels track the /permissions level vocabulary (lib/permissionLevels.ts)
+    // so the badge and the picker never name the same mode two ways.
     const accept = footer({ mode: 'acceptEdits' })
 
-    expect(stripAnsi(accept)).toContain('▶▶ accept edits on')
+    expect(stripAnsi(accept)).toContain('▶▶ approve for me on')
     expect(accept).toContain('175;135;255') // autoAccept violet
 
     const bypass = footer({ mode: 'bypassPermissions' })
 
-    expect(stripAnsi(bypass)).toContain('▶▶ bypass permissions on')
+    expect(stripAnsi(bypass)).toContain('▶▶ full access on')
     expect(bypass).toContain('255;107;128') // error red
+  })
+
+  it('names badges with the same labels the /permissions picker shows', () => {
+    // A drifting label here is how a user ends up unable to tell which level
+    // they picked, given full access is the default.
+    //
+    // `default` deliberately has no badge (CC parity: the base mode is the
+    // absence of one), so it is named explicitly rather than skipped by an
+    // `if (badge)` guard — that guard would make this test vacuous the moment
+    // someone deleted a badge.
+    expect(Object.keys(MODE_BADGES).sort()).toContain('acceptEdits')
+    expect(Object.keys(MODE_BADGES).sort()).toContain('bypassPermissions')
+    expect(MODE_BADGES.default).toBeUndefined()
+
+    for (const level of PERMISSION_LEVELS.filter(l => l.mode !== 'default')) {
+      expect(MODE_BADGES[level.mode]!.label).toBe(`${level.label.toLowerCase()} on`)
+    }
   })
 
   it('shows bash-mode hint in pink when the input is in ! mode', () => {
