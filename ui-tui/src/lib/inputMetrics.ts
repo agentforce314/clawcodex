@@ -191,6 +191,24 @@ export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: s
   return Math.max(20, available)
 }
 
+/** Scrollbar gutter beside the transcript: `marginLeft={1}` + `width={1}` on
+ *  the `TranscriptScrollbar` wrapper in appLayout. Always reserved — the
+ *  scrollbar renders a `width={1}` spacer even when it has nothing to show. */
+export const TRANSCRIPT_SCROLLBAR_GUTTER = 2
+/** `paddingX={1}` on the transcript's inner column, both sides. */
+export const TRANSCRIPT_PADDING_X = 2
+
+/** Width actually available to a full-bleed transcript child (the intro banner
+ *  and session panel), i.e. the ScrollBox interior.
+ *
+ *  Not the same as `stableComposerColumns`, which budgets the *composer's* text
+ *  area and subtracts the prompt prefix. Passing `totalCols - 2` here — the
+ *  composer's reserve rather than the transcript's — makes a boxed child two
+ *  columns too wide, which silently clips its right border off the screen. */
+export function transcriptPanelWidth(totalCols: number) {
+  return Math.max(1, totalCols - TRANSCRIPT_SCROLLBAR_GUTTER - TRANSCRIPT_PADDING_X)
+}
+
 export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {
   // Physical render/wrap width. Always reserve outer composer padding and
   // prompt prefix. Only reserve the transcript scrollbar gutter when the

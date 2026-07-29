@@ -14,7 +14,8 @@ import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
   inputVisualHeight,
-  stableComposerColumns
+  stableComposerColumns,
+  transcriptPanelWidth
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
@@ -124,13 +125,13 @@ const TranscriptPane = memo(function TranscriptPane({
 
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
-                  <Banner logoPalette={ui.logoPalette} maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                  <Banner logoPalette={ui.logoPalette} maxWidth={transcriptPanelWidth(composer.cols)} t={ui.theme} />
 
                   {row.msg.info && (
                     <SessionPanel
                       info={row.msg.info}
                       logoPalette={ui.logoPalette}
-                      maxWidth={Math.max(1, composer.cols - 2)}
+                      maxWidth={transcriptPanelWidth(composer.cols)}
                       sid={ui.sid}
                       t={ui.theme}
                     />

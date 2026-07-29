@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { stableComposerColumns, transcriptBodyWidth } from '../lib/inputMetrics.js'
+import { stableComposerColumns, transcriptBodyWidth, transcriptPanelWidth } from '../lib/inputMetrics.js'
 import { composerPromptText } from '../lib/prompt.js'
 
 describe('Termux composer prompt + width guards', () => {
@@ -29,5 +29,30 @@ describe('Termux composer prompt + width guards', () => {
   it('keeps legacy desktop floor outside Termux mode', () => {
     expect(transcriptBodyWidth(24, 'assistant', '>')).toBe(20)
     expect(transcriptBodyWidth(24, 'user', 'upstr >')).toBe(20)
+  })
+})
+
+describe('transcriptPanelWidth', () => {
+  // The transcript's reserve is NOT the composer's. appLayout used to hand the
+  // intro banner and session panel `composer.cols - 2` — the composer's outer
+  // padding — while the transcript actually gives up 4 columns: a scrollbar
+  // gutter (marginLeft 1 + width 1) plus paddingX on both sides. The boxed
+  // panel was therefore two columns too wide and its right border was clipped
+  // off the screen entirely.
+  it('reserves the scrollbar gutter and the transcript padding', () => {
+    expect(transcriptPanelWidth(100)).toBe(96)
+    expect(transcriptPanelWidth(80)).toBe(76)
+  })
+
+  it('is strictly narrower than the composer reserve it replaced', () => {
+    for (const cols of [40, 60, 100, 200]) {
+      expect(transcriptPanelWidth(cols)).toBeLessThan(cols - 2)
+    }
+  })
+
+  it('never goes below one column', () => {
+    for (const cols of [0, 1, 2, 3, 4, 5]) {
+      expect(transcriptPanelWidth(cols)).toBeGreaterThanOrEqual(1)
+    }
   })
 })

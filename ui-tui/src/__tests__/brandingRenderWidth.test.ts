@@ -1,10 +1,15 @@
 import { PassThrough } from 'stream'
 
-import { renderSync, stringWidth } from '@clawcodex/ink'
+import { Box, renderSync, ScrollBox, stringWidth } from '@clawcodex/ink'
 import React from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { SessionPanel } from '../components/branding.js'
+import {
+  TRANSCRIPT_PADDING_X,
+  TRANSCRIPT_SCROLLBAR_GUTTER,
+  transcriptPanelWidth
+} from '../lib/inputMetrics.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 import type { SessionInfo, Theme } from '../types.js'
@@ -58,7 +63,18 @@ const info = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   ...over
 })
 
-async function boxRows(cols: number, sessionInfo: SessionInfo, theme: Theme = DEFAULT_THEME): Promise<string[]> {
+const boxRows = (cols: number, sessionInfo: SessionInfo, theme: Theme = DEFAULT_THEME) =>
+  render(cols, transcriptPanelWidth(cols), sessionInfo, theme)
+
+/** Same wrapper, but the panel is told a width its container does not have. */
+const boxRowsWithMaxWidth = (cols: number, maxWidth: number) => render(cols, maxWidth, info(), DEFAULT_THEME)
+
+async function render(
+  cols: number,
+  maxWidth: number,
+  sessionInfo: SessionInfo,
+  theme: Theme = DEFAULT_THEME
+): Promise<string[]> {
   Object.defineProperty(process.stdout, 'columns', { configurable: true, value: cols, writable: true })
 
   const stdout = new PassThrough()
@@ -74,12 +90,41 @@ async function boxRows(cols: number, sessionInfo: SessionInfo, theme: Theme = DE
     captured += chunk.toString()
   })
 
-  const instance = renderSync(React.createElement(SessionPanel, { info: sessionInfo, sid: 'a1b2c3d4', t: theme }), {
-    patchConsole: false,
-    stderr: stderr as NodeJS.WriteStream,
-    stdin: stdin as NodeJS.ReadStream,
-    stdout: stdout as NodeJS.WriteStream
-  })
+  // Mirrors appLayout's actual wrapper, NOT the root and NOT a plain Box.
+  //
+  // Both details are load-bearing. Rendering at the root is what let a
+  // two-column overflow pass this file originally. And a plain <Box> stand-in
+  // is not equivalent either: it has flexShrink, so an over-wide child is
+  // quietly shrunk to fit and the bug disappears. ScrollBox constrains its
+  // children instead of being expanded by them, so an over-wide child is
+  // CLIPPED — which is why the right border vanished on screen but not in a
+  // Box-wrapped test.
+  const instance = renderSync(
+    React.createElement(
+      Box,
+      { flexDirection: 'row', height: 40, width: cols },
+      React.createElement(
+        ScrollBox,
+        { flexDirection: 'column', flexGrow: 1, flexShrink: 1 },
+        React.createElement(
+          Box,
+          { flexDirection: 'column', paddingX: TRANSCRIPT_PADDING_X / 2 },
+          React.createElement(SessionPanel, { info: sessionInfo, maxWidth, sid: 'a1b2c3d4', t: theme })
+        )
+      ),
+      React.createElement(Box, {
+        flexShrink: 0,
+        marginLeft: TRANSCRIPT_SCROLLBAR_GUTTER - 1,
+        width: TRANSCRIPT_SCROLLBAR_GUTTER - 1
+      })
+    ),
+    {
+      patchConsole: false,
+      stderr: stderr as NodeJS.WriteStream,
+      stdin: stdin as NodeJS.ReadStream,
+      stdout: stdout as NodeJS.WriteStream
+    }
+  )
 
   try {
     await delay(30)
@@ -90,8 +135,13 @@ async function boxRows(cols: number, sessionInfo: SessionInfo, theme: Theme = DE
     // pass against `undefined`.
     const plain = stripAnsi(captured)
 
-    // Only the box rows; the panel also emits a trailing margin line.
-    return plain.split('\n').filter(line => /^[╭│╰]/.test(line))
+    // Only the box rows; the panel also emits a trailing margin line. The
+    // wrapper's left padding means rows no longer start at column 0.
+    return plain
+      .split('\n')
+      .map(line => line.trimEnd())
+      .filter(line => /[╭│╰]/.test(line))
+      .map(line => line.slice(line.search(/[╭│╰]/)))
   } finally {
     instance.unmount()
     instance.cleanup()
@@ -101,13 +151,14 @@ async function boxRows(cols: number, sessionInfo: SessionInfo, theme: Theme = DE
 const WIDTHS = [34, 40, 60, 72, 88, 96, 100, 140, 200]
 
 describe('header box render width', () => {
-  it.each(WIDTHS)('emits rows exactly %i columns wide', async cols => {
+  it.each(WIDTHS)('fills its container exactly at %i terminal columns', async cols => {
     const rows = await boxRows(cols, info())
 
     expect(rows.length).toBeGreaterThan(0)
 
+    // The container, not the terminal: overflowing it clips the right border.
     for (const row of rows) {
-      expect(stringWidth(row)).toBe(cols)
+      expect(stringWidth(row)).toBe(transcriptPanelWidth(cols))
     }
   })
 
@@ -130,6 +181,27 @@ describe('header box render width', () => {
     }
   })
 
+  // The shipped regression: appLayout passed `composer.cols - 2` (the COMPOSER's
+  // reserve) instead of the transcript's, so the panel believed it had two more
+  // columns than its container had. Combined with an explicit `width={cols}` on
+  // the box, the right border was pushed off screen — the box rendered with a
+  // left edge, a top rule running to the terminal edge, and no `╮`/`│`/`╯`.
+  //
+  // The panel must now survive a caller that over-reports: with no hard width it
+  // stretches to its real container regardless of what it was told.
+  it.each([34, 60, 100, 140])('ignores an over-reported maxWidth at %i columns', async cols => {
+    const rows = await boxRowsWithMaxWidth(cols, cols - 2)
+    const top = rows.find(r => r.startsWith('╭'))
+
+    expect(rows.length).toBeGreaterThan(0)
+    expect(top).toBeDefined()
+    expect(top?.endsWith('╮')).toBe(true)
+
+    for (const row of rows) {
+      expect(stringWidth(row)).toBe(transcriptPanelWidth(cols))
+    }
+  })
+
   // A branded install pushes the title past `cols - 2` at ordinary widths.
   it('degrades a long brand title instead of destroying the top border', async () => {
     const branded: Theme = { ...DEFAULT_THEME, brand: { ...DEFAULT_THEME.brand, name: 'Acme Engineering Assistant' } }
@@ -139,7 +211,7 @@ describe('header box render width', () => {
       const top = rows.find(r => r.startsWith('╭'))
 
       expect(top).toBeDefined()
-      expect(stringWidth(top ?? '')).toBe(cols)
+      expect(stringWidth(top ?? '')).toBe(transcriptPanelWidth(cols))
       expect(top?.endsWith('╮')).toBe(true)
     }
   })
@@ -154,7 +226,7 @@ describe('header box render width', () => {
     expect(rows.length).toBeGreaterThan(0)
 
     for (const row of rows) {
-      expect(stringWidth(row)).toBe(100)
+      expect(stringWidth(row)).toBe(transcriptPanelWidth(100))
     }
   })
 
@@ -164,7 +236,7 @@ describe('header box render width', () => {
     expect(rows.length).toBeGreaterThan(0)
 
     for (const row of rows) {
-      expect(stringWidth(row)).toBe(100)
+      expect(stringWidth(row)).toBe(transcriptPanelWidth(100))
     }
   })
 
@@ -178,7 +250,7 @@ describe('header box render width', () => {
       expect(rows.length).toBeGreaterThan(0)
 
       for (const row of rows) {
-        expect(stringWidth(row)).toBe(100)
+        expect(stringWidth(row)).toBe(transcriptPanelWidth(100))
       }
     }
   })

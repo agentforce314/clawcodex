@@ -387,6 +387,7 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
     [welcome, `${MODEL_LABEL}${modelLine}`, `${PATH_LABEL}${cwdLine}`, permsLine],
     heroW
   )
+
   const wide = fitsHorizontal(cols, leftW)
   // Stacked: the column IS the interior (border + paddingX = BORDER_PADDING).
   // Flooring this at MIN_RIGHT_WIDTH would overflow a narrow box — that floor
@@ -675,10 +676,13 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
       marginBottom={1}
       paddingX={1}
       paddingY={1}
-      // Without this the border stretches to the full terminal while the column
-      // math above is budgeted against `cols` (which honors maxWidth), so the
-      // right column stops short of its own border.
-      width={cols}
+      // Deliberately NO explicit width: the box stretches to its container, so
+      // the right border is wherever the container actually ends. Pinning it to
+      // `cols` instead makes the border a *prediction* of the container width,
+      // and when that prediction was two columns high (the transcript reserves a
+      // scrollbar gutter the composer budget doesn't) the right border was
+      // pushed off screen entirely. `cols` still drives the column split below,
+      // where being slightly off only shifts a truncation point.
     >
       {wide && (
         <Box alignItems="center" flexDirection="column" width={leftW}>
@@ -700,7 +704,10 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
         />
       )}
 
-      <Box flexDirection="column" width={w}>
+      {/* flexGrow so the feed column absorbs the container's *actual* remainder
+          rather than the `w` we predicted; `w` stays the flex basis and the
+          truncation budget. */}
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} width={w}>
         {/* Narrow layout drops the column split; keep the identity block above
             the feed so nothing is lost. */}
         {!wide && (
@@ -722,9 +729,18 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
           </Box>
         ))}
 
-        <Box marginTop={1}>
-          <Text color={t.color.border}>{'─'.repeat(Math.max(1, w))}</Text>
-        </Box>
+        {/* A top-border-only box, not `'─'.repeat(w)`: the column can flex away
+            from `w`, and a repeat-count rule would then under- or overshoot its
+            own column. A border stretches to whatever width the column got. */}
+        <Box
+          borderBottom={false}
+          borderColor={t.color.border}
+          borderLeft={false}
+          borderRight={false}
+          borderStyle="single"
+          borderTop
+          marginTop={1}
+        />
 
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
