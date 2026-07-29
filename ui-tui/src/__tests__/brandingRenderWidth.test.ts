@@ -63,18 +63,16 @@ const info = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   ...over
 })
 
-const boxRows = (cols: number, sessionInfo: SessionInfo, theme: Theme = DEFAULT_THEME) =>
-  render(cols, transcriptPanelWidth(cols), sessionInfo, theme)
-
-/** Same wrapper, but the panel is told a width its container does not have. */
-const boxRowsWithMaxWidth = (cols: number, maxWidth: number) => render(cols, maxWidth, info(), DEFAULT_THEME)
-
-async function render(
+/** `oversizedContainer` drops the scrollbar gutter, reproducing the first paint
+ *  where the ScrollBox has not yet reserved it. */
+async function boxRows(
   cols: number,
-  maxWidth: number,
   sessionInfo: SessionInfo,
-  theme: Theme = DEFAULT_THEME
+  theme: Theme = DEFAULT_THEME,
+  { oversizedContainer = false }: { oversizedContainer?: boolean } = {}
 ): Promise<string[]> {
+  const maxWidth = transcriptPanelWidth(cols)
+  const gutter = oversizedContainer ? 0 : TRANSCRIPT_SCROLLBAR_GUTTER
   Object.defineProperty(process.stdout, 'columns', { configurable: true, value: cols, writable: true })
 
   const stdout = new PassThrough()
@@ -112,11 +110,7 @@ async function render(
           React.createElement(SessionPanel, { info: sessionInfo, maxWidth, sid: 'a1b2c3d4', t: theme })
         )
       ),
-      React.createElement(Box, {
-        flexShrink: 0,
-        marginLeft: TRANSCRIPT_SCROLLBAR_GUTTER - 1,
-        width: TRANSCRIPT_SCROLLBAR_GUTTER - 1
-      })
+      gutter ? React.createElement(Box, { flexShrink: 0, marginLeft: gutter - 1, width: gutter - 1 }) : null
     ),
     {
       patchConsole: false,
@@ -181,22 +175,29 @@ describe('header box render width', () => {
     }
   })
 
-  // The shipped regression: appLayout passed `composer.cols - 2` (the COMPOSER's
-  // reserve) instead of the transcript's, so the panel believed it had two more
-  // columns than its container had. Combined with an explicit `width={cols}` on
-  // the box, the right border was pushed off screen — the box rendered with a
-  // left edge, a top rule running to the terminal edge, and no `╮`/`│`/`╯`.
+  // The regression that made the border invisible in a real terminal.
   //
-  // The panel must now survive a caller that over-reports: with no hard width it
-  // stretches to its real container regardless of what it was told.
-  it.each([34, 60, 100, 140])('ignores an over-reported maxWidth at %i columns', async cols => {
-    const rows = await boxRowsWithMaxWidth(cols, cols - 2)
+  // On the first paint the transcript's ScrollBox has not settled and reports
+  // its full width, WITHOUT the scrollbar gutter its steady-state layout
+  // reserves. A box that sizes to its container therefore renders two columns
+  // too wide, gets clipped, and — because the intro row is committed to
+  // scrollback and never repainted — stays broken until a resize.
+  //
+  // So the panel must hold its own width against a container that is bigger
+  // than the steady-state one. `oversizedContainer` reproduces frame 1 by
+  // omitting the gutter.
+  it.each(WIDTHS)('holds its width when the container is mis-measured at %i columns', async cols => {
+    const rows = await boxRows(cols, info(), DEFAULT_THEME, { oversizedContainer: true })
     const top = rows.find(r => r.startsWith('╭'))
+    const bottom = rows.find(r => r.startsWith('╰'))
 
     expect(rows.length).toBeGreaterThan(0)
     expect(top).toBeDefined()
+    expect(bottom).toBeDefined()
     expect(top?.endsWith('╮')).toBe(true)
+    expect(bottom?.endsWith('╯')).toBe(true)
 
+    // Still the steady-state width, not the container's inflated one.
     for (const row of rows) {
       expect(stringWidth(row)).toBe(transcriptPanelWidth(cols))
     }

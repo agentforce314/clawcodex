@@ -676,13 +676,23 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
       marginBottom={1}
       paddingX={1}
       paddingY={1}
-      // Deliberately NO explicit width: the box stretches to its container, so
-      // the right border is wherever the container actually ends. Pinning it to
-      // `cols` instead makes the border a *prediction* of the container width,
-      // and when that prediction was two columns high (the transcript reserves a
-      // scrollbar gutter the composer budget doesn't) the right border was
-      // pushed off screen entirely. `cols` still drives the column split below,
-      // where being slightly off only shifts a truncation point.
+      // Explicit width, deliberately — do NOT let this box size to its
+      // container.
+      //
+      // On the FIRST paint the transcript's ScrollBox has not settled: it
+      // reports its full width, without the scrollbar gutter its steady-state
+      // layout reserves. A container-sized box therefore renders two columns
+      // wider than the terminal can show and its right border is clipped off
+      // screen, staying that way because the intro row is committed to
+      // scrollback and never repainted — until a resize forces a relayout, at
+      // which point the border appears. That is exactly the "I have to resize
+      // to see the border" symptom.
+      //
+      // `cols` does not have that problem: it comes from `maxWidth`
+      // (transcriptPanelWidth) and process.stdout.columns, both correct on the
+      // first frame. Measured on a real pty: cols=196 on frame 1 at a 200-col
+      // terminal, while the container claimed 198.
+      width={cols}
     >
       {wide && (
         <Box alignItems="center" flexDirection="column" width={leftW}>
