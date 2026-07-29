@@ -11,7 +11,11 @@ PyYAML>=6.0
 pathspec>=0.11
 websockets>=14.0
 httpx-sse>=0.4
-mcp>=1.27.0
+# Capped below 2.0: mcp 2.0.0 removed ``mcp.client.websocket``, which
+# src/services/mcp/transport.py imports. See the longer note in pyproject.toml.
+# THIS is the file CI installs from (ci.yml -> requirements.dev.txt -> here);
+# pyproject.toml is packaging metadata only, so both need the cap.
+mcp>=1.27.0,<2
 Pillow>=10.0
 markdownify>=0.11
 pydantic>=2.0

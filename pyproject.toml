@@ -52,7 +52,20 @@ dependencies = [
     # Official Model Context Protocol SDK used by ``src.services.mcp`` for
     # stdio, SSE, Streamable HTTP, WebSocket, OAuth discovery, and JSON-RPC
     # message models.
-    "mcp>=1.27.0",
+    #
+    # Capped below 2.0 deliberately. mcp 2.0.0 (2026-07-28) is a restructure
+    # that REMOVED ``mcp.client.websocket`` — the module
+    # ``src/services/mcp/transport.py:30`` imports ``websocket_client`` from.
+    # Because the old bound was open-ended, CI began resolving 2.0.0 the day it
+    # published and every PR died with 26 collection errors
+    # (``ModuleNotFoundError: No module named 'mcp.client.websocket'``) in files
+    # nobody had touched. 1.29.0 still ships the module.
+    #
+    # Lifting the cap is a real migration, not a version bump: 2.0 also renames
+    # the client internals (``_transport``, ``caching``, ``subscriptions`` are
+    # new; ``experimental`` is gone). Do that on its own branch, with the
+    # websocket transport either ported or explicitly dropped.
+    "mcp>=1.27.0,<2",
     # Image decode/resize/encode for the FileReadTool image pipeline (port
     # of TS imageResizer.ts which uses sharp). Pillow has pure-Python wheels
     # for all platforms and covers PNG/JPEG/GIF/WebP and palette quantization.
