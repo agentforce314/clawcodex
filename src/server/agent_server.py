@@ -55,6 +55,7 @@ import asyncio
 import json
 import logging
 import queue as _queue
+import re
 import threading
 import time
 import uuid as _uuid
@@ -163,12 +164,17 @@ class _AgentSession:
     # real turn (inside the async context; _build_runtime runs sync in an
     # executor with no live loop). Guarded so it fires exactly once.
     _session_start_fired: bool = False
-    # Images attached (clipboard paste, /image, dropped path) but not yet sent.
-    # Drained into the NEXT user message as image content blocks -- the client
-    # holds no bytes, it only shows the "📎 Attached image" notice, so the
-    # pending list is the single source of truth. Cleared by /clear so a reset
-    # conversation cannot smuggle an image from the previous one.
+    # Images attached (clipboard paste, /image, dropped path) but not yet sent,
+    # as ``(image_id, PastedImage, expects_placeholder)``. Drained into the NEXT
+    # user message as image content blocks -- the client holds no bytes (it shows
+    # an ``[Image #N]`` chip), so this list is the single source of truth. Cleared by /clear and /resume so a
+    # switched-away conversation cannot smuggle an image into a new one.
     _pending_images: list = field(default_factory=list)
+    # Monotonic id behind the ``[Image #N]`` chip the client inserts. Increments
+    # across the session rather than per prompt: the reference only requires
+    # uniqueness within one prompt, and a session-wide counter satisfies that
+    # while matching what users actually see (#1, #2, #3 as they paste).
+    _image_seq: int = 0
     # Completed user turns — the "turns: N" odometer on the client's session
     # stats line (the deleted REPL's ``_stats_turns``, repl/core.py). Counts
     # successful non-internal, non-btw turns; /resume seeds it from the
@@ -556,13 +562,21 @@ class _AgentSession:
             self._do_set_effort(request_id, inner.get("effort"))
             return
         if subtype == "attach_image":
-            await self._do_attach_image(request_id, inner.get("path"))
+            await self._do_attach_image(
+                request_id, inner.get("path"),
+                expects_placeholder=bool(inner.get("placeholder")),
+            )
             return
         if subtype == "clipboard_image":
-            await self._do_clipboard_image(request_id)
+            await self._do_clipboard_image(
+                request_id, expects_placeholder=bool(inner.get("placeholder")),
+            )
             return
         if subtype == "detect_file_drop":
-            await self._do_detect_file_drop(request_id, inner.get("text"))
+            await self._do_detect_file_drop(
+                request_id, inner.get("text"),
+                expects_placeholder=bool(inner.get("placeholder")),
+            )
             return
         if subtype == "workflows":
             self._do_workflows(request_id)
@@ -912,6 +926,13 @@ class _AgentSession:
           stops firing.
 
         Images stay first (the API prefers image-before-question).
+
+        An image whose ``[Image #N]`` chip is gone from the text is DROPPED. That
+        is how the chip doubles as un-attach: deleting it in the composer removes
+        the image, matching the reference ("Images are only sent if their
+        [Image #N] placeholder is still in the text", handlePromptSubmit.ts:225).
+        The chip text itself stays in the prompt -- the reference leaves image
+        refs inline and sends the bytes as separate blocks (history.ts:79).
         """
         with self._lock:
             pending = self._pending_images
@@ -921,9 +942,17 @@ class _AgentSession:
 
         from src.utils.image_processor import create_image_metadata_text
 
+        referenced = _parse_image_refs(_content_text(content))
         blocks: list[dict] = []
         trailing: list[dict] = []
-        for image in pending:
+        for image_id, image, expects_placeholder in pending:
+            if expects_placeholder and image_id not in referenced:
+                logger.debug(
+                    "[agent-server] dropping image #%s: its [Image #%s] chip was "
+                    "deleted from the prompt",
+                    image_id, image_id,
+                )
+                continue
             blocks.append({
                 "type": "image",
                 "source": {
@@ -935,6 +964,10 @@ class _AgentSession:
             meta = create_image_metadata_text(image.dimensions, image.source_path)
             if meta:
                 trailing.append({"type": "text", "text": meta})
+
+        if not blocks:
+            # Every pending image was un-attached; keep the plain-string shape.
+            return content
 
         if isinstance(content, list):
             return blocks + content + trailing
@@ -950,18 +983,25 @@ class _AgentSession:
     #: strictly better than losing all N.
     MAX_PENDING_IMAGES = 8
 
-    def _queue_image(self, image) -> bool:
-        """Append under the lock, honoring the cap. False when already full.
+    def _queue_image(self, image, *, expects_placeholder: bool = False) -> int | None:
+        """Append under the lock and return the new image's id, or None if full.
 
         Single entry point so every producer (clipboard, ``/image``, dropped
-        path) is capped -- an inline append in one of them would silently bypass
-        it.
+        path) is capped and numbered -- an inline append in one of them would
+        silently bypass both.
+
+        ``expects_placeholder`` says the caller will render an ``[Image #N]`` chip
+        for this id, which makes the chip authoritative: delete it and the image
+        is dropped at submit. Callers that render no chip (headless ``-p``, the
+        VS Code bridge) leave it False and their images always send.
         """
         with self._lock:
             if len(self._pending_images) >= self.MAX_PENDING_IMAGES:
-                return False
-            self._pending_images.append(image)
-            return True
+                return None
+            self._image_seq += 1
+            image_id = self._image_seq
+            self._pending_images.append((image_id, image, expects_placeholder))
+            return image_id
 
     def _too_many_images_error(self) -> dict:
         return {
@@ -972,12 +1012,24 @@ class _AgentSession:
         }
 
     def _attach_image(
-        self, request_id: object, image, *, remainder: str = "", extra: dict | None = None
+        self,
+        request_id: object,
+        image,
+        *,
+        remainder: str = "",
+        extra: dict | None = None,
+        expects_placeholder: bool = False,
     ) -> None:
-        """Queue ``image`` and reply in the client's ImageAttachResponse shape."""
+        """Queue ``image`` and reply in the client's ImageAttachResponse shape.
+
+        ``id``/``count`` carry the number behind the client's ``[Image #N]`` chip.
+        Both names are sent: ``ImageAttachResponse`` readers want ``id``,
+        ``ClipboardPasteResponse`` readers want ``count``.
+        """
         from src.utils.image_paste import dimensions_to_wire
 
-        if not self._queue_image(image):
+        image_id = self._queue_image(image, expects_placeholder=expects_placeholder)
+        if image_id is None:
             # Spread ``extra`` into the error too: the drop routes key on
             # ``matched``, so an error reply without it reads as "not a file
             # drop" and the cap message never reaches the user — the paste
@@ -986,6 +1038,9 @@ class _AgentSession:
             return
         name = Path(image.source_path).name if image.source_path else "clipboard image"
         self._reply(request_id, {
+            "attached": True,
+            "count": image_id,
+            "id": image_id,
             "name": name,
             "token_estimate": image.token_estimate,
             "remainder": remainder,
@@ -993,7 +1048,9 @@ class _AgentSession:
             **(extra or {}),
         })
 
-    async def _do_attach_image(self, request_id: object, raw_path: object) -> None:
+    async def _do_attach_image(
+        self, request_id: object, raw_path: object, *, expects_placeholder: bool = False
+    ) -> None:
         """``/image <path>`` and the dropped-path paste route."""
         from src.utils.image_paste import as_image_file_path, try_read_image_from_path
 
@@ -1018,9 +1075,11 @@ class _AgentSession:
         if image is None:
             self._reply(request_id, {"error": f"could not read image: {text}"})
             return
-        self._attach_image(request_id, image)
+        self._attach_image(request_id, image, expects_placeholder=expects_placeholder)
 
-    async def _do_clipboard_image(self, request_id: object) -> None:
+    async def _do_clipboard_image(
+        self, request_id: object, *, expects_placeholder: bool = False
+    ) -> None:
         """Ctrl+V / Cmd+V with an image on the clipboard."""
         from src.utils.image_paste import (
             clipboard_tooling_available,
@@ -1042,9 +1101,11 @@ class _AgentSession:
         if image is None:
             self._reply(request_id, {})  # no image on the clipboard
             return
-        self._attach_image(request_id, image)
+        self._attach_image(request_id, image, expects_placeholder=expects_placeholder)
 
-    async def _do_detect_file_drop(self, request_id: object, raw_text: object) -> None:
+    async def _do_detect_file_drop(
+        self, request_id: object, raw_text: object, *, expects_placeholder: bool = False
+    ) -> None:
         """Classify a paste that looks like a dragged-in path.
 
         Images are ATTACHED here (so a dropped screenshot works with one paste);
@@ -1072,10 +1133,12 @@ class _AgentSession:
                 image = None
             if image is not None:
                 # Same queue-and-reply as /image, plus the drop-specific fields.
-                # ``text: ""`` because an attached image inserts nothing into the
-                # composer -- the notice is the whole feedback.
+                # ``text: ""`` because the client inserts an ``[Image #N]`` chip
+                # itself rather than any text this reply carries.
                 self._attach_image(
-                    request_id, image, extra={"matched": True, "is_image": True, "text": ""}
+                    request_id, image,
+                    extra={"matched": True, "is_image": True, "text": ""},
+                    expects_placeholder=expects_placeholder,
                 )
                 return
         resolved = await asyncio.to_thread(resolve_dropped_file, text, cwd=cwd)
@@ -5026,6 +5089,36 @@ def _extract_prompt_text(msg: dict) -> str:
                 parts.append(block)
         return "".join(parts)
     return str(content) if content is not None else ""
+
+
+#: The reference's reference-pattern, narrowed to image refs
+#: (``history.ts:66`` parseReferences). ``[Image #3]`` in the prompt text is what
+#: keeps image #3 attached.
+_IMAGE_REF_RE = re.compile(r"\[Image #(\d+)\]")
+
+
+def _parse_image_refs(text: str) -> set[int]:
+    """Image ids still referenced by an ``[Image #N]`` chip in ``text``.
+
+    Ids start at 1, so ``#0`` is never real — dropped here rather than left to
+    coincidentally not match, mirroring the reference's ``id > 0`` filter
+    (history.ts:74).
+    """
+    ids = {int(m.group(1)) for m in _IMAGE_REF_RE.finditer(text)}
+    return {i for i in ids if i > 0}
+
+
+def _content_text(content) -> str:
+    """Flatten prompt content to text for chip scanning."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(b.get("text", ""))
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content or "")
 
 
 def _extract_prompt_content(msg: dict):

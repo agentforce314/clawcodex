@@ -1024,21 +1024,61 @@ export class GatewayClient extends EventEmitter {
       case 'image.attach':
         // Longer deadline than a normal RPC: reading + downsampling a large
         // screenshot is Pillow work, and osascript alone is ~1.5s.
+        //
+        // `placeholder` must come from the CALLER, not be hardcoded here:
+        // whether an `[Image #N]` chip gets rendered is a property of the call
+        // site, not of the RPC. Six sites reach these four RPCs and only three
+        // insert a chip — hardcoding `true` made the backend drop the images of
+        // the other three (`/image`, the startup image, and typed-path submit)
+        // at submit time, after their UI had already confirmed success.
+        // Default false is fail-open: an unmarked caller keeps its image.
         return this.controlQuery(
           'attach_image',
-          { path: String(p.path ?? '') },
+          { path: String(p.path ?? ''), placeholder: p.placeholder === true },
           IMAGE_RPC_TIMEOUT_MS
         ).then(r => (r ?? {}) as T)
 
       case 'image.clipboard':
-        return this.controlQuery('clipboard_image', {}, IMAGE_RPC_TIMEOUT_MS).then(
-          r => (r ?? {}) as T
-        )
+        return this.controlQuery(
+          'clipboard_image',
+          { placeholder: p.placeholder === true },
+          IMAGE_RPC_TIMEOUT_MS
+        ).then(r => (r ?? {}) as T)
+
+      // The macOS Cmd+V route, and the one users actually reach first. Apple
+      // Terminal and iTerm handle Cmd+V themselves and deliver the clipboard as
+      // a BRACKETED PASTE, so the app never sees a Cmd+V keypress — and with an
+      // image on the clipboard there is no text, so what arrives is an EMPTY
+      // bracketed paste. That lands in handleResolvedPaste's empty branch, which
+      // calls onClipboardPaste → this RPC. Unwired, it resolved `{}` and Cmd+V
+      // did nothing at all, silently (the call passes quiet=true).
+      case 'clipboard.paste':
+        return this.controlQuery(
+          'clipboard_image',
+          { placeholder: p.placeholder === true },
+          IMAGE_RPC_TIMEOUT_MS
+        ).then(r => {
+          const res = (r ?? {}) as {
+            attached?: boolean
+            error?: string
+            message?: string
+            unavailable?: boolean
+          }
+
+          // Only synthesize for a genuinely empty clipboard. Adding it to an
+          // error/unavailable reply would have it claim "no image found"
+          // alongside a real failure.
+          if (res.attached || res.error || res.unavailable) {
+            return res as T
+          }
+
+          return { ...res, message: 'No image found in clipboard' } as T
+        })
 
       case 'input.detect_drop':
         return this.controlQuery(
           'detect_file_drop',
-          { text: String(p.text ?? '') },
+          { text: String(p.text ?? ''), placeholder: p.placeholder === true },
           IMAGE_RPC_TIMEOUT_MS
         ).then(r => (r ?? {}) as T)
 

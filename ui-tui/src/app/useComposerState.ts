@@ -17,6 +17,7 @@ import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
+import { formatImageRef } from '../protocol/imageRef.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
@@ -42,6 +43,26 @@ const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
   }
 
   return out.length === snips.length ? snips : out
+}
+
+/** Append an `[Image #N]` chip on its own line at the end of the composer.
+ *
+ *  Block-level rather than at-cursor on purpose: the chip is a standing
+ *  attachment indicator, not pasted prose, and putting it on its own line keeps
+ *  it visible and easy to delete (deleting it un-attaches the image). All three
+ *  attach routes — Ctrl+V hotkey, Cmd+V empty-paste, dropped path — use this so
+ *  the chip lands in the same place regardless of how the image arrived. */
+export function appendImageChip(value: string, id: number, extra = ''): { cursor: number; value: string } {
+  // Trailing space ONLY when the chip is last, so paste-then-type does not
+  // fuse into `[Image #1]what`. The reference does this lazily
+  // (pendingSpaceAfterPillRef); an eager space is the same benefit for a
+  // fraction of the machinery. Skipped before a newline, where it would just
+  // be invisible trailing whitespace.
+  const chip = formatImageRef(id)
+  const body = extra ? `${chip}\n${extra}` : `${chip} `
+  const next = !value ? body : value.endsWith('\n') ? `${value}${body}` : `${value}\n${body}`
+
+  return { cursor: next.length, value: next }
 }
 
 /** Insert text at the cursor position, adding spacing to separate from adjacent non-whitespace. */
@@ -208,24 +229,41 @@ export function useComposerState({
         try {
           const attached = await gw.request<ImageAttachResponse>('image.attach', {
             path: cleanedText,
+            // This route inserts an `[Image #N]` chip below, so the chip is
+            // authoritative: deleting it un-attaches the image.
+            placeholder: true,
             session_id: sid
           })
 
           if (attached?.name) {
-            onImageAttached?.(attached)
-            const remainder = attached.remainder?.trim() ?? ''
-
-            if (!remainder) {
-              return { cursor, value }
+            // Insert the chip by RETURNING it, not via setInput: the caller
+            // applies this {cursor, value} to the composer, so a separate
+            // setInput would race it and the chip could be clobbered.
+            // Guard the id rather than defaulting to 0: `[Image #0]` is
+            // filtered by the backend's ref parser, so it would render as
+            // visible garbage AND guarantee the image is dropped.
+            if (attached.id) {
+              return appendImageChip(value, attached.id, attached.remainder?.trim() ?? '')
             }
 
-            return insertAtCursor(value, cursor, remainder)
+            onImageAttached?.(attached)
+
+            return null
+          }
+
+          if (attached?.error || attached?.unavailable) {
+            onImageAttached?.(attached)
+
+            return null
           }
         } catch {
           // Fall back to generic file-drop detection below.
         }
 
         try {
+          // No chip on this route (it inserts the returned text instead), so
+          // no `placeholder` — the backend must not make a chip authoritative
+          // for an image whose chip never gets rendered.
           const dropped = await gw.request<InputDetectDropResponse>('input.detect_drop', {
             session_id: sid,
             text: cleanedText
@@ -305,7 +343,7 @@ export function useComposerState({
         return readPreferredText.then(async preferredText => {
           const decision = await resolveHotkeyPaste({
             probeClipboardImage: () =>
-              gw.request<ImageAttachResponse>('image.clipboard', {}).catch(() => null),
+              gw.request<ImageAttachResponse>('image.clipboard', { placeholder: true }).catch(() => null),
             text: preferredText
           })
 
@@ -316,9 +354,18 @@ export function useComposerState({
           }
 
           if (decision.kind === 'image') {
-            // The backend holds the bytes and attaches them to the next prompt;
-            // nothing goes into the composer text.
-            onImageAttached?.(decision.image)
+            const { image } = decision
+
+            // The backend holds the bytes; the composer shows an `[Image #N]`
+            // chip, which is both the "attached" indicator and the un-attach
+            // control (delete it and the backend drops the image at submit).
+            // Returned rather than set, so the caller's value application is the
+            // single writer.
+            if (image.id) {
+              return appendImageChip(value, image.id)
+            }
+
+            onImageAttached?.(image)
 
             return null
           }
@@ -333,6 +380,20 @@ export function useComposerState({
     },
     [gw, handleResolvedPaste, onClipboardPaste, onImageAttached, querier]
   )
+
+  /** Insert an `[Image #N]` chip for a just-attached image.
+   *
+   *  The chip is the whole UI for an attachment: it shows one is pending, and
+   *  deleting it un-attaches (the backend drops any image whose chip is absent
+   *  from the submitted text). Placed on its own line when the composer already
+   *  has content, which is how the reference renders it. */
+  const insertImageRef = useCallback((id: number) => {
+    if (!Number.isFinite(id) || id <= 0) {
+      return
+    }
+
+    setInput(prev => appendImageChip(prev, id).value)
+  }, [])
 
   const openEditor = useCallback(async () => {
     const dir = mkdtempSync(join(tmpdir(), 'clawcodex-'))
@@ -372,6 +433,7 @@ export function useComposerState({
       dismissCompletions,
       enqueue,
       handleTextPaste,
+      insertImageRef,
       openEditor,
       pushHistory,
       removeQueue: removeQ,
@@ -389,6 +451,7 @@ export function useComposerState({
       dismissCompletions,
       enqueue,
       handleTextPaste,
+      insertImageRef,
       openEditor,
       pushHistory,
       removeQ,

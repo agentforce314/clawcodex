@@ -475,10 +475,15 @@ export interface ShellExecResponse {
 
 export interface ClipboardPasteResponse {
   attached?: boolean
+  /** The N in the `[Image #N]` chip the composer inserts. */
   count?: number
+  /** Set when the image could not be read; `attached` is then absent. */
+  error?: string
   height?: number
   message?: string
   token_estimate?: number
+  /** Set when the platform has no clipboard-image tooling. */
+  unavailable?: boolean
   width?: number
 }
 
@@ -502,6 +507,8 @@ export interface ImageAttachResponse {
   /** Set when the image could not be read; `name` is then absent. */
   error?: string
   height?: number
+  /** The N in the `[Image #N]` chip the composer inserts. */
+  id?: number
   name?: string
   remainder?: string
   token_estimate?: number

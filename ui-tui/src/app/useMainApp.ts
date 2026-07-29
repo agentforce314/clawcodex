@@ -14,7 +14,7 @@ import { STARTUP_RESUME_ID, TRANSCRIPT_COLOR } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
+import { attachedImageNotice } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -221,6 +221,7 @@ export function useMainApp(gw: GatewayClient) {
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
+  const insertImageRefRef = useRef<(id: number) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
@@ -286,6 +287,9 @@ export function useMainApp(gw: GatewayClient) {
   const composer = useComposerState({
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
+    // Success renders as an `[Image #N]` chip in the composer (see
+    // insertImageRef), so this fires only for failures — an undecodable
+    // image, or a box with no xclip/wl-clipboard.
     onImageAttached: info => {
       sys(attachedImageNotice(info))
     },
@@ -796,15 +800,25 @@ export function useMainApp(gw: GatewayClient) {
 
   const paste = useCallback(
     (quiet = false) =>
-      rpc<ClipboardPasteResponse>('clipboard.paste', { session_id: getUiState().sid }).then(r => {
+      rpc<ClipboardPasteResponse>('clipboard.paste', {
+        // Inserts an `[Image #N]` chip below, so the chip is authoritative.
+        placeholder: true,
+        session_id: getUiState().sid
+      }).then(r => {
         if (!r) {
           return
         }
 
         if (r.attached) {
-          const meta = imageTokenMeta(r)
+          // The chip in the composer IS the feedback — matching the reference,
+          // which shows `[Image #N]` inline and prints nothing to the transcript.
+          // It also doubles as un-attach: delete the chip and the backend drops
+          // the image at submit.
+          return insertImageRefRef.current(r.count ?? 0)
+        }
 
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+        if (r.error || r.unavailable) {
+          return sys(attachedImageNotice(r))
         }
 
         if (!quiet) {
@@ -815,6 +829,9 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   clipboardPasteRef.current = paste
+  // `paste` is declared above the composer, so it reaches insertImageRef through
+  // this ref (same pattern as clipboardPasteRef itself).
+  insertImageRefRef.current = composerActions.insertImageRef
 
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,

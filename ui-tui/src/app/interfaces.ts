@@ -230,6 +230,8 @@ export interface ComposerActions {
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
   setHistoryIdx: StateSetter<null | number>
+  /** Insert an `[Image #N]` chip for a just-attached image. */
+  insertImageRef: (id: number) => void
   setInput: StateSetter<string>
   setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void

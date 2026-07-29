@@ -840,6 +840,69 @@ describe('GatewayClient NDJSON adapter', () => {
     })
   })
 
+  // The macOS Cmd+V route. Apple Terminal/iTerm handle Cmd+V themselves and
+  // deliver the clipboard as a bracketed paste, so with an image on the
+  // clipboard an EMPTY paste arrives and lands in the composer's
+  // empty-bracketed branch → onClipboardPaste → this RPC. Unwired it resolved
+  // {} and Cmd+V did nothing, silently (the call passes quiet=true).
+  it('maps clipboard.paste to the clipboard_image control', async () => {
+    const p = gw.request('clipboard.paste', { session_id: 's1' })
+    await replyToControl('clipboard_image', {
+      attached: true, count: 3, height: 220, name: 'clipboard image', width: 760
+    })
+    await expect(p).resolves.toMatchObject({ attached: true, count: 3 })
+  })
+
+  it('gives clipboard.paste a message when the clipboard has no image', async () => {
+    // The caller shows this only on an explicit paste (quiet=false).
+    const p = gw.request('clipboard.paste', {})
+    await replyToControl('clipboard_image', {})
+    await expect(p).resolves.toMatchObject({ message: 'No image found in clipboard' })
+  })
+
+  it('does not overwrite a real failure with the not-found message', async () => {
+    const p = gw.request('clipboard.paste', {})
+    await replyToControl('clipboard_image', { unavailable: true })
+    const r = (await p) as { message?: string; unavailable?: boolean }
+    expect(r.unavailable).toBe(true)
+  })
+
+  // `placeholder` says "this caller renders an `[Image #N]` chip", which makes the
+  // chip authoritative — the backend DROPS a pending image whose chip is gone at
+  // submit. It must therefore come from the CALLER, never be hardcoded per-RPC:
+  // six sites reach these RPCs and only three insert a chip. Hardcoding `true`
+  // made `/image`, the startup image, and typed-path submit silently lose their
+  // images *after* their UI had confirmed success. Default false is fail-open.
+  it('forwards placeholder:true from a chip-rendering caller', async () => {
+    void gw.request('image.clipboard', { placeholder: true })
+    await vi.waitFor(() => {
+      seen.push(...stdinFrames())
+      const req = seen.find(f => f.request?.subtype === 'clipboard_image')
+      expect(req?.request?.placeholder).toBe(true)
+    })
+  })
+
+  it('sends placeholder:false when the caller renders no chip', async () => {
+    // `/image`, the startup image and typed-path submit all land here. If this
+    // ever flips to true their images are dropped at submit.
+    void gw.request('image.attach', { path: '/tmp/a.png' })
+    await vi.waitFor(() => {
+      seen.push(...stdinFrames())
+      const req = seen.find(f => f.request?.subtype === 'attach_image')
+      expect(req?.request?.placeholder).toBe(false)
+    })
+  })
+
+  it('never invents placeholder:true from a truthy-ish value', async () => {
+    // Strict === true, so a stray string/1 cannot make a chip authoritative.
+    void gw.request('input.detect_drop', { placeholder: 'yes', text: '/tmp/a.png' })
+    await vi.waitFor(() => {
+      seen.push(...stdinFrames())
+      const req = seen.find(f => f.request?.subtype === 'detect_file_drop')
+      expect(req?.request?.placeholder).toBe(false)
+    })
+  })
+
   it('never resolves an image RPC to undefined', async () => {
     // The composer does `attached?.name`, but `input.detect_drop`'s caller reads
     // `dropped.matched` after a truthiness check — a bare undefined from a
