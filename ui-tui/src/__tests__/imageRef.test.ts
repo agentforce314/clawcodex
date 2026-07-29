@@ -1,6 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 import { formatImageRef, IMAGE_REF_RE, parseImageRefs } from '../protocol/imageRef.js'
+
+/** `useComposerState` pulls in a large module graph, so it stays out of this
+ *  file's static imports — the tests above it are pure protocol checks that
+ *  should not pay for (or run the module-scope side effects of) the composer.
+ *
+ *  It is loaded ONCE in beforeAll rather than per-test: a cold `await import()`
+ *  inside a test is billed against the 5s testTimeout, and under a loaded
+ *  full-suite run that transform blew the budget and failed whichever test
+ *  happened to be first. beforeAll takes its own generous timeout, so the cost
+ *  is paid where it belongs. */
+let appendImageChip: typeof import('../app/useComposerState.js')['appendImageChip']
+
+beforeAll(async () => {
+  ;({ appendImageChip } = await import('../app/useComposerState.js'))
+}, 60_000)
 
 describe('formatImageRef', () => {
   it('renders the chip the composer shows', () => {
@@ -52,44 +67,34 @@ describe('chip round-trip against the backend contract', () => {
 })
 
 describe('appendImageChip — composer placement', () => {
-  it('puts the chip on its own line under existing text', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
-
+  it('puts the chip on its own line under existing text', () => {
     expect(appendImageChip('what this image is about?', 2).value).toBe(
       'what this image is about?\n[Image #2] '
     )
   })
 
-  it('is the only content in an empty composer', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
-
+  it('is the only content in an empty composer', () => {
     expect(appendImageChip('', 1).value).toBe('[Image #1] ')
   })
 
-  it('does not double the newline', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
-
+  it('does not double the newline', () => {
     expect(appendImageChip('line\n', 3).value).toBe('line\n[Image #3] ')
   })
 
-  it('leaves the cursor after the chip', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
+  it('leaves the cursor after the chip', () => {
     const out = appendImageChip('hi', 4)
 
     expect(out.cursor).toBe(out.value.length)
   })
 
-  it('keeps a dropped-path remainder after the chip', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
-
+  it('keeps a dropped-path remainder after the chip', () => {
     // No trailing space before a newline — it would be invisible whitespace.
     expect(appendImageChip('look:', 5, 'and this too').value).toBe(
       'look:\n[Image #5]\nand this too'
     )
   })
 
-  it('stacks multiple attachments, each parseable', async () => {
-    const { appendImageChip } = await import('../app/useComposerState.js')
+  it('stacks multiple attachments, each parseable', () => {
     const one = appendImageChip('compare these', 1).value
     const two = appendImageChip(one, 2).value
 
