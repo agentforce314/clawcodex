@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-29
+
+### Added
+
+- Added the `claude-opus-5` model, and wired `--effort` end to end (the
+  interactive `/effort` path on Anthropic was also fixed) (#722, #746).
+- Added bounded persistent memory with a background self-improvement review
+  fork (#731).
+- Added a VS Code extension (`vscode-extension/clawcodex-vscode`) driving the
+  agent-server over stdio, with interrupt/suggestion/chosen-updates contracts
+  (#727).
+- Added image-paste input: paste an image at the prompt and it attaches as a
+  content block, shown as an `[Image #N]` chip that un-attaches on demand
+  (#761, #762).
+- Added a Harbor eval harness (`eval/harbor/`) with clawcodex, openclaude, and
+  latest-Claude-Code subscription adapters for terminal-bench 2.0/2.1 three-way
+  comparisons, ATIF trajectory emission, and per-step token/cost accounting
+  (#720, #724, #725, #736–#738).
+
+### Changed
+
+- Renamed the project context file `CLAUDE.md` → `CLAWCODEX.md` (clean break,
+  no fallback) (#732).
+- Tuned the agent prompt and headless harness for reliability and parity with
+  the reference: restored dropped task-tool skip conditions, parallel-tool
+  guidance, and dropped instruction qualifiers; deferred nonessential initial
+  tools; and recovered trials lost to empty turns and transport drops
+  (#743–#745, #747–#754).
+- Reworked the TUI header box to the reference's element allocation (#764).
+- Honor runtime 1M-context model limits end to end (#730).
+- Activated `--allowedTools`/`--disallowedTools`, which were a silent no-op
+  (#739).
+
+### Fixed
+
+- Ping-aware stream watchdog to stop spurious `NonZeroAgentExitCodeError` on
+  large-context agentic runs (#734).
+- Recover trials lost to empty turns, transport drops, and a headless-only
+  tool; preserve thinking and reduce headless overhead (#735, #742).
+- Enable interactive TaskV2 and harden Bash execution (#741).
+- Retry transient transport failures instead of aborting the run, and stop
+  `Read` from leaking image base64 into context (#757, #760).
+- Cap `mcp` below 2.0 (2.0.0 removed `mcp.client.websocket`) (#763).
+- Correct the DeepSeek V4 `max_output_tokens` to the documented 384K (#758).
+- Nudge off a stalled background task instead of polling forever (#759).
+
 ## [1.2.1] - 2026-07-16
 
 ### Changed
