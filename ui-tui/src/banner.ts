@@ -1,3 +1,5 @@
+import { stringWidth } from '@clawcodex/ink'
+
 import {
   DEFAULT_LOGO_PALETTE,
   gradientStopForRow,
@@ -142,6 +144,9 @@ export const lobster = (c: ThemeColors, customHero?: string, logoColor?: string)
   return colorize(LOBSTER_ART, LOBSTER_GRADIENT, c)
 }
 
-export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, t.length), 0)
+// Measured in columns, not code units: this feeds the header's left-column
+// sizing (`optimalLeftWidth`), so a custom `bannerHero` skin with wide glyphs
+// would otherwise under-size the column it has to fit inside.
+export const artWidth = (lines: Line[]) => lines.reduce((m, [, t]) => Math.max(m, stringWidth(t)), 0)
 
 type Line = [string, string]

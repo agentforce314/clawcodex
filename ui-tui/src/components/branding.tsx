@@ -1,4 +1,6 @@
-import { Box, Text, useStdout } from '@clawcodex/ink'
+import { userInfo } from 'os'
+
+import { applyColor, Box, stringWidth, Text, useStdout } from '@clawcodex/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
@@ -142,16 +144,205 @@ function CollapseToggle({
   title: string
   onToggle: () => void
 }) {
+  // One <Text> run, not sibling <Text>es in a flex row: as siblings, a toggle
+  // wider than its column makes flexbox wrap each span into its own column
+  // ("▸Available  (8) in 2" / " Skills      categories") instead of truncating
+  // the line. Nesting keeps it a single run that truncates cleanly.
   return (
     <Box onClick={onToggle}>
-      <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-      <Text bold color={t.color.accent}>
-        {title}
+      <Text wrap="truncate-end">
+        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+        <Text bold color={t.color.accent}>
+          {title}
+        </Text>
+        {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
+        {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
       </Text>
-      {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : null}
-      {suffix ? <Text color={t.color.muted}> {suffix}</Text> : null}
     </Box>
   )
+}
+
+// ── Header layout allocation ─────────────────────────────────────────
+//
+// Ported from the reference banner's allocation math
+// (`calculateOptimalLeftWidth` / `calculateLayoutDimensions` in
+// typescript/src/utils/logoV2Utils.ts).
+//
+// The point is that the left column is sized to *its own content* and the
+// remainder is handed to the right column, with the divider and padding booked
+// explicitly. The previous code sized the left column as
+// `min(mascotWidth + 4, cols * 0.4)`, which never looked at the cwd or model
+// lines: at 140 columns that pinned it to 20, truncating the cwd to
+// `/Users/ericlee2/wor…` while ~65 columns sat empty to the right.
+
+const MAX_LEFT_WIDTH = 50
+/** Floor so a short cwd still leaves the mascot room to breathe. */
+const MIN_LEFT_CONTENT = 20
+/** The box's own chrome: `borderStyle` (1 each side) + `paddingX={1}`. */
+const BORDER_PADDING = 4
+/** The divider's `marginX={1}`, both sides. Must track the JSX below. */
+const DIVIDER_MARGIN = 2
+/** The divider's own border glyph. Must track the JSX below. */
+const DIVIDER_WIDTH = 1
+/** A space either side of the left column's text so it doesn't touch the rule. */
+const LEFT_COLUMN_SLACK = 2
+// The reference floors the feed column at 30, but its feed titles are short;
+// clawcodex's longest toggle ("▸ Available Skills (8) in 2 categories") is 38.
+// Below this the split earns nothing, so the layout stacks instead.
+const MIN_RIGHT_WIDTH = 36
+/** Below this the columns stack — the divider costs more width than it earns. */
+const HORIZONTAL_FROM = 70
+const MAX_USERNAME_LENGTH = 20
+// Row labels. Kept as constants because the width budgets are measured off them.
+const MODEL_LABEL = 'Model '
+const PATH_LABEL = 'Path '
+/** Columns between the top-left corner and the title. */
+const TITLE_OFFSET = 3
+
+/** Widest title variant that `borderText` can render, or null if none fits.
+ *
+ *  This guard is not cosmetic. Once the title reaches `cols - 2` ink stops
+ *  embedding it and returns `['', text.substring(0, cols), '']`
+ *  (render-border.ts:43-44) — corners and rule gone, and the slice is by code unit
+ *  across a pre-rendered ANSI string. The result is a box with no top edge at
+ *  all. `t.brand.name` is operator-configurable, so a branded install hits this
+ *  at ordinary narrow-pane widths, not just tiny ones. Degrade instead:
+ *  name + version → name → nothing. */
+export function borderTitleParts(cols: number, name: string, version?: string): { name: string; version?: string } | null {
+  // Keeps ink's `position` clamp (render-border.ts:59) from moving the title.
+  const room = cols - TITLE_OFFSET - 2
+  const width = (v?: string) => stringWidth(` ${name}${v ? ` v${v}` : ''} `)
+
+  if (version && width(version) <= room) {
+    return { name, version }
+  }
+
+  return width() <= room ? { name } : null
+}
+
+/** Split into columns only when the terminal clears the coarse threshold AND
+ *  both columns fit at usable widths.
+ *
+ *  The fit check is not redundant with the threshold: the left column is sized
+ *  to the cwd, so a deep path can want 50 columns at a terminal width of 72.
+ *  Forcing the split there overflows the box, and flexbox resolves the overflow
+ *  by shrinking *both* children — which wraps the collapse toggles into
+ *  unreadable two-word columns ("▸Available  (8 in 2" / " Skills  categories").
+ *  Stacking is the better failure mode. */
+export function fitsHorizontal(columns: number, leftWidth: number): boolean {
+  const needed = leftWidth + BORDER_PADDING + DIVIDER_MARGIN + DIVIDER_WIDTH + MIN_RIGHT_WIDTH
+
+  return columns >= HORIZONTAL_FROM && needed <= columns
+}
+
+/** Left column width: its widest line, floored at the mascot, capped so a deep
+ *  cwd can never starve the feed column. */
+export function optimalLeftWidth(lines: string[], heroWidth: number): number {
+  const content = Math.max(...lines.map(stringWidth), heroWidth, MIN_LEFT_CONTENT)
+
+  return Math.min(content + 4, MAX_LEFT_WIDTH)
+}
+
+/** Whatever the left column and chrome don't use goes to the feed column. */
+export function rightColumnWidth(columns: number, leftWidth: number): number {
+  const used = BORDER_PADDING + DIVIDER_MARGIN + DIVIDER_WIDTH + leftWidth
+
+  return Math.max(MIN_RIGHT_WIDTH, columns - used)
+}
+
+/** Grapheme clusters of `s`, longest tail fitting in `maxWidth` *columns*.
+ *
+ *  Every part of that sentence is load-bearing:
+ *
+ *  - *columns*, not code units. Slicing by `.length` overshoots on a CJK cwd
+ *    ("目" is 1 unit, 2 columns) and returns a string wider than the budget,
+ *    which then re-truncates at the far end and elides BOTH sides — destroying
+ *    the trailing segment this whole function exists to preserve.
+ *  - *grapheme clusters*, not code points. Measuring per code point undercounts
+ *    a keycap sequence (`1️⃣` = digit + VS16 + U+20E3 sums to 1, but the cluster
+ *    is 2 columns wide), which overflows again; and it splits regional-indicator
+ *    flags into reversed letter pairs. `Intl.Segmenter` is what `stringWidth`
+ *    itself segments with, so this measures the way the renderer measures.
+ *  - Code points at minimum, never code units: an arbitrary code-unit offset
+ *    leaves a lone surrogate that renders as U+FFFD but measures as zero. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+function clipTailToWidth(s: string, maxWidth: number): string {
+  if (maxWidth <= 0) {
+    return ''
+  }
+
+  const clusters = [...GRAPHEMES.segment(s)].map(g => g.segment)
+  let out = ''
+  let width = 0
+
+  for (let i = clusters.length - 1; i >= 0; i--) {
+    const ch = clusters[i]!
+    const chWidth = stringWidth(ch)
+
+    if (width + chWidth > maxWidth) {
+      break
+    }
+
+    out = ch + out
+    width += chWidth
+  }
+
+  return out
+}
+
+/** Middle-truncate a path so the *current* directory stays readable.
+ *
+ *  Plain `wrap="truncate-end"` clips the tail, which is the one segment that
+ *  matters: `/Users/me/workspace/clawcodex/ui-tui/src/comp…` tells you less
+ *  than `…/ui-tui/src/components`. Mirrors the reference's `truncatePath`
+ *  (logoV2Utils.ts), keeping as many trailing segments as fit. */
+export function truncatePath(path: string, maxWidth: number): string {
+  if (maxWidth <= 0) {
+    return ''
+  }
+
+  if (stringWidth(path) <= maxWidth) {
+    return path
+  }
+
+  const parts = path.split('/')
+  const last = parts[parts.length - 1] ?? ''
+
+  // Even one segment behind the ellipsis doesn't fit — clip the tail itself.
+  if (stringWidth(`…/${last}`) > maxWidth) {
+    return `…${clipTailToWidth(last, maxWidth - 1)}`
+  }
+
+  // Grow backwards from the tail while whole segments still fit.
+  let kept = last
+
+  for (let i = parts.length - 2; i > 0; i--) {
+    const next = `${parts[i]}/${kept}`
+
+    if (stringWidth(`…/${next}`) > maxWidth) {
+      break
+    }
+
+    kept = next
+  }
+
+  return `…/${kept}`
+}
+
+/** Mirrors the reference's `formatWelcomeMessage`: an absurdly long name is
+ *  treated as no name at all rather than blowing out the left column. */
+export function welcomeMessage(username: string | null | undefined, brand: string): string {
+  return !username || username.length > MAX_USERNAME_LENGTH ? `Welcome to ${brand}` : `Welcome back, ${username}`
+}
+
+/** `os.userInfo()` throws when the uid has no passwd entry (some containers). */
+function currentUsername(): string | null {
+  try {
+    return userInfo().username || null
+  } catch {
+    return null
+  }
 }
 
 // ── SessionPanel ─────────────────────────────────────────────────────
@@ -163,11 +354,43 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = lobster(t.color, t.bannerHero || undefined, logoPalette)
-  const leftW = Math.min((artWidth(heroLines) || LOBSTER_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
-  const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
+  const heroW = artWidth(heroLines) || LOBSTER_WIDTH
+
+  // Left-column lines, built before layout so the column can be sized to them.
+  // The cwd is pre-truncated to the column's hard cap: sizing the column to an
+  // arbitrarily deep path first and clipping after would let one long path
+  // dictate the whole split.
+  const welcome = welcomeMessage(currentUsername(), t.brand.name)
+  const modelLine = `${info.model.split('/').pop()}${info.profile_name ? ` · ${info.profile_name}` : ''}`
+  const rawCwd = info.cwd || process.cwd()
+  const cwdLine = truncatePath(rawCwd, MAX_LEFT_WIDTH - LEFT_COLUMN_SLACK - PATH_LABEL.length)
+
+  const leftW = optimalLeftWidth([welcome, `${MODEL_LABEL}${modelLine}`, `${PATH_LABEL}${cwdLine}`], heroW)
+  const wide = fitsHorizontal(cols, leftW)
+  // Stacked: the column IS the interior (border + paddingX = BORDER_PADDING).
+  // Flooring this at MIN_RIGHT_WIDTH would overflow a narrow box — that floor
+  // gates whether to split at all, it is not a width to render at.
+  const w = wide ? rightColumnWidth(cols, leftW) : Math.max(10, cols - BORDER_PADDING)
+  // Stacked layout spans `w`, which can be narrower than the left column's cap.
+  const shownCwd = wide ? cwdLine : truncatePath(rawCwd, Math.max(10, w - PATH_LABEL.length))
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
+
+  // Pre-rendered ANSI: `borderText` writes straight into the border run, so it
+  // can't take <Text> children. applyColor is the fork's own colorizer, which
+  // keeps the 8-bit downgrade for legacy Apple Terminal that a hand-rolled
+  // truecolor escape would bypass.
+  //
+  // The cast is real, not cosmetic: theme colors are typed `string` but
+  // applyColor wants the `Color` union, which the ink entry does not export.
+  // Runtime is safe either way — colorize() returns the text unstyled for any
+  // format it doesn't recognize, so a bad skin color degrades to plain text.
+  const tint = (s: string, color: string) => applyColor(s, color as Parameters<typeof applyColor>[1])
+  const titleParts = borderTitleParts(cols, t.brand.name, info.version)
+
+  const borderTitle = titleParts
+    ? ` ${tint(titleParts.name, t.color.text)}${titleParts.version ? ` ${tint(`v${titleParts.version}`, t.color.muted)}` : ''} `
+    : null
 
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)
@@ -287,79 +510,20 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
     return <Text color={t.color.muted}>{info.system_prompt}</Text>
   }
 
-  return (
-    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
-      {wide && (
-        <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
-          <Text />
-
-          <Text color={t.color.accent}>
-            {info.model.split('/').pop()}
-            {info.profile_name ? <Text color={t.color.muted}> · {info.profile_name}</Text> : null}
-          </Text>
-
-          <Text color={t.color.muted} wrap="truncate-end">
-            {info.cwd || process.cwd()}
-          </Text>
-
-          {worktree && (
-            <Text color={t.color.muted} wrap="truncate-end">
-              worktree <Text color={t.color.accent}>{worktree.name}</Text> · {worktree.branch}
-            </Text>
-          )}
-
-          {sid && (
-            <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
-              <Text color={t.color.sessionBorder}>{sid}</Text>
-            </Text>
-          )}
-        </Box>
-      )}
-
-      <Box flexDirection="column" width={w}>
-        {wide ? (
-          <Box justifyContent="center" marginBottom={1}>
-            <Text bold color={t.color.primary}>
-              {t.brand.name}
-              {info.version ? ` v${info.version}` : ''}
-              {info.release_date ? ` (${info.release_date})` : ''}
-            </Text>
-          </Box>
-        ) : (
-          // Narrow layout hides the hero column; surface model/cwd/session
-          // here so they aren't lost.
-          <Box flexDirection="column" marginBottom={1}>
-            <Text color={t.color.accent} wrap="truncate-end">
-              {info.model.split('/').pop()}
-              {info.profile_name ? <Text color={t.color.muted}> · {info.profile_name}</Text> : null}
-            </Text>
-            <Text color={t.color.muted} wrap="truncate-end">
-              {info.cwd || process.cwd()}
-            </Text>
-            {worktree && (
-              <Text color={t.color.muted} wrap="truncate-end">
-                worktree <Text color={t.color.accent}>{worktree.name}</Text> · {worktree.branch}
-              </Text>
-            )}
-            {sid && (
-              <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
-                <Text color={t.color.sessionBorder}>{sid}</Text>
-              </Text>
-            )}
-          </Box>
-        )}
-
-        {/* ── Tools (expanded by default) ── */}
-        <Box flexDirection="column" marginTop={1}>
+  const sections: { key: string; node: React.ReactNode }[] = [
+    {
+      key: 'tools',
+      node: (
+        <>
           <CollapseToggle onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools" />
           {toolsOpen && toolsBody()}
-        </Box>
-
-        {/* ── Skills (collapsed by default) ── */}
-        <Box flexDirection="column" marginTop={1}>
+        </>
+      )
+    },
+    {
+      key: 'skills',
+      node: (
+        <>
           <CollapseToggle
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
@@ -371,38 +535,151 @@ export function SessionPanel({ info, logoPalette, maxWidth, sid, t }: SessionPan
             title="Available Skills"
           />
           {skillsOpen && skillsBody()}
+        </>
+      )
+    },
+    ...(sysPromptLen > 0
+      ? [
+          {
+            key: 'system',
+            node: (
+              <>
+                <CollapseToggle
+                  onToggle={() => setSystemOpen(v => !v)}
+                  open={systemOpen}
+                  suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+                  t={t}
+                  title="System Prompt"
+                />
+                {systemOpen && systemBody()}
+              </>
+            )
+          }
+        ]
+      : []),
+    ...(mcpServers.length > 0
+      ? [
+          {
+            key: 'mcp',
+            node: (
+              <>
+                <CollapseToggle
+                  count={mcpConnected}
+                  onToggle={() => setMcpOpen(v => !v)}
+                  open={mcpOpen}
+                  suffix="connected"
+                  t={t}
+                  title="MCP Servers"
+                />
+                {mcpOpen && mcpBody()}
+              </>
+            )
+          }
+        ]
+      : [])
+  ]
+
+  // Identity block: welcome + mascot + labeled Model/Path rows. Shared by both
+  // layouts so the narrow one loses the *column*, never the information.
+  const identity = (
+    <>
+      <Text bold color={t.color.text} wrap="truncate-end">
+        {welcome}
+      </Text>
+
+      <Box marginY={1}>
+        <ArtLines lines={heroLines} />
+      </Box>
+
+      <Text color={t.color.border}>{'─'.repeat(12)}</Text>
+
+      <Text wrap="truncate-end">
+        <Text color={t.color.muted}>{MODEL_LABEL}</Text>
+        <Text color={t.color.accent}>{modelLine}</Text>
+      </Text>
+
+      <Text wrap="truncate-end">
+        <Text color={t.color.muted}>{PATH_LABEL}</Text>
+        <Text color={t.color.muted}>{shownCwd}</Text>
+      </Text>
+
+      {worktree && (
+        <Text wrap="truncate-end">
+          <Text color={t.color.muted}>Tree</Text>
+          <Text color={t.color.accent}> {worktree.name}</Text>
+          <Text color={t.color.muted}> · {worktree.branch}</Text>
+        </Text>
+      )}
+
+      {sid && (
+        <Text wrap="truncate-end">
+          <Text color={t.color.sessionLabel}>Session</Text>
+          <Text color={t.color.sessionBorder}> {sid}</Text>
+        </Text>
+      )}
+    </>
+  )
+
+  return (
+    <Box
+      borderColor={t.color.border}
+      borderStyle="round"
+      borderText={
+        borderTitle ? { align: 'start', content: borderTitle, offset: TITLE_OFFSET, position: 'top' } : undefined
+      }
+      marginBottom={1}
+      paddingX={1}
+      paddingY={1}
+      // Without this the border stretches to the full terminal while the column
+      // math above is budgeted against `cols` (which honors maxWidth), so the
+      // right column stops short of its own border.
+      width={cols}
+    >
+      {wide && (
+        <Box alignItems="center" flexDirection="column" width={leftW}>
+          {identity}
         </Box>
+      )}
 
-        {/* ── System Prompt (collapsed by default) ── */}
-        {sysPromptLen > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              onToggle={() => setSystemOpen(v => !v)}
-              open={systemOpen}
-              suffix={`— ${sysPromptLen.toLocaleString()} chars`}
-              t={t}
-              title="System Prompt"
-            />
-            {systemOpen && systemBody()}
+      {/* Column rule. A left-only border stretches to the taller column, so the
+          rule always spans the full content height without being measured. */}
+      {wide && (
+        <Box
+          borderBottom={false}
+          borderColor={t.color.border}
+          borderLeft
+          borderRight={false}
+          borderStyle="single"
+          borderTop={false}
+          marginX={1}
+        />
+      )}
+
+      <Box flexDirection="column" width={w}>
+        {/* Narrow layout drops the column split; keep the identity block above
+            the feed so nothing is lost. */}
+        {!wide && (
+          <Box alignItems="center" flexDirection="column" marginBottom={1}>
+            {identity}
           </Box>
         )}
 
-        {/* ── MCP Servers (collapsed by default) ── */}
-        {mcpServers.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <CollapseToggle
-              count={mcpConnected}
-              onToggle={() => setMcpOpen(v => !v)}
-              open={mcpOpen}
-              suffix="connected"
-              t={t}
-              title="MCP Servers"
-            />
-            {mcpOpen && mcpBody()}
+        {/* Built as a list so a hidden section takes its spacing with it — an
+            inline `&&` leaves a dangling gap. The first section sits flush with
+            the top of the column so both columns start on the same row.
+            Sections are spaced, not ruled: the reference draws one rule between
+            two multi-line feeds, and clawcodex's mostly-collapsed toggles would
+            turn a rule-per-section into four rules of noise. The single rule
+            below separates the index from the totals footer. */}
+        {sections.map((section, i) => (
+          <Box flexDirection="column" key={section.key} marginTop={i > 0 ? 1 : 0}>
+            {section.node}
           </Box>
-        )}
+        ))}
 
-        <Text />
+        <Box marginTop={1}>
+          <Text color={t.color.border}>{'─'.repeat(Math.max(1, w))}</Text>
+        </Box>
 
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}

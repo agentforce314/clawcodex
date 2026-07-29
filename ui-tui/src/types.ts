@@ -226,7 +226,6 @@ export interface SessionInfo {
   permission_mode?: string
   profile_name?: string
   reasoning_effort?: string
-  release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
   system_prompt?: string

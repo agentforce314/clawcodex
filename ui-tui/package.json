@@ -12,7 +12,9 @@
     "lint:fix": "eslint src/ packages/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
+    "pretest": "npm run build --prefix packages/clawcodex-ink",
     "test": "vitest run",
+    "pretest:watch": "npm run build --prefix packages/clawcodex-ink",
     "test:watch": "vitest"
   },
   "dependencies": {
