@@ -94,6 +94,22 @@ clawcodex --dangerously-skip-permissions   # 启动 REPL
 
 ***
 
+## 🏆 Terminal-Bench 2.1 —— Opus 5 上 **80.9%**，顶尖开源成绩
+
+在经过验证的 89 任务 **Terminal-Bench 2.1** 套件上，ClawCodex 以 `claude-opus-5`（`effort=xhigh`）无头运行，解决了 **72 / 89** 个任务（**80.9% pass@1**，单次运行）。在[公开排行榜](https://www.tbench.ai/leaderboard/terminal-bench/2.1)（k=5 平均）上这大约排在**第 3 左右**：
+
+| Agent | 模型 | 准确率 |
+|---|---|---:|
+| Claude Code | Fable 5 | 83.8% |
+| Codex | GPT-5.5 | 83.1% |
+| **ClawCodex** | **Opus 5** | **80.9%** |
+| Terminus 2 | Fable 5 | 80.4% |
+| Claude Code | Opus 4.8 | 78.9% |
+
+落后于 Claude Code / Fable 5 与 Codex / GPT-5.5，**领先 Claude Code 搭配 Opus 4.8（78.9%）**。单次 k=1 对照榜单的 k=5 平均值，基准运行在 v1.3.0 打标签前的 `main`（#756），完整可由开源 [Harbor 适配器](../../eval/harbor/) 复现。
+
+***
+
 ## 🏆 SWE-bench Verified —— 相同模型下 `clawcodex` 超越 `openclaude`
 
 ![SWE-bench Verified —— clawcodex vs openclaude on Gemini 2.5 Pro](../../assets/swebench-verified-gemini.png)

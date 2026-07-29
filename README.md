@@ -26,6 +26,22 @@
 
 <div align="center">
 
+# 🏆 Terminal-Bench 2.1
+
+# **80.9%** on Claude Opus 5 — a top-tier open-source result
+
+### 72 of 89 tasks solved (pass@1) on the verified 89-task suite. On the [public leaderboard](https://www.tbench.ai/leaderboard/terminal-bench/2.1) that slots **around 3rd** — behind Claude Code / Fable 5 (83.8%) and Codex / GPT-5.5 (83.1%), **ahead of Claude Code on Opus 4.8 (78.9%)**.
+
+ClawCodex — the open-source Python rebuild of Claude Code — run headless on `claude-opus-5` at `effort=xhigh`.
+A single run (k=1) against the board's k=5 averages; benchmarked on `main` at #756. Fully reproducible from the
+open-source [Harbor adapter](eval/harbor/). **[Read the full breakdown ↓](#-news)**
+
+</div>
+
+***
+
+<div align="center">
+
 # 🌿✂️ /eco Token Compression
 
 # Same session, **80% fewer** Bash-output tokens
