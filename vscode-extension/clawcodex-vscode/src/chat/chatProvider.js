@@ -314,8 +314,23 @@ class ChatController {
       return;
     }
 
-    // Non-permission inbound control_requests: nothing for a chat pane to do.
+    // Non-permission inbound control_requests: nothing for a chat pane to
+    // RENDER, but silence is not a safe default. The server blocks a worker
+    // thread per control_request until it is answered or times out, and
+    // AskUserQuestion's timeout is 30 minutes -- so dropping one wedges the
+    // session with no visible cause. Decline anything we cannot present, and
+    // let the tool take its own not-answered path immediately.
     if (isControlRequest(msg)) {
+      const requestId = msg.request_id;
+
+      if (requestId && this._process) {
+        try {
+          this._process.sendControlResponse(requestId, { action: 'cancel', behavior: 'deny' });
+        } catch {
+          // Best effort: a dead process needs no reply.
+        }
+      }
+
       return;
     }
 
