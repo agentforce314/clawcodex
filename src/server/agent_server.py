@@ -81,6 +81,15 @@ PROTOCOL_VERSION = "0.1.0"
 #: not wedge a tool forever, so we default-deny after this (proposal §7).
 DEFAULT_PERMISSION_TIMEOUT_S = 300.0
 
+#: Default ceiling for an AskUserQuestion round-trip. Deliberately much longer
+#: than the permission timeout above: that one guards against a dead client,
+#: whereas this one is a human reading up to four questions and composing
+#: answers. Expiring at 300s would yank the dialog out from under someone who
+#: was still thinking. On expiry the user is not denied -- the tool returns a
+#: "proceed autonomously" answer so the agent keeps moving (see
+#: ``ask_user`` below).
+DEFAULT_ASK_USER_TIMEOUT_S = 1800.0
+
 #: Default agent-loop turn ceiling for an interactive session. Shared by the
 #: dataclass default below and the ``--max-turns`` CLI flag (agent_server_cli.py)
 #: so the two can't drift apart from independently hand-edited literals.
@@ -126,6 +135,7 @@ class AgentServerConfig:
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     permission_timeout_s: float = DEFAULT_PERMISSION_TIMEOUT_S
+    ask_user_timeout_s: float = DEFAULT_ASK_USER_TIMEOUT_S
     # ch02 round-4 (critic B1): True only on the --stdio transport, which
     # serves exactly one session (the Ink client's spawned child). Gates
     # the process-global side effects in _build_runtime (post-trust env
@@ -371,9 +381,15 @@ class _AgentSession:
             # immediately rather than at permission_timeout_s (proposal §7: ESC
             # during a permission prompt must both deny the pending ask AND
             # abort the turn). Mirrors shutdown()'s deny-release.
-            for pending in pendings:
-                pending.reply = {"behavior": "deny", "message": "interrupted"}
-                pending.event.set()
+            # Under the lock and honoring the latch: a reply that already
+            # landed must win over the sweep, or an answer the user really
+            # submitted gets thrown away by an unrelated interrupt.
+            with self._lock:
+                for pending in pendings:
+                    if pending.event.is_set():
+                        continue
+                    pending.reply = {"behavior": "deny", "message": "interrupted"}
+                    pending.event.set()
             if abort is not None:
                 abort.abort("user_interrupt")
             # ESC while IDLE clears the pending dynamic-loop wakeup
@@ -2604,10 +2620,65 @@ class _AgentSession:
             return
         with self._lock:
             pending = self._pending.get(request_id)
-        if pending is None:
-            return
-        pending.reply = inner if isinstance(inner, dict) else {"behavior": "deny"}
-        pending.event.set()
+            if pending is None:
+                return
+            # First writer wins. A duplicate or racing response must not be able
+            # to overwrite a reply between event.set() and the waiter's read --
+            # in the permission lane that turns a deny into an allow whose
+            # chosen_updates get persisted.
+            if pending.event.is_set():
+                return
+            pending.reply = inner if isinstance(inner, dict) else {"behavior": "deny"}
+            pending.event.set()
+
+    # ─── shared control round-trip (worker thread; BLOCKS) ─────────────────
+
+    def _round_trip(self, request: dict, timeout: float) -> tuple[str, dict | None]:
+        """Emit a ``control_request`` and block for the client's reply.
+
+        The single implementation behind both synchronous lanes (permission and
+        ask-user). They had drifted: only one guarded against registering after
+        shutdown, and only one popped its slot in a ``finally`` -- so a raising
+        ``_emit`` leaked a pending slot in the other, which the shutdown sweep
+        would then try to release forever.
+
+        Returns ``(status, reply)`` where status is ``"closed"`` (shutting down,
+        nothing emitted), ``"timeout"``, or ``"replied"``. Callers own the
+        interpretation of ``reply`` -- the two lanes read different shapes and
+        must not be collapsed.
+
+        (``_make_elicitation_handler`` deliberately stays separate: it is
+        ``async`` and awaits via ``run_in_executor`` on the MCP runtime loop, so
+        it cannot share this synchronous body.)
+        """
+        request_id = str(_uuid.uuid4())
+        pending = _Pending(event=threading.Event())
+
+        with self._lock:
+            # Registering after shutdown() took its release snapshot would park
+            # this thread for the full timeout with nobody left to answer --
+            # _emit silently drops on a closed loop, so the client would never
+            # even see the request. ``_stop`` is set at the top of shutdown(),
+            # so checking it under the same lock closes that window.
+            if self._stop.is_set():
+                return "closed", None
+            self._pending[request_id] = pending
+
+        try:
+            self._emit({
+                "type": "control_request",
+                "request_id": request_id,
+                "request": request,
+            })
+            got = pending.event.wait(timeout=timeout)
+            with self._lock:
+                reply = pending.reply
+        finally:
+            # Pop on EVERY exit path, including a raising _emit.
+            with self._lock:
+                self._pending.pop(request_id, None)
+
+        return ("replied", reply) if got else ("timeout", None)
 
     # ─── permission-mode push (any thread; _emit is thread-safe) ───────────
 
@@ -2635,11 +2706,6 @@ class _AgentSession:
 
     def permission_handler(self, request: Any) -> Any:
         from src.permissions.types import PermissionAskReply
-
-        request_id = str(_uuid.uuid4())
-        pending = _Pending(event=threading.Event())
-        with self._lock:
-            self._pending[request_id] = pending
 
         # ch13 round-4 — forward the permission SUGGESTIONS (the "always
         # allow Bash(ls:*)" rule options) so the TUI can offer a persistable
@@ -2693,21 +2759,15 @@ class _AgentSession:
                 ) or bool(self.config.bypass_selectable)
             except Exception:  # noqa: BLE001 — degrade to the generic box
                 logger.debug("[agent-server] plan payload failed", exc_info=True)
-        self._emit({
-            "type": "control_request",
-            "request_id": request_id,
-            "request": wire_request,
-        })
+        status, reply = self._round_trip(wire_request, self.config.permission_timeout_s)
 
-        got = pending.event.wait(timeout=self.config.permission_timeout_s)
-        with self._lock:
-            self._pending.pop(request_id, None)
-
-        if not got:
+        if status == "closed":
+            return PermissionAskReply(behavior="deny", message="session closed")
+        if status == "timeout":
             return PermissionAskReply(
                 behavior="deny", message="permission request timed out"
             )
-        return self._permission_reply(pending.reply or {"behavior": "deny"})
+        return self._permission_reply(reply or {"behavior": "deny"})
 
     def _permission_reply(self, reply: dict) -> Any:
         """Turn a client's permission-ask reply into a :class:`PermissionAskReply`.
@@ -2747,6 +2807,82 @@ class _AgentSession:
             updated_input=updated if isinstance(updated, dict) else None,
             chosen_updates=chosen,
         )
+
+    # ─── AskUserQuestion handler (worker thread; BLOCKS) ───────────────────
+
+    def ask_user(self, questions: list[dict]) -> dict[str, str] | None:
+        """Collect answers to AskUserQuestion's questions from the client.
+
+        Deliberately NOT routed through the permission lane, even though
+        ExitPlanMode -- the other blocking interactive tool -- is.
+        ``PermissionAskReply`` carries only behavior/updated_input/
+        chosen_updates, with nowhere to put structured answers; ExitPlanMode
+        gets away with smuggling its edited plan through ``updatedInput``.
+        This borrows the MCP-elicitation shape instead (``_make_elicitation_handler``):
+        the same ``_pending`` round-trip, but a free-form reply. That also
+        keeps AskUserQuestion in ``NO_PERMISSION_TOOLS`` -- the questions ARE
+        the gate, and stacking an "Answer questions?" prompt on top of them
+        would be absurd.
+
+        Blocks the WORKER thread; the main asyncio loop keeps pumping stdin and
+        delivers the reply (see the module header). Returns ``None`` when the
+        user declines -- distinct from an empty dict, which is a submit with
+        nothing filled in.
+        """
+        status, reply = self._round_trip(
+            {"subtype": "ask_user_question", "questions": questions},
+            self.config.ask_user_timeout_s,
+        )
+
+        # Shutting down: nobody is left to answer, and a decline is the honest
+        # reading -- the question was never put to anyone.
+        if status == "closed":
+            return None
+
+        if status == "timeout":
+            # Nobody answered. Deny would be actively misleading here (the user
+            # did not refuse, they walked away), and an empty answer makes the
+            # model flail -- so hand back the same "proceed autonomously"
+            # instruction the headless surface uses.
+            # Local import: this module is the agent-server entry and the tool
+            # package pulls in the whole registry, so importing at module scope
+            # would put that on every cold start for a branch most turns never
+            # reach.
+            from src.tool_system.tools.ask_user_question import TIMED_OUT_ANSWER
+
+            return {
+                q["question"]: TIMED_OUT_ANSWER
+                for q in questions
+                if isinstance(q, dict) and isinstance(q.get("question"), str)
+            }
+
+        reply = reply or {}
+        # Anything that is not an explicit submit counts as a decline. That
+        # deliberately includes the generic {"behavior": "deny"} that the ESC
+        # sweep (_handle_control_request, subtype "interrupt") and shutdown()
+        # write into every pending slot -- an interrupted question was not
+        # answered, and this is what makes ESC release the block immediately
+        # instead of at ask_user_timeout_s.
+        if reply.get("action") != "submit":
+            return None
+        answers = reply.get("answers")
+        if not isinstance(answers, dict):
+            return {}
+        # Only keys we actually ASKED about survive. The reply is client-shaped
+        # and its values end up in prose the model reads as authoritative user
+        # speech, so an unfiltered map lets a compromised or buggy client
+        # attribute statements to the user for questions that were never put to
+        # them.
+        asked = {
+            q["question"]
+            for q in questions
+            if isinstance(q, dict) and isinstance(q.get("question"), str)
+        }
+        return {
+            str(q): str(a)
+            for q, a in answers.items()
+            if isinstance(q, str) and q in asked and a is not None
+        }
 
     def _may_persist_mode(self, mode: str) -> bool:
         """Whether a wire request may write ``permissions.defaultMode`` to disk.
@@ -4134,9 +4270,14 @@ class _AgentSession:
         with self._lock:
             pendings = list(self._pending.values())
             abort = self._current_abort
-        for pending in pendings:
-            pending.reply = {"behavior": "deny", "message": "session closed"}
-            pending.event.set()
+        # Under the lock and honoring the latch, same as the interrupt sweep:
+        # a reply that already landed must not be overwritten on the way out.
+        with self._lock:
+            for pending in pendings:
+                if pending.event.is_set():
+                    continue
+                pending.reply = {"behavior": "deny", "message": "session closed"}
+                pending.event.set()
         if abort is not None:
             abort.abort("session_closed")
         self._inbox.put(_SHUTDOWN)
@@ -4181,9 +4322,24 @@ def make_spawn_agent(config: AgentServerConfig | None = None):
         # Build the provider/registry/tool_context off the event loop — these
         # touch config/filesystem and must not block the WS pump.
         await loop.run_in_executor(None, lambda: _build_runtime(sess, perm_mode))
-        # Wire the permission handler now that tool_context exists.
+        # Wire the permission + ask-user handlers now that tool_context exists.
         if sess.tool_context is not None and sess.init_error is None:
             sess.tool_context.permission_handler = sess.permission_handler
+            # Without this AskUserQuestion falls through to its outbox branch
+            # and returns its own questions back as a "pending" result -- the
+            # tool looked registered but could never actually ask.
+            #
+            # single_session only: that is the --stdio transport, one session
+            # owned by the Ink client we know renders the dialog. On the
+            # multi-session --http transport there is no capability
+            # negotiation, so a client that ignores the ask_user_question
+            # subtype would park that session's sole worker thread for the full
+            # ask_user_timeout_s. Substitute the non-interactive answer there
+            # instead, which is what the headless surface does.
+            if sess.config.single_session:
+                sess.tool_context.ask_user = sess.ask_user
+            else:
+                sess.tool_context.ask_user = _non_interactive_ask_user
         sess.start()
         sess.emit_init()
 
@@ -4830,9 +4986,24 @@ def _filter_registry(registry, *, keep) -> None:
 # ─── message shaping ─────────────────────────────────────────────────────────
 
 
+def _non_interactive_ask_user(questions: list[dict]) -> dict[str, str]:
+    """AskUserQuestion substitute for transports with no dialog-capable client.
+
+    Mirrors headless's ``_noop_ask_user``: NOT ``None`` (that is the decline
+    signal) and not empty strings (which make the model flail) -- an explicit
+    "proceed autonomously" so the turn keeps moving.
+    """
+    from src.tool_system.tools.ask_user_question import NON_INTERACTIVE_ANSWER
+
+    return {
+        q["question"]: NON_INTERACTIVE_ANSWER
+        for q in questions
+        if isinstance(q, dict) and isinstance(q.get("question"), str)
+    }
+
+
 def _display_tool_result(value: Any) -> dict | None:
-    """Trim a rich Edit/Write or WebSearch tool output for the wire (display
-    data only).
+    """Trim a rich tool output for the wire (display data only).
 
     Recognizes self-describing shapes rather than a tool name so mid-turn
     clients can render without tool_use bookkeeping:
@@ -4848,6 +5019,10 @@ def _display_tool_result(value: Any) -> dict | None:
       the only input the one-line render needs ("Read image (12.3KB)", UI.tsx
       renderToolResultMessage). The base64 payload is dropped: it belongs on the
       model-facing tool_result content, never on a display envelope.
+    * AskUserQuestion (``type: "ask_user_question"``) — reduced to ``answers``
+      or ``declined``. The ``questions`` bodies are deliberately dropped:
+      ``answers`` is already keyed by question text, and the option/description
+      bodies are dialog INPUT, not transcript output.
     * WebSearch (``query``/``results``/``duration_seconds``) — reduced to the
       two numbers the original's one-line render needs (UI.tsx
       renderToolResultMessage: "Did N searches in Xs"): ``searchCount`` per
@@ -4873,6 +5048,25 @@ def _display_tool_result(value: Any) -> dict | None:
             "searchCount": sum(
                 1 for r in value["results"] if r is not None and not isinstance(r, str)
             ),
+        }
+    from src.tool_system.tools.ask_user_question import RESULT_TYPE
+
+    if value.get("type") == RESULT_TYPE:
+        # Answered/declined AskUserQuestion: forward just what the transcript
+        # renders ("· question → answer" rows, or the declined line). The
+        # ``questions`` list is deliberately dropped -- ``answers`` is already
+        # keyed by question text, and the option/description bodies are dialog
+        # input, not transcript output.
+        if value.get("declined"):
+            return {"type": RESULT_TYPE, "declined": True}
+        answers = value.get("answers")
+        if not isinstance(answers, dict):
+            return None
+        return {
+            "type": RESULT_TYPE,
+            "answers": {
+                str(q): str(a) for q, a in answers.items() if isinstance(q, str)
+            },
         }
     if value.get("type") == "image":
         # Read-an-image: forward ONLY the byte count the one-line render needs

@@ -8,7 +8,7 @@
     "max_result_size_chars": 20000
   },
   "tool_overrides": {
-    "AskUserQuestion": {"is_read_only": true, "is_concurrency_safe": true},
+    "AskUserQuestion": {"is_read_only": true, "is_concurrency_safe": false, "_note": "DELIBERATE DIVERGENCE: TS AskUserQuestionTool.tsx isConcurrencySafe()=true; this port returns false. Upstream serializes interactive dialogs through REPL's toolUseConfirmQueue and renders only the head. This port has no such queue and the TUI's PromptZone is an exclusive if-chain, so a second simultaneous question dialog would be invisible while still blocking its tool. See src/tool_system/tools/ask_user_question.py."},
     "Bash": {"is_read_only": false, "is_concurrency_safe": false, "is_destructive": true},
     "Brief": {"is_read_only": true, "is_concurrency_safe": true},
     "ClipboardRead": {"is_read_only": true, "is_concurrency_safe": true},

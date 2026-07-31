@@ -141,7 +141,12 @@ class ToolContext:
     background_bash_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     worktree_root: Path | None = None
     outbox: list[dict[str, Any]] = field(default_factory=list)
-    ask_user: Callable[[list[dict[str, Any]]], dict[str, str]] | None = None
+    # Collects answers for AskUserQuestion. Returning ``None`` means the user
+    # DECLINED (dismissed the dialog); an empty dict means they submitted with
+    # nothing filled in, which is a different thing. ``None`` on the field
+    # itself means the surface has no way to ask at all, and the tool falls
+    # back to its outbox branch.
+    ask_user: Callable[[list[dict[str, Any]]], dict[str, str] | None] | None = None
     crons: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Live scheduled-task engine (src.scheduled_tasks.SessionCronScheduler).
     # Set for the MAIN agent-server session only; when present the Cron*
