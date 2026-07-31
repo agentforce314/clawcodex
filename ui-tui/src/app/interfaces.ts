@@ -7,6 +7,7 @@ import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } 
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { SessionStats } from '../lib/sessionStats.js'
+import type { QuestionAnswers } from '../components/questionPrompt.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -16,6 +17,7 @@ import type {
   Msg,
   PanelSection,
   PlanApprovalReq,
+  QuestionReq,
   SecretReq,
   SectionVisibility,
   SessionInfo,
@@ -148,6 +150,7 @@ export interface OverlayState {
   petPicker: boolean
   planApproval: null | PlanApprovalReq
   pluginsHub: boolean
+  questions: null | QuestionReq
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
@@ -408,6 +411,7 @@ export interface AppLayoutActions {
   answerApproval: (choice: string, rule?: string) => void
   answerClarify: (answer: string) => void
   answerPlanApproval: (choice: string, feedback?: string) => void
+  answerQuestions: (answers: null | QuestionAnswers) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -479,6 +483,7 @@ export interface AppOverlaysProps {
   onApprovalChoice: (choice: string, rule?: string) => void
   onClarifyAnswer: (value: string) => void
   onPlanApprovalChoice: (choice: string, feedback?: string) => void
+  onQuestionsAnswer: (answers: null | QuestionAnswers) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onLogoSelect: (value: string) => void

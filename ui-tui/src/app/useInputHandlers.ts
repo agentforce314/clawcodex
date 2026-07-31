@@ -7,6 +7,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import { PLACEHOLDER, suggestedQuery } from '../content/placeholders.js'
 import type {
   ApprovalRespondResponse,
+  QuestionRespondResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -181,6 +182,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         )
     }
 
+    if (overlay.questions) {
+      // Ctrl+C on the question dialog = dismiss without answering, same as the
+      // dialog's own Esc. Without a branch here Ctrl+C is a silent no-op and
+      // the tool stays blocked until the ask_user timeout. Direct rpc rather
+      // than an action, like the two branches above: useMainApp declares
+      // answerQuestions AFTER it calls useInputHandlers.
+      return gateway
+        .rpc<QuestionRespondResponse>('question.respond', { answers: null, session_id: getUiState().sid })
+        .then(
+          r => r && (patchOverlayState({ questions: null }), patchTurnState({ outcome: 'questions dismissed' }))
+        )
+    }
+
     if (overlay.sudo) {
       return gateway
         .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
@@ -338,7 +352,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
+      const promptOverlay =
+        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.questions
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {

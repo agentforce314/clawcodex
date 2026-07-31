@@ -464,6 +464,10 @@ export interface ApprovalRespondResponse {
   ok?: boolean
 }
 
+export interface QuestionRespondResponse {
+  ok?: boolean
+}
+
 export interface SudoRespondResponse {
   ok?: boolean
 }
@@ -740,6 +744,23 @@ export interface CronSnapshot {
   wakeup?: CronWakeupInfo | null
 }
 
+/** One selectable answer in an AskUserQuestion question. `description` is the
+ *  dim explanatory line rendered under the label. */
+export interface QuestionOption {
+  description?: string
+  label: string
+}
+
+/** One AskUserQuestion question, as sent by the backend's `ask_user_question`
+ *  control request. `header` is the short chip label in the navigation bar;
+ *  `multiSelect` switches the option list to checkboxes with a submit row. */
+export interface QuestionSpec {
+  header?: string
+  multiSelect?: boolean
+  options?: QuestionOption[]
+  question: string
+}
+
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
@@ -835,6 +856,7 @@ export type GatewayEvent =
       session_id?: string
       type: 'plan.approval'
     }
+  | { payload: { questions: QuestionSpec[] }; session_id?: string; type: 'question.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { mode: string }; session_id?: string; type: 'permission.mode' }

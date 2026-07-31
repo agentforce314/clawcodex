@@ -208,6 +208,30 @@ function webSearchSummary(result: string, webSearch?: WebSearchDisplay): string 
  *  the payload travels on the model-facing tool_result content only. */
 export type ImageDisplay = { originalSize?: number }
 
+/** AskUserQuestion display data forwarded by the agent-server (`tool_use_result`
+ *  trimmed to the answered map, or the declined flag). The model-facing prose
+ *  ("User has answered your questions: …") travels on the tool_result content;
+ *  the transcript renders from this structure instead of scraping that. */
+export type AskUserDisplay = { answers?: Record<string, string>; declined?: boolean }
+
+/** Port of AskUserQuestionTool.tsx's renderToolResultMessage body: one
+ *  `· question → answer` row per answered question, in the order they were
+ *  answered (the answers map's insertion order) — which differs from ask order
+ *  if the user tabbed back and forth. */
+export function askUserSummary(display: AskUserDisplay): string {
+  if (display.declined) {
+    return 'User declined to answer questions'
+  }
+
+  const entries = Object.entries(display.answers ?? {})
+
+  // An empty submit is reachable: the review step lets you submit with
+  // questions left blank. Say so rather than rendering nothing at all.
+  return entries.length
+    ? entries.map(([question, answer]) => `· ${question} → ${answer}`).join('\n')
+    : 'No answers submitted'
+}
+
 /** Exact port of typescript/src/utils/format.ts formatFileSize. */
 export function formatFileSize(sizeInBytes: number): string {
   const kb = sizeInBytes / 1024
@@ -318,21 +342,47 @@ function toolSpecificErrorSummary(name: string | undefined, result: string): str
   switch (name) {
     case 'Read':
       return 'Error reading file'
+
     case 'Grep':
+
     case 'Glob':
       return tagged.includes(FILE_NOT_FOUND_CWD_NOTE) ? 'File not found' : 'Error searching files'
+
     case 'Edit':
       // "Show a less scary message for intended behavior" (FileEditTool/UI.tsx:138).
       if (tagged.includes('File has not been read yet')) {return 'File must be read first'}
 
       return tagged.includes(FILE_NOT_FOUND_CWD_NOTE) ? 'File not found' : 'Error editing file'
+
     case 'Write':
       return 'Error writing file'
+
     case 'NotebookEdit':
       return 'Error editing notebook'
+
     default:
       return undefined
   }
+}
+
+/** Collapse the legacy `{"questions":[…],"status":"pending"}` dead-letter
+ *  result to one line. Falls back to the raw text only if it does not parse as
+ *  that shape, so a genuinely different payload is never silently hidden. */
+function pendingQuestionsSummary(result: string): string {
+  try {
+    const parsed = JSON.parse(result)
+    const questions = parsed?.questions
+
+    if (Array.isArray(questions)) {
+      const n = questions.length
+
+      return `Waiting on ${n} question${n === 1 ? '' : 's'} (no interactive surface)`
+    }
+  } catch {
+    // Not JSON — fall through and show whatever it is.
+  }
+
+  return result
 }
 
 export function formatToolResult(
@@ -340,7 +390,8 @@ export function formatToolResult(
   result: string,
   isError = false,
   webSearch?: WebSearchDisplay,
-  image?: ImageDisplay
+  image?: ImageDisplay,
+  askUser?: AskUserDisplay
 ): string {
   if (isError) {
     const summary = toolSpecificErrorSummary(name, result ?? '')
@@ -352,6 +403,7 @@ export function formatToolResult(
     // violation blocks, and bare `<error>` tags are model-facing bytes, not
     // something the transcript should print.
     const extracted = extractTag(result ?? '', 'tool_use_error') ?? (result ?? '')
+
     const trimmed = extracted
       .replace(/<sandbox_violations>[\s\S]*?<\/sandbox_violations>/g, '')
       .replace(/<\/?error>/g, '')
@@ -390,7 +442,22 @@ export function formatToolResult(
     return imageSummary(image)
   }
 
+  // Same: the answers live on the envelope, and the content is the model-facing
+  // prose ("User has answered your questions: …") which reads badly here.
+  if (askUser) {
+    return askUserSummary(askUser)
+  }
+
   if (!result) {return result}
+
+  // Backstop for a surface that never collected answers — an agent-server
+  // predating the ask_user round-trip, or the MCP/SDK path — where the tool
+  // falls through to its outbox branch and returns its own questions as a
+  // "pending" result. Without this the whole {"questions":[…]} blob is dumped
+  // into the transcript verbatim, which is the bug that started all this.
+  if (name === 'AskUserQuestion') {
+    return pendingQuestionsSummary(result)
+  }
 
   // The original renders the whole result as ONE line (never the blob —
   // that's tens of wrapped rows of snippets); the full text stays reachable
@@ -526,6 +593,10 @@ export class GatewayClient extends EventEmitter {
   private logs: string[] = []
   // The tool-permission request currently awaiting the user's choice.
   private pendingApproval: { input: unknown; request_id: string; suggestions: any[] } | null = null
+  // The AskUserQuestion round-trip currently awaiting answers. A SEPARATE slot
+  // from pendingApproval on purpose: that one is single-flight and reusing it
+  // would let a permission ask and a question dialog clobber each other.
+  private pendingQuestions: { questions: any[]; request_id: string } | null = null
   // ch13 round-4 — subagent ids already announced via subagent.start, so a
   // second agent_progress emits subagent.progress (not a duplicate start).
   private seenSubagents = new Set<string>()
@@ -987,11 +1058,13 @@ export class GatewayClient extends EventEmitter {
 
         if (ap) {
           const choice = String(p.choice ?? 'deny')
+
           const modeByChoice: Record<string, string> = {
             'accept-edits': 'acceptEdits',
             bypass: 'bypassPermissions',
             default: 'default'
           }
+
           const mode = modeByChoice[choice]
 
           this.send({
@@ -1008,6 +1081,34 @@ export class GatewayClient extends EventEmitter {
             type: 'control_response'
           })
         }
+
+        return Promise.resolve({ ok: true } as T)
+      }
+
+      case 'question.respond': {
+        // AskUserQuestion dialog reply. `answers` is a question-text → answer
+        // map (multi-select answers already joined by the dialog); a null/
+        // absent `answers` means the user dismissed the dialog, which the
+        // backend maps to a decline rather than an empty submit.
+        const pq = this.pendingQuestions
+        this.pendingQuestions = null
+
+        if (!pq) {
+          // No live slot: the round trip already ended (timed out server-side,
+          // or a second reply raced the first). Reporting ok here made the app
+          // stamp "questions answered" on a turn whose answers went nowhere.
+          return Promise.resolve({ ok: false } as T)
+        }
+
+        const answers = p.answers && typeof p.answers === 'object' ? p.answers : null
+
+        this.send({
+          response: {
+            request_id: pq.request_id,
+            response: answers ? { action: 'submit', answers } : { action: 'cancel' }
+          },
+          type: 'control_response'
+        })
 
         return Promise.resolve({ ok: true } as T)
       }
@@ -1236,6 +1337,7 @@ export class GatewayClient extends EventEmitter {
 
         return skill ?? out('loop: backend not ready')
       }
+
       case 'advisor': {
         const r = (await this.controlQuery('advisor', { arg: arg ?? '' })) as any
 
@@ -1243,6 +1345,7 @@ export class GatewayClient extends EventEmitter {
 
         return out(String(r.text ?? r.error ?? 'advisor: no response'))
       }
+
       case 'memory': {
         // Arg-ful /memory (status | pending | approve | reject) — the
         // bounded-store management surface. The no-arg picker never routes
@@ -1621,6 +1724,27 @@ export class GatewayClient extends EventEmitter {
     return { durationSeconds: num(value.durationSeconds), searchCount: num(value.searchCount) }
   }
 
+  // AskUserQuestion answers on the same envelope. Shape-detected like the
+  // others so a mid-turn attach renders without tool_use bookkeeping.
+  private askUserDisplay(value: any): AskUserDisplay | undefined {
+    if (!value || typeof value !== 'object' || value.type !== 'ask_user_question') {return undefined}
+
+    if (value.declined) {
+      return { declined: true }
+    }
+
+    const raw = value.answers
+    const answers: Record<string, string> = {}
+
+    if (raw && typeof raw === 'object') {
+      for (const [question, answer] of Object.entries(raw)) {
+        answers[question] = String(answer)
+      }
+    }
+
+    return { answers }
+  }
+
   private imageDisplay(value: any): ImageDisplay | undefined {
     if (!value || typeof value !== 'object' || value.type !== 'image') {return undefined}
     const size = value.originalSize
@@ -1817,6 +1941,7 @@ export class GatewayClient extends EventEmitter {
           let structured = this.structuredDiff(msg.tool_use_result)
           let webSearch = this.webSearchDisplay(msg.tool_use_result)
           let image = this.imageDisplay(msg.tool_use_result)
+          let askUser = this.askUserDisplay(msg.tool_use_result)
 
           for (const b of content) {
             if (b?.type === 'tool_result') {
@@ -1825,7 +1950,7 @@ export class GatewayClient extends EventEmitter {
               // real patch nor a fabricated one for an edit that never ran.
               const isError = Boolean(b.is_error)
               const fullText = flattenToolResultContent(b.content)
-              const resultText = formatToolResult(stored?.name, fullText, isError, webSearch, image)
+              const resultText = formatToolResult(stored?.name, fullText, isError, webSearch, image, askUser)
               const taskTodos = isError ? undefined : this.taskTodosFromResult(stored?.name, stored?.input, fullText)
               // Read shows no expand hint (the summary loses nothing the user
               // needs — the file is in context), so retain nothing for it.
@@ -1849,6 +1974,7 @@ export class GatewayClient extends EventEmitter {
               structured = undefined
               webSearch = undefined
               image = undefined
+              askUser = undefined
               this.toolInputs.delete(String(b.tool_use_id))
             }
           }
@@ -1946,10 +2072,12 @@ export class GatewayClient extends EventEmitter {
         if (current) {
           const content = String(args.subject ?? current.content).trim()
           const activeForm = String(args.activeForm ?? current.activeForm ?? '').trim()
+
           const status =
             args.status === 'pending' || args.status === 'in_progress' || args.status === 'completed'
               ? args.status
               : current.status
+
           this.taskTodos.set(id, {
             ...(activeForm && { activeForm }),
             content,
@@ -1970,6 +2098,7 @@ export class GatewayClient extends EventEmitter {
           if (!id || !content || (status !== 'pending' && status !== 'in_progress' && status !== 'completed')) {
             continue
           }
+
           const previous = this.taskTodos.get(id)
           listed.set(id, {
             ...(previous?.activeForm && { activeForm: previous.activeForm }),
@@ -2040,6 +2169,7 @@ export class GatewayClient extends EventEmitter {
 
         return
       }
+
       // Show the ACTUAL command/action under review, not the tool name or a raw
       // JSON dump — and carry the editable grant rule separately so the box can
       // offer a broadenable "don't ask again for <rule>" option. Only offer the
@@ -2065,6 +2195,14 @@ export class GatewayClient extends EventEmitter {
         },
         type: 'approval.request'
       })
+    } else if (req?.subtype === 'ask_user_question') {
+      // AskUserQuestion does NOT come through the permission lane (the
+      // questions are the gate), so it carries its own subtype and its own
+      // reply shape — free-form, because permission replies have nowhere to
+      // put structured answers.
+      const questions: any[] = Array.isArray(req.questions) ? req.questions : []
+      this.pendingQuestions = { questions, request_id: String(msg.request_id ?? '') }
+      this.publish({ payload: { questions }, type: 'question.request' })
     } else if (req?.subtype === 'mcp_elicitation') {
       this.publish({
         payload: { choices: null, question: 'Input requested', request_id: String(msg.request_id ?? '') },

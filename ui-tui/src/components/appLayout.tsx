@@ -104,6 +104,27 @@ const TranscriptPane = memo(function TranscriptPane({
         flexDirection="column"
         flexGrow={1}
         flexShrink={1}
+        // Remount on width change — inline mode only.
+        //
+        // Inline mode has no constrained-height root (ink lays the tree out
+        // with `calculateLayout(columns)`, height undefined), so the ScrollBox
+        // sizes to its content. Widening the terminal re-wraps every row
+        // shorter, but the box does NOT shrink with them: it keeps its
+        // pre-resize height and pads the difference with blank rows. Those
+        // blanks push the transcript above the terminal viewport, and the
+        // resize repaint's ERASE_SCROLLBACK (log-update fullReset →
+        // clearTerminal) wipes it from scrollback — so the whole transcript
+        // reads as gone, with only the composer left on screen.
+        //
+        // A fresh Yoga node has no prior layout to keep, so remounting is what
+        // actually re-measures. Marking the tree dirty is NOT enough (tested).
+        // Every transcript row already remounts on a width change (useMainApp
+        // keys virtualRows on `cols`), so this adds no new render cost.
+        //
+        // Fullscreen pins the root to terminalRows, so its ScrollBox can never
+        // drift — and keying there would throw away the user's scroll position
+        // on every resize.
+        key={INLINE_MODE ? composer.cols : undefined}
         onClick={(e: { cellIsBlank?: boolean }) => {
           if (e.cellIsBlank) {
             actions.clearSelection()
@@ -511,6 +532,7 @@ export const AppLayout = memo(function AppLayout({
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
                 onPlanApprovalChoice={actions.answerPlanApproval}
+                onQuestionsAnswer={actions.answerQuestions}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />

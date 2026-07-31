@@ -1,3 +1,5 @@
+import type { QuestionSpec } from './gatewayTypes.js'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -131,6 +133,13 @@ export interface PlanApprovalReq {
   bypassAvailable: boolean
   plan: null | string
   planFilePath: null | string
+}
+
+// AskUserQuestion's dialog (the AskUserQuestionPermissionRequest analog).
+// Deliberately NOT routed through the permission lane — the questions are the
+// gate — so it carries only the questions and replies with structured answers.
+export interface QuestionReq {
+  questions: QuestionSpec[]
 }
 
 export interface ClarifyReq {

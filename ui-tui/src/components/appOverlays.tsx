@@ -19,6 +19,7 @@ import { PermissionsPicker } from './permissionsPicker.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, PlanApprovalPrompt } from './prompts.js'
+import { QuestionPrompt } from './questionPrompt.js'
 import { SkillsHub } from './skillsHub.js'
 import { WorktreeExitPrompt } from './worktreeExitPrompt.js'
 
@@ -29,11 +30,18 @@ export function PromptZone({
   onApprovalChoice,
   onClarifyAnswer,
   onPlanApprovalChoice,
+  onQuestionsAnswer,
   onSecretSubmit,
   onSudoSubmit
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onPlanApprovalChoice' | 'onSecretSubmit' | 'onSudoSubmit'
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyAnswer'
+  | 'onPlanApprovalChoice'
+  | 'onQuestionsAnswer'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
@@ -60,6 +68,24 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+      </Box>
+    )
+  }
+
+  // BELOW the approval box, deliberately. A permission request is a gate on an
+  // action and must fail closed; a question is advisory. Ranked the other way,
+  // an approval arriving during a (possibly 30-minute) question dialog renders
+  // nothing at all, and ApprovalPrompt mounts with the allow option
+  // preselected -- so a type-ahead Enter could approve something never seen.
+  if (overlay.questions) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <QuestionPrompt
+          cols={cols}
+          onAnswer={onQuestionsAnswer}
+          questions={overlay.questions.questions}
+          t={theme}
+        />
       </Box>
     )
   }

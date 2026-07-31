@@ -145,6 +145,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     patchOverlayState({ clarify: null })
   }
 
+  // A question dialog still up when the turn ends is being torn down under the
+  // user (recordError, /clear). Dropping the overlay without replying strands
+  // the backend worker in ask_user's wait for up to ask_user_timeout_s while
+  // the composer comes back looking ready, so idle() declines it first.
+  turnController.releaseQuestions = () => {
+    void rpc('question.respond', { answers: null, session_id: getUiState().sid }).catch(() => {})
+  }
+
   // Inject the disk-save callback into turnController so recordMessageComplete
   // can fire-and-forget a persist without having to plumb a gateway ref around.
   turnController.persistSpawnTree = async (subagents, sessionId) => {
@@ -853,6 +861,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           }
         })
         setStatus('plan ready for review')
+
+        return
+
+      case 'question.request':
+        // AskUserQuestion's ask → the multiple-choice dialog. The tool is
+        // blocked on the backend until this answers, so the overlay must be
+        // reachable (it is folded into $isBlocked, which unmounts the composer).
+        patchOverlayState({ questions: { questions: ev.payload.questions } })
+        setStatus('waiting on your answers')
 
         return
 

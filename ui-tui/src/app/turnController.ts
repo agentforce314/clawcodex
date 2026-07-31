@@ -21,7 +21,7 @@ import {
 import type { ActiveTool, ActivityItem, Msg, MsgDiffData, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
-import { resetFlowOverlays } from './overlayStore.js'
+import { getOverlayState, resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -194,6 +194,10 @@ class TurnController {
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
+  /** Injected by createGatewayEventHandler: sends a decline for a question
+   *  dialog that idle() is about to drop, so the backend worker blocked in
+   *  ask_user is released instead of waiting out its 30-minute timeout. */
+  releaseQuestions?: () => void
   protocolWarned = false
   reasoningText = ''
   segmentMessages: Msg[] = []
@@ -370,6 +374,17 @@ class TurnController {
       turnTrail: []
     })
     patchUiState({ busy: false })
+
+    // A question dialog still up when the turn ends means the turn is being
+    // torn down underneath it (recordError, /clear). resetFlowOverlays drops
+    // the overlay either way, so without this the backend worker stays parked
+    // in ask_user's wait for up to ask_user_timeout_s (30 min) while the
+    // composer comes back and looks ready. Answer it as a decline first, so
+    // "overlay gone" and "tool released" stay a single invariant.
+    if (getOverlayState().questions) {
+      this.releaseQuestions?.()
+    }
+
     resetFlowOverlays()
   }
 
@@ -886,6 +901,17 @@ class TurnController {
     // The original renders NOTHING inline for todo tools — the checklist HUD
     // is the whole UI. completeTool still ran above (clears activeTools +
     // bookkeeping), only the trail-line append is suppressed.
+    //
+    // AskUserQuestion deliberately does NOT get the same treatment, even though
+    // upstream also hides its row (userFacingName() === '', renderToolUseMessage
+    // → null) and renders "⏺ User answered <product>'s questions:" from the
+    // RESULT instead. buildToolTrailLine (lib/text.ts) returns the header and
+    // its ⎿ detail as one string, so suppressing the row here would delete the
+    // answers with it, and there is no "result becomes the header" facility to
+    // put them back. It renders as `⏺ AskUserQuestion` + `⎿ · q → a` rows —
+    // the stated goal (a readable summary, not a JSON blob) without upstream's
+    // exact label. Do not "fix" this to match upstream without first giving the
+    // renderer that facility.
     if (name !== 'TodoWrite' || error) {
       this.pendingSegmentTools = [...this.pendingSegmentTools, line]
       this.pendingSegmentToolsVerbose = [...this.pendingSegmentToolsVerbose, this.lastVerboseLine]

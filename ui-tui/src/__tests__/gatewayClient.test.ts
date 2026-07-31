@@ -568,6 +568,7 @@ describe('GatewayClient NDJSON adapter', () => {
       action: 'inspect',
       query: 'QA'
     })
+
     expect(r.info).toMatchObject({ name: 'qa', path: '/u/qa' })
     expect(stdinFrames().filter(f => f.request?.subtype === 'list_skills')).toHaveLength(0)
   })
@@ -672,6 +673,101 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(p.rule_label).toBe('Bash(ls:*)')
   })
 
+  // ── AskUserQuestion ────────────────────────────────────────────────────────
+  //
+  // Deliberately NOT the permission lane: the questions ARE the gate, and a
+  // PermissionAskReply has nowhere to carry structured answers. These pin the
+  // wire contract in both directions.
+
+  it('forks ask_user_question into a question.request instead of the approval box', async () => {
+    const questions = [
+      { question: 'Which posts?', header: 'Scope', options: [{ label: 'Two' }, { label: 'All' }] }
+    ]
+
+    proc.line({ request: { questions, subtype: 'ask_user_question' }, request_id: 'q1', type: 'control_request' })
+    await vi.waitFor(() => expect(last('question.request')).toBeTruthy())
+
+    expect(last('question.request').payload.questions).toEqual(questions)
+    // The generic approval box must NOT also fire — that would stack a
+    // redundant "Answer questions?" prompt on top of the questions.
+    expect(last('approval.request')).toBeFalsy()
+  })
+
+  it('tolerates a malformed questions payload rather than throwing', async () => {
+    proc.line({ request: { questions: 'nope', subtype: 'ask_user_question' }, request_id: 'q1', type: 'control_request' })
+    await vi.waitFor(() => expect(last('question.request')).toBeTruthy())
+    expect(last('question.request').payload.questions).toEqual([])
+  })
+
+  it('replies to question.respond with action:submit and the answers map', async () => {
+    const sent: any[] = []
+
+    ;(gw as any).send = (m: any) => sent.push(m)
+
+    proc.line({
+      request: { questions: [{ question: 'Which posts?' }], subtype: 'ask_user_question' },
+      request_id: 'q7', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('question.request')).toBeTruthy())
+
+    await gw.request('question.respond', { answers: { 'Which posts?': 'Two' } })
+
+    const resp = sent.find(m => m.type === 'control_response')
+    expect(resp.response.request_id).toBe('q7')
+    expect(resp.response.response).toEqual({ action: 'submit', answers: { 'Which posts?': 'Two' } })
+  })
+
+  it('replies to a dismissed dialog with action:cancel, not an empty submit', async () => {
+    // The backend maps cancel to a DECLINE; an empty submit is a different
+    // thing (the review step lets you submit with nothing filled in), so
+    // collapsing the two would tell the model the user answered with nothing.
+    const sent: any[] = []
+
+    ;(gw as any).send = (m: any) => sent.push(m)
+
+    proc.line({
+      request: { questions: [{ question: 'Which posts?' }], subtype: 'ask_user_question' },
+      request_id: 'q8', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('question.request')).toBeTruthy())
+
+    await gw.request('question.respond', { answers: null })
+
+    const resp = sent.find(m => m.type === 'control_response')
+    expect(resp.response.request_id).toBe('q8')
+    expect(resp.response.response).toEqual({ action: 'cancel' })
+  })
+
+  it('reports failure when no question is pending, instead of a false success', async () => {
+    // The round trip can already be over (server-side timeout, or a second
+    // reply racing the first). Returning ok here made the app stamp
+    // "questions answered" on a turn whose answers went nowhere.
+    const r = await gw.request<{ ok?: boolean }>('question.respond', { answers: { Q: 'A' } })
+
+    expect(r.ok).toBe(false)
+  })
+
+  it('sends nothing on a second question.respond (single-flight slot)', async () => {
+    // turnController.idle() also declines a still-open dialog on teardown, so
+    // a real answer and the safety-net decline can both fire. The slot is
+    // cleared before the send, making the second a no-op rather than a
+    // duplicate control_response that would resolve someone else's request.
+    const sent: any[] = []
+
+    ;(gw as any).send = (m: any) => sent.push(m)
+
+    proc.line({
+      request: { questions: [{ question: 'Q' }], subtype: 'ask_user_question' },
+      request_id: 'q9', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('question.request')).toBeTruthy())
+
+    await gw.request('question.respond', { answers: { Q: 'A' } })
+    await gw.request('question.respond', { answers: null })
+
+    expect(sent.filter(m => m.type === 'control_response')).toHaveLength(1)
+  })
+
   it('sends chosen_updates when the user picks "always"; none for "once"', async () => {
     const sent: any[] = []
 
@@ -751,7 +847,9 @@ describe('GatewayClient NDJSON adapter', () => {
     // addRules update. The box must not offer per-rule editing (rule=null) and
     // accepting must persist the WHOLE bundle unchanged.
     const sent: any[] = []
+
     ;(gw as any).send = (m: any) => sent.push(m)
+
     const bundle = {
       type: 'addRules', destination: 'localSettings', behavior: 'allow',
       rules: [
@@ -760,6 +858,7 @@ describe('GatewayClient NDJSON adapter', () => {
         { tool_name: 'Bash', rule_content: 'sort -u' }
       ]
     }
+
     proc.line({
       request: {
         input: { command: "grep x f | tr a b | sort -u" }, subtype: 'can_use_tool', tool_name: 'Bash',

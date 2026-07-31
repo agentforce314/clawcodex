@@ -26,6 +26,7 @@ import type {
   SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
+import type { QuestionAnswers } from '../components/questionPrompt.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
@@ -713,7 +714,12 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+  const marker =
+    overlay.approval || overlay.sudo || overlay.secret || overlay.clarify || overlay.questions
+      ? '⚠'
+      : ui.busy
+        ? '⏳'
+        : '✓'
 
   const tabCwd = ui.info?.cwd
 
@@ -1090,6 +1096,18 @@ export function useMainApp(gw: GatewayClient) {
     [respondWith, ui.sid]
   )
 
+  const answerQuestions = useCallback(
+    // AskUserQuestion dialog. `null` = the user dismissed it, which the backend
+    // maps to a decline (distinct from submitting with nothing filled in).
+    (answers: null | QuestionAnswers) =>
+      respondWith('question.respond', { answers, session_id: ui.sid }, () => {
+        patchOverlayState({ questions: null })
+        patchTurnState({ outcome: answers ? 'questions answered' : 'questions dismissed' })
+        patchUiState({ status: 'running…' })
+      }),
+    [respondWith, ui.sid]
+  )
+
   const answerSudo = useCallback(
     (pw: string) => {
       if (!overlay.sudo) {
@@ -1250,6 +1268,7 @@ export function useMainApp(gw: GatewayClient) {
       answerApproval,
       answerClarify,
       answerPlanApproval,
+      answerQuestions,
       answerSecret,
       answerSudo,
       clearSelection,
@@ -1276,6 +1295,7 @@ export function useMainApp(gw: GatewayClient) {
       answerApproval,
       answerClarify,
       answerPlanApproval,
+      answerQuestions,
       answerSecret,
       answerSudo,
       clearSelection,
