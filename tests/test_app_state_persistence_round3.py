@@ -21,7 +21,7 @@ from src.bootstrap.state import (
     reset_state_for_tests,
 )
 from src.settings.settings import (
-    apply_persisted_model,
+    get_persisted_model,
     get_settings,
     invalidate_settings_cache,
 )
@@ -205,38 +205,60 @@ def test_store_factory_seeds_when_initial_omitted(_isolated_state):
 
 
 # ---------------------------------------------------------------------------
-# Effective read side — apply_persisted_model
+# Effective read side — get_persisted_model
+#
+# ``apply_persisted_model`` (which set ``provider.model`` post-construction)
+# was replaced by ``get_persisted_model``, which returns the id instead: the
+# entrypoints must know the model BEFORE constructing a provider, because a
+# fusion model decides which provider to construct at all. Same rule, same
+# provider-match guard; these tests keep their original intent.
 # ---------------------------------------------------------------------------
 
 
-class _FakeProvider:
-    def __init__(self) -> None:
-        self.model = "default-model"
-
-
-def test_apply_persisted_model_match(_isolated_state):
+def test_get_persisted_model_match(_isolated_state):
     _persist(
         _isolated_state,
         settings={"model": "kimi-k3", "model_provider": "openrouter"},
     )
-    provider = _FakeProvider()
-    assert apply_persisted_model(provider, "openrouter") is True
-    assert provider.model == "kimi-k3"
+    assert get_persisted_model("openrouter") == "kimi-k3"
 
 
-def test_apply_persisted_model_mismatch_or_unset(_isolated_state):
+def test_get_persisted_model_never_raises(monkeypatch):
+    """The documented contract, and it is load-bearing.
+
+    This runs on the startup path of EVERY entrypoint, so anything that
+    escapes here aborts a launch. A settings object that does not carry
+    these fields — a partial test stub, an older persisted shape — must
+    degrade to the provider default. Regression: an earlier revision
+    wrapped only the file load, not the attribute reads, and
+    ``tests/entrypoints/test_headless_goal.py`` (whose stub is a bare
+    SimpleNamespace) died with AttributeError inside headless startup.
+    """
+    import types
+
+    import src.settings.settings as mod
+
+    monkeypatch.setattr(mod, "get_settings", lambda *a, **k: types.SimpleNamespace())
+    assert mod.get_persisted_model("deepseek") == ""
+
+    def boom(*a, **k):
+        raise RuntimeError("settings on fire")
+
+    monkeypatch.setattr(mod, "get_settings", boom)
+    assert mod.get_persisted_model("deepseek") == ""
+
+
+def test_get_persisted_model_mismatch_or_unset(_isolated_state):
     _persist(
         _isolated_state,
         settings={"model": "kimi-k3", "model_provider": "openrouter"},
     )
-    provider = _FakeProvider()
-    assert apply_persisted_model(provider, "anthropic") is False
-    assert provider.model == "default-model"
+    # Cross-provider staleness guard: a model persisted under another
+    # provider must not be fired at this one.
+    assert get_persisted_model("anthropic") == ""
 
     _persist(_isolated_state, settings={})
-    provider2 = _FakeProvider()
-    assert apply_persisted_model(provider2, "openrouter") is False
-    assert provider2.model == "default-model"
+    assert get_persisted_model("openrouter") == ""
 
 
 def test_restart_round_trip_same_provider(_isolated_state):
@@ -246,20 +268,17 @@ def test_restart_round_trip_same_provider(_isolated_state):
     store = create_app_state_store(AppState())
     store.set_state(lambda s: replace_state(s, main_loop_model="kimi-k3"))
 
-    # "Restart": fresh seed + fresh provider, same provider name.
+    # "Restart": fresh seed, same provider name.
     reset_state_for_tests()
     set_active_provider_supplier(None)
     invalidate_settings_cache()
     config_module._default_manager = None
-    provider = _FakeProvider()
-    assert apply_persisted_model(provider, "openrouter") is True
-    assert provider.model == "kimi-k3"
+    assert get_persisted_model("openrouter") == "kimi-k3"
     state = seed_app_state_from_settings("openrouter")
     assert state.main_loop_model == "kimi-k3"
 
     # Provider switch: persisted pair ignored everywhere.
-    provider_b = _FakeProvider()
-    assert apply_persisted_model(provider_b, "anthropic") is False
+    assert get_persisted_model("anthropic") == ""
     state_b = seed_app_state_from_settings("anthropic")
     assert state_b.main_loop_model is None
 

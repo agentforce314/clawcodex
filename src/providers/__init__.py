@@ -55,7 +55,15 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.4",
         "available_models": [
-            # GPT-5.5 (flagship; also served by the ChatGPT subscription)
+            # GPT-5.6 — the current frontier generation. Sol / Terra / Luna are
+            # durable capability tiers rather than a size ladder: Sol is the
+            # flagship, Terra balances capability against cost, Luna is the
+            # cheap high-volume tier. ``gpt-5.6`` is OpenAI's alias for Sol.
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            # GPT-5.5 (also served by the ChatGPT subscription)
             "gpt-5.5",
             # GPT-5.4 series
             "gpt-5.4",
@@ -137,36 +145,67 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "deepseek/deepseek-v4-pro",
             "deepseek/deepseek-v4-flash",
             # Anthropic
+            "anthropic/claude-fable-5",
             "anthropic/claude-sonnet-4.5",
             "anthropic/claude-opus-4.1",
+            "anthropic/claude-opus-4",
             "anthropic/claude-haiku-4.5",
-            "anthropic/claude-3.5-sonnet",
-            "anthropic/claude-3.5-haiku",
-            # OpenAI
+            # OpenAI — frontier first. OpenRouter carries ~70 openai/* ids;
+            # this is the coding-relevant slice. The `:batch` variants (the
+            # asynchronous Batch API), image/audio/embedding models, and the
+            # `-chat` tunings are deliberately absent — none of them serves an
+            # interactive agent turn. Any id OpenRouter lists still works:
+            # free-text model ids are accepted regardless of this list.
+            # Sol / Terra / Luna are capability tiers, not a size ladder:
+            # Sol leads, Terra balances cost, Luna is the cheap high-volume
+            # tier. Ordered flagship-first to match the rest of the list.
+            "openai/gpt-5.6-sol-pro",
+            "openai/gpt-5.6-sol",
+            "openai/gpt-5.6-terra-pro",
+            "openai/gpt-5.6-terra",
+            "openai/gpt-5.6-luna-pro",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.5-pro",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4-pro",
+            "openai/gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-5.4-nano",
+            # Coding-specialised
+            "openai/gpt-5.3-codex",
+            "openai/gpt-5.2-codex",
+            "openai/gpt-5.1-codex-max",
+            # Reasoning (o-series)
+            "openai/o3-pro",
+            "openai/o3",
+            "openai/o4-mini-high",
+            "openai/o4-mini",
+            # Previous generation
+            "openai/gpt-5-pro",
             "openai/gpt-5",
             "openai/gpt-5-mini",
+            "openai/gpt-4.1",
             "openai/gpt-4o",
             "openai/gpt-4o-mini",
-            "openai/o1",
-            "openai/o1-mini",
             # Google
             "google/gemini-2.5-pro",
             "google/gemini-2.5-flash",
-            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash-lite",
             # Meta
             "meta-llama/llama-3.3-70b-instruct",
-            "meta-llama/llama-3.1-405b-instruct",
+            "meta-llama/llama-3.1-70b-instruct",
             # Mistral
             "mistralai/mistral-large",
             "mistralai/mixtral-8x22b-instruct",
             # DeepSeek (V3.x line — V4 is at top of list)
             "deepseek/deepseek-v3.2",
-            "deepseek/deepseek-v3.2-speciale",
+            "deepseek/deepseek-v3.2-exp",
             "deepseek/deepseek-v3.1-terminus",
             "deepseek/deepseek-chat-v3.1",
             "deepseek/deepseek-r1-0528",
             # xAI
-            "x-ai/grok-2",
+            "x-ai/grok-4.5",
+            "x-ai/grok-4.3",
         ],
     },
 }
@@ -324,6 +363,27 @@ def is_anthropic_wire(provider: Any) -> bool:
     return isinstance(provider, (AnthropicProvider, MinimaxProvider))
 
 
+#: The provider ids whose classes :func:`is_anthropic_wire` matches. Kept
+#: adjacent to it so the name-based and instance-based tests cannot drift:
+#: adding an Anthropic-shaped provider means updating both.
+_ANTHROPIC_WIRE_PROVIDERS: frozenset[str] = frozenset({"anthropic", "minimax"})
+
+
+def provider_name_is_anthropic_wire(provider_name: str) -> bool:
+    """Whether the provider *named* ``provider_name`` speaks the Anthropic shape.
+
+    The by-name counterpart to :func:`is_anthropic_wire`, for callers that
+    must decide before any provider instance exists — validating a
+    user-typed ``provider:model`` selector, for one (see
+    ``providers/fusion_models.py``). Accepts legacy aliases.
+
+    Prefer :func:`is_anthropic_wire` whenever an instance is in hand: the
+    class carries the wire contract, and a name cannot see that a provider
+    was constructed with a custom endpoint.
+    """
+    return _canonical_provider_name(provider_name) in _ANTHROPIC_WIRE_PROVIDERS
+
+
 def provider_requires_api_key(provider_name: str) -> bool:
     """Whether a provider needs an API key.
 
@@ -411,6 +471,7 @@ __all__ = [
     "canonical_provider_name",
     "provider_env_vars",
     "provider_has_credentials",
+    "provider_name_is_anthropic_wire",
     "provider_requires_api_key",
     "resolve_api_key",
     "PROVIDER_INFO",

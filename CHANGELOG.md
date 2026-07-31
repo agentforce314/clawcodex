@@ -7,6 +7,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fusion models — give a text-only model vision.** Some strong reasoning
+  models cannot see images at all: `deepseek-v4-pro` rejects any image content
+  block outright (`400 unknown variant \`image_url\`, expected \`text\``), so
+  pasting a screenshot, `@`-mentioning an image, or letting `Read` return one
+  ended the turn. A *fusion model* pairs that base model with a second,
+  vision-capable one: every image is sent to the vision model first, and its
+  description is what the base model reads.
+
+  ```
+  /fusion create deepseek-v4-pro-V deepseek:deepseek-v4-pro openrouter:google/gemini-2.5-flash
+  /model deepseek-v4-pro-V
+  ```
+
+  Ported from [claude-code-router]'s Fusion Model concept, keeping its
+  `new model = base model + capability` shape and its create/save/manage
+  lifecycle. One deliberate difference: CCR is a proxy, so it can only offer
+  vision as a tool the model may choose to call — which cannot help a *pasted*
+  image, already on the wire before the model gets a turn. clawcodex owns the
+  agent loop, so it does what CCR's docs describe directly, substituting images
+  in place. Every entry point is covered at once: paste, `@file.png`, `Read` on
+  an image, and `Bash` image output.
+
+  - `/fusion` lists, creates, deletes, and enables/disables saved models; they
+    are stored in `~/.clawcodex/config.json` under `fusionModels` (user-level
+    only, so a checked-out repo cannot redirect where your screenshots go).
+  - A saved fusion model behaves like a normal model: it appears in the
+    `/model` picker, works as `--model <name>` interactively and in `-p`, and
+    **survives a restart** — selecting one persists the fusion *name*, and
+    startup resolves it back to the pair. Deleting or disabling a fusion
+    model that was the persisted choice falls back to the provider default
+    instead of leaving a dangling name on the wire.
+  - Each distinct image is described once per session, so replayed history
+    does not re-pay for the same screenshot. Vision failures degrade to a note
+    naming the cause rather than killing the turn.
+  - Requires the vision half to actually support images. Notably `glm-5.2` does
+    **not** — Z.ai's vision models are the separate `*v` family (`glm-4.5v`,
+    `glm-5v-turbo`), which is what CCR's own `GLM-5.2 + GLM-5V-Turbo` example
+    refers to. `deepseek-v4-pro`, `deepseek-v4-flash`, `glm-5.2`, and `glm-5.1`
+    are now marked vision-less in the model table.
+
+  [claude-code-router]: https://ccrdesk.top/en/configuration/fusion-models/
+
+### Added
+
+- **GPT-5.6 (Sol / Terra / Luna).** OpenAI's current frontier generation is
+  three durable capability tiers on one generation rather than a size ladder:
+  Sol is the flagship, Terra balances capability against cost, Luna is the
+  cheap high-volume tier, and `gpt-5.6` is OpenAI's alias for Sol. All four are
+  offered by the direct OpenAI provider and by OpenRouter (which also carries
+  `-pro` variants of each tier).
+
+  Each carries a real `ModelConfig` (1.05M context / 128K output). Without one
+  they resolved through the prefix fallback to the 272K catch-all, which fires
+  auto-compact roughly three quarters of a window early. The bare `gpt-5.6`
+  alias is deliberately registered *after* `gpt-5.5`: its prefix base is `gpt`,
+  so listing it first would make it the catch-all for every unknown `gpt` id
+  and hand them a 1.05M window — over-estimating overflows the context, while
+  under-estimating only compacts early.
+
+  Not changed: `default_model` stays `gpt-5.4`, matching how Anthropic defaults
+  to `claude-sonnet-4-6` while listing `claude-fable-5` first — the default is a
+  cost-sensible tier, not the frontier. The ChatGPT-subscription allow-list
+  (`SUBSCRIPTION_MODELS`) is also untouched, since which models that backend
+  serves is a wire fact that has to be observed rather than assumed.
+
+### Fixed
+
+- **OpenRouter's curated model list offered ids OpenRouter had delisted.** The
+  OpenAI section still led with `openai/gpt-5` / `openai/gpt-4o` / `openai/o1`
+  while the gateway had moved on to the `gpt-5.6` family, and
+  `openai/o1-mini` had been removed upstream entirely — so the /model picker
+  offered a row that fails at request time, the same "offers something you
+  cannot select" shape as the picker bug above. Refreshed against
+  `https://openrouter.ai/api/v1/models`: the OpenAI block now leads with
+  `gpt-5.6-luna/terra/sol` (and their `-pro` tiers), keeps the codex line and
+  the o-series, and drops the delisted ids. Batch (`:batch`), image, audio,
+  and embedding variants are deliberately excluded — none of them serves an
+  interactive agent turn.
+
+  Validating the rest of the list caught five more dead ids:
+  `anthropic/claude-3.5-sonnet`, `anthropic/claude-3.5-haiku`,
+  `google/gemini-2.0-flash`, `meta-llama/llama-3.1-405b-instruct`,
+  `deepseek/deepseek-v3.2-speciale`, and `x-ai/grok-2`. All are replaced with
+  live successors; every id in the catalogue now resolves.
+
+  The list had also been duplicated verbatim between
+  `PROVIDER_INFO["openrouter"]` (which feeds `login` and the picker) and
+  `OpenRouterProvider._curated_models()` (which feeds discovery's curation).
+  Two lists for one set drift the moment someone edits one of them, and the
+  drift reads as a model one surface offers and the other drops, so the
+  provider now reads the registry.
+
+- **`/model` listed one provider instead of every configured one.** Step 1 of
+  the picker showed a single row — `anthropic · 22 models` — no matter how many
+  providers were set up. `model.options` was a stub: it called the
+  `get_settings` control, which describes only the provider the session is
+  *currently* on, and synthesized a hardcoded one-element array from it. The
+  26-entry registry (`PROVIDER_INFO`, hand-written provider classes plus the
+  data-driven OpenAI-compatible specs) was never enumerated, and no backend
+  control exposed it, so the row on screen was the active provider echoed back
+  at itself. A new `list_model_providers` control returns the real catalog,
+  ordered active-first, then providers that can authenticate, then the rest.
+
+  Three paths behind it had never been reachable, and two were broken:
+
+  - Selecting a model from another provider was refused. `set_model` will not
+    point the live provider at a foreign model id — a cross-provider switch
+    needs the registry rebuild only `set_provider` performs — so its refusal
+    now carries a machine-readable `provider_mismatch` and the client re-drives
+    the switch through `set_provider` before re-applying the model. If that
+    second step fails it rolls back and reports which provider the session
+    actually ended on.
+  - `model.save_key` was never wired and fell through to the adapter's default
+    case, so inline API-key entry always answered "failed to save key". Keys
+    now persist where `clawcodex login` writes them.
+  - `model.disconnect` was likewise unwired, so `^d` silently did nothing.
+
+  Disconnect deletes only environment-variable names a provider *owns*. The
+  candidate list is a resolution preference, not a claim of ownership —
+  `nvidia-nim` accepts `DEEPSEEK_API_KEY` — so treating it as a delete-set
+  would destroy a credential set for something else, including the provider the
+  session is running on. Ownership follows the primary candidate, contested
+  names are reported rather than removed, and a key the live session
+  authenticates through is never touched. A shell export sitting behind a
+  config key is detected before deletion, since removing the config copy makes
+  the provider look disconnected while the export restores it on next launch.
+
+  Known limitation: when no provider is configured at all the session fails to
+  start, and the `init_error` guard short-circuits every control — including
+  this one — so the picker cannot yet be used to paste a first key. It now
+  reports that reason instead of inventing a provider row.
+
+- **`--model`/`/model` selection is now resolved from one rule at every
+  entrypoint.** The persisted `/model` choice was applied only in the
+  interactive agent-server, and only *after* the provider was constructed
+  (`_build_runtime`'s post-construction `provider.model = ...`). Headless
+  (`-p`) ignored it entirely, so a `/model` switch had to be re-stated with
+  `--model` on every subsequent run. Both entrypoints now share
+  `settings.get_persisted_model` and TS's precedence — explicit `--model`,
+  then the persisted choice, then the provider default
+  (`main.tsx:1984`: `userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null`)
+  — resolved *before* construction, which is also what lets a persisted
+  fusion model decide which provider to build. The cross-provider staleness
+  guard (`settings.model_provider` must match) is unchanged; a fusion model
+  is exempt because its record names its own provider.
+
+  `apply_persisted_model` (post-construction, no callers) is replaced by
+  `get_persisted_model`.
+
 ### Changed
 
 - **Permissions are now loose by default and easy to change.** `/mode` is

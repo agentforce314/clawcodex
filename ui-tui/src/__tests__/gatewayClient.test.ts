@@ -395,6 +395,232 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).rejects.toThrow("model 'm' expects provider 'other' but this session is on 'deepseek'")
   })
 
+  // ── cross-provider selection (the picker's step 1 + step 2) ───────────────
+  // `set_model` refuses to point the live provider at a foreign model id, so a
+  // picker selection from another provider has to go through `set_provider`
+  // first. A replier that can answer the SECOND set_model frame is required —
+  // replyToControl always matches the first, which is already resolved.
+
+  const makeReplier = () => {
+    const answered = new Set<string>()
+
+    return async (subtype: string, response: unknown) => {
+      let req: any
+      await vi.waitFor(() => {
+        seen.push(...stdinFrames())
+        req = seen.find(
+          f => f.type === 'control_request' && f.request?.subtype === subtype && !answered.has(f.request_id)
+        )
+        expect(req).toBeTruthy()
+      })
+      answered.add(req.request_id)
+      proc.line({ response: { request_id: req.request_id, response }, type: 'control_response' })
+    }
+  }
+
+  it('switches provider then re-applies the model on provider_mismatch', async () => {
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai --tui-session' })
+
+    await reply('set_model', {
+      error: "model 'gpt-5.4' expects provider 'openai' but this session is on 'anthropic'",
+      ok: false,
+      provider: 'anthropic',
+      provider_mismatch: true
+    })
+    await reply('set_provider', { model: 'gpt-5.4', ok: true, provider: 'openai' })
+    await reply('set_model', { model: 'gpt-5.4', ok: true })
+
+    await expect(p).resolves.toEqual({ value: 'gpt-5.4' })
+
+    const switched = seen.find(f => f.request?.subtype === 'set_provider')!.request
+    expect(switched.provider).toBe('openai')
+    // Two set_model frames: the probe that got refused, then the retry.
+    expect(seen.filter(f => f.request?.subtype === 'set_model')).toHaveLength(2)
+  })
+
+  it('surfaces a failed provider switch instead of the model error', async () => {
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+
+    await reply('set_model', { error: 'wrong provider', ok: false, provider_mismatch: true })
+    await reply('set_provider', { error: "provider 'openai' is not configured (no API key)", ok: false })
+
+    await expect(p).rejects.toThrow("provider 'openai' is not configured (no API key)")
+  })
+
+  it('does not retry forever when the switch does not take', async () => {
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+
+    await reply('set_model', { error: 'wrong provider', ok: false, provider_mismatch: true })
+    await reply('set_provider', { ok: true, provider: 'openai' })
+    await reply('set_model', { error: 'still wrong provider', ok: false, provider_mismatch: true })
+
+    await expect(p).rejects.toThrow('still wrong provider')
+    expect(seen.filter(f => f.request?.subtype === 'set_provider')).toHaveLength(1)
+  })
+
+  // ── model.options / save_key / disconnect ─────────────────────────────────
+
+  it('lists every provider from the catalog control', async () => {
+    const p = gw.request('model.options', {})
+    await replyToControl('list_model_providers', {
+      model: 'claude-opus-5',
+      ok: true,
+      provider: 'anthropic',
+      providers: [
+        { authenticated: true, is_current: true, models: ['claude-opus-5'], name: 'Anthropic Claude', slug: 'anthropic' },
+        { authenticated: false, key_env: 'TOGETHER_API_KEY', models: [], name: 'Together AI', slug: 'together' }
+      ]
+    })
+
+    const r: any = await p
+    expect(r.providers).toHaveLength(2)
+    expect(r.providers.map((x: any) => x.slug)).toEqual(['anthropic', 'together'])
+    expect(r.model).toBe('claude-opus-5')
+  })
+
+  it('surfaces a catalog refusal instead of inventing a fake provider row', async () => {
+    // The `init_error` short-circuit answers every control with {ok:false} —
+    // and it fires exactly when no provider is configured. Falling back to the
+    // get_settings synthesis there would render one row literally named
+    // `clawcodex` (the `?? 'clawcodex'` default), reproducing the original
+    // one-row symptom on top of a provider that does not exist.
+    const p = gw.request('model.options', {})
+    await replyToControl('list_model_providers', {
+      error: "API key for provider 'anthropic' is not configured. Run `clawcodex login` to set it up.",
+      ok: false
+    })
+
+    await expect(p).rejects.toThrow('Run `clawcodex login`')
+    expect(seen.find(f => f.request?.subtype === 'get_settings')).toBeUndefined()
+  })
+
+  it('falls back to the active provider only when the backend never answers', async () => {
+    // A null reply means an RPC timeout or a backend too old to know the
+    // control — the one case where synthesizing from get_settings is right.
+    vi.useFakeTimers()
+
+    try {
+      const p = gw.request('model.options', {})
+      await vi.waitFor(() => {
+        seen.push(...stdinFrames())
+        expect(seen.find(f => f.request?.subtype === 'list_model_providers')).toBeTruthy()
+      })
+      await vi.advanceTimersByTimeAsync(5_100) // past RPC_TIMEOUT_MS
+      await vi.waitFor(() => {
+        seen.push(...stdinFrames())
+        expect(seen.find(f => f.request?.subtype === 'get_settings')).toBeTruthy()
+      })
+      const req = seen.find(f => f.request?.subtype === 'get_settings')!
+      proc.line({
+        response: {
+          request_id: req.request_id,
+          response: { available_models: ['a', 'b'], model: 'a', provider: 'deepseek' }
+        },
+        type: 'control_response'
+      })
+
+      const r: any = await p
+      expect(r.providers).toHaveLength(1)
+      expect(r.providers[0]).toMatchObject({ is_current: true, slug: 'deepseek', total_models: 2 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rolls back the provider when the model cannot be selected after switching', async () => {
+    // set_provider has already committed backend-side (registry rebuilt,
+    // model reset to the new provider's default, pairing persisted), so a
+    // bare "model switch failed" would read as "nothing happened".
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+
+    await reply('set_model', { ok: false, provider: 'anthropic', provider_mismatch: true })
+    await reply('set_provider', { ok: true, provider: 'openai' })
+    await reply('set_model', { error: 'model switch failed: bad id', ok: false })
+    await reply('set_provider', { ok: true, provider: 'anthropic' })
+
+    await expect(p).rejects.toThrow("rolled back to 'anthropic'")
+
+    const switches = seen.filter(f => f.request?.subtype === 'set_provider')
+    expect(switches).toHaveLength(2)
+    expect(switches[1]!.request.provider).toBe('anthropic')
+  })
+
+  it('does not roll back when the retry only timed out', async () => {
+    // A silent backend may well have applied the model; rolling back there
+    // would discard a switch that actually worked.
+    vi.useFakeTimers()
+    try {
+      const reply = makeReplier()
+      const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+      // Attach the rejection handler BEFORE advancing timers: the rejection
+      // fires inside advanceTimersByTimeAsync, and an assertion added after
+      // that leaves a window Node reports as an unhandled rejection.
+      const rejects = expect(p).rejects.toThrow('may be on')
+
+      await reply('set_model', { ok: false, provider: 'anthropic', provider_mismatch: true })
+      await reply('set_provider', { ok: true, provider: 'openai' })
+      await vi.advanceTimersByTimeAsync(5_100) // the retried set_model never answers
+
+      await rejects
+      expect(seen.filter(f => f.request?.subtype === 'set_provider')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says the session moved when the rollback itself fails', async () => {
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+
+    await reply('set_model', { ok: false, provider: 'anthropic', provider_mismatch: true })
+    await reply('set_provider', { ok: true, provider: 'openai' })
+    await reply('set_model', { error: 'model switch failed: bad id', ok: false })
+    await reply('set_provider', { error: 'anthropic is not configured', ok: false })
+
+    await expect(p).rejects.toThrow("session is now on 'openai'")
+  })
+
+  it('saves an api key through the save_provider_key control', async () => {
+    const p = gw.request('model.save_key', { api_key: 'sk-tog-1', slug: 'together' })
+    await replyToControl('save_provider_key', {
+      ok: true,
+      provider: { authenticated: true, models: ['m1'], name: 'Together AI', slug: 'together' }
+    })
+
+    const r: any = await p
+    expect(r.provider).toMatchObject({ authenticated: true, slug: 'together' })
+
+    const req = seen.find(f => f.request?.subtype === 'save_provider_key')!.request
+    expect(req).toMatchObject({ api_key: 'sk-tog-1', slug: 'together' })
+  })
+
+  it('surfaces a refused disconnect rather than reporting success', async () => {
+    const p = gw.request('model.disconnect', { slug: 'anthropic' })
+    await replyToControl('disconnect_provider', {
+      disconnected: false,
+      error: "'anthropic' is the active provider — switch to another provider before disconnecting it",
+      ok: false
+    })
+
+    await expect(p).rejects.toThrow('is the active provider')
+  })
+
+  it('surfaces a partial disconnect whose key survives in the shell', async () => {
+    const p = gw.request('model.disconnect', { slug: 'together' })
+    await replyToControl('disconnect_provider', {
+      disconnected: false,
+      error: "'together' still authenticates — its key is set in the process environment, which only your shell can unset",
+      ok: true,
+      still_authenticated: true
+    })
+
+    await expect(p).rejects.toThrow('only your shell can unset')
+  })
+
   it('dispatches an unknown slash as a backend workflow command (send)', async () => {
     const p = gw.request('slash.exec', { command: 'deep-research what is love' })
     await replyToControl('workflow_command', {

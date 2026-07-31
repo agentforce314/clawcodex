@@ -237,12 +237,22 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # Recorded because the inertness is easy to mistake for a bug: this value
     # was briefly suspected of truncating long ``effort=max`` responses on
     # terminal-bench 2.1, and it cannot, because it never reaches the wire.
+    #
+    # ``supports_vision=False``: the DeepSeek API rejects any non-text
+    # content block outright —
+    #   400  unknown variant `image_url`, expected `text`
+    # — so a pasted screenshot, an ``@image.png`` mention, or a ``Read`` of
+    # an image kills the turn. Probed against api.deepseek.com 2026-07-30.
+    # A fusion model (``/fusion``, ``providers/fusion_models.py``) is the
+    # way to use images with these: it borrows vision from a second model
+    # and hands the base model a text description.
     "deepseek-v4-pro": ModelConfig(
         model_id="deepseek-v4-pro",
         display_name="DeepSeek V4 Pro",
         context_window=1_000_000,
         max_output_tokens=384_000,
         supports_cache=True,
+        supports_vision=False,
     ),
     "deepseek-v4-flash": ModelConfig(
         model_id="deepseek-v4-flash",
@@ -250,17 +260,30 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         context_window=1_000_000,
         max_output_tokens=384_000,
         supports_cache=True,
+        supports_vision=False,
     ),
     # Z.ai GLM Coding Plan. glm-5.2 ships a 1M context window (like DeepSeek V4);
     # glm-5.1 is 202_752 and legacy glm-4.x is 128K. Registered here so the
     # canonical window/threshold path agrees with the context display — both
     # exact keys, so glm-4 never prefix-matches glm-5.2's 1M.
+    #
+    # ``supports_vision=False`` on the glm-5.x text line. Probed 2026-07-30
+    # against BOTH Z.ai endpoints (``api/coding/paas/v4`` and the general
+    # ``api/paas/v4``); each rejects an image part with
+    #   400 code 1210  messages.content.type is invalid, allowed values: ['text']
+    # Z.ai's vision models are the separate ``*v`` family (glm-4.5v,
+    # glm-4.6v, glm-5v-turbo — the "GLM-5V-Turbo" of claude-code-router's
+    # own fusion example), which are NOT part of the GLM Coding Plan. Worth
+    # stating explicitly because "GLM-5.2 is multimodal" is an easy and
+    # costly assumption: it makes glm-5.2 look like a valid *vision* half
+    # for a fusion model, where it would fail on every image.
     "glm-5.2": ModelConfig(
         model_id="glm-5.2",
         display_name="GLM-5.2",
         context_window=1_000_000,
         max_output_tokens=8_192,
         supports_cache=True,
+        supports_vision=False,
     ),
     "glm-5.1": ModelConfig(
         model_id="glm-5.1",
@@ -268,6 +291,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         context_window=202_752,
         max_output_tokens=8_192,
         supports_cache=True,
+        supports_vision=False,
     ),
     "glm-4": ModelConfig(
         model_id="glm-4",
@@ -275,6 +299,36 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         context_window=128_000,
         max_output_tokens=8_192,
         supports_cache=True,
+    ),
+    # Z.ai's VISION family (the ``*v`` models). Registered explicitly, and
+    # with ``supports_vision=True`` stated rather than defaulted, because
+    # these are the models the fusion-model validator's error message tells
+    # users to pick — so their capability must be a positive fact in the
+    # table, not an assumption about an absent id. Probed 2026-07-30: all
+    # three accept an image part on ``api.z.ai/api/paas/v4`` (they answer
+    # 429 "insufficient balance" on a Coding-Plan-only key, which is an
+    # entitlement result, not a rejection of the shape). NOT part of the
+    # GLM Coding Plan.
+    "glm-5v-turbo": ModelConfig(
+        model_id="glm-5v-turbo",
+        display_name="GLM-5V-Turbo",
+        context_window=128_000,
+        max_output_tokens=8_192,
+        supports_vision=True,
+    ),
+    "glm-4.6v": ModelConfig(
+        model_id="glm-4.6v",
+        display_name="GLM-4.6V",
+        context_window=128_000,
+        max_output_tokens=8_192,
+        supports_vision=True,
+    ),
+    "glm-4.5v": ModelConfig(
+        model_id="glm-4.5v",
+        display_name="GLM-4.5V",
+        context_window=128_000,
+        max_output_tokens=8_192,
+        supports_vision=True,
     ),
     # MiniMax pricing is maintained in services/pricing.py.
     "MiniMax-M2.7": ModelConfig(
@@ -336,10 +390,48 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # entries so they never take that path. As with the Meta entry above,
     # max_output_tokens is not sent on the wire for OpenAI providers — its
     # live effect is the auto-compact output reservation (clamped at 20K).
+    # GPT-5.6 (Sol / Terra / Luna — three durable capability tiers on one
+    # generation, 1.05M context each). These keys sit BEFORE "gpt-5.5"
+    # deliberately: ``get_model_config``'s prefix fallback walks in insertion
+    # order and each of these has base "gpt-5.6" (rsplit on the last "-"), so
+    # putting them first is what lets an unlisted variant like
+    # ``gpt-5.6-sol-pro`` resolve to 1.05M instead of falling through to the
+    # 272K catch-all. The bare ``gpt-5.6`` alias is deliberately NOT here —
+    # see below.
+    "gpt-5.6-sol": ModelConfig(
+        model_id="gpt-5.6-sol",
+        display_name="GPT-5.6 Sol",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.6-terra": ModelConfig(
+        model_id="gpt-5.6-terra",
+        display_name="GPT-5.6 Terra",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.6-luna": ModelConfig(
+        model_id="gpt-5.6-luna",
+        display_name="GPT-5.6 Luna",
+        context_window=1_048_576,
+        max_output_tokens=128_000,
+    ),
     "gpt-5.5": ModelConfig(
         model_id="gpt-5.5",
         display_name="GPT-5.5",
         context_window=272_000,
+        max_output_tokens=128_000,
+    ),
+    # ``gpt-5.6`` is OpenAI's alias for Sol. Its base is "gpt" (not
+    # "gpt-5.6"), so it would become the catch-all for EVERY unknown gpt id if
+    # it preceded "gpt-5.5" — handing them a 1.05M window. Over-estimating
+    # overflows the context; under-estimating only compacts early, so the
+    # catch-all must stay on the 272K entry. Exact lookups are unaffected by
+    # position: ``get_model_config`` checks for an exact key first.
+    "gpt-5.6": ModelConfig(
+        model_id="gpt-5.6",
+        display_name="GPT-5.6 (Sol)",
+        context_window=1_048_576,
         max_output_tokens=128_000,
     ),
     "gpt-5.4": ModelConfig(

@@ -224,6 +224,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         }
 
         setKeySaving(true)
+        setKeyError('')
         gw.request<{ disconnected?: boolean }>('model.disconnect', {
           slug: provider.slug,
           ...(sessionId ? { session_id: sessionId } : {})
@@ -241,7 +242,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
                         authenticated: false,
                         models: [],
                         total_models: 0,
-                        warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `clawcodex model` to configure'
+                        warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `clawcodex login` to configure'
                       }
                     : p
                 )
@@ -251,9 +252,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
             setKeySaving(false)
             setStage('provider')
           })
-          .catch(() => {
+          .catch((e: unknown) => {
+            // Refusals are real information — disconnecting the active
+            // provider, or a key still exported in the shell. Stay put and
+            // show why instead of dropping back as if it had worked.
+            setKeyError(rpcErrorMessage(e))
             setKeySaving(false)
-            setStage('provider')
           })
 
         return
@@ -410,7 +414,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Paste your API key below (saved to ~/.clawcodex/.env)
+          Paste your API key below — saved to providers.{provider.slug}.api_key
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -418,7 +422,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          {provider.key_env}:
+          {provider.name} API key ({provider.key_env}):
         </Text>
 
         <Text color={t.color.accent} wrap="truncate-end">
@@ -463,8 +467,18 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          This removes saved credentials for {provider.name}.
+          Clears providers.{provider.slug}.api_key from ~/.clawcodex/config.json
         </Text>
+
+        {provider.removes_env?.length ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            …and {provider.removes_env.join(', ')} from its env block
+          </Text>
+        ) : (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' '}
+          </Text>
+        )}
 
         <Text color={t.color.muted} wrap="truncate-end">
           You can re-authenticate later by selecting it again.
@@ -473,6 +487,16 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         <Text color={t.color.muted} wrap="truncate-end">
           {' '}
         </Text>
+
+        {keyError ? (
+          <Text color={t.color.label} wrap="truncate-end">
+            error: {keyError}
+          </Text>
+        ) : (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' '}
+          </Text>
+        )}
 
         {keySaving ? (
           <Text color={t.color.muted} wrap="truncate-end">

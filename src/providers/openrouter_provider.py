@@ -86,39 +86,20 @@ class OpenRouterProvider(OpenAICompatibleProvider):
 
     @staticmethod
     def _curated_models() -> list[str]:
-        return [
-            # DeepSeek V4 (latest, strongest — top of the list)
-            "deepseek/deepseek-v4-pro",
-            "deepseek/deepseek-v4-flash",
-            # Anthropic
-            "anthropic/claude-sonnet-4.5",
-            "anthropic/claude-opus-4.1",
-            "anthropic/claude-haiku-4.5",
-            "anthropic/claude-3.5-sonnet",
-            "anthropic/claude-3.5-haiku",
-            # OpenAI
-            "openai/gpt-5",
-            "openai/gpt-5-mini",
-            "openai/gpt-4o",
-            "openai/gpt-4o-mini",
-            "openai/o1",
-            "openai/o1-mini",
-            # Google
-            "google/gemini-2.5-pro",
-            "google/gemini-2.5-flash",
-            "google/gemini-2.0-flash",
-            # Meta
-            "meta-llama/llama-3.3-70b-instruct",
-            "meta-llama/llama-3.1-405b-instruct",
-            # Mistral
-            "mistralai/mistral-large",
-            "mistralai/mixtral-8x22b-instruct",
-            # DeepSeek (V3.x line — V4 is at top of list)
-            "deepseek/deepseek-v3.2",
-            "deepseek/deepseek-v3.2-speciale",
-            "deepseek/deepseek-v3.1-terminus",
-            "deepseek/deepseek-chat-v3.1",
-            "deepseek/deepseek-r1-0528",
-            # xAI
-            "x-ai/grok-2",
-        ]
+        """The curated catalogue, read from the one place it is defined.
+
+        This used to be a byte-identical second copy of
+        ``PROVIDER_INFO["openrouter"]["available_models"]``. Two lists meant
+        for the same set drift the moment someone updates one of them, and the
+        halves are read by different surfaces — the registry entry feeds
+        ``login`` and the /model picker, this feeds discovery's curation — so
+        the drift shows up as a model the picker offers and discovery drops,
+        or the reverse.
+
+        Imported inside the function, not at module scope: this module is
+        itself imported lazily by ``get_provider_class``, so a top-level import
+        of the package that defines that function would be circular.
+        """
+        from . import PROVIDER_INFO
+
+        return list(PROVIDER_INFO["openrouter"]["available_models"])

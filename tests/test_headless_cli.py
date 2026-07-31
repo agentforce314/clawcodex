@@ -354,3 +354,113 @@ def test_headless_empty_prompt_exits_2(fake_wiring, tmp_path):
             )
         )
     assert excinfo.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# persisted-model resolution (the one deliberate behaviour change in the
+# model-restore delta: headless previously ignored `settings.model` entirely,
+# so a `/model` switch had to be re-stated with `--model` on every `-p` run)
+
+
+def test_headless_uses_the_persisted_model_when_no_flag(fake_wiring, tmp_path, monkeypatch):
+    fake_wiring.append(_text_response("ok"))
+    monkeypatch.setattr(
+        "src.settings.settings.get_persisted_model",
+        lambda name, **kw: "persisted-model",
+    )
+    seen: list[str | None] = []
+    inner = headless_mod.get_provider_class
+
+    def _capture(provider_name):
+        ctor = inner(provider_name)
+
+        def _wrapped(api_key, base_url=None, model=None):
+            seen.append(model)
+            return ctor(api_key, base_url, model)
+
+        return _wrapped
+
+    monkeypatch.setattr(headless_mod, "get_provider_class", _capture)
+    run_headless(
+        HeadlessOptions(
+            prompt="hi", output_format="text",
+            stdout=io.StringIO(), stderr=io.StringIO(), workspace_root=tmp_path,
+        )
+    )
+    assert seen == ["persisted-model"]
+
+
+def test_headless_explicit_model_beats_the_persisted_one(fake_wiring, tmp_path, monkeypatch):
+    # TS precedence (main.tsx:1984): explicit ?? persisted ?? default.
+    fake_wiring.append(_text_response("ok"))
+    monkeypatch.setattr(
+        "src.settings.settings.get_persisted_model",
+        lambda name, **kw: "persisted-model",
+    )
+    seen: list[str | None] = []
+    inner = headless_mod.get_provider_class
+
+    def _capture(provider_name):
+        ctor = inner(provider_name)
+
+        def _wrapped(api_key, base_url=None, model=None):
+            seen.append(model)
+            return ctor(api_key, base_url, model)
+
+        return _wrapped
+
+    monkeypatch.setattr(headless_mod, "get_provider_class", _capture)
+    run_headless(
+        HeadlessOptions(
+            prompt="hi", model="explicit-model", output_format="text",
+            stdout=io.StringIO(), stderr=io.StringIO(), workspace_root=tmp_path,
+        )
+    )
+    assert seen == ["explicit-model"]
+
+
+def test_headless_falls_back_to_the_provider_default(fake_wiring, tmp_path, monkeypatch):
+    fake_wiring.append(_text_response("ok"))
+    monkeypatch.setattr("src.settings.settings.get_persisted_model", lambda name, **kw: "")
+    seen: list[str | None] = []
+    inner = headless_mod.get_provider_class
+
+    def _capture(provider_name):
+        ctor = inner(provider_name)
+
+        def _wrapped(api_key, base_url=None, model=None):
+            seen.append(model)
+            return ctor(api_key, base_url, model)
+
+        return _wrapped
+
+    monkeypatch.setattr(headless_mod, "get_provider_class", _capture)
+    run_headless(
+        HeadlessOptions(
+            prompt="hi", output_format="text",
+            stdout=io.StringIO(), stderr=io.StringIO(), workspace_root=tmp_path,
+        )
+    )
+    assert seen == ["fake-model"]        # provider_config default
+
+
+def test_headless_passes_provider_is_explicit_when_provider_flagged(
+    fake_wiring, tmp_path, monkeypatch
+):
+    # A persisted FUSION model replaces the session provider, so it must not
+    # win over a typed --provider; headless has to forward that signal.
+    fake_wiring.append(_text_response("ok"))
+    calls: list[dict] = []
+
+    def _spy(name, **kw):
+        calls.append({"name": name, **kw})
+        return ""
+
+    monkeypatch.setattr("src.settings.settings.get_persisted_model", _spy)
+    run_headless(
+        HeadlessOptions(
+            prompt="hi", provider_name="openrouter", output_format="text",
+            stdout=io.StringIO(), stderr=io.StringIO(), workspace_root=tmp_path,
+        )
+    )
+    assert calls and calls[0]["provider_is_explicit"] is True

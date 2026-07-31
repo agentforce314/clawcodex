@@ -565,6 +565,8 @@ export interface ModelOptionProvider {
   key_env?: string
   models?: string[]
   name: string
+  /** Env vars ^d would clear from the config — shown on the confirm screen. */
+  removes_env?: string[]
   slug: string
   total_models?: number
   warning?: string

@@ -153,30 +153,17 @@ class OpenAIProvider(OpenAICompatibleProvider):
             List of model names
         """
         if self._subscription_active:
+            # A ChatGPT plan serves a SMALLER set than the API key does, so
+            # this stays its own list — see openai_responses.SUBSCRIPTION_MODELS.
             return list(SUBSCRIPTION_MODELS)
-        return [
-            # GPT-5.5 (flagship; also the ChatGPT-subscription default family)
-            "gpt-5.5",
-            # GPT-5.4 series
-            "gpt-5.4",
-            "gpt-5.4-pro",
-            "gpt-5.4-mini",
-            "gpt-5.4-nano",
-            # GPT-5.2 series
-            "gpt-5.2",
-            "gpt-5.2-pro",
-            "gpt-5.2-mini",
-            "gpt-5.2-nano",
-            # Codex (coding-specialized)
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
-            # Legacy GPT-4 series
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4",
-            "gpt-3.5-turbo",
-        ]
+        # Read the registry rather than keep a second copy. This used to
+        # duplicate PROVIDER_INFO["openai"]["available_models"] verbatim, and
+        # the halves feed different surfaces — the registry drives `login` and
+        # the /model picker, this drives discovery — so an update to one shows
+        # up as a model one offers and the other drops.
+        from . import PROVIDER_INFO
+
+        return list(PROVIDER_INFO["openai"]["available_models"])
 
     # ------------------------------------------------------------------
     # ChatGPT-subscription path (Responses API against the Codex backend)

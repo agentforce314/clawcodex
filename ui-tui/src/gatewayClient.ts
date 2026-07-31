@@ -543,6 +543,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
     hint: '[<provider>:<model> [--client] | --no-client | off|unset]',
     name: '/advisor'
   },
+  {
+    desc: 'Give a text-only model vision by fusing it with a multimodal one',
+    hint: '[list | create <name> <base> <vision> | delete|enable|disable <name>]',
+    name: '/fusion'
+  },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   {
@@ -870,25 +875,86 @@ export class GatewayClient extends EventEmitter {
         return Promise.resolve({ provider_configured: true } as T)
 
       // ── runtime ──────────────────────────────────────────────────────────
+      // The picker's step 1 needs EVERY provider clawcodex knows about, which
+      // only `list_model_providers` reports. `get_settings` describes just the
+      // active one, so synthesizing the list from it (as this used to) could
+      // never show more than a single row.
       case 'model.options':
-        return this.controlQuery('get_settings', {}).then((r: any) => {
-          const models: string[] = Array.isArray(r?.available_models) ? r.available_models : []
-          const provider = String(r?.provider ?? 'clawcodex')
+        return this.controlQuery('list_model_providers', {}).then((r: any) => {
+          const providers = Array.isArray(r?.providers) ? r.providers : []
 
-          return {
-            model: r?.model,
-            provider,
-            providers: [
-              {
-                authenticated: true,
-                is_current: true,
-                models,
-                name: provider,
-                slug: provider,
-                total_models: models.length
-              }
-            ]
-          } as T
+          if (providers.length) {
+            return {
+              // On a fused session the backend reports `model` as the base id;
+              // the picker's "current" marker must point at the fusion entry
+              // the user actually selected, not at the base model row.
+              model: typeof r?.fusion === 'string' && r.fusion ? r.fusion : r?.model,
+              provider: r?.provider,
+              providers
+            } as T
+          }
+
+          // An explicit refusal is real information — most importantly the
+          // `init_error` short-circuit, which fires exactly when no provider
+          // is configured. Papering over it with the get_settings synthesis
+          // would invent a single row named `clawcodex` (that being the
+          // `?? 'clawcodex'` default when the errored reply carries no
+          // provider) and reproduce the original one-row symptom. Surface it.
+          if (r != null) {
+            throw new Error(
+              typeof r.error === 'string' && r.error ? r.error : 'could not list providers'
+            )
+          }
+
+          // Only a null reply reaches here: a backend too old to know the
+          // control, or an RPC timeout. Fall back to the single active
+          // provider so /model still switches models.
+          return this.controlQuery('get_settings', {}).then((s: any) => {
+            const models: string[] = Array.isArray(s?.available_models) ? s.available_models : []
+            const provider = String(s?.provider ?? 'clawcodex')
+
+            return {
+              // Same fusion rule as the catalog path above.
+              model: typeof s?.fusion === 'string' && s.fusion ? s.fusion : s?.model,
+              provider,
+              providers: [
+                {
+                  authenticated: true,
+                  is_current: true,
+                  models,
+                  name: provider,
+                  slug: provider,
+                  total_models: models.length
+                }
+              ]
+            } as T
+          })
+        })
+
+      case 'model.save_key':
+        return this.controlQuery('save_provider_key', {
+          api_key: String(p.api_key ?? ''),
+          slug: String(p.slug ?? '')
+        }).then((r: any) => {
+          if (r == null) {throw new Error('save key: no response from backend')}
+
+          if (r.ok === false) {throw new Error(typeof r.error === 'string' && r.error ? r.error : 'failed to save key')}
+
+          return { provider: r.provider } as T
+        })
+
+      case 'model.disconnect':
+        return this.controlQuery('disconnect_provider', { slug: String(p.slug ?? '') }).then((r: any) => {
+          if (r == null) {throw new Error('disconnect: no response from backend')}
+
+          // A refusal (the active provider) and a partial disconnect (a key
+          // still exported in the shell) both carry `error`; surface either
+          // rather than silently returning to the list as if it worked.
+          if (r.ok === false || (r.disconnected !== true && r.error)) {
+            throw new Error(typeof r.error === 'string' && r.error ? r.error : 'disconnect failed')
+          }
+
+          return { disconnected: r.disconnected === true } as T
         })
       case 'prompt.submit': {
         const text = String(p.text ?? '')
@@ -1264,12 +1330,82 @@ export class GatewayClient extends EventEmitter {
 
     const model = modelParts.join(' ')
 
+    return this.applyModel(model, provider)
+  }
+
+  // `set_model` deliberately refuses to point the live provider at another
+  // provider's model id — a cross-provider switch needs the registry rebuild
+  // only `set_provider` performs. The /model picker selects exactly that way
+  // (step 1 a provider, step 2 one of its models), so on the backend's
+  // `provider_mismatch` signal we do the switch first and re-apply the model.
+  // `allowSwitch` guards the retry against recursing.
+  private applyModel(
+    model: string,
+    provider: string | undefined,
+    allowSwitch = true
+  ): Promise<{ value: string; warning?: string }> {
     return this.controlQuery('set_model', { model, ...(provider ? { provider } : {}) }).then((r: any) => {
       if (r == null) {
-        throw new Error('model switch: no response from backend')
+        // Tagged: a silent backend may still have APPLIED the model, so the
+        // cross-provider retry below must not "roll back" over it.
+        throw Object.assign(new Error('model switch: no response from backend'), {
+          indeterminate: true
+        })
       }
 
       if (r.ok === false) {
+        if (r.provider_mismatch === true && provider && allowSwitch) {
+          return this.controlQuery('set_provider', { provider }).then((sr: any) => {
+            if (sr == null) {
+              throw new Error('provider switch: no response from backend')
+            }
+
+            if (sr.ok === false) {
+              throw new Error(
+                typeof sr.error === 'string' && sr.error ? sr.error : `could not switch to provider '${provider}'`
+              )
+            }
+
+            // The switch has already COMMITTED backend-side: set_provider
+            // rebuilt the registry, reset the model to the new provider's
+            // default and persisted the pairing. If selecting the requested
+            // model now fails, "model switch failed" would read as "nothing
+            // happened" while the session quietly sits on a different
+            // provider AND a different model. Roll back to where we came
+            // from (the mismatch reply names it) and say what actually stuck.
+            return this.applyModel(model, provider, false).catch((e: unknown) => {
+              const why = e instanceof Error ? e.message : String(e)
+              const previous = typeof r.provider === 'string' ? r.provider : ''
+
+              // A silent backend is NOT a known failure — it may have applied
+              // the model. Rolling back would then throw away a switch that
+              // worked, so report the uncertainty instead of acting on it.
+              if ((e as { indeterminate?: boolean })?.indeterminate) {
+                throw new Error(
+                  `switched to '${provider}' but the model selection got no response — ` +
+                    `the session may be on '${provider}'`
+                )
+              }
+
+              if (!previous) {
+                throw new Error(`switched to '${provider}' but could not select '${model}': ${why}`)
+              }
+
+              return this.controlQuery('set_provider', { provider: previous }).then((back: any) => {
+                throw new Error(
+                  back != null && back.ok !== false
+                    ? // set_provider resets the model to that provider's
+                      // configured default and persists it, so the provider is
+                      // restored but the previously-selected model is not.
+                      `could not select '${model}' on '${provider}': ${why} — rolled back to ` +
+                        `'${previous}' (its default model)`
+                    : `could not select '${model}': ${why} — session is now on '${provider}'`
+                )
+              })
+            })
+          })
+        }
+
         throw new Error(typeof r.error === 'string' && r.error ? r.error : 'model switch failed')
       }
 
@@ -1345,7 +1481,17 @@ export class GatewayClient extends EventEmitter {
 
         return out(String(r.text ?? r.error ?? 'advisor: no response'))
       }
+      case 'fusion': {
+        // Manage fusion models (a text-only base model + a borrowed vision
+        // model). The backend owns the whole grammar — list / create /
+        // delete / enable / disable — so this only relays the arg and
+        // prints the reply, exactly like /advisor above.
+        const r = (await this.controlQuery('fusion', { arg: arg ?? '' })) as any
 
+        if (!r || Object.keys(r).length === 0) {return out('fusion: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'fusion: no response'))
+      }
       case 'memory': {
         // Arg-ful /memory (status | pending | approve | reject) — the
         // bounded-store management surface. The no-arg picker never routes
@@ -1447,10 +1593,26 @@ export class GatewayClient extends EventEmitter {
       // registry first and returns, so a gateway case here would be unreachable.
       // The RPC it uses is `config.set{key:'permission_mode'}` above.
 
-      case 'model':
-        await this.controlQuery('set_model', { model: arg })
+      case 'model': {
+        const r = (await this.controlQuery('set_model', { model: arg })) as any
 
-        return out(`Model set to ${arg ?? '(unchanged)'}.`)
+        // DEFENCE-IN-DEPTH, not the reachable path: like /permissions above,
+        // `/model` is a TUI-local command (app/slash/commands/session.ts) and
+        // createSlashHandler resolves the local registry first, so the live
+        // route is config.set → setModel — which already throws on
+        // `ok === false` and already patches the badge from `r.value`. This
+        // case only runs if that local command is ever removed. Kept correct
+        // anyway because set_model can now decline for several actionable
+        // reasons (a disabled fusion model, missing credentials for a fusion
+        // half, an active turn), each carrying the fix in its message.
+        if (r?.ok === false) {
+          return out(String(r.error ?? 'model switch failed'))
+        }
+
+        const applied = typeof r?.model === 'string' && r.model ? r.model : (arg ?? '(unchanged)')
+
+        return out(`Model set to ${applied}.${r?.warning ? ` ${r.warning}` : ''}`)
+      }
       case 'output-style': {
         if (arg) {
           const r = (await this.controlQuery('set_output_style', { style: arg })) as any
@@ -2309,9 +2471,18 @@ export class GatewayClient extends EventEmitter {
       ? init.tools.map((t: any) => t?.name).filter(Boolean)
       : []
 
+    // A fused session reports `model` as the BASE model id (what serves the
+    // turn, and what the backend's cost/context-window lookups key off) and
+    // the fusion model's name separately. The name is what the user selected
+    // and the only signal that images are being routed through a second
+    // model, so it is what the model line shows — matching CCR's contract
+    // that a fusion model behaves "like a normal model". `/fusion list`
+    // remains the place to see which two models it is made of.
+    const fusion = typeof init.fusion === 'string' ? init.fusion : ''
+
     return {
       cwd: init.cwd,
-      model: String(init.model ?? ''),
+      model: fusion || String(init.model ?? ''),
       permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
       // Rendered beside the model name; the backend sends the session's

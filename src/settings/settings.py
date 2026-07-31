@@ -67,30 +67,70 @@ def get_settings(
     return _settings_cache
 
 
-def apply_persisted_model(provider: Any, provider_name: str) -> bool:
-    """Apply the persisted ``(model, model_provider)`` pair to a provider.
+def get_persisted_model(provider_name: str, *, provider_is_explicit: bool = False) -> str:
+    """The persisted ``/model`` choice for ``provider_name``, or ``""``.
 
-    The effective read-side of the ch03 round-3 model persistence: the
-    port's live model channel is ``provider.model``, so a persisted
-    `/model` choice must reach the constructed provider to survive a
-    restart. Mirrors ``getUserSpecifiedModelSetting``
-    (TS ``utils/model/model.ts:109-135``) including its provider-match
-    guard — a model persisted under another provider is ignored (the
-    cross-provider staleness failure documented there). Callers gate on
-    explicit overrides: an explicit ``--model``-style choice made at
-    construction wins (override-first precedence), so call this only when
-    no explicit model was supplied.
+    The read side of the model persistence whose write side is
+    ``state/app_state._on_main_loop_model_change``. Mirrors TS
+    ``getUserSpecifiedModelSetting`` (``utils/model/model.ts:124-165``),
+    which resolves the saved ``settings.model`` after an explicit override
+    and before the built-in default. Callers own that precedence:
 
-    Returns True iff the persisted model was applied.
+        model = explicit_override or get_persisted_model(provider) or default
+
+    matching TS ``main.tsx:1984``
+    (``userSpecifiedModel ?? getUserSpecifiedModelSetting() ?? null``).
+
+    **Provider-match guard.** A persisted model is meaningful only with the
+    provider that served it; TS documents the cross-provider staleness
+    failure (a stale model fired at the wrong endpoint and 400s), and TS
+    itself guards it by reading only the env var matching the active
+    provider. Here the pairing is explicit: ``settings.model_provider``.
+
+    **Fusion exception.** A fusion model (``providers/fusion_models.py``)
+    names its OWN base provider in its record, so it is self-describing and
+    the staleness hazard does not apply — it is restored even when it does
+    not match the session's *default* provider, which is the whole point of
+    having selected one. A disabled or since-deleted fusion name resolves to
+    nothing and falls through to the default, rather than reaching the wire
+    as a bogus id.
+
+    ``provider_is_explicit`` marks that the caller's ``provider_name`` came
+    from an explicit ``--provider`` flag rather than the configured default.
+    That narrows the fusion exception: restoring a fusion model REPLACES the
+    session provider with the record's base, so honouring it over an explicit
+    flag would silently ignore what the user just typed. Explicit intent
+    wins, matching the override-first precedence throughout this resolution.
+
+    Never raises: any failure yields ``""`` and the caller falls back to the
+    provider default. That covers the attribute reads too, not just the file
+    load — this runs on the startup path of every entrypoint, and a settings
+    object that does not carry these fields (a partial stub, an older
+    persisted shape) must degrade to the default rather than abort a launch.
     """
     try:
         s = get_settings()
-    except Exception:
-        return False
-    if s.model and s.model_provider == provider_name:
-        provider.model = s.model
-        return True
-    return False
+        model = str(getattr(s, "model", "") or "").strip()
+        if not model:
+            return ""
+        persisted_provider = str(getattr(s, "model_provider", "") or "")
+    except Exception:  # noqa: BLE001 — see the "never raises" contract above
+        logger.debug("settings read during model restore failed", exc_info=True)
+        return ""
+    try:
+        from src.providers.fusion_models import get_fusion_model
+
+        fusion = get_fusion_model(model)
+        if fusion is not None:
+            if not fusion.enabled:
+                return ""
+            if provider_is_explicit and fusion.base.provider != provider_name:
+                return ""
+            return fusion.name
+    except Exception:  # noqa: BLE001 — a fusion-config problem is not fatal
+        logger.debug("fusion lookup during model restore failed", exc_info=True)
+    return model if persisted_provider == provider_name else ""
+
 
 def update_local_settings(
     updates: dict[str, Any], *, cwd: str | Path | None = None,
