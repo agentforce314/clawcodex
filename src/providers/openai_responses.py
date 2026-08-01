@@ -98,6 +98,69 @@ def strip_responses_item_blocks(
     return result
 
 
+# Effort levels the OpenAI Responses API accepts. Mirrors OpenCode, which
+# excludes "max" from the OpenAI effort type at compile time
+# (packages/llm/src/protocols/utils/openai-options.ts:5-7:
+# ``Exclude<ReasoningEffort, "max">``) while keeping it in the cross-provider
+# union. Confirmed live 2026-08-01 against gpt-5.6-luna:
+#
+#   reasoning_effort='max' -> 400 invalid_request_error
+#   "does not support 'max' with this model.
+#    Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'."
+#
+# This is why "unknown params are ignored" does not apply here: an
+# unsupported VALUE of a KNOWN parameter is a hard rejection, not a no-op.
+# OpenRouter tolerates ``max`` for the same model, so the two providers
+# genuinely differ and the clamp has to be provider-scoped.
+OPENAI_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+
+
+def supports_reasoning(model: str) -> bool:
+    """Whether ``model`` accepts a ``reasoning`` block on the Responses API.
+
+    Sending one to a non-reasoning model is a hard 400 — verified live
+    2026-08-01: ``gpt-4o`` and ``gpt-4o-mini`` return "Unsupported parameter:
+    'reasoning.effort' is not supported with this model", while the same
+    request WITHOUT the block succeeds. So the Responses endpoint itself is
+    universal; only the reasoning block is gated.
+
+    That distinction is what makes Responses safe as the default protocol for
+    every OpenAI model, which is the routing shape this mirrors (OpenCode's
+    provider facade returns ``model: responses``).
+    """
+    m = (model or "").lower()
+    if "-chat" in m:
+        # gpt-5-chat-latest and friends are the NON-reasoning variants of a
+        # reasoning family, so the prefix alone would misclassify them.
+        # ``supports_verbosity`` below already carves out the same variants
+        # for the same reason (OpenCode transform.ts:1189-1196). Excluding
+        # them costs nothing if wrong — they fall to Chat Completions, the
+        # older and more exercised path — whereas including them wrongly is a
+        # hard 400 on every request.
+        return False
+    if m.startswith(("gpt-5", "o1", "o3", "o4")):
+        return True
+    return "codex" in m
+
+
+def normalize_openai_effort(effort: str | None) -> str | None:
+    """Coerce a cross-provider effort level to one the OpenAI API accepts.
+
+    ``max`` degrades to ``xhigh`` (the highest OpenAI level) rather than
+    erroring, matching how ``resolve_thinking_effort`` degrades an
+    unsupported ``xhigh`` to ``high`` on the Anthropic wire — a level the
+    provider cannot take should cost a notch of depth, not the whole run.
+    Unknown values return ``None`` so the caller omits the block and lets the
+    API apply its own default.
+    """
+    value = (effort or "").strip().lower()
+    if not value:
+        return None
+    if value == "max":
+        return "xhigh"
+    return value if value in OPENAI_REASONING_EFFORTS else None
+
+
 def supports_verbosity(model: str) -> bool:
     """gpt-5.x general models accept ``text.verbosity``; codex/chat variants
     don't (OpenCode transform.ts:1189-1196)."""
@@ -442,12 +505,21 @@ def convert_messages_to_responses_input(
 # --- responses --------------------------------------------------------------
 
 
-def build_usage_dict(usage: dict[str, Any] | None) -> dict[str, Any]:
+def build_usage_dict(
+    usage: dict[str, Any] | None, *, subscription: bool = True
+) -> dict[str, Any]:
     """Responses usage JSON → the ChatResponse usage shape.
 
     ``billing_mode: subscription`` zeroes the cost in ``record_api_usage``
     (cost_tracker.py — the #697 mechanism); token counts still feed the
     context-left display.
+
+    That zeroing is correct for a flat-rate ChatGPT plan and WRONG for an API
+    key, which is metered per token. This protocol now carries both, so the
+    flag has to follow the auth mode — otherwise every API-key request
+    reports $0.00 and ``/cost`` silently under-reports the whole session.
+    The default stays ``True`` because the subscription path was this
+    function's only caller when it was written.
     """
     usage = usage or {}
     input_details = usage.get("input_tokens_details") or {}
@@ -455,8 +527,9 @@ def build_usage_dict(usage: dict[str, Any] | None) -> dict[str, Any]:
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
         "total_tokens": int(usage.get("total_tokens", 0) or 0),
-        "billing_mode": "subscription",
     }
+    if subscription:
+        result["billing_mode"] = "subscription"
     cached = input_details.get("cached_tokens")
     if cached:
         result["cache_read_input_tokens"] = int(cached)

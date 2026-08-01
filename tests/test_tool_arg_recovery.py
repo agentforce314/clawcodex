@@ -109,7 +109,10 @@ def test_stream_response_recovers_truncated_tool_args(mock_openai):
     mock_client.with_options.return_value = mock_client  # see _apply_client_timeout
     mock_openai.return_value = mock_client
 
-    provider = OpenAIProvider(api_key="test_key")
+    # gpt-4o pins this to Chat Completions: the truncated-tool-args recovery
+    # under test is that protocol's delta reconstruction, and reasoning
+    # models now route to the Responses protocol instead.
+    provider = OpenAIProvider(api_key="test_key", model="gpt-4o")
     resp = provider.chat_stream_response(
         [ChatMessage(role="user", content="Hi")],
         tools=[{"name": "Read", "description": "", "input_schema": {"type": "object"}}],

@@ -63,15 +63,25 @@ Agent kwargs (``--ak key=value``):
     (see ``source`` below) before an effort number means anything.
     ``xhigh`` is model-dependent (opus-5/opus-4-8 yes; sonnet-4-6/opus-4-6
     no) and degrades to ``high`` where rejected.
-  - **OpenAI-compatible wire** (openrouter, openai, deepseek, zai, …) —
-    sent as the top-level ``reasoning_effort`` body field, with no model
-    allowlist and no ``xhigh`` clamp; the level passes through verbatim.
-    ONE exception: the ChatGPT-subscription path (``subscription=true``
-    with ``--model openai/…``) clamps ``xhigh`` and ``max`` down to
-    ``high`` before sending, because that backend advertises only
-    low/medium/high and rejects higher tiers. So ``--ak effort=max`` plus
-    subscription auth really runs at ``high`` — an API-key or OpenRouter
-    run of the same model does not.
+  - **OpenAI-compatible wire** (openrouter, deepseek, zai, …) — sent as
+    the top-level ``reasoning_effort`` body field, with no model allowlist
+    and no ``xhigh`` clamp; the level passes through verbatim. This is the
+    path ``openrouter/openai/gpt-5.6-luna`` takes, and OpenRouter accepts
+    ``max`` for that model.
+  - **First-party ``--provider openai``** — reasoning models go over the
+    Responses API, which tops out at ``xhigh``: ``max`` is degraded to
+    ``xhigh`` rather than sent (the API rejects ``max`` outright with
+    "Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'").
+    So ``--ak effort=max`` against ``openai/gpt-5.6-luna`` really runs at
+    ``xhigh``, while the same nominal setting on OpenRouter sends ``max``.
+    Non-reasoning models (gpt-4o, …) stay on Chat Completions and have the
+    effort field STRIPPED, since they reject it as an unknown argument.
+  - **ChatGPT subscription** (``subscription=true`` with
+    ``--model openai/…``) clamps ``xhigh`` and ``max`` down to ``high``,
+    because that backend advertises only low/medium/high. So the same
+    ``effort=max`` runs at three different levels depending on route:
+    ``max`` on OpenRouter, ``xhigh`` on an OpenAI key, ``high`` on a
+    ChatGPT plan.
 
   REQUIRES a clawcodex build from 2026-07-31 or later. Before that, effort
   was emitted ONLY on the Anthropic branch, so ``--effort`` was a silent

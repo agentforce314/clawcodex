@@ -408,7 +408,11 @@ class TestOpenAIProvider(unittest.TestCase):
         mock_openai.return_value = mock_client
 
         # Test
-        provider = OpenAIProvider(api_key="test_key")
+        # gpt-4o pins this to Chat Completions: the mocks below are Chat
+        # Completions chunk shapes, and reasoning models now route to the
+        # Responses protocol instead. The path under test is still live for
+        # non-reasoning models.
+        provider = OpenAIProvider(api_key="test_key", model="gpt-4o")
         messages = [ChatMessage(role="user", content="Hi")]
         response = provider.chat(messages)
 
@@ -432,7 +436,11 @@ class TestOpenAIProvider(unittest.TestCase):
         mock_client.with_options.return_value = mock_client  # see _apply_client_timeout
         mock_openai.return_value = mock_client
 
-        provider = OpenAIProvider(api_key="test_key")
+        # gpt-4o pins this to Chat Completions: the mocks below are Chat
+        # Completions chunk shapes, and reasoning models now route to the
+        # Responses protocol instead. The path under test is still live for
+        # non-reasoning models.
+        provider = OpenAIProvider(api_key="test_key", model="gpt-4o")
         messages = [{"role": "user", "content": "Hi"}]
         response = provider.chat(messages)
 
@@ -476,7 +484,11 @@ class TestOpenAIProvider(unittest.TestCase):
         mock_client.with_options.return_value = mock_client  # see _apply_client_timeout
         mock_openai.return_value = mock_client
 
-        provider = OpenAIProvider(api_key="test_key")
+        # gpt-4o pins this to Chat Completions: the mocks below are Chat
+        # Completions chunk shapes, and reasoning models now route to the
+        # Responses protocol instead. The path under test is still live for
+        # non-reasoning models.
+        provider = OpenAIProvider(api_key="test_key", model="gpt-4o")
         chunks: list[str] = []
         response = provider.chat_stream_response(
             [ChatMessage(role="user", content="Hi")],
