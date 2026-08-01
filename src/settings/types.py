@@ -157,6 +157,14 @@ class SettingsSchema:
     # provider-scoped in a multi-provider config).
     model_provider: str = ""
 
+    # Query sources eligible for 1h prompt-cache TTL (#285) — the
+    # config-backed replacement for the TS GrowthBook allowlist
+    # (e.g. ["repl_main_thread"]). Empty = 1h caching dormant.
+    # CLAWCODEX_PROMPT_CACHE_1H_SOURCES (comma-separated) overrides when
+    # SET, including set-but-empty as a kill switch. Like every list
+    # setting, a more specific config layer REPLACES (not extends) this.
+    prompt_cache_1h_sources: list[str] = field(default_factory=list)
+
     # Disable dynamic workflows (also honored via CLAUDE_CODE_DISABLE_WORKFLOWS
     # and the camelCase ``disableWorkflows`` JSON key). See src/workflow/gating.py.
     disable_workflows: bool = False

@@ -687,11 +687,11 @@ def build_full_system_prompt_blocks(
     # WI-2.2: TTL selector. ``should_1h_cache_ttl(query_source)`` returns
     # True only when (a) the user is 1h-eligible per the latched
     # evaluation in cache_state.evaluate_prompt_cache_1h_eligibility, AND
-    # (b) the query source is in the GrowthBook-populated allowlist.
+    # (b) the query source is in the configured allowlist (#285:
+    # settings.prompt_cache_1h_sources / CLAWCODEX_PROMPT_CACHE_1H_SOURCES,
+    # installed at session start by initialize_prompt_cache_state).
     # When either condition is False, fall back to "5m" — the safe-default
-    # TTL that Phase 1 already engaged. The allowlist is empty by default
-    # (no GrowthBook port yet), so this defaults to "5m" universally until
-    # a future WI populates it.
+    # TTL that Phase 1 already engaged.
     from src.state.cache_state import should_1h_cache_ttl, should_use_global_cache_scope
     ttl = "1h" if should_1h_cache_ttl(query_source) else "5m"
 

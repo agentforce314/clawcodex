@@ -499,6 +499,16 @@ def get_mcp_configs_by_scope(
 
 
 def get_mcp_config_by_name(name: str) -> ScopedMcpServerConfig | None:
+    # Enterprise lockdown parity with the aggregate path (#286): when a
+    # managed-mcp.json exists, get_all_mcp_configs returns enterprise
+    # servers ONLY — the by-name resolve (reconnect, OAuth flows) must
+    # not be a side door that hands out user/project/local/managed/
+    # dynamic configs the merge excluded (same reasoning as the C7
+    # approval gate below).
+    if _does_enterprise_mcp_config_exist():
+        servers, _ = get_mcp_configs_by_scope("enterprise")
+        return servers.get(name)
+
     # Order: highest-trust → lowest-trust. Enterprise managed wins over
     # user, which wins over project, which wins over local.
     for scope in ("enterprise", "user", "project", "local"):
@@ -573,26 +583,36 @@ def get_dynamic_mcp_configs() -> dict[str, ScopedMcpServerConfig]:
 def get_managed_mcp_configs() -> dict[str, ScopedMcpServerConfig]:
     """Return plugin-provided MCP server configs (``managed`` scope).
 
-    Phase 7 WI-7.4 (gap #9 subset). The integration point with the plugin
-    layer at ``src/plugins/mcp_integration.py`` is the
-    ``McpPluginWrapper`` registry — but as of today, ``McpPluginWrapper``
-    does not carry an ``McpServerConfig`` (only a ``server_name``,
-    ``plugin``, ``tools``, ``connected``). There is therefore nothing to
-    return: the wrapper holds tool metadata, not the launch config.
+    Phase 7 WI-7.4 (gap #9 subset), wired by #286: reads the
+    ``McpPluginWrapper`` registry at ``src/plugins/mcp_integration.py``
+    and surfaces every wrapper that carries a ``server_config`` into the
+    merge — per-name lookup, the ``get_all_mcp_configs`` aggregator, and
+    ``filter_mcp_servers_by_policy`` (``allow_managed_only_mcp`` counts
+    these as managed) all see them like any other scope. Legacy
+    tools-only registrations (``server_config=None``) stay invisible to
+    the merge, exactly as before.
 
-    Returning ``{}`` here keeps the merge surface stable: callers (the
-    ``get_all_mcp_configs`` aggregator and ``get_mcp_config_by_name``)
-    can ask for managed configs without crashing, and the moment the
-    plugin layer is extended to carry an ``McpServerConfig`` per wrapper,
-    this loader can read it via ``wrapper.config`` (or whatever the
-    extended schema names it) and propagate.
-
-    TODO(Phase 7 follow-up): extend ``McpPluginWrapper`` with a
-    ``server_config: McpServerConfig`` field, set at registration time,
-    and surface it here. Until that lands, plugin-provided MCP servers
-    cannot participate in the per-name lookup or the merge.
+    ``plugin_source`` records the providing plugin's name so listings
+    and dedup notices can attribute the entry.
     """
-    return {}
+    try:
+        # Lazy import: services/mcp must not import the plugins package
+        # at module level (plugins imports services.mcp.types).
+        from src.plugins.mcp_integration import get_all_mcp_plugins
+    except ImportError:
+        logger.warning("plugin registry unavailable; no managed MCP servers")
+        return {}
+
+    servers: dict[str, ScopedMcpServerConfig] = {}
+    for wrapper in get_all_mcp_plugins():
+        if wrapper.server_config is None:
+            continue
+        servers[wrapper.server_name] = ScopedMcpServerConfig(
+            config=wrapper.server_config,
+            scope="managed",
+            plugin_source=wrapper.plugin.name,
+        )
+    return servers
 
 
 def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[ValidationError]]:
@@ -685,6 +705,33 @@ def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[Valida
             dedup_notice_strings.append(
                 f"Claude.ai connector {rec.get('name')!r} suppressed; "
                 f"duplicate of manual server {rec.get('duplicateOf')!r}."
+            )
+
+    # #286: plugin/manual dedup — a plugin server whose launch signature
+    # duplicates a manual entry is suppressed so the operator's explicit
+    # config wins (same policy as the claudeai dedup above — including
+    # the disabled-server carve-out: a DISABLED manual entry must not
+    # suppress its plugin twin, or disabling the manual copy would leave
+    # the user with zero working servers).
+    if managed_servers:
+        managed_only = {k: v for k, v in merged.items() if v.scope == "managed"}
+        manual_only = {
+            k: v
+            for k, v in merged.items()
+            if v.scope in ("user", "project", "local")
+            and not is_mcp_server_disabled(k)
+        }
+        kept_managed, suppressed_plugin = dedup_plugin_mcp_servers(
+            managed_only, manual_only
+        )
+        merged = {
+            **{k: v for k, v in merged.items() if v.scope != "managed"},
+            **kept_managed,
+        }
+        for rec in suppressed_plugin:
+            dedup_notice_strings.append(
+                f"Plugin MCP server {rec.get('name')!r} suppressed; "
+                f"duplicate of {rec.get('duplicateOf')!r}."
             )
 
     filtered, notices = filter_mcp_servers_by_policy(merged)

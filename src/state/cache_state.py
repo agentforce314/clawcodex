@@ -11,18 +11,24 @@ fields, if flipped mid-session, would bust ~50-70K tokens of cached prompt.
 Sacrificing mid-session toggleability buys cache stability worth far more in
 dollars per turn.
 
-Per the Phase 2 audit (M9-resolved):
-  * ``prompt_cache_1h_eligible`` — wired here; consumed by WI-2.2's
+Per the Phase 2 audit (M9-resolved; #285 wired the 1h path):
+  * ``prompt_cache_1h_eligible`` — latched at session start by
+    ``src/state/session_start.initialize_prompt_cache_state`` (called
+    from ``init.pre_action``); consumed by WI-2.2's
     ``should_1h_cache_ttl`` selector.
+  * ``prompt_cache_1h_allowlist`` — populated at the same session-start
+    site from ``settings.prompt_cache_1h_sources`` /
+    ``CLAWCODEX_PROMPT_CACHE_1H_SOURCES`` (the config-backed,
+    non-GrowthBook channel — #285).
   * ``fast_mode_header_latched`` — wired by ``src/utils/fast_mode.py`` on
     first true result of ``is_fast_mode_enabled()``.
-  * ``afk_mode_header_latched`` — DEAD STORE today (no AFK toggle in
-    Python TUI yet). Future TUI WI must add the trigger.
-  * ``cache_editing_header_latched`` — DEAD STORE today (cache-editing is
-    a TS GrowthBook treatment with no Python equivalent yet).
-  * ``thinking_clear_latched`` — DEAD STORE today (thinking-mode-flip event
-    is not exposed by ``src/utils/effort.py`` in the form needed for this
-    latch). Future WI must surface the event.
+  * ``afk_mode_header_latched`` — DEAD STORE: its source feature (the TUI
+    AFK toggle) is not built. Wire when that feature lands (#285 audit).
+  * ``cache_editing_header_latched`` — DEAD STORE: cache-editing is a TS
+    GrowthBook treatment with no Python equivalent. Wire with that port.
+  * ``thinking_clear_latched`` — DEAD STORE: the port has no extended-
+    thinking request parameter, so a thinking-flip-after-cache-miss event
+    cannot exist yet. Wire when thinking lands.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ __all__ = [
     "get_prompt_cache_1h_allowlist",
     "get_prompt_cache_1h_eligible",
     "is_first_party_provider",
+    "populate_prompt_cache_1h_allowlist",
     "reset_for_test_only",
     "should_1h_cache_ttl",
     "should_use_global_cache_scope",
@@ -78,10 +85,11 @@ class BetaHeaderLatches:
     # ``prompt_cache_1h_eligible`` is True, the per-call decision still
     # requires the ``query_source`` to appear in this list — mirrors TS
     # GrowthBook config at ``services/api/claude.ts:430-438``.
-    # Default empty list = no source emits 1h. Population of this list is
-    # left to a future WI that ports the GrowthBook integration; for now
-    # the allowlist remains empty and 1h caching is dormant (5m caching
-    # still works because Phase 1 already engaged it).
+    # Default empty list = no source emits 1h. Populated once per session
+    # by ``populate_prompt_cache_1h_allowlist`` from configuration
+    # (settings.prompt_cache_1h_sources / CLAWCODEX_PROMPT_CACHE_1H_SOURCES
+    # — the non-GrowthBook channel, #285); unconfigured installs stay
+    # dormant (5m caching still works from Phase 1).
     prompt_cache_1h_allowlist: list[str] = field(default_factory=list)
 
     # Toggle latches. Set on first toggle event; never reset.
@@ -133,13 +141,30 @@ def get_prompt_cache_1h_eligible() -> bool | None:
 def get_prompt_cache_1h_allowlist() -> list[str]:
     """Read the 1h-cache query-source allowlist.
 
-    Returns a copy to discourage caller mutation. The allowlist is
-    populated by future GrowthBook-port work (currently always empty in
-    the open build). Plain getter for parity with TS
-    ``getPromptCache1hAllowlist`` (``bootstrap/state.ts:1579``). **No
-    setter is exposed**.
+    Returns a copy to discourage caller mutation. Populated once per
+    session from configuration via
+    ``populate_prompt_cache_1h_allowlist`` (#285 — the non-GrowthBook
+    config channel). Plain getter for parity with TS
+    ``getPromptCache1hAllowlist`` (``bootstrap/state.ts:1579``).
     """
     return list(_LATCHES.prompt_cache_1h_allowlist)
+
+
+def populate_prompt_cache_1h_allowlist(sources: list[str]) -> bool:
+    """Populate the 1h-cache allowlist ONCE per session (#285).
+
+    The config-backed replacement for the TS GrowthBook channel: the
+    session-start wiring reads the configured query sources and installs
+    them here. Sticky like every other field in this module — a
+    non-empty allowlist is never replaced mid-session (a flip would bust
+    the cached prompt prefix this module exists to protect). Returns
+    True when the list was installed.
+    """
+    cleaned = [s.strip() for s in sources if isinstance(s, str) and s.strip()]
+    if not cleaned or _LATCHES.prompt_cache_1h_allowlist:
+        return False
+    _LATCHES.prompt_cache_1h_allowlist = cleaned
+    return True
 
 
 def evaluate_prompt_cache_1h_eligibility(
@@ -165,16 +190,14 @@ def evaluate_prompt_cache_1h_eligibility(
     keeps 1h caching dormant. When the porting WI for these inputs lands,
     1h caching activates without requiring code changes here.
 
-    **Status (Phase 2):** this primitive is implemented but has NO
-    production caller today. ``grep -rn "evaluate_prompt_cache_1h_eligibility"
-    src/`` returns only the definition. The 1h cache path is therefore
-    end-to-end dormant: ``prompt_cache_1h_eligible`` stays at ``None``,
-    ``should_1h_cache_ttl`` always returns False, every cache_control
-    emits ``ttl: '5m'``. Activating 1h requires (a) porting the user-type
-    /subscription/overage signals, (b) calling this function with real
-    inputs at session start, AND (c) populating
-    ``prompt_cache_1h_allowlist`` from a Python-equivalent of the TS
-    GrowthBook config. All three are deferred to a future WI.
+    **Status (#285 — wired):** called once per session via
+    ``src/state/session_start.initialize_prompt_cache_state`` (from
+    ``init.pre_action``, env-signal backed) and lazily from
+    ``should_1h_cache_ttl`` when the latch is unevaluated (SDK paths
+    that skip pre_action; a /clear that reset the latches). 1h engages
+    when the eligibility signals AND a configured allowlist
+    (``populate_prompt_cache_1h_allowlist``) are both present;
+    otherwise every cache_control stays at ``ttl: '5m'``.
     """
     latches = get_beta_header_latches()
     if latches.prompt_cache_1h_eligible is None:
@@ -191,12 +214,24 @@ def should_1h_cache_ttl(query_source: str) -> bool:
       1. ``prompt_cache_1h_eligible`` is latched True (the user is eligible).
       2. ``query_source`` is in the allowlist (this specific call is eligible).
 
-    The allowlist is empty by default — until a future WI populates it
-    from configuration, every call defaults to ``ttl: '5m'``. This is the
-    safe-default behavior: 5m caching is already engaged from Phase 1; 1h
-    is an opt-in extension for sessions that cross 5-minute idle gaps.
+    Unconfigured installs default every call to ``ttl: '5m'`` — the
+    safe behavior already engaged in Phase 1; 1h is an opt-in extension
+    (#285: settings.prompt_cache_1h_sources / the env override) for
+    sessions that cross 5-minute idle gaps.
     """
     latches = get_beta_header_latches()
+    if latches.prompt_cache_1h_eligible is None:
+        # Lazy (re-)initialization — TS evaluates at the consumer
+        # (claude.ts:420-425). Covers SDK paths that never ran
+        # init.pre_action AND a /clear / /compact that reset the latch
+        # singleton (without this, a cleared session silently downgrades
+        # to 5m for its remainder).
+        try:
+            from src.state.session_start import initialize_prompt_cache_state
+
+            initialize_prompt_cache_state()
+        except Exception:
+            pass  # fail-soft: 5m below
     if latches.prompt_cache_1h_eligible is not True:
         return False
     return query_source in latches.prompt_cache_1h_allowlist
