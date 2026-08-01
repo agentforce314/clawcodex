@@ -347,3 +347,141 @@ class TestQueryLoopImageSizeError(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQueryLoopImageCountError(unittest.TestCase):
+    """A "too MANY images" provider error must enter the media-recovery lane.
+
+    An agent that reads image files in a loop — video frames, a screenshot
+    series, a page-by-page scan — accumulates one image block per Read, and
+    every block rides along on every later request. Nothing bounds that:
+    compaction is the only thing that strips images, and it is triggered by
+    the TOKEN budget, so on a million-token model it may never fire before the
+    provider's image cap is hit.
+
+    Observed on terminal-bench 2.1 (video-processing, 2026-08-01): 82 image
+    Reads, then ``Exceeded maximum number of images (50) allowed in the
+    request.`` The classifier did not recognise the wording, so it fell
+    through to the generic handler and killed a 22-minute run outright
+    instead of compacting once and retrying.
+
+    The recovery machinery already existed and was tested — only the
+    classifier's pattern set was missing this phrasing.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _run_with_error(self, error_text: str):
+        provider = MagicMock()
+        exc = Exception(error_text)
+        provider.chat_stream_response.side_effect = exc
+        provider.chat.side_effect = exc
+        params = QueryParams(
+            messages=[UserMessage(content="describe the frames")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        collected = []
+
+        async def run():
+            async for msg in query(params):
+                collected.append(msg)
+
+        _run(run())
+        return collected
+
+    def test_image_count_error_is_classified_as_media_size(self):
+        """THE regression guard — the exact string that killed the trial."""
+        collected = self._run_with_error(
+            "Exceeded maximum number of images (50) allowed in the request."
+        )
+        assistants = [m for m in collected if isinstance(m, AssistantMessage)]
+        self.assertTrue(assistants, "expected an assistant error message")
+        tagged = [
+            m for m in assistants
+            if getattr(m, "_api_error", None) == "media_size"
+        ]
+        self.assertTrue(
+            tagged,
+            "the image-COUNT error must carry the media_size tag so the "
+            "reactive-compact lane (which strips images) can recover; "
+            f"got tags {[getattr(m, '_api_error', None) for m in assistants]}",
+        )
+
+    def test_image_count_error_does_not_end_as_a_plain_model_error(self):
+        """Unclassified, it reached ``Terminal(model_error)`` and the run died.
+
+        Classified, an exhausted recovery lands on ``image_error`` instead —
+        which ``EARLY_STOP_SUBTYPES`` maps to a non-success result subtype, so
+        the caller can tell a media problem from an arbitrary crash.
+        """
+        from src.query.query import run_query
+        from src.query.transitions import EARLY_STOP_SUBTYPES
+
+        provider = MagicMock()
+        exc = Exception("Exceeded maximum number of images (50) allowed in the request.")
+        provider.chat_stream_response.side_effect = exc
+        provider.chat.side_effect = exc
+        params = QueryParams(
+            messages=[UserMessage(content="describe the frames")],
+            system_prompt="s",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        _msgs, terminal = _run(run_query(params))
+        self.assertNotEqual(
+            terminal.reason, "model_error",
+            "a recognised media error must not exit as a generic model_error",
+        )
+        self.assertEqual(terminal.reason, "image_error")
+        self.assertIn(
+            "image_error", EARLY_STOP_SUBTYPES,
+            "image_error must map to a non-success subtype so the caller can "
+            "distinguish it from a clean completion",
+        )
+
+    def test_size_errors_still_recognised(self):
+        """The pre-existing SIZE patterns must keep working."""
+        collected = self._run_with_error("image exceeds the maximum allowed size")
+        tagged = [
+            m for m in collected
+            if isinstance(m, AssistantMessage)
+            and getattr(m, "_api_error", None) == "media_size"
+        ]
+        self.assertTrue(tagged)
+
+    def test_unrelated_errors_are_not_swept_in(self):
+        """Widening the pattern set must not capture other failures — a
+        prompt-too-long has its own recovery, and a generic server error has
+        none, so mislabelling either would route it wrongly."""
+        for text, expect_tag in (
+            ("prompt is too long: 137500 tokens > 135000 maximum", "prompt_too_long"),
+            ("The server had an error processing your request", None),
+        ):
+            with self.subTest(text=text):
+                collected = self._run_with_error(text)
+                tags = {
+                    getattr(m, "_api_error", None)
+                    for m in collected
+                    if isinstance(m, AssistantMessage)
+                }
+                self.assertNotIn("media_size", tags, f"{text!r} misclassified")
+                if expect_tag:
+                    self.assertIn(expect_tag, tags)

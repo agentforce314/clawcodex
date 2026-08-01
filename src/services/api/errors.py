@@ -207,10 +207,43 @@ def is_transport_error(error: BaseException) -> bool:
 
 
 def is_media_size_error(raw: str) -> bool:
+    """Provider errors meaning "there is too much media in this request".
+
+    The name says SIZE but the category is really "the request carries more
+    media than the endpoint accepts", which the recovery lane treats
+    identically: the message is withheld (``_is_withheld_media_size``), one
+    reactive compaction runs, and compaction's ``strip_images_from_messages``
+    removes the media before the retry. Too-big and too-many both get fixed
+    by dropping media, so both belong here.
+
+    Case-insensitive: providers paraphrase casing inconsistently, and the
+    first two patterns previously required exact lowercase.
+
+    COUNT limits are the fourth pattern. An agent that reads image files in a
+    loop — video frames, a screenshot series, a page-by-page scan — accumulates
+    one image block per Read in the conversation, and every block rides along
+    on every later request. Nothing bounds that: compaction is the only thing
+    that strips images and it is triggered by the TOKEN budget, so on a
+    million-token model it may never fire before the image cap is hit.
+    Observed on terminal-bench 2.1 (video-processing, 2026-08-01): 82 image
+    Reads, then ``Exceeded maximum number of images (50) allowed in the
+    request.`` — unclassified, so it fell through to the generic handler and
+    killed a 22-minute run outright instead of compacting and retrying.
+
+    Patterns cover the observed OpenAI/Azure wording plus the likely
+    paraphrases, since the same gap already had to be patched once for a
+    different provider's phrasing (see ``is_image_unsupported_error``).
+    """
+    low = raw.lower()
     return (
-        ("image exceeds" in raw and "maximum" in raw)
-        or ("image dimensions exceed" in raw and "many-image" in raw)
-        or bool(re.search(r"maximum of \d+ PDF pages", raw))
+        ("image exceeds" in low and "maximum" in low)
+        or ("image dimensions exceed" in low and "many-image" in low)
+        or bool(re.search(r"maximum of \d+ pdf pages", low))
+        # Too MANY images, as opposed to too large.
+        or bool(re.search(r"maximum number of images", low))
+        or bool(re.search(r"too many images", low))
+        or bool(re.search(r"exceeds? the maximum of \d+ images", low))
+        or bool(re.search(r"at most \d+ images", low))
     )
 
 
