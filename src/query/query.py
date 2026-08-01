@@ -1321,14 +1321,36 @@ async def _call_model_sync(
             err_msg._api_error = "max_output_tokens"  # type: ignore[attr-defined]
             return [err_msg], []
 
-        # Ch5/B.1 — tag media-size errors so the loop can withhold them
-        # and (in B.2) route through reactive-compact recovery. Mirrors
-        # TS `isWithheldMediaSizeError` at query.ts:892. `is_media_size_error`
+        # Ch5/B.1 — tag media errors so the loop can withhold them and (in
+        # B.2) route through media recovery. Mirrors TS
+        # `isWithheldMediaSizeError` at query.ts:892. `is_media_size_error`
         # expects a str (substring match), so pass error_str explicitly.
-        from ..services.api.errors import is_media_size_error
-        if is_media_size_error(error_str):
+        #
+        # RETRYABLE ERRORS FIRST. This branch RETURNS a tagged message rather
+        # than re-raising, which takes the request out of the retry lane
+        # entirely (``categorize_retryable_api_error`` only ever sees
+        # exceptions that propagate out of this function). So a 429 or a 5xx
+        # whose body happens to mention images — "Rate limit reached for
+        # images: ..." is real provider wording — would be converted from
+        # "back off and retry" into a non-retryable media terminal. Classify
+        # on transport/status BEFORE matching on prose.
+        from ..services.api.errors import (
+            is_media_size_error,
+            is_overloaded_error,
+            is_rate_limit_error,
+        )
+
+        _status = getattr(e, "status", getattr(e, "status_code", None))
+        _retryable = (
+            is_rate_limit_error(e)
+            or is_overloaded_error(e)
+            or (isinstance(_status, int) and _status >= 500)
+        )
+        if is_media_size_error(error_str) and not _retryable:
             err_msg = _create_assistant_api_error_message(
-                f"Media too large: {error_str}",
+                # "too large" was wrong for a COUNT rejection, which is what
+                # this branch most often sees; the operator reads this string.
+                f"Media rejected: {error_str}",
                 error="media_size",
             )
             err_msg._api_error = "media_size"  # type: ignore[attr-defined]
@@ -2012,21 +2034,86 @@ async def query(
                 )
                 from ..services.api.errors import PromptTooLongError
 
-                # Synthesize an exception for reactive_compact's
-                # is_prompt_too_long_error check. The withheld
-                # message holds the original error string; we don't
-                # need to round-trip it precisely because
-                # reactive_compact only uses the exception for
-                # classification.
-                synthetic_err = PromptTooLongError(
-                    "withheld during streaming, recovering"
-                )
-                result: ReactiveCompactResult = await reactive_compact(
-                    messages=messages,
-                    error=synthetic_err,
-                    provider=params.provider,
-                    model=config.model,
-                )
+                # A MEDIA rejection is a COUNT/SIZE violation, not a token
+                # one, so fix it directly instead of routing through the
+                # token-shaped compactor.
+                #
+                # reactive_compact's emergency fallback drops the OLDEST
+                # messages and accepts the result when tokens fall 30%
+                # (reactive_compact.py). Image count is never consulted. For
+                # the case that motivates this path — an agent reading frames
+                # in a loop, so the images are all in the RECENT tail —
+                # dropping old text satisfies the token test while leaving
+                # the images in place: measured 200 msgs/60 images -> 40
+                # msgs/40 images, reported as ``compacted=True``. The retry
+                # then hits the same cap with the one-shot flag already
+                # burned.
+                #
+                # Stripping is deterministic, needs no summarizer call, and
+                # keeps the text context that a full compaction would replace
+                # with a summary. Upstream models these as distinct
+                # operations too (reactiveCompact.ts carries a
+                # 'media_unstrippable' outcome); the port had collapsed them.
+                media_result: ReactiveCompactResult | None = None
+                if is_withheld_media:
+                    from ..context_system.microcompact import (
+                        strip_images_from_typed_messages,
+                    )
+
+                    def _n_images(ms: list[Message]) -> int:
+                        n = 0
+                        for m in ms:
+                            c = getattr(m, "content", None)
+                            if isinstance(c, list):
+                                n += sum(
+                                    1 for b in c
+                                    if getattr(b, "type", None) in ("image", "document")
+                                )
+                        return n
+
+                    before_imgs = _n_images(messages)
+                    stripped = strip_images_from_typed_messages(messages)
+                    after_imgs = _n_images(stripped)
+                    if before_imgs and after_imgs < before_imgs:
+                        logger.info(
+                            "media recovery: stripped %d media block(s) from "
+                            "the conversation and retrying",
+                            before_imgs - after_imgs,
+                        )
+                        media_result = ReactiveCompactResult(
+                            compacted=True,
+                            messages=stripped,
+                            tokens_before=0,
+                        )
+                if is_withheld_media and media_result is not None:
+                    result = media_result
+                else:
+                    # Either a prompt-too-long, or a media error with nothing
+                    # strippable in the typed conversation (media referenced
+                    # some other way). Fall back to the general compactor
+                    # rather than giving up — strip is an OPTIMISATION for the
+                    # case it can fix deterministically, not a replacement.
+                    # Synthesize an exception for reactive_compact's
+                    # is_prompt_too_long_error check. The withheld message
+                    # holds the original error string; we don't need to
+                    # round-trip it precisely because reactive_compact only
+                    # uses the exception for classification.
+                    #
+                    # That predicate is TYPE-aware (reactive_compact.py) --
+                    # it has to be, because this message deliberately is not
+                    # the default one. When it was string-only this synthetic
+                    # error failed the gate and the WHOLE lane was dead: no
+                    # compaction, no retry, one provider call, for both the
+                    # PTL and media paths.
+                    synthetic_err = PromptTooLongError(
+                        "withheld during streaming, recovering"
+                    )
+                    result = await reactive_compact(
+                        messages=messages,
+                        error=synthetic_err,
+                        provider=params.provider,
+                        model=config.model,
+                    )
                 if result.compacted:
                     # ReactiveCompactResult.messages is list[Message]
                     # (verified 2026-05-12 against reactive_compact.py

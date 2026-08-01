@@ -43,6 +43,31 @@ _withheld_ptl_errors: list[Exception] = []
 
 
 def is_withheld_prompt_too_long(error: Exception) -> bool:
+    """Whether ``error`` means "the request did not fit".
+
+    TYPE FIRST, then the wire text. The type check is not redundant: a
+    ``PromptTooLongError`` carries its reason in ``str(error)`` only when the
+    caller left the default message alone, and ``query.py``'s recovery path
+    deliberately does not — it constructs one with an explanatory message
+    ("withheld during streaming, recovering") because the original provider
+    exception was already consumed during streaming and only the
+    classification needs to survive.
+
+    Without the isinstance arm that synthetic error failed this predicate, so
+    ``reactive_compact`` returned ``compacted=False`` immediately and the
+    ENTIRE reactive-recovery lane was dead: no compaction, no image strip, no
+    retry, for both the prompt-too-long and the media paths. Measured on
+    ``main`` before this change — one provider call, then a terminal. A typed
+    ``PromptTooLongError`` failing the PromptTooLong predicate is a trap, not
+    a contract.
+
+    The lane's own tests did not catch it because they stub
+    ``reactive_compact`` itself, so the gate was never exercised.
+    """
+    from ..api.errors import PromptTooLongError
+
+    if isinstance(error, PromptTooLongError):
+        return True
     error_str = str(error).lower()
     return (
         "prompt_too_long" in error_str

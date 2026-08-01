@@ -16,6 +16,7 @@ from src.query.query import (
     QueryParams,
     StreamEvent,
     query,
+    run_query,
 )
 
 
@@ -669,3 +670,233 @@ class TestPhaseBBlockingLimitPreemption(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReactiveRecoveryActuallyRuns(unittest.TestCase):
+    """The recovery lane must RETRY, not just relabel the terminal.
+
+    Both lanes were dead. ``query.py`` builds its trigger as
+    ``PromptTooLongError("withheld during streaming, recovering")`` because
+    the original provider exception is consumed during streaming and only the
+    classification needs to survive — but the gate
+    (``reactive_compact.is_prompt_too_long_error``) was a pure SUBSTRING test
+    for "prompt is too long" / "prompt_too_long" / "context_length_exceeded".
+    A typed ``PromptTooLongError`` matched none of them, so
+    ``reactive_compact`` returned ``compacted=False`` on its first line and
+    nothing downstream ran: no compaction, no image strip, no retry.
+
+    Measured on main before the fix: ONE provider call for both a
+    prompt-too-long and a media rejection.
+
+    The lane's existing tests all stub ``reactive_compact`` itself
+    (``fake_reactive_compact`` returning ``compacted=True``), so the gate was
+    never exercised — which is how it stayed broken from 2026-05 to 2026-08.
+    These tests deliberately do NOT stub it: they count provider calls.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.registry = build_default_registry()
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _drive(self, error_text, messages):
+        from unittest.mock import MagicMock
+
+        calls = {"n": 0, "images": []}
+
+        def side(msgs, *a, **k):
+            calls["n"] += 1
+            n = 0
+            for m in msgs:
+                c = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+                if isinstance(c, list):
+                    for b in c:
+                        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+                        if t in ("image", "image_url", "document"):
+                            n += 1
+            calls["images"].append(n)
+            raise Exception(error_text)
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = side
+        provider.chat.side_effect = side
+        params = QueryParams(
+            messages=messages,
+            system_prompt="s",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=ToolContext(workspace_root=self.workspace),
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        _msgs, terminal = _run(run_query(params))
+        return terminal, calls
+
+    @staticmethod
+    def _image_convo(n):
+        from src.types.content_blocks import ImageBlock, TextBlock
+
+        ms = [UserMessage(content=[TextBlock(text="analyse these frames")])]
+        for i in range(n):
+            ms.append(UserMessage(content=[
+                TextBlock(text=f"frame {i}"),
+                ImageBlock(source={
+                    "type": "base64", "media_type": "image/jpeg", "data": "x" * 300,
+                }),
+            ]))
+        return ms
+
+    def test_media_rejection_strips_images_and_retries(self):
+        """THE regression guard: a retry must happen AND carry fewer images."""
+        terminal, calls = self._drive(
+            "Exceeded maximum number of images (50) allowed in the request.",
+            self._image_convo(60),
+        )
+        self.assertGreater(
+            calls["n"], 1,
+            "no retry happened — the recovery lane is dead again",
+        )
+        self.assertGreater(calls["images"][0], 0, "first attempt should carry images")
+        self.assertLess(
+            calls["images"][1], calls["images"][0],
+            f"the retry must carry FEWER images; got {calls['images']}",
+        )
+        self.assertEqual(terminal.reason, "image_error")
+
+    def test_prompt_too_long_recovery_retries(self):
+        """The pre-existing lane, dead by the identical bug since 2026-05."""
+        terminal, calls = self._drive(
+            "prompt is too long: 137500 tokens > 135000 maximum",
+            self._image_convo(40),
+        )
+        self.assertGreater(
+            calls["n"], 1,
+            "prompt_too_long recovery never retried — the gate is broken again",
+        )
+        self.assertEqual(terminal.reason, "prompt_too_long")
+
+    def test_the_synthetic_trigger_passes_its_own_gate(self):
+        """Pins the exact mismatch, so a future edit to either side is caught.
+
+        ``query.py`` constructs this error; ``reactive_compact`` gates on it.
+        The two live in different modules and drifted apart silently.
+        """
+        from src.services.api.errors import PromptTooLongError
+        from src.services.compact.reactive_compact import is_prompt_too_long_error
+
+        self.assertTrue(
+            is_prompt_too_long_error(
+                PromptTooLongError("withheld during streaming, recovering")
+            ),
+            "a typed PromptTooLongError must satisfy the PromptTooLong gate "
+            "regardless of its message",
+        )
+        # ...and the string arm still works for untyped provider exceptions.
+        self.assertTrue(is_prompt_too_long_error(Exception("prompt is too long")))
+        self.assertFalse(is_prompt_too_long_error(Exception("network error")))
+
+    def test_retryable_errors_mentioning_images_stay_retryable(self):
+        """A 429/5xx whose body mentions images must NOT become a media
+        terminal — that would take it out of the retry lane."""
+        from src.services.api.errors import is_media_size_error
+
+        self.assertFalse(
+            is_media_size_error("Rate limit reached for images: too many images generated")
+        )
+
+
+class TestMediaRecoveryWhenTheSummarizerIsDown(unittest.TestCase):
+    """The media path must not depend on a working summarizer.
+
+    ``reactive_compact``'s emergency fallback drops the OLDEST messages and
+    accepts the result on a TOKEN test (``tokens_after < tokens_before *
+    0.7``). Image count is never consulted. For the case that motivates this
+    path — an agent reading frames in a loop, so the images sit in the RECENT
+    tail — dropping old text satisfies that test while leaving the images in
+    place. Measured directly against the compactor: 200 messages / 60 images
+    -> 40 messages / 40 images, returned as ``compacted=True``.
+
+    So routing media through the token compactor can "succeed" and still
+    retry over the cap, burning the one-shot flag. Stripping is deterministic.
+
+    This test forces the summarizer to fail so the two paths diverge — with a
+    working summarizer both happen to reach zero images, which is why a
+    simpler test cannot tell them apart.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.registry = build_default_registry()
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_images_still_dropped_without_a_summarizer(self):
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from src.types.content_blocks import ImageBlock, TextBlock
+
+        # Text-heavy head, images concentrated in the recent tail.
+        msgs = []
+        for i in range(60):
+            msgs.append(UserMessage(content=[TextBlock(text=f"step {i} " + "lorem " * 80)]))
+        for i in range(40):
+            msgs.append(UserMessage(content=[
+                TextBlock(text=f"frame {i}"),
+                ImageBlock(source={
+                    "type": "base64", "media_type": "image/jpeg", "data": "x" * 300,
+                }),
+            ]))
+
+        seen = []
+
+        def side(api_msgs, *a, **k):
+            n = 0
+            for m in api_msgs:
+                c = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+                if isinstance(c, list):
+                    for b in c:
+                        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+                        if t in ("image", "image_url", "document"):
+                            n += 1
+            seen.append(n)
+            raise Exception("Exceeded maximum number of images (50) allowed in the request.")
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = side
+        provider.chat.side_effect = side
+
+        async def _summarizer_down(ctx):
+            raise RuntimeError("summarizer unavailable")
+
+        params = QueryParams(
+            messages=msgs,
+            system_prompt="s",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=ToolContext(workspace_root=self.workspace),
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        with mock.patch(
+            "src.services.compact.reactive_compact.compact_conversation",
+            _summarizer_down,
+        ):
+            _run(run_query(params))
+
+        self.assertGreater(len(seen), 1, "no retry happened")
+        self.assertGreater(seen[0], 0, "first attempt should carry images")
+        self.assertEqual(
+            seen[1], 0,
+            "the retry must carry NO images even with the summarizer down; "
+            f"got {seen} — the token-shaped compactor leaves images behind",
+        )

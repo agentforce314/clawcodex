@@ -131,14 +131,61 @@ class TestIsInvalidApiKey(unittest.TestCase):
 
 
 class TestIsMediaSizeError(unittest.TestCase):
-    def test_image_exceeds(self) -> None:
-        self.assertTrue(is_media_size_error("image exceeds the maximum allowed"))
+    """Pin EVERY pattern individually.
 
-    def test_pdf_pages(self) -> None:
-        self.assertTrue(is_media_size_error("maximum of 100 PDF pages"))
+    This predicate decides error ROUTING — a match sends the request into
+    media recovery and out of the retry lane — so a pattern nobody pins can
+    be deleted, or a wrong one added, without a test noticing. Testing the
+    patterns as a group hides exactly that: removing three of four count
+    patterns at once left the loop-level tests green.
+    """
 
-    def test_unrelated(self) -> None:
-        self.assertFalse(is_media_size_error("some other error"))
+    # (string, expected, why)
+    CASES = [
+        # --- size / PDF (pre-existing) ---
+        ("image exceeds the maximum allowed", True, "size"),
+        ("image dimensions exceed the many-image limit", True, "dimensions"),
+        ("maximum of 100 PDF pages", True, "pdf page cap"),
+        # --- count (the video-processing failure) ---
+        ("Exceeded maximum number of images (50) allowed in the request.",
+         True, "OBSERVED on terminal-bench 2.1"),
+        ("Request exceeds the maximum of 100 images", True, "count, anchored"),
+        ("You may include at most 50 images per request", True, "count, anchored"),
+        # --- case-insensitivity ---
+        ("IMAGE EXCEEDS 5MB MAXIMUM", True, "upper"),
+        ("Maximum Of 100 Pdf Pages", True, "mixed; the regex literal is lowercase"),
+        # --- must NOT match: each has a DIFFERENT recovery, or none ---
+        ("prompt is too long: 137500 tokens > 135000 maximum", False, "own lane"),
+        ("context_length_exceeded", False, "own lane"),
+        ("No endpoints found that support image input", False,
+         "stripping does not help; is_image_unsupported_error owns it"),
+        ("Rate limit reached for images: too many images generated", False,
+         "retryable — must not become a media terminal"),
+        ("The server had an error processing your request", False, "no recovery"),
+        ("maximum context length exceeded", False, "token, not media"),
+        ("some other error", False, "unrelated"),
+    ]
+
+    def test_every_pattern_individually(self) -> None:
+        for raw, expected, why in self.CASES:
+            with self.subTest(raw=raw, why=why):
+                self.assertEqual(is_media_size_error(raw), expected, why)
+
+    def test_bare_too_many_images_is_not_a_pattern(self) -> None:
+        """Deliberately NOT matched. It was tried and removed: it also
+        matches retry-worthy prose ("Rate limit reached for images: too many
+        images generated"), and this predicate takes the request out of the
+        retry lane."""
+        self.assertFalse(is_media_size_error("too many images"))
+
+    def test_case_folding_cannot_widen_the_match_set(self) -> None:
+        """Case-insensitivity must only add case variants of strings that
+        already matched — never anything new."""
+        for raw, _expected, _why in self.CASES:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    is_media_size_error(raw), is_media_size_error(raw.lower())
+                )
 
 
 class TestIsImageUnsupportedError(unittest.TestCase):

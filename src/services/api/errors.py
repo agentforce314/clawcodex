@@ -239,9 +239,12 @@ def is_media_size_error(raw: str) -> bool:
         ("image exceeds" in low and "maximum" in low)
         or ("image dimensions exceed" in low and "many-image" in low)
         or bool(re.search(r"maximum of \d+ pdf pages", low))
-        # Too MANY images, as opposed to too large.
+        # Too MANY images, as opposed to too large. All three are anchored
+        # on a count phrase; a bare "too many images" was tried and REMOVED
+        # because it also matches retry-worthy provider prose such as
+        # "Rate limit reached for images: too many images generated", and
+        # this predicate decides routing, not just wording.
         or bool(re.search(r"maximum number of images", low))
-        or bool(re.search(r"too many images", low))
         or bool(re.search(r"exceeds? the maximum of \d+ images", low))
         or bool(re.search(r"at most \d+ images", low))
     )
