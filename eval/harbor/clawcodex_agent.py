@@ -686,8 +686,13 @@ class Clawcodex(BaseInstalledAgent):
 
         # Leaderboard token/cost columns. Prefer the session's authoritative
         # BILLING totals (input + cache, summed per turn — matches
-        # claude-code); fall back to the stream-json usage (incomplete: no
-        # cumulative cache) only when no session cost block was synced.
+        # claude-code); fall back to the stream-json usage only when no
+        # session cost block was synced. That fallback now carries cumulative
+        # cache counters, so the sum below is no longer short by the cached
+        # portion — but it is still not COMPLETE: result.usage only ever sees
+        # the main loop's assistant messages, so subagent and compaction
+        # tokens never reach it. The cost block includes them, which is one
+        # reason it stays preferred.
         if totals is not None:
             context.n_input_tokens = totals["prompt"]
             context.n_cache_tokens = totals["cached"]
@@ -748,8 +753,10 @@ class Clawcodex(BaseInstalledAgent):
         totals: dict[str, Any] | None,
     ) -> FinalMetrics | None:
         """``totals`` = authoritative session billing totals (preferred).
-        Falls back to the stream-json usage (incomplete — no cumulative
-        cache) only when no session cost block was synced."""
+        Falls back to the stream-json usage when no session cost block was
+        synced; that fallback now carries cumulative cache counters, so it is
+        no longer short by the cached portion — though it still omits
+        subagent and compaction tokens, which only the cost block sees."""
         usage = (result_event or {}).get("usage")
         if not isinstance(usage, dict):
             usage = {}
@@ -814,15 +821,21 @@ class Clawcodex(BaseInstalledAgent):
     ) -> dict[str, Any] | None:
         """Authoritative BILLING token totals from a session ``cost`` block.
 
-        clawcodex's stream-json ``result.usage`` is built for live-CONTEXT
-        measurement, not accounting: ``input_tokens`` is the running sum of
-        NON-cached input and it drops cumulative cache tokens (only a
-        ``last_*`` snapshot survives). For a heavily prompt-cached opus run
-        that under-reports total prompt tokens by orders of magnitude
-        (observed: 6 vs the real ~412 K). The session cost block's
-        ``model_usage`` accumulates the real per-turn billing counters
-        (input + cache_read + cache_creation, summed across turns), which is
-        exactly the convention the built-in claude-code agent reports.
+        Historically clawcodex's stream-json ``result.usage`` summed only
+        input+output, and ``input_tokens`` is the running sum of NON-cached
+        input, so cumulative cache tokens were dropped entirely (only a
+        ``last_*`` snapshot survived). For a heavily prompt-cached opus run
+        that under-reported total prompt tokens by orders of magnitude —
+        observed here as 6 against the real ~412 K, which is why this cost
+        block path exists. ``result.usage`` now carries the cumulative cache
+        counters, so the fallback is sound; this remains PREFERRED because
+        the cost block also supplies the real dollar cost, and because a run
+        against an older clawcodex build still needs it.
+
+        The session cost block's ``model_usage`` accumulates the real
+        per-turn billing counters (input + cache_read + cache_creation,
+        summed across turns), which is exactly the convention the built-in
+        claude-code agent reports.
         Returns ``{prompt, completion, cached, cost}`` or ``None``.
         """
         model_usage = cost.get("model_usage")

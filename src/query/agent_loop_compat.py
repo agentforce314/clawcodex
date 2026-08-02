@@ -664,7 +664,12 @@ async def run_query_as_agent_loop(
 
     holder = TerminalHolder()
     response_text_parts: list[str] = []
-    usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+    usage: dict[str, int] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
     num_turns = 0
     last_assistant_text = ""
     last_api_error_text = ""
@@ -717,16 +722,36 @@ async def run_query_as_agent_loop(
             num_turns += 1
             # Sum usage across turns.
             mu = getattr(msg, "usage", None) or {}
-            usage["input_tokens"] += mu.get("input_tokens", 0)
-            usage["output_tokens"] += mu.get("output_tokens", 0)
+            usage["input_tokens"] += mu.get("input_tokens", 0) or 0
+            usage["output_tokens"] += mu.get("output_tokens", 0) or 0
+            # The cache counters are summed too, because ``input_tokens`` is
+            # only the NON-cached part of each prompt — that is the shared
+            # convention across providers (Anthropic reports it natively;
+            # OpenAI-compatible providers since the cache-read split). Summing
+            # input+output alone therefore drops every cached token from the
+            # total, and ``agent_server`` feeds this very dict to
+            # ``compute_cost``, which then bills the cached portion at nothing:
+            # a real 2613-token turn with a 2560-token hit lost 71.7% of its
+            # cost. ``eval/harbor/clawcodex_agent.py`` measured the same defect
+            # from the other end — 6 tokens reported against a real ~412K on a
+            # prompt-cached opus run — and works around it by reading the
+            # session cost block instead.
+            #
+            # Purely additive: ``input_tokens`` keeps its meaning, so existing
+            # readers are untouched and only gain the ability to see the rest.
+            usage["cache_read_input_tokens"] += mu.get("cache_read_input_tokens", 0) or 0
+            usage["cache_creation_input_tokens"] += (
+                mu.get("cache_creation_input_tokens", 0) or 0
+            )
             # C3a: also keep the LAST response's FULL usage (all four
             # keys, last-wins — TS getCurrentUsage, utils/tokens.ts:
-            # 152-171). The cumulative sum above double-counts context
-            # across a multi-tool-call run and drops the cache keys, so
-            # it must NOT be used as a live-context measure
-            # (tokens.ts:407-420 warning). Last-wins also covers the
-            # parallel-tool-call case where N assistant records share
-            # one usage object.
+            # 152-171). The cumulative sum above is a BILLING total and
+            # still must NOT be used as a live-context measure: it
+            # double-counts context across a multi-tool-call run, because
+            # each turn re-sends the whole conversation (tokens.ts:407-420
+            # warning). Last-wins is the context measure, and it also covers
+            # the parallel-tool-call case where N assistant records share one
+            # usage object.
             if mu:
                 usage["last_input_tokens"] = int(mu.get("input_tokens", 0) or 0)
                 usage["last_output_tokens"] = int(mu.get("output_tokens", 0) or 0)

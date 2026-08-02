@@ -64,6 +64,49 @@ from src.query.transitions import EARLY_STOP_SUBTYPES
 from src.utils.abort_controller import AbortController, AbortError
 
 
+def _accumulate_usage(total: dict[str, int], usage: dict[str, int]) -> None:
+    """Fold one prompt's usage into the running totals, in place.
+
+    Two different kinds of key live in the same dict and must not be treated
+    alike. The cumulative counters (``input_tokens``, ``output_tokens`` and
+    the two cache counters) ADD across prompts — together they are the
+    billing total. The ``last_*`` keys are a snapshot of the most recent
+    response, used as the live-context measure, so they REPLACE: adding a
+    snapshot to itself across prompts yields a number that measures nothing,
+    and it ships in the stream-json ``result`` payload.
+    """
+    for key, value in usage.items():
+        # Provider usage dicts carry non-numeric entries — MinimaxProvider
+        # puts a ``service_tier`` string in its. The aggregator upstream
+        # whitelists keys today, so none arrive; skipping rather than
+        # raising means the natural next edit there ("stop dropping keys")
+        # cannot take down a headless run with ``int("standard")``.
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            continue
+        if key.startswith("last_"):
+            total[key] = numeric
+        else:
+            total[key] = int(total.get(key, 0) or 0) + numeric
+
+
+#: The cumulative counters that together make up what was actually billed.
+#: ``input_tokens`` is only the NON-cached part of each prompt, so any total
+#: built from input+output alone silently omits every cached token.
+_BILLED_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _billed_token_total(usage_total: dict[str, int]) -> int:
+    """Every billed token across the run — what ``/goal`` spends against."""
+    return int(sum(int(usage_total.get(key, 0) or 0) for key in _BILLED_TOKEN_KEYS))
+
+
 def _json_result_subtype(
     exit_code: int, early_stop_subtype: str | None
 ) -> tuple[str, bool]:
@@ -824,8 +867,7 @@ def run_headless(options: HeadlessOptions) -> int:
 
                 num_turns_total += result.num_turns
                 if result.usage:
-                    for key, value in result.usage.items():
-                        usage_total[key] = usage_total.get(key, 0) + int(value)
+                    _accumulate_usage(usage_total, result.usage)
 
                 if writer is not None:
                     writer.write(AssistantEvent(text=result.response_text))
@@ -841,10 +883,7 @@ def run_headless(options: HeadlessOptions) -> int:
                     evidence = collect_turn_evidence(
                         list(session.conversation.messages)
                     ) or (result.response_text or "")
-                    tokens_now = int(
-                        usage_total.get("input_tokens", 0)
-                        + usage_total.get("output_tokens", 0)
-                    )
+                    tokens_now = _billed_token_total(usage_total)
                     decision = goal_mgr.evaluate_after_turn(
                         evidence, tokens_now=tokens_now,
                     )

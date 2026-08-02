@@ -789,3 +789,128 @@ def test_subtype_and_is_error_never_disagree(exit_code, early, expected):
     a failure.
     """
     assert headless_mod._json_result_subtype(exit_code, early) == expected
+
+
+# ---------------------------------------------------------------------------
+# usage accounting in the emitted result
+
+
+def _cached_response(text: str, *, cache_read: int) -> ChatResponse:
+    """A response whose prompt was mostly served from the cache."""
+    return ChatResponse(
+        content=text,
+        model="fake-model",
+        usage={
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": 2,
+        },
+        finish_reason="end_turn",
+        tool_uses=None,
+    )
+
+
+def test_headless_result_usage_sums_cache_tokens(fake_wiring, tmp_path):
+    """The emitted `result.usage` must be a complete billing total.
+
+    Drives `run_headless` rather than the accumulation helper: an earlier
+    version of these assertions called the helper directly and passed with
+    the call site reverted to the old inline loop.
+    """
+    fake_wiring.append(_cached_response("hi", cache_read=1000))
+
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+
+    assert code == 0
+    payload = json.loads(stdout.getvalue())
+    usage = payload["usage"]
+    assert usage["cache_read_input_tokens"] == 1000, (
+        "cumulative cache tokens never reached the emitted result"
+    )
+    assert usage["cache_creation_input_tokens"] == 2
+    # input_tokens keeps its meaning — cache misses only
+    assert usage["input_tokens"] == 5
+
+
+def test_headless_result_usage_keeps_last_snapshot_unsummed(fake_wiring, tmp_path):
+    """`last_*` are a snapshot of the most recent response, not a running sum.
+
+    Summing them across turns produces a number that measures nothing, and it
+    ships in this payload.
+    """
+    fake_wiring.append(_cached_response("hi", cache_read=1000))
+
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="json",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+
+    usage = json.loads(stdout.getvalue())["usage"]
+    assert usage["last_cache_read_input_tokens"] == 1000
+    assert usage["last_input_tokens"] == 5
+
+
+def test_headless_multi_prompt_sums_cache_but_not_the_last_snapshot(
+    fake_wiring, tmp_path
+):
+    """Two prompts: cumulative keys ADD, `last_*` keys REPLACE.
+
+    One prompt cannot tell the two apart — the generic
+    `total = total + value` loop and the split accumulator agree on a single
+    accumulation, which is why a mutant reverting the call site survived a
+    single-prompt test. The divergence only appears from the second prompt on.
+    """
+    fake_wiring.append(_cached_response("A", cache_read=1000))
+    fake_wiring.append(_cached_response("B", cache_read=3000))
+
+    stdin = io.StringIO(
+        "\n".join(
+            [
+                json.dumps({"type": "user", "message": {"content": "one"}}),
+                json.dumps({"type": "user", "message": {"content": "two"}}),
+            ]
+        )
+        + "\n"
+    )
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            output_format="stream-json",
+            input_format="stream-json",
+            stdin=stdin,
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+
+    assert code == 0
+    parsed = [json.loads(l) for l in stdout.getvalue().splitlines() if l.strip()]
+    usage = parsed[-1]["usage"]
+
+    # cumulative: both prompts' cache reads
+    assert usage["cache_read_input_tokens"] == 4000
+    assert usage["cache_creation_input_tokens"] == 4
+    assert usage["input_tokens"] == 10
+
+    # snapshot: the SECOND prompt's value alone, not 1000 + 3000
+    assert usage["last_cache_read_input_tokens"] == 3000, (
+        "last_* was summed across prompts, which measures nothing"
+    )
+    assert usage["last_input_tokens"] == 5

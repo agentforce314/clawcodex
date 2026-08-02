@@ -4782,6 +4782,12 @@ class _AgentSession:
             # subagents spawn from the Agent tool's captured FULL registry.
             from src.coordinator.mode import coordinator_main_loop_registry
 
+            # Cost is read as a DELTA of the tracker's running total rather
+            # than recomputed from ``result.usage`` below — see the note at
+            # the ``_cost`` assignment for why the aggregate cannot be priced.
+            from src.bootstrap.state import get_total_cost_usd
+
+            _cost_before = get_total_cost_usd()
             result = asyncio.run(run_query_as_agent_loop(
                 initial_messages=list(self.session.conversation.messages),
                 provider=turn_provider,
@@ -4848,14 +4854,23 @@ class _AgentSession:
                 msgs.extend(_btw_snapshot)
 
         _usage = result.usage if result.num_turns > 0 else None
+        # The turn's cost is the tracker's delta, NOT ``compute_cost`` over
+        # ``result.usage``. That dict is the sum across every loop turn, and
+        # ``get_pricing`` selects a tier from a PER-REQUEST threshold
+        # (gpt-5.6-luna at 272K, MiniMax-M3 at 512K). Cache reads sum to
+        # roughly turns x conversation-size, so a long loop of small requests
+        # crosses a boundary no single request came near: a 25-turn loop over
+        # a 15K conversation prices at 1.76x the true cost.
+        #
+        # ``cost_tracker.record_api_usage`` already prices each response as it
+        # arrives, with the tier chosen from that one request, so the running
+        # total is correct by construction. Reading its delta also drops a
+        # duplicate cost implementation rather than patching one.
         _cost = 0.0
-        if _usage:
-            try:
-                from src.services.pricing import compute_cost
-
-                _cost = compute_cost(getattr(self.provider, "model", None) or self.config.model or "", _usage)
-            except Exception:  # noqa: BLE001 — cost is best-effort, never break the turn
-                _cost = 0.0
+        try:
+            _cost = max(0.0, get_total_cost_usd() - _cost_before)
+        except Exception:  # noqa: BLE001 — cost is best-effort, never break the turn
+            _cost = 0.0
         # One more completed user turn. Internal (notification) and btw
         # (ephemeral, rolled-back) turns don't move the odometer — same rule
         # as the deleted REPL, which only counted real prompt→response rounds.

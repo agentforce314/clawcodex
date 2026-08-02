@@ -921,3 +921,93 @@ def test_early_stop_respects_the_verdict_decision():
         {"subtype": "error_during_execution", "response_text": "[Stopped: x]"},
     )
     assert not sess2._inbox.empty(), "control failed — nothing ever enqueues"
+
+
+class _TieredCacheProvider:
+    """Many small requests whose cache reads only cross a tier once summed.
+
+    Each request is ~15.4K prompt tokens — far below gpt-5.6-luna's 272K
+    long-context threshold — but the loop's cumulative total reaches 385K.
+    """
+
+    PER_REQUEST_USAGE = {
+        "input_tokens": 400,
+        "output_tokens": 300,
+        "cache_read_input_tokens": 15_000,
+        "cache_creation_input_tokens": 0,
+    }
+    TURNS = 25
+
+    def __init__(self, api_key=None, base_url=None, model=None):
+        self.model = "openai/gpt-5.6-luna"
+        self._calls = 0
+
+    def chat(self, messages, tools=None, **kw):
+        from src.providers.base import ChatResponse
+
+        self._calls += 1
+        last = self._calls >= self.TURNS
+        return ChatResponse(
+            content="done" if last else "thinking",
+            model=self.model,
+            usage=dict(self.PER_REQUEST_USAGE),
+            finish_reason="end_turn" if last else "tool_use",
+            tool_uses=None
+            if last
+            else [
+                {
+                    "id": f"tool_{self._calls}",
+                    "name": "Bash",
+                    "input": {"command": "true", "description": "noop"},
+                }
+            ],
+        )
+
+    def chat_stream_response(self, *a, **kw):  # force fallback to chat()
+        raise NotImplementedError
+
+
+async def test_turn_cost_is_not_priced_from_the_cumulative_usage(tmp_path):
+    """A long loop must not be billed at the long-context rate.
+
+    ``get_pricing`` picks a tier from a PER-REQUEST threshold, but
+    ``result.usage`` is the sum across every loop turn. Once the cumulative
+    dict carried cache reads — which sum to roughly turns x conversation
+    size — pricing it crossed a boundary no single request came near, and
+    this turn billed at 1.76x its true cost.
+
+    The cost is now a delta of ``cost_tracker``'s running total, which prices
+    each response as it arrives with the tier chosen from that one request.
+
+    BEHAVIOURAL: asserted on the emitted ``total_cost_usd``, because the
+    failure mode is a plausible-looking number rather than an error.
+    """
+    from src.services.pricing import compute_cost
+
+    per_request = _TieredCacheProvider.PER_REQUEST_USAGE
+    turns = _TieredCacheProvider.TURNS
+    model = "openai/gpt-5.6-luna"
+
+    truth = sum(compute_cost(model, per_request) for _ in range(turns))
+    aggregate = {k: v * turns for k, v in per_request.items()}
+    if_priced_as_aggregate = compute_cost(model, aggregate)
+    assert if_priced_as_aggregate > truth * 1.5, "fixture must cross the tier"
+
+    async with _spawned(tmp_path, _TieredCacheProvider) as (handle, gen):
+        await handle.send_to_agent(
+            {"type": "user", "message": {"role": "user", "content": "go"}}
+        )
+        result = None
+        for _ in range(200):
+            msg = await asyncio.wait_for(gen.__anext__(), timeout=20)
+            if msg.get("type") == "result":
+                result = msg
+                break
+
+    assert result is not None, "no result frame emitted"
+    reported = float(result.get("total_cost_usd") or 0.0)
+    assert reported > 0, "the turn reported no cost at all"
+    assert reported < if_priced_as_aggregate * 0.8, (
+        f"turn billed at the long-context rate: {reported} vs aggregate "
+        f"{if_priced_as_aggregate} (true {truth})"
+    )
