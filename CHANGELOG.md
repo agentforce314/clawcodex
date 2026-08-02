@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-02
+
 ### Added
 
 - **Fusion models — give a text-only model vision.** Some strong reasoning
@@ -49,11 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     refers to. `deepseek-v4-pro`, `deepseek-v4-flash`, `glm-5.2`, and `glm-5.1`
     are now marked vision-less in the model table.
 
+  Fusion models, the `/fusion` command and the shared persisted-model
+  resolution below all land in #771.
+
   [claude-code-router]: https://ccrdesk.top/en/configuration/fusion-models/
 
-### Added
-
-- **GPT-5.6 (Sol / Terra / Luna).** OpenAI's current frontier generation is
+- **GPT-5.6 (Sol / Terra / Luna)** (#773). OpenAI's current frontier generation is
   three durable capability tiers on one generation rather than a size ladder:
   Sol is the flagship, Terra balances capability against cost, Luna is the
   cheap high-volume tier, and `gpt-5.6` is OpenAI's alias for Sol. All four are
@@ -74,9 +77,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SUBSCRIPTION_MODELS`) is also untouched, since which models that backend
   serves is a wire fact that has to be observed rather than assumed.
 
+- **`AskUserQuestion` actually asks.** The tool was advertised but never
+  wired: its raw JSON payload was returned to the model as the tool result,
+  so the model saw a blob instead of the user seeing a picker. The TUI now
+  renders a real multiple-choice dialog and sends the choice back (#774).
+
+- **Four more OpenAI-compatible providers** — `groq`, `cerebras`, `baseten`
+  and `xai` — bringing the registry to 30. Each ships a curated model list
+  that live `/models` discovery extends rather than replaces (#784).
+
+- **Fusion models are runnable under the Terminal-Bench harness.** A fusion
+  model lives in global config and is selected by name, so a fresh eval
+  container could not resolve one; `--ak fusion=<base>+<vision>` seeds the
+  record and the base provider (#787).
+
 ### Fixed
 
-- **OpenRouter's curated model list offered ids OpenRouter had delisted.** The
+- **Reasoning effort never reached the wire for any OpenAI-compatible
+  provider.** `--effort` was emitted only on the Anthropic branch, so every
+  DeepSeek/OpenRouter/GLM run silently ignored it — including benchmark runs
+  that reported an effort setting in their config and sent nothing (#776).
+
+- **The first-party OpenAI provider chose its wire protocol from the auth
+  mode**, not the model: an API key meant Chat Completions, which rejects
+  tools outright for some reasoning models (`gpt-5.6-luna` 400s even with no
+  effort set). Protocol now follows the model and auth only picks the route,
+  which is what makes those models usable on an API key at all (#783).
+
+- **Cached prompt tokens were billed at the full input rate.** `prompt_tokens`
+  includes tokens served from the cache, and the cached count was dropped, so
+  a heavily-cached turn over-reported its cost several-fold. Both wires now
+  split cache reads out. The same change surfaced that OpenRouter's streamed
+  reasoning was discarded entirely — it sends `delta.reasoning`, and only
+  `reasoning_content` was read (#785).
+
+- **`result.usage` omitted cumulative cache tokens**, so anything pricing it
+  billed the cached portion at nothing, and `/goal`'s token budget saw a
+  fraction of what had been spent. Turn cost is now read from the cost
+  tracker, which prices each response individually — pricing the aggregate
+  crosses a per-request tier boundary no single request came near (#786).
+
+- **Headless runs reported success after stopping early.** A cut-short run,
+  a loop-guard kill, and a plan-mode trap all surfaced as
+  `subtype: "success"`; `/goal` then treated the result as evidence of
+  progress and re-ran on cancels and errors (#777, #778, #779, #780).
+
+- **A rejected image ended the turn instead of being recovered.** The
+  "too many images" path is now classified and retried, and the reactive
+  recovery lane — dead since a typed error stopped matching a string-only
+  gate — runs again (#781, #782).
+
+- **TUI:** the header box lost its right border and could lose the border
+  entirely on first paint (#769, #770); the scrollbar stretched its sibling
+  and blanked the transcript on terminal resize (#775).
+
+- **OpenRouter's curated model list offered ids OpenRouter had delisted** (#773). The
   OpenAI section still led with `openai/gpt-5` / `openai/gpt-4o` / `openai/o1`
   while the gateway had moved on to the `gpt-5.6` family, and
   `openai/o1-mini` had been removed upstream entirely — so the /model picker
@@ -101,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drift reads as a model one surface offers and the other drops, so the
   provider now reads the registry.
 
-- **`/model` listed one provider instead of every configured one.** Step 1 of
+- **`/model` listed one provider instead of every configured one** (#772). Step 1 of
   the picker showed a single row — `anthropic · 22 models` — no matter how many
   providers were set up. `model.options` was a stub: it called the
   `get_settings` control, which describes only the provider the session is
@@ -142,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports that reason instead of inventing a provider row.
 
 - **`--model`/`/model` selection is now resolved from one rule at every
-  entrypoint.** The persisted `/model` choice was applied only in the
+  entrypoint** (#771). The persisted `/model` choice was applied only in the
   interactive agent-server, and only *after* the provider was constructed
   (`_build_runtime`'s post-construction `provider.model = ...`). Headless
   (`-p`) ignored it entirely, so a `/model` switch had to be re-stated with
@@ -160,7 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Permissions are now loose by default and easy to change.** `/mode` is
+- **Permissions are now loose by default and easy to change** (#768). `/mode` is
   renamed `/permissions` (the old name still works as an alias) and bare
   `/permissions` opens a three-option picker — *Ask for approval*, *Approve for
   me*, *Full Access* — instead of requiring a raw mode name. A bare interactive
