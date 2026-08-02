@@ -49,6 +49,16 @@ API keys reach the container two ways, either is sufficient:
 
 Agent kwargs (``--ak key=value``):
 
+* ``fusion`` — run a FUSION model: a text-only base plus a borrowed
+  vision model, as ``<base>+<vision>`` with each side ``provider:model``
+  (e.g. ``fusion=deepseek:deepseek-v4-flash+openai:gpt-5.6-luna``). Pair
+  it with ``--model <fusion-name>``; the seeded record is named after that
+  so clawcodex can resolve the selector. Needed because a fusion model
+  lives in the user's global config rather than being addressable as
+  ``provider/model``, so a fresh container cannot resolve one otherwise.
+  The name carries no ``/``, which leaves the env allowlist on its
+  all-providers fallback — required here, since a fusion run legitimately
+  needs two vendors' keys at once.
 * ``max_turns`` — clawcodex ``--max-turns`` (default 300 here; the CLI's
   own default of 50 is too low for terminal-bench tasks). The
   ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
@@ -322,6 +332,8 @@ class Clawcodex(BaseInstalledAgent):
         logs_dir: Path,
         subscription: bool | str = False,
         source: str | None = None,
+        fusion: str | None = None,
+        forward_keys: bool | str = True,
         *args,
         **kwargs,
     ):
@@ -329,6 +341,20 @@ class Clawcodex(BaseInstalledAgent):
 
         self._subscription = parse_bool_env_value(subscription, name="subscription")
         self._source = source
+        # Explicit constructor kwargs, NOT CLI_FLAGS entries: both are config
+        # inputs with no clawcodex flag behind them, and every CLI_FLAGS entry
+        # is emitted into the command by ``build_cli_flags()``. Declaring them
+        # there would pass ``--fusion ...`` to clawcodex, which rejects it.
+        #
+        # ``forward_keys`` was previously read from ``_resolved_flags`` while
+        # being declared nowhere. ``_resolve_flag_values`` only walks
+        # ``CLI_FLAGS``, so the value never arrived and the documented
+        # ``--ak forward_keys=false`` opt-out silently did nothing — keys were
+        # forwarded regardless. Same silent-drop that made ``fusion=`` a no-op
+        # on its first run: an undeclared ``--ak`` key is accepted without
+        # complaint and discarded.
+        self._fusion = fusion
+        self._forward_keys = parse_bool_env_value(forward_keys, name="forward_keys")
         super().__init__(logs_dir, *args, **kwargs)
         if self._source and self._version:
             raise ValueError(
@@ -498,11 +524,7 @@ class Clawcodex(BaseInstalledAgent):
         Values travel to the container through the exec ENV, never the command
         string, so they stay out of process listings and Harbor's logs.
         """
-        if str(self._resolved_flags.get("forward_keys", "true")).lower() in (
-            "false",
-            "0",
-            "no",
-        ):
+        if not self._forward_keys:
             return {}
         path = Path.home() / ".clawcodex" / "config.json"
         try:
@@ -516,6 +538,47 @@ class Clawcodex(BaseInstalledAgent):
             for k, v in block.items()
             if isinstance(v, (str, int, float)) and str(v).strip()
         }
+
+    def _fusion_record(self) -> dict[str, str] | None:
+        """The ``fusionModels`` entry for a ``fusion=`` run, or None.
+
+        A fusion model is a text-only base plus a borrowed vision model, and
+        it lives in the user's GLOBAL config rather than being addressable as
+        ``provider/model`` — so a fresh container cannot resolve one no matter
+        what ``--model`` says. Seeding the record is what makes
+        ``--model <fusion-name>`` mean anything in there.
+
+        Named after ``--model`` so the two cannot drift: the record's name IS
+        the selector clawcodex looks up.
+
+        Note the key forwarding this relies on. ``--model <fusion-name>`` has
+        no ``provider/`` prefix, so ``_parsed_model_provider`` is empty and
+        the env allowlist falls back to ALL providers — which is required
+        here and only here, because a fusion run legitimately needs two
+        vendors' keys at once (the base's and the vision model's).
+        """
+        raw = str(self._fusion or "").strip()
+        if not raw:
+            return None
+        name = (self._parsed_model_name or "").strip()
+        if not name:
+            raise ValueError(
+                "fusion= requires --model <fusion-name>; the seeded record is "
+                "named after it so clawcodex can resolve the selector"
+            )
+        base, sep, vision = raw.partition("+")
+        if not sep or not base.strip() or not vision.strip():
+            raise ValueError(
+                "fusion= must be '<base>+<vision>', each as <provider>:<model> "
+                "(e.g. fusion=deepseek:deepseek-v4-flash+openai:gpt-5.6-luna); "
+                f"got {raw!r}"
+            )
+        for part in (base, vision):
+            if ":" not in part:
+                raise ValueError(
+                    f"fusion= selector {part.strip()!r} must be <provider>:<model>"
+                )
+        return {"name": name, "base": base.strip(), "vision": vision.strip()}
 
     async def _seed_container_settings(
         self,
@@ -552,6 +615,16 @@ class Clawcodex(BaseInstalledAgent):
         env_block = self._host_env_keys()
         if env_block:
             config["env"] = env_block
+        fusion = self._fusion_record()
+        if fusion:
+            config["fusionModels"] = [fusion]
+            # The fusion's BASE provider also becomes the session default.
+            # Provider resolution runs BEFORE the fusion name is looked up:
+            # with no default configured, clawcodex falls back to anthropic
+            # and dies on its missing key without ever reaching the fusion
+            # record. Seeding the base provider is also semantically right —
+            # the base model is the one that runs the loop.
+            config["default_provider"] = fusion["base"].split(":", 1)[0]
         if not config:
             return
         payload = json.dumps(config)
