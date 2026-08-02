@@ -70,9 +70,10 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         ``prompt_cache_miss_tokens`` (DeepSeek's native shape) or, on some
         OpenAI-compatible gateways, nested under
         ``prompt_tokens_details.cached_tokens``. The base
-        :meth:`OpenAICompatibleProvider._build_usage_dict` reports
-        ``input_tokens`` as the FULL prompt (hit + miss) and drops the cache
-        split, so cache hit-rate is invisible and cost cannot credit the hit.
+        :meth:`OpenAICompatibleProvider._build_usage_dict` now performs the
+        nested-``cached_tokens`` split itself for every OpenAI-compatible
+        provider; this override remains for DeepSeek's NATIVE top-level
+        fields, which the base does not know about.
 
         When a cache hit is present we re-map onto the **Anthropic
         convention** that ``cost_tracker.record_api_usage`` /
@@ -117,7 +118,14 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             except (TypeError, ValueError):
                 hit = 0
 
-        prompt_tokens = int(result.get("input_tokens", 0) or 0)
+        # The FULL prompt (hit + miss). The base builder now performs the
+        # generic nested-``cached_tokens`` re-map itself, so ``input_tokens``
+        # may already be miss-only; adding back whatever it split off
+        # recovers the original total. Without this the subtraction below
+        # runs twice and drives the miss count to zero, under-reporting cost.
+        prompt_tokens = int(result.get("input_tokens", 0) or 0) + int(
+            result.get("cache_read_input_tokens", 0) or 0
+        )
         if hit > 0:
             # Only an explicit/derivable cache hit triggers the re-map; with no
             # hit, the base dict (input_tokens = full prompt) is already correct.

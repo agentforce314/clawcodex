@@ -569,6 +569,25 @@ def _parse_tool_call_arguments(raw: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _extract_reasoning(source: Any) -> Optional[str]:
+    """Reasoning text from a message or delta, across both field names.
+
+    ``reasoning_content`` is the DeepSeek/GLM convention. OpenRouter uses a
+    bare ``reasoning`` instead — verified live 2026-08-02, where a streamed
+    gpt-5.6-luna turn carried ``delta.reasoning`` and ``delta.reasoning_details``
+    but no ``reasoning_content`` at all. Reading only the first name dropped
+    every token of reasoning from the provider this repo's benchmarks run on.
+
+    ``reasoning_details`` (a structured summary list) is deliberately not
+    read: it duplicates the same text in a shape nothing downstream consumes.
+    """
+    for name in ("reasoning_content", "reasoning"):
+        value = getattr(source, name, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 class OpenAICompatibleProvider(BaseProvider):
     """Base class for providers using OpenAI-style chat completions API.
 
@@ -624,13 +643,74 @@ class OpenAICompatibleProvider(BaseProvider):
         return _convert_anthropic_messages_to_openai(base)
 
     def _build_usage_dict(self, usage: Any) -> dict[str, Any]:
+        """Provider usage → the Anthropic-convention dict the cost layer reads.
+
+        ``prompt_tokens`` on this wire INCLUDES tokens served from the prompt
+        cache, with the cached count reported separately under
+        ``prompt_tokens_details.cached_tokens``. Reporting only the total
+        billed every cached token at the full input rate — for OpenRouter's
+        gpt-5.6-luna that is $1.25/M against a real $0.15/M, an ~8x
+        over-estimate on the cached portion, and it made cache hit-rate
+        invisible. Every pricing tier already carries a ``cache_read`` rate;
+        two of them (``_TIER_MUSE_SPARK``, ``_TIER_GPT_56_LUNA``) say in
+        comments that the rate is inert "for when that lands". This is that.
+
+        The split follows the convention ``services.pricing.compute_cost``
+        already understands, which is also how DeepSeek's override has
+        reported for some time and how OpenCode maps usage for every
+        OpenAI-compatible provider (openai-chat.ts):
+
+        * ``input_tokens``               → cache MISS, at the input rate
+        * ``cache_read_input_tokens``    → cache HIT, at the cache-read rate
+        * ``cache_creation_input_tokens`` → 0; this wire has no cache-write
+          charge, so there is nothing to bill for populating the cache.
+
+        With no cache hit the dict is byte-identical to the previous one, so
+        providers that never report the field are unaffected.
+        """
         if usage is None:
             return {}
-        return {
+        result: dict[str, Any] = {
             "input_tokens": getattr(usage, "prompt_tokens", 0),
             "output_tokens": getattr(usage, "completion_tokens", 0),
             "total_tokens": getattr(usage, "total_tokens", 0),
         }
+
+        # Gateways differ on whether details arrive as an object or a mapping.
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = None
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens")
+        elif details is not None:
+            cached = getattr(details, "cached_tokens", None)
+        # Only a genuine number counts. ``int()`` alone is too permissive:
+        # any object defining ``__int__`` converts, and a ``MagicMock`` usage
+        # stub — which auto-creates ``prompt_tokens_details.cached_tokens`` —
+        # yields 1, inventing a one-token cache hit out of a fixture that
+        # never meant to describe one. ``bool`` is excluded because it is an
+        # ``int`` subclass and ``True`` would read as a single cached token.
+        if isinstance(cached, bool) or not isinstance(cached, (int, float, str)):
+            hit = 0
+        else:
+            try:
+                hit = int(cached)
+            except (TypeError, ValueError, OverflowError):
+                # OverflowError descends from ArithmeticError, not
+                # ValueError, so it escapes the other two and would kill the
+                # turn. Reachable: stdlib ``json.loads`` accepts a bare
+                # ``Infinity`` literal, so any vendor emitting one crashes
+                # the session rather than losing a usage number.
+                hit = 0
+
+        if hit > 0:
+            try:
+                prompt_tokens = int(result.get("input_tokens", 0) or 0)
+            except (TypeError, ValueError):
+                prompt_tokens = 0
+            result["input_tokens"] = max(prompt_tokens - hit, 0)
+            result["cache_read_input_tokens"] = hit
+            result["cache_creation_input_tokens"] = 0
+        return result
 
     @staticmethod
     def _with_system_prompt(
@@ -719,13 +799,8 @@ class OpenAICompatibleProvider(BaseProvider):
         # Extract content
         choice = response.choices[0]
 
-        # Handle reasoning content (GLM specific, but harmless for others)
-        reasoning_content: Optional[str] = None
-        if (
-            hasattr(choice.message, "reasoning_content")
-            and choice.message.reasoning_content
-        ):
-            reasoning_content = choice.message.reasoning_content
+        # Reasoning text, under either provider's field name.
+        reasoning_content: Optional[str] = _extract_reasoning(choice.message)
 
         # Extract tool calls (OpenAI format -> Anthropic format)
         tool_uses: Optional[list[dict[str, Any]]] = None
@@ -1040,7 +1115,7 @@ class OpenAICompatibleProvider(BaseProvider):
                             if on_text_chunk is not None:
                                 on_text_chunk(piece)
 
-                        reasoning_piece = getattr(delta, "reasoning_content", None)
+                        reasoning_piece = _extract_reasoning(delta)
                         if reasoning_piece:
                             reasoning_parts.append(str(reasoning_piece))
                             if on_thinking_chunk is not None:

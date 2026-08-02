@@ -352,10 +352,11 @@ providers = [
     # OpenAI-compatible vendors
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
-    "huggingface", "together", "stepfun", "deepinfra",
+    "huggingface", "together", "stepfun", "deepinfra", "meta",
+    "groq", "cerebras", "baseten", "xai",
     # Local servers (no API key required)
     "ollama", "vllm", "sglang",
-]  # 25 providers; aliases like `nim`, `kimi`, `hf` resolve automatically
+]  # 30 providers; aliases like `nim`, `kimi`, `hf`, `grok` resolve automatically
 ```
 
 Any new OpenAI-compatible vendor is a one-row addition to

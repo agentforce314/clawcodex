@@ -287,14 +287,27 @@ def test_chat_completions_converter_strips_passthrough_blocks() -> None:
 
 
 def test_usage_dict_marks_subscription_billing() -> None:
+    """Subscription flag, and the cache split that rides alongside it.
+
+    The expectation used to be ``input_tokens: 10`` WITH
+    ``cache_read_input_tokens: 4`` — 14 tokens for a 10-token prompt.
+    ``input_tokens`` on this wire already includes the cached prefix, and
+    every consumer sums input + cache_creation + cache_read, so recording
+    the hit without subtracting double-counted it. That is invisible in the
+    cost here (``billing_mode: subscription`` zeroes it), but the same
+    inflated numbers drive the context-left display.
+    """
     usage = build_usage_dict({
         "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
         "input_tokens_details": {"cached_tokens": 4},
     })
     assert usage == {
-        "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+        "input_tokens": 6, "output_tokens": 5, "total_tokens": 15,
         "billing_mode": "subscription", "cache_read_input_tokens": 4,
+        "cache_creation_input_tokens": 0,
     }
+    # the parts still reconstruct the prompt the model actually saw
+    assert usage["input_tokens"] + usage["cache_read_input_tokens"] == 10
 
 
 # --- provider ---------------------------------------------------------------

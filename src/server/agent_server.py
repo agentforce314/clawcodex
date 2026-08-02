@@ -3583,12 +3583,21 @@ class _AgentSession:
 
     @staticmethod
     def _usage_token_total(snapshot: dict) -> int:
-        """Total input+output tokens across the cost snapshot's model_usage."""
+        """Total tokens across the cost snapshot's model_usage.
+
+        Includes the cache fields. ``input_tokens`` counts only the UNCACHED
+        prompt — providers report the cached prefix separately, and the
+        snapshot already carries both — so summing input+output alone
+        under-reported every cached turn, by 98% of the prompt on a warm
+        prefix cache.
+        """
         total = 0
         try:
             for usage in (snapshot.get("model_usage") or {}).values():
                 total += int(usage.get("input_tokens", 0) or 0)
                 total += int(usage.get("output_tokens", 0) or 0)
+                total += int(usage.get("cache_read_input_tokens", 0) or 0)
+                total += int(usage.get("cache_creation_input_tokens", 0) or 0)
         except Exception:  # noqa: BLE001
             return 0
         return total

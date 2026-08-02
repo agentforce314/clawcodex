@@ -120,15 +120,10 @@ _TIER_MINIMAX_M27 = {
 # Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Meta's published rates:
 # $1.25/M input, $4.25/M output, $0.15/M cached input. OpenAI-style caching has
 # no separate cache-write charge, so ``cache_creation`` mirrors ``input``.
-# NOTE: the generic OpenAI-compat usage builder does not (yet) map
-# ``prompt_tokens_details.cached_tokens`` onto ``cache_read_input_tokens`` —
-# only the hand-written DeepSeek provider does — so today ``cache_read`` is
-# inert for Meta: cached input is billed at the full input rate in the cost
-# display, an over-estimate on the cached portion ($1.25 vs $0.15/M, ~8x).
-# The displayed cost is thus a safe upper bound, consistent with the other
-# registry providers; wiring the mapping into ``_build_usage_dict`` is a
-# separate change (it would affect all OpenAI-compat providers). The real
-# cache-read rate is recorded here for when that lands.
+# ``cache_read`` is LIVE: the generic OpenAI-compat usage builder maps
+# ``prompt_tokens_details.cached_tokens`` onto ``cache_read_input_tokens``,
+# so cached input bills at $0.15/M rather than the full $1.25/M. Before that
+# mapping the displayed cost over-estimated the cached portion by ~8x.
 _TIER_MUSE_SPARK = {
     "input": 1.25 / 1_000_000,
     "output": 4.25 / 1_000_000,
@@ -147,10 +142,11 @@ _TIER_MUSE_SPARK = {
 # against other agents' — under-reporting the expensive half of a run by ~2x
 # would corrupt exactly the number the eval exists to produce.
 #
-# Cache rates remain inert in practice: the generic OpenAI-compat usage
-# builder does not map ``prompt_tokens_details.cached_tokens`` onto
-# ``cache_read_input_tokens`` (only the hand-written DeepSeek provider does),
-# so cached input bills at the full input rate. Recorded for when that lands.
+# Cache rates are LIVE: the generic OpenAI-compat usage builder maps
+# ``prompt_tokens_details.cached_tokens`` onto ``cache_read_input_tokens``,
+# and the Responses builder does the same, so cached input bills at the
+# cache-read rate on either wire. Measured on a real 2613-token turn with a
+# 2560-token hit, the split lowers the reported cost ~7.5x for this model.
 _GPT_56_LUNA_INPUT_TIER_LIMIT = 272_000
 _TIER_GPT_56_LUNA = {
     "input": 0.10 / 1_000_000,
@@ -410,8 +406,16 @@ def compute_session_cost(
 
     Worker cache token counts default to zero — callers that don't
     track cache separately (most of them, today) just get input+output
-    pricing. Advisor cache is ignored entirely; the advisor's separate
-    API call doesn't get cache hits across runs.
+    pricing. Advisor cache is ignored entirely: the advisor branch below
+    passes no cache keys, and ``utils.advisor`` projects the provider dict
+    down to input+output before it gets here.
+
+    That is a known under-count, NOT a claim that the advisor misses the
+    cache. The original rationale — "the advisor's separate API call doesn't
+    get cache hits across runs" — is unsafe: OpenAI-compatible prefix caching
+    is automatic and does hit across calls that share a system prompt, which
+    advisor calls do. Threading the cache keys through both sites is a
+    separate change.
     """
     worker_cost = 0.0
     if worker_model and (worker_input_tokens or worker_output_tokens):

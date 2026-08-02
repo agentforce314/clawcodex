@@ -208,8 +208,30 @@ class GeminiProvider(BaseProvider):
     def _convert_messages(
         self, messages: list[MessageInput]
     ) -> tuple[list[Any], Optional[str]]:
-        """Convert Anthropic-style messages → (gemini contents, system_instruction)."""
+        """Convert Anthropic-style messages → (gemini contents, system_instruction).
+
+        ``openai_responses_item`` blocks are stripped first, matching
+        ``AnthropicProvider`` and ``MinimaxProvider``. A mid-session
+        ``/model`` switch away from the ChatGPT-subscription path leaves
+        those reasoning-replay blocks in assistant history.
+
+        This is defence in depth, NOT a bug fix: today the if/elif chain
+        below has no ``else``, so an unknown block contributes no part, and
+        the ``if parts:`` guard then drops a message left with none — the
+        same outcome the strip produces. The reason to strip explicitly is
+        that the current behaviour is accidental. It depends on two separate
+        implicit fallthroughs, and adding an ``else`` branch or a
+        placeholder part (the natural way to handle some future block type)
+        would silently start forwarding ChatGPT replay items to Gemini.
+        Being the one converter of four that relies on that is the actual
+        defect.
+        """
         _ensure_sdk()
+        from .openai_responses import strip_responses_item_blocks
+
+        messages = strip_responses_item_blocks(
+            [m if isinstance(m, dict) else m.to_dict() for m in messages]
+        )
         contents: list[Any] = []
         system_parts: list[str] = []
 

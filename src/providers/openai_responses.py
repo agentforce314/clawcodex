@@ -531,8 +531,27 @@ def build_usage_dict(
     if subscription:
         result["billing_mode"] = "subscription"
     cached = input_details.get("cached_tokens")
-    if cached:
-        result["cache_read_input_tokens"] = int(cached)
+    if isinstance(cached, bool) or not isinstance(cached, (int, float, str)):
+        cached = 0
+    try:
+        hit = int(cached or 0)
+    except (TypeError, ValueError, OverflowError):
+        # See the matching guard in ``OpenAICompatibleProvider``:
+        # ``int(float('inf'))`` raises OverflowError, which is an
+        # ArithmeticError and so slips past a ValueError-only except.
+        hit = 0
+    if hit > 0:
+        # Subtract, don't just annotate. ``input_tokens`` on this wire
+        # already INCLUDES the cached prefix, so recording the hit alongside
+        # the untouched total made the two double-count: every consumer sums
+        # input + cache_creation + cache_read, so a 2613-token prompt with a
+        # 2560-token hit reported 5173. That billed the cached portion at
+        # BOTH the input and the cache-read rate, and inflated the prompt
+        # size that ``get_pricing`` uses to select a tier — which for
+        # gpt-5.6-luna can cross the 272K boundary and pick the wrong one.
+        result["input_tokens"] = max(result["input_tokens"] - hit, 0)
+        result["cache_read_input_tokens"] = hit
+        result["cache_creation_input_tokens"] = 0
     return result
 
 
