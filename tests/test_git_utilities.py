@@ -1,5 +1,6 @@
 import os
 import subprocess
+from unittest import mock
 import tempfile
 import pytest
 
@@ -55,8 +56,26 @@ class TestRunGit:
         assert rc != 0
 
     def test_run_git_timeout(self):
-        stdout, stderr, rc = _run_git(["log"], timeout=0.001)
-        assert rc != 0 or stdout == ""
+        """A timed-out git call reports failure rather than partial output.
+
+        Driven by a forced ``TimeoutExpired`` instead of a 1ms budget on a
+        real ``git log``. The old form asserted ``rc != 0 or stdout == ""``
+        after a genuine 0.001s timeout, which is a race: when the runner is
+        fast enough for git to finish inside the millisecond, the call
+        succeeds with real output and the assertion fails. It flaked on CI
+        (fail / pass / fail across three runs of an unrelated change) while
+        testing nothing on the runs where it passed for the wrong reason —
+        a timeout that never fired exercises none of this branch.
+        """
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["git", "log"], timeout=0.001),
+        ):
+            stdout, stderr, rc = _run_git(["log"], timeout=0.001)
+
+        assert rc == -1
+        assert stdout == ""
+        assert stderr == "Command timed out"
 
 
 class TestGetRepoRoot:
