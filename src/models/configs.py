@@ -277,6 +277,58 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # stating explicitly because "GLM-5.2 is multimodal" is an easy and
     # costly assumption: it makes glm-5.2 look like a valid *vision* half
     # for a fusion model, where it would fail on every image.
+    # OpenAI's open-weight models, served by several hosts in this registry
+    # (cerebras as ``gpt-oss-120b``, groq/baseten as ``openai/gpt-oss-120b``).
+    #
+    # These rows exist to STOP a prefix match, not merely to describe a model.
+    # ``get_model_config`` falls back to ``key.rsplit("-", 1)[0]``, under which
+    # "gpt-oss-120b" reduces to "gpt" and collided with the gpt-5.x family —
+    # so a bare gpt-oss id silently inherited gpt-5.5's 272k window, its 128k
+    # output cap and its $3/$15 pricing. That window sizes auto-compaction, so
+    # the session would run past the real limit and die on a context-length
+    # 400 rather than compacting. The namespaced ``openai/gpt-oss-120b`` did
+    # not start with "gpt" and so got the safe generic defaults instead: one
+    # model behaving two ways depending on which host served it.
+    #
+    # 131,072 both ways per OpenAI's model docs (2026-08-02). Hosts may cap
+    # output lower; the context window is the load-bearing number here.
+    "gpt-oss-120b": ModelConfig(
+        model_id="gpt-oss-120b",
+        display_name="GPT-OSS 120B",
+        context_window=131_072,
+        max_output_tokens=131_072,
+        supports_cache=False,
+        supports_vision=False,
+    ),
+    "gpt-oss-20b": ModelConfig(
+        model_id="gpt-oss-20b",
+        display_name="GPT-OSS 20B",
+        context_window=131_072,
+        max_output_tokens=131_072,
+        supports_cache=False,
+        supports_vision=False,
+    ),
+    # The namespaced forms groq and baseten actually serve. Explicit rows are
+    # the documented remedy for a vendor-qualified id needing a real window
+    # (see ``get_model_config``'s docstring and ``openai/gpt-5.6-luna``) —
+    # without them these fall to the generic 200k default, which is LARGER
+    # than the true 131k, so compaction is sized past the real limit.
+    "openai/gpt-oss-120b": ModelConfig(
+        model_id="openai/gpt-oss-120b",
+        display_name="GPT-OSS 120B",
+        context_window=131_072,
+        max_output_tokens=131_072,
+        supports_cache=False,
+        supports_vision=False,
+    ),
+    "openai/gpt-oss-20b": ModelConfig(
+        model_id="openai/gpt-oss-20b",
+        display_name="GPT-OSS 20B",
+        context_window=131_072,
+        max_output_tokens=131_072,
+        supports_cache=False,
+        supports_vision=False,
+    ),
     "glm-5.2": ModelConfig(
         model_id="glm-5.2",
         display_name="GLM-5.2",

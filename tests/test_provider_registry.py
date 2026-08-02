@@ -27,7 +27,7 @@ from src.providers.openai_compatible_specs import (
     build_provider_class,
 )
 
-# The 19 OpenAI-compatible providers added via the registry.
+# The OpenAI-compatible providers added via the registry.
 EXPECTED_NEW_PROVIDERS = {
     "nvidia-nim",
     "atlascloud",
@@ -48,6 +48,11 @@ EXPECTED_NEW_PROVIDERS = {
     "stepfun",
     "deepinfra",
     "meta",
+    # OpenCode's openai-compatible profiles that this registry was missing
+    "groq",
+    "cerebras",
+    "baseten",
+    "xai",
 }
 
 # A sample of (id -> (base_url, default_model)) — each vendor's published
@@ -61,6 +66,13 @@ VENDOR_DEFAULTS = {
     "stepfun": ("https://api.stepfun.ai/v1", "step-3.7-flash"),
     "siliconflow-cn": ("https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V4-Pro"),
     "meta": ("https://api.meta.ai/v1", "muse-spark-1.1"),
+    # Verified against each vendor's own docs 2026-08-02, and pinned here
+    # because model ids age. They did not come from OpenCode: the profile
+    # table this registry mirrors carries base URLs only, no ids at all.
+    "groq": ("https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
+    "cerebras": ("https://api.cerebras.ai/v1", "gpt-oss-120b"),
+    "baseten": ("https://inference.baseten.co/v1", "deepseek-ai/DeepSeek-V4-Pro"),
+    "xai": ("https://api.x.ai/v1", "grok-4.5"),
 }
 
 

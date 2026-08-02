@@ -70,6 +70,17 @@ class ProviderSpec:
     #: churning hosted catalogs). None = static list only. See
     #: src/providers/model_discovery.py (the discoveryService port).
     dynamic_catalog: str | None = None
+    #: How a discovered list combines with ``available_models``:
+    #: ``"dynamic"`` (discovered REPLACES the static list) or ``"hybrid"``
+    #: (static first, discovered appended). Defaults to ``"dynamic"``, which
+    #: is right for a LOCAL server — sglang/vllm/ollama ship placeholder
+    #: model ids and the endpoint is the only truth. A hosted vendor is the
+    #: opposite: its curated list is deliberate, while its raw ``/models``
+    #: includes speech, moderation and embedding models that do not belong in
+    #: a coding agent's picker. ``openrouter_provider`` already passes
+    #: ``hybrid`` by hand for exactly this reason; this field lets a spec row
+    #: say the same thing.
+    catalog_mode: str = "dynamic"
     #: Generated subclass name (for repr / debugging). Derived from ``id`` when
     #: omitted.
     class_name: str = ""
@@ -324,6 +335,87 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("META_API_KEY", "META_AI_API_KEY"),
         aliases=("meta-ai", "meta_ai", "muse", "muse-spark"),
     ),
+    # The four OpenAI-compatible vendors OpenCode ships that this table did
+    # not (reference_projects/opencode/packages/llm/src/providers/
+    # openai-compatible-profile.ts). Base URLs are OpenCode's, each confirmed
+    # live (2026-08-02) to answer /models with a 401/403 rather than a 404, so
+    # the host and path are current.
+    #
+    # Model ids could NOT come from that file: ``OpenAICompatibleProfile`` is
+    # ``{provider, baseURL}`` and nothing else, for all nine entries, and
+    # ``providers/xai.ts`` carries no ids either. They were read from each
+    # vendor's own docs on 2026-08-02 instead.
+    ProviderSpec(
+        id="groq",
+        dynamic_catalog="openai-compatible",
+        catalog_mode="hybrid",
+        label="Groq",
+        default_base_url="https://api.groq.com/openai/v1",
+        default_model="openai/gpt-oss-120b",
+        available_models=(
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+        ),
+        env_vars=("GROQ_API_KEY",),
+        aliases=("groq-cloud", "groqcloud"),
+    ),
+    ProviderSpec(
+        id="cerebras",
+        dynamic_catalog="openai-compatible",
+        catalog_mode="hybrid",
+        label="Cerebras",
+        default_base_url="https://api.cerebras.ai/v1",
+        default_model="gpt-oss-120b",
+        available_models=("gpt-oss-120b", "zai-glm-4.7"),
+        env_vars=("CEREBRAS_API_KEY",),
+        aliases=("cerebras-cloud", "cerebras_cloud"),
+    ),
+    ProviderSpec(
+        id="baseten",
+        dynamic_catalog="openai-compatible",
+        catalog_mode="hybrid",
+        label="Baseten",
+        default_base_url="https://inference.baseten.co/v1",
+        default_model="deepseek-ai/DeepSeek-V4-Pro",
+        available_models=(
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "moonshotai/Kimi-K3",
+            "zai-org/GLM-5.2",
+            "openai/gpt-oss-120b",
+        ),
+        env_vars=("BASETEN_API_KEY",),
+        aliases=("base-ten", "base_ten"),
+    ),
+    # xAI also exposes an OpenAI *Responses* endpoint, and OpenCode defaults
+    # its xai facade to that protocol (providers/xai.ts: `model: responses`).
+    # This row deliberately takes the Chat Completions route instead, for a
+    # structural reason rather than only an absence of evidence:
+    # ``openai_responses`` is imported solely by ``openai_provider``, and
+    # ``_use_responses`` sits behind ``_is_first_party_base_url()``, which
+    # #783 scoped to api.openai.com. Routing xai over Responses is therefore
+    # not a row change at all — it needs a hand-written class plus a carve-out
+    # in that host gate.
+    #
+    # Chat Completions is also known-good for this model rather than merely
+    # assumed: OpenCode's own docs serve grok-4.5 over BOTH protocols, routing
+    # it to /chat/completions via @ai-sdk/openai-compatible in
+    # packages/web/src/content/docs/go.mdx and to /responses via @ai-sdk/openai
+    # in zen.mdx. A row is the right shape for the former; the latter would be
+    # a separate change, made by someone who can probe it with a real key.
+    ProviderSpec(
+        id="xai",
+        dynamic_catalog="openai-compatible",
+        catalog_mode="hybrid",
+        label="xAI (Grok)",
+        default_base_url="https://api.x.ai/v1",
+        default_model="grok-4.5",
+        available_models=("grok-4.5", "grok-4.3"),
+        env_vars=("XAI_API_KEY", "GROK_API_KEY"),
+        aliases=("x-ai", "x_ai", "grok"),
+    ),
 )
 
 
@@ -398,6 +490,7 @@ class _SpecOpenAICompatibleProvider(OpenAICompatibleProvider):
             getattr(self, "api_key", None) or None,
             spec.dynamic_catalog,
             spec.available_models,
+            mode=spec.catalog_mode,
         )
 
 
