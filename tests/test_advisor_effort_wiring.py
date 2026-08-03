@@ -339,6 +339,33 @@ class TestAdvisorOutputBudget(unittest.TestCase):
                     advisor_mod._ADVISOR_MAX_OPENAI_WIRE_TOKENS,
                 )
 
+    def test_the_ceiling_still_equals_the_anthropic_family_maximum(self) -> None:
+        """The ceiling is documented as a RULE — "the OpenAI wire never gets a
+        larger budget than the most generous Anthropic model" — so pin it,
+        the way VALID_THINKING_EFFORT_LEVELS pins its ladder.
+
+        This is load-bearing because the anchor is a SINGLE legacy row
+        (claude-opus-4-20250514 at 32768; opus-5, opus-4-8 and fable-5 are all
+        32000). Pruning old model rows would drop the family maximum to 32000
+        and silently turn the constant's stated rationale into a false
+        statement, with nothing else noticing.
+        """
+        from src.models.configs import MODEL_CONFIGS
+
+        family_max = max(
+            cfg.max_output_tokens
+            for name, cfg in MODEL_CONFIGS.items()
+            if "claude" in name.lower()
+        )
+        self.assertEqual(
+            advisor_mod._ADVISOR_MAX_OPENAI_WIRE_TOKENS, family_max,
+            msg=(
+                "the Anthropic family maximum moved — either update "
+                "_ADVISOR_MAX_OPENAI_WIRE_TOKENS to match, or rewrite the "
+                "constant's comment to stop claiming it equals that maximum"
+            ),
+        )
+
     def test_clamp_never_raises_a_smaller_model_budget(self) -> None:
         """The clamp is a ceiling, not a floor — a model whose table value is
         already modest keeps it."""
