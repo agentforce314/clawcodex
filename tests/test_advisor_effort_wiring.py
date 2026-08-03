@@ -250,6 +250,43 @@ class TestAdvisorOutputBudget(unittest.TestCase):
         )
         self.assertGreater(rec.kwargs["max_tokens"], 4096)
 
+    def test_anthropic_takes_the_model_table_value_whole(self) -> None:
+        """On this wire max_output_tokens IS the request's max_tokens by
+        design — same value the main loop sends."""
+        from src.models.context import resolve_max_output_tokens
+
+        (_ok, _, _), rec = _run_advisor("claude-opus-5", anthropic_wire=True)
+        self.assertEqual(
+            rec.kwargs["max_tokens"],
+            resolve_max_output_tokens(None, "claude-opus-5"),
+        )
+
+    def test_openai_wire_is_clamped_below_the_advisory_table_value(self) -> None:
+        """The table value is an auto-compact reservation on this wire, not a
+        legal request cap — deepseek's row is 384000, luna's 128000, and
+        openai_compatible DOES forward max_tokens to completions.create().
+
+        DeepSeek accepts 384000 (probed), so this guards an untested number
+        per provider across ~30 of them rather than a known outage — but a
+        rejection would be a non-retryable 400 that degrades silently."""
+        for model in ("deepseek-v4-pro", "gpt-5.6-luna"):
+            with self.subTest(model=model):
+                (_ok, _, _), rec = _run_advisor(model, anthropic_wire=False)
+                self.assertEqual(
+                    rec.kwargs["max_tokens"],
+                    advisor_mod._ADVISOR_MAX_OPENAI_WIRE_TOKENS,
+                )
+
+    def test_clamp_never_raises_a_smaller_model_budget(self) -> None:
+        """The clamp is a ceiling, not a floor — a model whose table value is
+        already modest keeps it."""
+        (_ok, _, _), rec = _run_advisor("glm-5.2", anthropic_wire=False)
+        self.assertLess(
+            rec.kwargs["max_tokens"],
+            advisor_mod._ADVISOR_MAX_OPENAI_WIRE_TOKENS,
+        )
+        self.assertGreaterEqual(rec.kwargs["max_tokens"], 4096)
+
 
 class TestAdvisorRetry(unittest.TestCase):
     """Bounded retry on transient failures only."""

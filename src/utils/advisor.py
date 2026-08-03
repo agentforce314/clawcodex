@@ -668,6 +668,11 @@ def build_advisor_forwarded_messages(
 # than the value (see the budget note in ``execute_client_advisor``).
 _ADVISOR_MIN_MAX_TOKENS = 4096
 
+# Ceiling for the OpenAI-compatible wire, where the per-model table is an
+# advisory compaction figure rather than a legal request cap. See the budget
+# note in ``execute_client_advisor`` for why the two wires differ.
+_ADVISOR_MAX_OPENAI_WIRE_TOKENS = 32_768
+
 # Transient-failure budget for one consultation. Deliberately far below the
 # main loop's DEFAULT_MAX_RETRIES (10): the advisor is an auxiliary call the
 # worker is blocked on, so a rate-limited reviewer must degrade to "no advice"
@@ -857,18 +862,42 @@ def execute_client_advisor(
     # SAME max_tokens budget as the reply, so a high-effort reviewer can
     # spend the entire allowance reasoning and come back with
     # ``stop_reason=max_tokens`` and no text at all (surfacing here as the
-    # useless "Advisor returned no text content"). Use the same per-model
-    # resolution the main loop uses, floored at the historical 4096 so this
-    # can only ever widen the budget. It's a cap, not a target: an advisor
-    # that answers in 300 tokens still costs 300 tokens.
+    # useless "Advisor returned no text content"). Floored at the historical
+    # 4096 so this can only ever widen the budget. It's a cap, not a target:
+    # an advisor that answers in 300 tokens still costs 300 tokens.
+    #
+    # The ceiling is WIRE-DEPENDENT, and the two families are not symmetric:
+    #
+    #   * Anthropic — ``max_output_tokens`` IS the request's max_tokens by
+    #     design (resolve_max_output_tokens is exactly what the main loop
+    #     sends), so take the table value whole.
+    #   * OpenAI-compatible — the main loop deliberately sends NO max_tokens
+    #     here, and the table value is ADVISORY on this wire: it is tuned as
+    #     an auto-compact reservation, not as a legal request cap (deepseek's
+    #     row is 384000, luna's 128000). ``openai_compatible`` DOES forward
+    #     max_tokens to completions.create(), so the raw table value really
+    #     does reach the wire.
+    #
+    #     Honest scope: DeepSeek accepts 384000 (probed 2026-08-02, 200 OK),
+    #     so this is not a live outage — it is an untested number per
+    #     provider across a registry of ~30, where a rejection would be a
+    #     400: non-retryable, so the consultation dies on attempt 1 and
+    #     degrades SILENTLY (the worker continues and the task can still
+    #     score). Clamp to a value large enough that reasoning tokens can't
+    #     starve the reply, small enough to stay unremarkable on any wire.
     max_tokens = _ADVISOR_MIN_MAX_TOKENS
     try:
         from src.models.context import resolve_max_output_tokens
 
-        max_tokens = max(
-            max_tokens,
-            int(resolve_max_output_tokens(None, advisor_model) or 0),
+        table = int(
+            resolve_max_output_tokens(
+                None, advisor_model, base_url=cfg_raw.get("base_url")
+            )
+            or 0
         )
+        if not is_anthropic_shape:
+            table = min(table, _ADVISOR_MAX_OPENAI_WIRE_TOKENS)
+        max_tokens = max(max_tokens, table)
     except Exception:  # noqa: BLE001 — unknown model / bad env falls back
         pass
 
@@ -991,6 +1020,16 @@ def execute_client_advisor(
             break
         except Exception as e:  # noqa: BLE001 — surface as advisor failure
             if attempt >= _ADVISOR_MAX_ATTEMPTS or not _advisor_error_is_retryable(e):
+                # INFO, not DEBUG: a consultation that gives up is invisible
+                # otherwise. The worker carries on and the task can still
+                # score, so a run that quietly lost its advisor looks
+                # identical to one where the advisor worked — the failure
+                # shows up only as a token-count difference.
+                logging.getLogger(__name__).info(
+                    "advisor consultation failed after %d attempt(s) "
+                    "(%s: %s); continuing without advice",
+                    attempt, type(e).__name__, str(e)[:200],
+                )
                 return (
                     False,
                     f"Advisor unavailable: {type(e).__name__}: {e}",

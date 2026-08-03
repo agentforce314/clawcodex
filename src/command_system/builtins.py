@@ -996,6 +996,17 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         )
 
     if arg_lower in ("unset", "off"):
+        # ``unset`` clears advisor_effort anyway, so a level passed alongside
+        # it can only be a mistake. Erroring beats silently discarding it.
+        if effort_flag is not None:
+            return LocalCommandResult(
+                type="text",
+                value=(
+                    f"'{arg_lower}' clears the advisor entirely — drop the "
+                    "--effort flag, or use \"/advisor --effort <level>\" to "
+                    "retune the current one."
+                ),
+            )
         previous_model = current_advisor
         previous_provider = current_provider
         if previous_model:
@@ -1086,11 +1097,25 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         _write_advisor_client_mode(context, True)
     elif force_client_flag is False:
         _write_advisor_client_mode(context, False)
+    carried_over = ""
     if effort_flag is not None:
         _write_advisor_effort(
             context, None if effort_flag == "auto" else effort_flag
         )
         current_effort = "" if effort_flag == "auto" else effort_flag
+    elif current_effort and normalized != current_advisor:
+        # Switching REVIEWER MODEL with no explicit level: a leftover effort
+        # belongs to the old model. Same rationale the ``unset`` branch
+        # states — and it can be actively wrong rather than merely stale,
+        # because the xhigh clamp is keyed on Anthropic model NAMES, so an
+        # xhigh left over from an Opus advisor goes out UNCLAMPED to a
+        # newly-selected OpenAI-compatible one.
+        _write_advisor_effort(context, None)
+        carried_over = (
+            f" Cleared effort {current_effort!r} (it was set for "
+            f"{current_advisor})."
+        )
+        current_effort = ""
 
     # Report what mode the chosen pair lands in, so the user can spot
     # mismatches immediately (e.g., they expected server-side but the
@@ -1120,7 +1145,10 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     effort_msg = f" Effort: {current_effort}." if current_effort else ""
     return LocalCommandResult(
         type="text",
-        value=f"Advisor set to {provider_part}:{normalized}.{effort_msg} {mode_msg}",
+        value=(
+            f"Advisor set to {provider_part}:{normalized}."
+            f"{effort_msg}{carried_over} {mode_msg}"
+        ),
     )
 
 

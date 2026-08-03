@@ -315,3 +315,119 @@ class TestAdvisorCommandStorePathInvalidatesCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdvisorEffortFlag(unittest.TestCase):
+    """``/advisor --effort <level>`` — the reviewer's own reasoning level,
+    independent of the worker's ``/effort``."""
+
+    def _settings(self):
+        from src.settings.settings import get_settings, invalidate_settings_cache
+        invalidate_settings_cache()
+        return get_settings()
+
+    def test_set_with_model_persists_effort(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            res = advisor_command_call(
+                "anthropic:claude-opus-4-6 --effort xhigh", ctx
+            )
+            self.assertIn("Effort: xhigh", res.value)
+            self.assertEqual(self._settings().advisor_effort, "xhigh")
+
+    def test_flag_order_is_insensitive(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call(
+                "--effort max anthropic:claude-opus-4-6 --client", ctx
+            )
+            s = self._settings()
+            self.assertEqual(s.advisor_effort, "max")
+            self.assertEqual(s.advisor_model, "claude-opus-4-6")
+            self.assertTrue(s.advisor_client_mode)
+
+    def test_equals_form_is_accepted(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort=high", ctx)
+            self.assertEqual(self._settings().advisor_effort, "high")
+
+    def test_retune_without_model(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort low", ctx)
+            res = advisor_command_call("--effort max", ctx)
+            self.assertIn("max", res.value)
+            self.assertEqual(self._settings().advisor_effort, "max")
+
+    def test_retune_requires_a_configured_advisor(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            res = advisor_command_call("--effort max", ctx)
+            self.assertIn("not configured", res.value)
+            self.assertEqual(self._settings().advisor_effort, "")
+
+    def test_auto_clears_to_inherit_session_effort(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            res = advisor_command_call("--effort auto", ctx)
+            self.assertIn("inherits", res.value)
+            self.assertEqual(self._settings().advisor_effort, "")
+
+    def test_invalid_level_rejected_without_writing(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort high", ctx)
+            res = advisor_command_call("--effort bogus", ctx)
+            self.assertIn("Invalid effort", res.value)
+            self.assertEqual(self._settings().advisor_effort, "high")
+
+    def test_missing_value_rejected(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            res = advisor_command_call("--effort", ctx)
+            self.assertIn("needs a level", res.value)
+
+    def test_unset_clears_effort(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            advisor_command_call("unset", ctx)
+            self.assertEqual(self._settings().advisor_effort, "")
+
+    def test_unset_with_effort_flag_is_an_error_not_a_silent_drop(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            res = advisor_command_call("unset --effort high", ctx)
+            self.assertIn("--effort", res.value)
+            # Still configured — the command refused rather than half-acting.
+            self.assertEqual(self._settings().advisor_model, "claude-opus-4-6")
+
+    def test_changing_model_clears_a_stale_effort(self) -> None:
+        """An xhigh set for an Opus reviewer must not ride along to an
+        OpenAI-compatible one, where the xhigh clamp does not apply."""
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            res = advisor_command_call("zai:glm-5.2", ctx)
+            self.assertIn("Cleared effort", res.value)
+            self.assertEqual(self._settings().advisor_effort, "")
+
+    def test_reselecting_the_same_model_keeps_its_effort(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            self.assertEqual(self._settings().advisor_effort, "xhigh")
+
+    def test_status_distinguishes_explicit_from_inherited(self) -> None:
+        with _IsolatedEnv():
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6 --effort xhigh", ctx)
+            self.assertIn("Effort: xhigh", advisor_command_call("", ctx).value)
+            advisor_command_call("--effort auto", ctx)
+            status = advisor_command_call("", ctx).value
+            self.assertIn("Effort:", status)
+            self.assertNotIn("Effort: xhigh", status)
