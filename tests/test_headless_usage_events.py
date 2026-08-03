@@ -36,12 +36,18 @@ class _Sink:
 def test_usage_event_serializes_with_a_distinct_type():
     sink = _Sink()
     StreamJsonWriter(sink).write(
-        UsageEvent(usage={"input_tokens": 10, "output_tokens": 3}, num_turns=2)
+        UsageEvent(
+            usage={"input_tokens": 10, "output_tokens": 3}, assistant_messages=2
+        )
     )
     (event,) = sink.events()
     assert event["type"] == "usage"
     assert event["usage"] == {"input_tokens": 10, "output_tokens": 3}
-    assert event["num_turns"] == 2
+    assert event["assistant_messages"] == 2
+    assert "num_turns" not in event, (
+        "num_turns was structurally always 0 here and the adapter promoted "
+        "that zero into killed trials' metrics"
+    )
 
 
 def test_usage_event_does_not_collide_with_the_result_event():
@@ -67,8 +73,15 @@ def _adapter():
     uses ``typing.override`` (3.12+) and imports ``harbor.*``, so the repo's
     3.11 test venv cannot load it. Run these under that interpreter:
 
-        uv run --python 3.13 --with harbor -m pytest \\
-            tests/test_headless_usage_events.py
+        uv run --isolated --python 3.13 --with harbor --with pytest \\
+            python -m pytest tests/test_headless_usage_events.py
+
+    ``--isolated`` is REQUIRED, not tidiness. Without it ``uv run`` treats the
+    repo as a project and re-syncs ``.venv`` to the requested interpreter —
+    it replaced this repo's 3.11 venv with a 3.13 one (and on a second
+    invocation deleted it outright), which then has to be rebuilt from
+    ``requirements.txt`` + ``requirements.dev.txt``. ``--with pytest`` is also
+    required: the isolated env has no dev dependencies.
     """
     import sys
     from pathlib import Path
@@ -124,13 +137,18 @@ def test_final_metrics_falls_back_to_the_usage_event():
         None,           # result_event — a killed run never emits one
         12,             # total_steps
         None,           # totals — copy-back never ran
-        {"type": "usage", "num_turns": 4,
+        {"type": "usage", "assistant_messages": 4,
          "usage": {"input_tokens": 100, "cache_read_input_tokens": 900,
                    "output_tokens": 7}},
     )
     assert metrics is not None, "a killed trial must still report tokens"
     assert metrics.total_prompt_tokens == 1000
     assert metrics.total_completion_tokens == 7
+    # Round trips are surfaced under their OWN name. Mapping them onto
+    # num_turns would report a confidently wrong turn count for exactly the
+    # killed trials this lane exists to measure.
+    assert metrics.extra.get("assistant_messages") == 4
+    assert "num_turns" not in metrics.extra
 
 
 def test_final_metrics_prefers_the_result_event_over_the_usage_event():

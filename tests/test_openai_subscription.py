@@ -691,8 +691,7 @@ def test_responses_stream_that_never_produces_content_times_out(monkeypatch) -> 
     Without the deadline this test does not fail — it hangs forever, which is
     exactly what happened in production.
     """
-    monkeypatch.setenv("CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS", "300")
-    monkeypatch.setenv("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "300")
+    monkeypatch.setenv("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", "300")
     provider = _subscription_provider(monkeypatch)
     fake_response = _StallingStreamResponse()
 
@@ -709,12 +708,33 @@ def test_responses_stream_that_never_produces_content_times_out(monkeypatch) -> 
         def close(self):
             pass
 
+    # Bounded on a thread: this regresses by HANGING, not failing (that is
+    # the production bug), and there is no pytest-timeout plugin installed —
+    # a bare call would burn the whole CI job budget and report "job timed
+    # out" instead of naming the regression.
+    box: dict = {}
+
+    def _call() -> None:
+        try:
+            with patch(
+                "src.auth.openai_subscription.get_valid_credentials",
+                return_value=_credentials(),
+            ), patch("httpx.Client", _FakeClient):
+                provider.chat_stream_response([{"role": "user", "content": "hi"}])
+        except BaseException as exc:  # noqa: BLE001 — asserted on below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_call, daemon=True)
     try:
-        with patch(
-            "src.auth.openai_subscription.get_valid_credentials",
-            return_value=_credentials(),
-        ), patch("httpx.Client", _FakeClient), pytest.raises(StreamIdleTimeout):
-            provider.chat_stream_response([{"role": "user", "content": "hi"}])
+        worker.start()
+        worker.join(6.0)
+        assert not worker.is_alive(), (
+            "the Responses consumer did not return — the content-progress "
+            "deadline did not fire (this is the production hang)"
+        )
+        assert isinstance(box.get("error"), StreamIdleTimeout), (
+            f"expected StreamIdleTimeout, got {box.get('error')!r}"
+        )
     finally:
         fake_response.stop.set()
 

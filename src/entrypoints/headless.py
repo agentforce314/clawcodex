@@ -625,6 +625,9 @@ def run_headless(options: HeadlessOptions) -> int:
     # double-count, and this lane exists precisely for runs that never reach
     # the per-turn accounting.
     live_usage: dict[str, int] = {}
+    # Model round trips so far. A one-element list because ``_persist`` is a
+    # closure defined per prompt and rebinding an int there would shadow it.
+    live_messages: list[int] = [0]
     exit_code = 0
     # Terminal reason of the LAST agent-loop turn, when it stopped the run
     # early rather than the model finishing (``tool_failure_loop``,
@@ -740,10 +743,16 @@ def run_headless(options: HeadlessOptions) -> int:
                                     and _msg_usage
                                 ):
                                     _accumulate_usage(live_usage, _msg_usage)
+                                    live_messages[0] += 1
+                                    # Round trips, NOT agent-loop turns.
+                                    # ``num_turns_total`` only advances after
+                                    # the whole loop returns, so anything
+                                    # emitted here would report a constant 0 —
+                                    # see the UsageEvent docstring.
                                     writer.write(
                                         UsageEvent(
                                             usage=dict(live_usage),
-                                            num_turns=num_turns_total,
+                                            assistant_messages=live_messages[0],
                                         )
                                     )
                                 # Claude Code's stream-json exposes signed

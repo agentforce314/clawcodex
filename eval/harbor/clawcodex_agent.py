@@ -903,10 +903,18 @@ class Clawcodex(BaseInstalledAgent):
             return None
         extra: dict[str, Any] = {}
         num_turns = (result_event or {}).get("num_turns")
-        if not isinstance(num_turns, int) and usage_event:
-            num_turns = usage_event.get("num_turns")
         if isinstance(num_turns, int):
             extra["num_turns"] = num_turns
+        elif usage_event:
+            # NOT mapped onto num_turns. The incremental event counts model
+            # ROUND TRIPS, and an agent-loop turn can span several of them, so
+            # writing it into num_turns would report a confidently wrong
+            # number for exactly the killed trials this lane exists to
+            # measure. Surfaced under its own name instead; a killed trial
+            # legitimately has no turn count.
+            messages = usage_event.get("assistant_messages")
+            if isinstance(messages, int):
+                extra["assistant_messages"] = messages
         duration_ms = (result_event or {}).get("duration_ms")
         if isinstance(duration_ms, (int, float)):
             extra["duration_ms"] = duration_ms

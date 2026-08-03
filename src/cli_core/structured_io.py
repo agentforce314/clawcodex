@@ -102,11 +102,28 @@ class UsageEvent(HeadlessEvent):
     Additive: a new event ``type``, so existing consumers that switch on the
     types they know are unaffected. It does not replace or change
     ``ResultEvent.usage``.
+
+    Carries ``assistant_messages``, NOT ``num_turns``. The first draft shipped
+    ``num_turns`` for shape symmetry with ``ResultEvent`` and it was always
+    zero: the headless loop increments its turn counter only after the whole
+    agent loop returns, so no event emitted DURING a run can ever see a
+    non-zero value. The harbor adapter then promoted that zero into killed
+    trials' metrics, which meant the trial that did the most work reported
+    ``num_turns: 0`` — the same floor-biased-low-on-the-longest-trials defect
+    this event exists to remove, and worse than the old behaviour, which
+    omitted the field rather than asserting a false zero.
+
+    ``assistant_messages`` counts model round trips and is genuinely
+    incrementable mid-run, so it means something on a truncated stream. It is
+    deliberately NOT called ``num_turns`` and must not be mapped onto it: an
+    agent-loop turn can span several round trips, so the two are different
+    quantities and conflating them would re-introduce the same class of lie
+    with a different number.
     """
 
     type: str = "usage"
     usage: dict[str, Any] = field(default_factory=dict)
-    num_turns: int = 0
+    assistant_messages: int = 0
 
 
 @dataclass

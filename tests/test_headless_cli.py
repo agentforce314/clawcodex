@@ -914,3 +914,88 @@ def test_headless_multi_prompt_sums_cache_but_not_the_last_snapshot(
         "last_* was summed across prompts, which measures nothing"
     )
     assert usage["last_input_tokens"] == 5
+
+
+# ---------------------------------------------------------------------------
+# incremental usage events (the killed-run measurement lane)
+
+
+def _usage_events(out: str) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in out.splitlines()
+        if line.strip().startswith("{") and json.loads(line).get("type") == "usage"
+    ]
+
+
+def test_stream_json_emits_incremental_usage(fake_wiring, tmp_path):
+    """A run must publish its running totals BEFORE it ends.
+
+    ResultEvent is authoritative but only exists if the run reaches the end;
+    a killed run emits none, which is how 21 of 46 trials in one
+    terminal-bench job came back with no tokens and no cost at all.
+    """
+    fake_wiring.append(_text_response("hi there"))
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="go", output_format="stream-json", verbose=True,
+            stdout=stdout, workspace_root=tmp_path,
+        )
+    )
+    assert code == 0
+    events = _usage_events(stdout.getvalue())
+    assert events, "no usage event was emitted at all"
+
+
+def test_incremental_usage_agrees_with_the_result_event(fake_wiring, tmp_path):
+    """The one invariant the fix rests on: the live lane is tracked in its
+    OWN accumulator, so it neither double-counts against `usage_total` nor
+    diverges from it. Folding both from one source silently doubles these."""
+    fake_wiring.append(_text_response("hi there"))
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="go", output_format="stream-json", verbose=True,
+            stdout=stdout, workspace_root=tmp_path,
+        )
+    )
+    out = stdout.getvalue()
+    last_usage = _usage_events(out)[-1]["usage"]
+    result = [
+        json.loads(line)
+        for line in out.splitlines()
+        if line.strip().startswith("{") and json.loads(line).get("type") == "result"
+    ][-1]
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        assert last_usage.get(key, 0) == (result["usage"] or {}).get(key, 0), (
+            f"{key} disagrees between the live lane and the result event"
+        )
+
+
+def test_usage_event_counts_round_trips_not_turns(fake_wiring, tmp_path):
+    """`assistant_messages` must actually increment.
+
+    The field it replaced (`num_turns`) was structurally always 0 — the turn
+    counter only advances after the whole agent loop returns — and the harbor
+    adapter promoted that zero into killed trials' metrics.
+    """
+    fake_wiring.append(_text_response("hi there"))
+    stdout = io.StringIO()
+    run_headless(
+        HeadlessOptions(
+            prompt="go", output_format="stream-json", verbose=True,
+            stdout=stdout, workspace_root=tmp_path,
+        )
+    )
+    events = _usage_events(stdout.getvalue())
+    assert "num_turns" not in events[-1], "the always-zero field is back"
+    assert events[-1]["assistant_messages"] >= 1
+    assert [e["assistant_messages"] for e in events] == list(
+        range(1, len(events) + 1)
+    ), "counter must advance by one per round trip"

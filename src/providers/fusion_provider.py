@@ -469,15 +469,24 @@ class FusionProvider:
 
         An EMPTY 200 gets one retry; nothing else does. The distinction is
         what keeps the negative cache honest. A transport failure means the
-        vision provider is unreachable, and ``_substitute`` caches that
-        permanently on purpose — the docstring's arithmetic (8 images x 60 s
-        x 2 attempts on every turn, forever, uninterruptible) is why. An empty
-        completion is the opposite situation: the provider is up, answered
-        fast, and just produced nothing that turn. Caching THAT permanently
-        loses the image for the rest of the session over a transient quirk —
-        observed on terminal-bench gcode-to-text (2026-08-02), where
+        vision provider is unreachable, and ``_substitute`` caches that so an
+        outage costs one attempt per image rather than being re-tried on every
+        turn of a replayed history — the arithmetic at
+        :data:`_FAILURE_TTL_SECONDS` (8 images x 60 s x 2 attempts per turn)
+        is why. An empty completion is the opposite situation: the provider is
+        up, answered fast, and just produced nothing that turn.
+
+        What caching an empty 200 actually costs — stated precisely, because
+        an earlier draft of this docstring got it wrong and contradicted
+        :data:`_FAILURE_TTL_SECONDS` directly. Failures are NOT cached
+        forever: the entry carries a 90 s expiry and ``_cache_get`` drops it.
+        So the real cost is that the image is degraded to a "could not be
+        described" note for up to 90 s — every turn that falls inside that
+        window, which in a fast agent loop is several. That was enough to
+        matter on terminal-bench gcode-to-text (2026-08-02), where
         ``openai:gpt-5.6-luna`` returned no text for image 2 of 5 and the task
-        scored 0 against a baseline that solved it.
+        scored 0 against a baseline that solved it. One retry inside the same
+        request beats waiting out the TTL.
 
         Bounded at one extra round trip per distinct image, and only while the
         request's own call/time budget still allows it, so the outage

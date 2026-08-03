@@ -74,7 +74,9 @@ __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
     "DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S",
     "DEFAULT_STREAM_IDLE_MAX_ATTEMPTS",
+    "DEFAULT_CONTENT_PROGRESS_TIMEOUT_S",
     "ContentProgressDeadline",
+    "content_progress_timeout_seconds",
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
     "stream_first_event_timeout_seconds",
@@ -230,6 +232,43 @@ class StreamIdleTimeout(Exception):
     """
 
 
+#: Default ceiling on a stream that delivers no semantic delta. Same value as
+#: the Anthropic first-event grace, arrived at independently: prompt processing
+#: on a large context legitimately runs minutes before the first token.
+DEFAULT_CONTENT_PROGRESS_TIMEOUT_S = 300.0
+
+
+def content_progress_timeout_seconds() -> float:
+    """Resolve the content-progress deadline, or ``0.0`` to disable it.
+
+    Its OWN env var (``CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS``) rather than
+    the Anthropic watchdog's. Sharing
+    ``CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS`` — which the first cut did —
+    means one knob silently governs two unrelated deadlines on two different
+    wires, so raising it to work around a false positive here also loosens the
+    Anthropic idle watchdog. Different failure modes, different instruments,
+    different knobs.
+
+    ``0`` DISABLES the deadline entirely, which the shared var could not
+    express (it floors at the inter-event idle and falls back to its default
+    on any non-positive value). This bound is new and applies to every
+    OpenAI-compatible provider at once, so an operator who hits a false
+    positive on some gateway needs a way to turn it off that does not require
+    a patched build. Malformed values fall back to the default rather than
+    disabling — failing open on a typo would silently remove the bound.
+    """
+    raw = os.environ.get("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", "").strip()
+    if not raw:
+        return DEFAULT_CONTENT_PROGRESS_TIMEOUT_S
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_CONTENT_PROGRESS_TIMEOUT_S
+    if ms < 0:
+        return DEFAULT_CONTENT_PROGRESS_TIMEOUT_S
+    return ms / 1000.0
+
+
 class ContentProgressDeadline:
     """Bound how long a stream may deliver nothing MEANINGFUL.
 
@@ -247,9 +286,15 @@ class ContentProgressDeadline:
     terminal-bench 2.1 (2026-08-02): 880 s of total silence on
     ``model-extraction-relu-logits`` before the harness killed the trial.
 
-    Used from the consumer's existing poll tick — no timer thread, and it can
-    only fire while the chunk queue is empty, so a stream that is actually
-    delivering is never interrupted by it.
+    Used from the consumer's existing poll loop — no timer thread.
+
+    **Call ``check()`` on EVERY loop iteration, not only when the chunk queue
+    is empty.** This is the one way to get this wrong, and it is the natural
+    way to write it. A stalled provider is usually still SENDING — keepalive
+    comments, empty delta frames — so the queue never empties and an
+    ``except Empty:``-gated check never runs at all. Both call sites were
+    written that way first and both reproduced the original hang; the two
+    regression tests hang rather than fail against that variant.
 
     The default threshold is the FIRST-EVENT grace (300 s), not the tighter
     inter-event idle (90 s), and it stays flat for the whole stream instead of
@@ -264,10 +309,10 @@ class ContentProgressDeadline:
 
         deadline = ContentProgressDeadline(stream=stream, label=model)
         while True:
+            deadline.check()          # EVERY iteration — see above
             try:
                 item = q.get(timeout=0.1)
             except Empty:
-                deadline.check()      # raises StreamIdleTimeout when expired
                 continue
             ...
             deadline.note_progress()  # a real delta arrived
@@ -284,10 +329,15 @@ class ContentProgressDeadline:
         self._timeout_s = (
             timeout_s
             if timeout_s is not None
-            else stream_first_event_timeout_seconds()
+            else content_progress_timeout_seconds()
         )
         self._label = label
         self._last = _time.monotonic()
+
+    @property
+    def enabled(self) -> bool:
+        """False when the deadline is switched off (timeout <= 0)."""
+        return self._timeout_s > 0
 
     @property
     def timeout_s(self) -> float:
@@ -301,6 +351,8 @@ class ContentProgressDeadline:
         self._last = _time.monotonic()
 
     def expired(self) -> bool:
+        if not self.enabled:
+            return False
         return _time.monotonic() - self._last > self._timeout_s
 
     def check(self) -> None:
