@@ -1099,7 +1099,6 @@ class OpenAICompatibleProvider(BaseProvider):
                     # waits between pressing ESC and the prompt
                     # returning, regardless of how slow / blocked the
                     # underlying SDK iteration is.
-                    #
                     if guard.aborted:
                         # Use ``raise_if_post_aborted`` so the abort
                         # reason from the controller is preserved
