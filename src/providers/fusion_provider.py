@@ -124,6 +124,15 @@ class _Failure:
         return time.monotonic() >= self.expires_at
 
 
+class _EmptyVisionResponse(RuntimeError):
+    """The vision model answered 200 with no usable text.
+
+    Distinguished from every other vision failure because it is the one that
+    is worth a retry: the provider is reachable and fast, it just produced
+    nothing this turn. See :meth:`FusionProvider._describe`.
+    """
+
+
 class _Budget:
     """Per-request limits on the rewrite: call count, wall clock, and abort.
 
@@ -452,12 +461,48 @@ class FusionProvider:
         except Exception:  # noqa: BLE001 — the float still satisfies the SDK
             return seconds
 
-    def _describe(self, source: dict[str, Any]) -> str:
+    def _describe(self, source: dict[str, Any], budget: "_Budget | None" = None) -> str:
         """Ask the vision model about one image. Returns its description.
 
         Raises on failure; :meth:`_substitute` converts that into a text note
         so invariant 1 (no image block survives) always holds.
+
+        An EMPTY 200 gets one retry; nothing else does. The distinction is
+        what keeps the negative cache honest. A transport failure means the
+        vision provider is unreachable, and ``_substitute`` caches that
+        permanently on purpose — the docstring's arithmetic (8 images x 60 s
+        x 2 attempts on every turn, forever, uninterruptible) is why. An empty
+        completion is the opposite situation: the provider is up, answered
+        fast, and just produced nothing that turn. Caching THAT permanently
+        loses the image for the rest of the session over a transient quirk —
+        observed on terminal-bench gcode-to-text (2026-08-02), where
+        ``openai:gpt-5.6-luna`` returned no text for image 2 of 5 and the task
+        scored 0 against a baseline that solved it.
+
+        Bounded at one extra round trip per distinct image, and only while the
+        request's own call/time budget still allows it, so the outage
+        arithmetic above is unchanged.
         """
+        try:
+            return self._describe_once(source)
+        except _EmptyVisionResponse:
+            blocked = budget.exhausted() if budget is not None else None
+            if blocked is not None:
+                logger.warning(
+                    "[fusion] vision returned no text and %s; not retrying", blocked
+                )
+                raise
+            if budget is not None:
+                # A retry is a real network call, so charge it. Otherwise a
+                # provider stuck returning empty 200s would double the
+                # fan-out this cap exists to bound.
+                budget.calls -= 1
+            logger.info("[fusion] vision returned no text; retrying once")
+            return self._describe_once(source)
+
+    def _describe_once(self, source: dict[str, Any]) -> str:
+        """One vision call. Raises :class:`_EmptyVisionResponse` for an empty
+        200 and lets every other failure propagate as-is."""
         prompt = self._prompt()
         provider = self._vision()
         # The image is handed over in ANTHROPIC block shape and the target
@@ -502,7 +547,10 @@ class FusionProvider:
             # response shape drops). Treat it as a failure so the caller
             # emits an explicit note rather than an empty text block that
             # reads to the base model as "the image was blank".
-            raise RuntimeError(
+            #
+            # Typed, not a bare RuntimeError: ``_describe`` retries THIS and
+            # only this, and a string match would be a fragile way to say so.
+            raise _EmptyVisionResponse(
                 f"vision model {self._fusion.vision.selector} returned no text"
             )
         if len(text) > _MAX_DESCRIPTION_CHARS:
@@ -551,7 +599,7 @@ class FusionProvider:
 
         budget.calls -= 1
         try:
-            description = self._describe(source)
+            description = self._describe(source, budget)
         except Exception as exc:  # noqa: BLE001 — invariant 1: never re-raise
             # Degrading to a note keeps the turn alive. Re-raising, or
             # leaving the image in place, reproduces the exact 400 this

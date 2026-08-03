@@ -647,3 +647,86 @@ def test_concurrent_fuse_from_multiple_threads():
     assert errors == []
     # 3 distinct images; the cache may race so allow one extra call each.
     assert 3 <= len(vision.calls) <= 12
+
+
+# --- empty-200 retry --------------------------------------------------------
+#
+# A vision model that answers 200 with no text is up, fast, and just produced
+# nothing that turn. Caching that permanently loses the image for the rest of
+# the session over a transient quirk -- terminal-bench gcode-to-text
+# (2026-08-02), where the vision leg returned no text for image 2 of 5 and the
+# task scored 0 against a baseline that solved it. Transport failures keep the
+# old single-attempt + negative-cache behaviour, which is what keeps a real
+# outage from costing 2x the calls on every turn forever.
+
+
+class FlakyVision:
+    """Empty text for the first ``empty_first`` calls, then a description."""
+
+    def __init__(self, empty_first: int = 1, text: str = "A gcode preview.") -> None:
+        self.empty_first = empty_first
+        self.text = text
+        self.calls = 0
+
+    def chat(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls <= self.empty_first:
+            return FakeResponse("")
+        return FakeResponse(self.text)
+
+
+def test_empty_vision_response_is_retried_once_and_succeeds():
+    provider, inner, vision = build(vision=FlakyVision())
+    provider.chat([{"role": "user", "content": [image()]}])
+
+    assert vision.calls == 2, "the empty 200 should have been re-issued once"
+    assert count_images(inner.seen) == 0
+    text = inner.seen[0]["content"][0]["text"]
+    assert "A gcode preview." in text
+    assert "could not be described" not in text
+
+
+def test_retry_is_bounded_at_one_extra_call():
+    provider, inner, vision = build(vision=FlakyVision(empty_first=99))
+    provider.chat([{"role": "user", "content": [image()]}])
+
+    assert vision.calls == 2, "exactly one retry, not a loop"
+    assert "could not be described" in inner.seen[0]["content"][0]["text"]
+
+
+def test_transport_failure_is_not_retried():
+    """The load-bearing asymmetry: an outage must still cost ONE call.
+
+    Retrying here would restore the 8 images x 60s x 2 attempts every turn
+    that the negative cache exists to prevent.
+    """
+    provider, inner, vision = build(vision=ExplodingVision())
+    provider.chat([{"role": "user", "content": [image()]}])
+
+    assert vision.calls == 1
+    assert "vision is down" in inner.seen[0]["content"][0]["text"]
+
+
+def test_retry_charges_the_call_budget():
+    """Two images, a cap of 2, and both need a retry: the cap must count the
+    retries, so the second image is refused rather than silently doubling
+    the fan-out the cap exists to bound."""
+    provider, inner, vision = build(vision=FlakyVision(), max_images=2)
+    provider.chat([{"role": "user", "content": [image("A"), image("B")]}])
+
+    assert vision.calls == 2, "image A's two calls should exhaust a cap of 2"
+    blocks = inner.seen[0]["content"]
+    assert "A gcode preview." in blocks[0]["text"]
+    assert "image limit" in blocks[1]["text"]
+    assert count_images(inner.seen) == 0
+
+
+def test_a_retried_failure_is_still_cached_negatively():
+    """After the retry also comes back empty, the failure caches as before —
+    a replayed history must not re-pay for it every turn."""
+    provider, inner, vision = build(vision=FlakyVision(empty_first=99))
+    msg = [{"role": "user", "content": [image()]}]
+    provider.chat(copy.deepcopy(msg))
+    provider.chat(copy.deepcopy(msg))
+
+    assert vision.calls == 2, "the second turn must replay the cached failure"
