@@ -103,6 +103,41 @@ def test_main_provider_key_survives_subscription_mode() -> None:
     assert env.get("OPENAI_API_KEY")
 
 
+def test_unmapped_main_provider_still_withholds_the_anthropic_key() -> None:
+    """The expensive branch.
+
+    For a MAPPED provider the strip is a no-op (``openai`` maps to only
+    OPENAI_API_KEY), so it looks redundant. It bites when the main provider
+    is unmapped and falls back to _ALL_PROVIDER_ENV_VARS — which is most of
+    the registry (groq, fireworks, cerebras, together, …). Without the
+    strip, ANTHROPIC_API_KEY rides into the container, where an API key
+    silently OUTRANKS OAuth inside clawcodex and bills the API instead of
+    the subscription. That is the exact outcome subscription mode exists to
+    prevent, and no mapped-provider test can catch it.
+    """
+    env = _agent(
+        model_provider="groq",
+        advisor="anthropic:claude-opus-5",
+        subscription=True,
+    )._build_env()
+    assert "ANTHROPIC_API_KEY" not in env
+    # The fallback DID fire — other mapped keys came through, so the absence
+    # above is the strip doing its job, not an empty forward set.
+    assert env.get("OPENAI_API_KEY"), "expected the all-providers fallback"
+
+
+def test_unmapped_provider_key_is_not_forwarded_at_all() -> None:
+    """PRE-EXISTING limitation, pinned so it is not mistaken for advisor
+    breakage. `_ALL_PROVIDER_ENV_VARS` is the union of the seven MAPPED
+    vendors, so an unmapped provider's own key (GROQ_API_KEY, TOGETHER_API_KEY,
+    …) is never forwarded — the fallback is 'every key we know about', not
+    'every key that exists'. A run using one of those as the worker needs its
+    key passed explicitly via --ae, whether or not an advisor is configured.
+    """
+    env = _agent(model_provider="groq", advisor=None)._build_env()
+    assert "GROQ_API_KEY" not in env
+
+
 def test_anthropic_main_loop_subscription_forwards_nothing() -> None:
     """The original behaviour, unchanged."""
     env = _agent(model_provider="anthropic", subscription=True)._build_env()

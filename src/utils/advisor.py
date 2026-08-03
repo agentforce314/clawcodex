@@ -671,6 +671,20 @@ _ADVISOR_MIN_MAX_TOKENS = 4096
 # Ceiling for the OpenAI-compatible wire, where the per-model table is an
 # advisory compaction figure rather than a legal request cap. See the budget
 # note in ``execute_client_advisor`` for why the two wires differ.
+#
+# The number is a RULE, not a taste: 32768 is the largest
+# ``max_output_tokens`` in the entire Anthropic family, so the ceiling says
+# "the OpenAI wire never gets a larger budget than the most generous
+# Anthropic model gets". Update it if that family maximum moves, not
+# otherwise. It sits far above any advisor critique (~1-2K plus reasoning)
+# and far below the outliers it exists to stop (deepseek 384000).
+#
+# Note it also caps a CLAUDE_CODE_MAX_OUTPUT_TOKENS override on this wire
+# (resolve_max_output_tokens consults the env before the table), while the
+# Anthropic wire still honours such an override whole. That asymmetry is
+# intended: the override is a main-loop budget knob, and the reason to bound
+# this wire — untested numbers reaching completions.create() — applies to an
+# env-supplied value just as much as to a table one.
 _ADVISOR_MAX_OPENAI_WIRE_TOKENS = 32_768
 
 # Transient-failure budget for one consultation. Deliberately far below the

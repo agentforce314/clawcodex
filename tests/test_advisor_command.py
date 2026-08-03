@@ -313,10 +313,6 @@ class TestAdvisorCommandStorePathInvalidatesCache(unittest.TestCase):
             self.assertEqual(store.get_state().advisor_model, "claude-opus-4-6")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAdvisorEffortFlag(unittest.TestCase):
     """``/advisor --effort <level>`` — the reviewer's own reasoning level,
     independent of the worker's ``/effort``."""
@@ -431,3 +427,7 @@ class TestAdvisorEffortFlag(unittest.TestCase):
             status = advisor_command_call("", ctx).value
             self.assertIn("Effort:", status)
             self.assertNotIn("Effort: xhigh", status)
+
+
+if __name__ == "__main__":
+    unittest.main()

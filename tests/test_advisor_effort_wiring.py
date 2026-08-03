@@ -80,7 +80,7 @@ def _run_advisor(
         patch.object(providers_mod, "is_anthropic_wire", lambda p: anthropic_wire),
         patch.object(
             cfg_mod, "get_provider_config",
-            lambda key: {"api_key": "k", "base_url": None},
+            lambda key: {"api_key": "k", "base_url": "https://example.test"},
         ),
     ):
         result = execute_client_advisor(
@@ -252,14 +252,40 @@ class TestAdvisorOutputBudget(unittest.TestCase):
 
     def test_anthropic_takes_the_model_table_value_whole(self) -> None:
         """On this wire max_output_tokens IS the request's max_tokens by
-        design — same value the main loop sends."""
+        design — same value the main loop sends.
+
+        The ceiling is PATCHED DOWN for this assertion. At its real value no
+        Anthropic model can distinguish clamped from unclamped — 32768 is
+        itself the largest max_output_tokens in the whole Anthropic family —
+        so without this patch the test passes even if the clamp is applied
+        to BOTH wires, leaving the asymmetry the fix rests on unpinned.
+        """
         from src.models.context import resolve_max_output_tokens
 
-        (_ok, _, _), rec = _run_advisor("claude-opus-5", anthropic_wire=True)
+        with patch.object(advisor_mod, "_ADVISOR_MAX_OPENAI_WIRE_TOKENS", 8192):
+            (_ok, _, _), rec = _run_advisor("claude-opus-5", anthropic_wire=True)
         self.assertEqual(
             rec.kwargs["max_tokens"],
             resolve_max_output_tokens(None, "claude-opus-5"),
+            msg="the OpenAI-wire ceiling leaked onto the Anthropic wire",
         )
+
+    def test_base_url_reaches_the_budget_resolver(self) -> None:
+        """Per-endpoint model-limit overrides are keyed on base_url; the main
+        loop passes it, so the advisor must too."""
+        seen: dict[str, Any] = {}
+        real = None
+        import src.models.context as ctx_mod
+
+        real = ctx_mod.resolve_max_output_tokens
+
+        def spy(override, model_id, *, base_url=None):
+            seen["base_url"] = base_url
+            return real(override, model_id, base_url=base_url)
+
+        with patch.object(ctx_mod, "resolve_max_output_tokens", spy):
+            _run_advisor("claude-opus-5", anthropic_wire=True)
+        self.assertEqual(seen.get("base_url"), "https://example.test")
 
     def test_openai_wire_is_clamped_below_the_advisory_table_value(self) -> None:
         """The table value is an auto-compact reservation on this wire, not a
