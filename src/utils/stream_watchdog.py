@@ -65,6 +65,7 @@ import logging
 import os
 import socket as _socket
 import threading
+import time as _time
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
     "DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_S",
     "DEFAULT_STREAM_IDLE_MAX_ATTEMPTS",
+    "ContentProgressDeadline",
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
     "stream_first_event_timeout_seconds",
@@ -226,6 +228,97 @@ class StreamIdleTimeout(Exception):
     exhaustion. Never recovered via a non-streaming re-issue (the SDK
     refuses those for opus-class ``max_tokens``).
     """
+
+
+class ContentProgressDeadline:
+    """Bound how long a stream may deliver nothing MEANINGFUL.
+
+    The sibling of :class:`StreamWatchdog`, for the OpenAI-compatible wires.
+    Where the watchdog asks "are bytes still arriving?" — the right question on
+    the Anthropic SDK, whose typed iterator hides the ``ping`` keepalives — this
+    asks "is the stream still producing semantic deltas?".
+
+    That difference is the whole point. The OpenAI-compatible wires already
+    bound dead air through httpx (``_apply_client_timeout``: ``read`` = the max
+    gap between BYTES, 120 s). What nothing bounded was a stream that keeps
+    *bytes* flowing — SSE keepalives, empty delta frames — while never
+    producing content. Byte liveness re-arms forever in that state, so a
+    byte-aware watchdog is exactly the wrong instrument for it. Measured on
+    terminal-bench 2.1 (2026-08-02): 880 s of total silence on
+    ``model-extraction-relu-logits`` before the harness killed the trial.
+
+    Used from the consumer's existing poll tick — no timer thread, and it can
+    only fire while the chunk queue is empty, so a stream that is actually
+    delivering is never interrupted by it.
+
+    The default threshold is the FIRST-EVENT grace (300 s), not the tighter
+    inter-event idle (90 s), and it stays flat for the whole stream instead of
+    tightening after the first delta. Prompt processing on a large context
+    legitimately runs minutes before the first token, and a model doing hidden
+    internal reasoning can legitimately go quiet mid-response — but no healthy
+    provider goes five minutes between deltas. Erring long here costs one
+    stalled request; erring short would truncate healthy generations on slow
+    providers, which is the strictly worse failure.
+
+    Usage::
+
+        deadline = ContentProgressDeadline(stream=stream, label=model)
+        while True:
+            try:
+                item = q.get(timeout=0.1)
+            except Empty:
+                deadline.check()      # raises StreamIdleTimeout when expired
+                continue
+            ...
+            deadline.note_progress()  # a real delta arrived
+    """
+
+    def __init__(
+        self,
+        *,
+        stream: Any = None,
+        timeout_s: float | None = None,
+        label: str = "",
+    ) -> None:
+        self._stream = stream
+        self._timeout_s = (
+            timeout_s
+            if timeout_s is not None
+            else stream_first_event_timeout_seconds()
+        )
+        self._label = label
+        self._last = _time.monotonic()
+
+    @property
+    def timeout_s(self) -> float:
+        return self._timeout_s
+
+    def note_progress(self) -> None:
+        """Record that a semantic delta arrived. Call for content, reasoning,
+        tool-call deltas and the terminal finish_reason — NOT for bare chunk
+        arrival, which is precisely the signal a stalled-but-chatty stream
+        keeps producing."""
+        self._last = _time.monotonic()
+
+    def expired(self) -> bool:
+        return _time.monotonic() - self._last > self._timeout_s
+
+    def check(self) -> None:
+        """Raise :class:`StreamIdleTimeout` if the deadline has lapsed.
+
+        Closes the stream first when one was supplied: the worker thread is
+        parked in a blocking socket read, and a bare ``close()`` from another
+        thread does not wake it (see :func:`force_close_response`). Without
+        that the daemon thread leaks for the life of the connection.
+        """
+        if not self.expired():
+            return
+        if self._stream is not None:
+            force_close_response(self._stream)
+        suffix = f" ({self._label})" if self._label else ""
+        raise StreamIdleTimeout(
+            f"stream produced no content for {self._timeout_s:.0f}s{suffix}"
+        )
 
 
 class StreamWatchdog:

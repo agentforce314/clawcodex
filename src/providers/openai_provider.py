@@ -49,6 +49,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     OpenAI = None
 
+from src.utils.stream_watchdog import ContentProgressDeadline
+
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 from .openai_compatible import (
     _CHUNK_QUEUE_MAXSIZE,
@@ -714,9 +716,25 @@ class OpenAIProvider(OpenAICompatibleProvider):
             target=_drain, daemon=True, name=f"openai-subscription-{id(response)}"
         )
 
-        with guard.attach(_HttpxStreamHolder(response)):
+        # Same content-progress deadline as the Chat Completions consumer in
+        # ``openai_compatible.py`` — this loop has the identical shape and had
+        # the identical gap: nothing bounded a connection that was accepted and
+        # then produced no events. See ``ContentProgressDeadline`` for why the
+        # signal is semantic deltas rather than byte liveness. The holder is
+        # what ``force_close_response`` needs (it exposes ``.response``), so a
+        # fire also unblocks the worker parked in the socket read.
+        holder = _HttpxStreamHolder(response)
+        deadline = ContentProgressDeadline(
+            stream=holder, label=f"model={request_model}"
+        )
+
+        with guard.attach(holder):
             worker.start()
             while True:
+                # Every iteration, not just on Empty — a stalled backend is
+                # usually still sending keepalive frames, so the queue never
+                # empties and an Empty-only check would never run.
+                deadline.check()
                 try:
                     item = line_queue.get(timeout=0.1)
                 except queue.Empty:
@@ -740,15 +758,18 @@ class OpenAIProvider(OpenAICompatibleProvider):
                     delta = str(event.get("delta", "") or "")
                     if delta:
                         content_parts.append(delta)
+                        deadline.note_progress()
                         if on_text_chunk is not None:
                             on_text_chunk(delta)
                 elif etype == "response.reasoning_summary_text.delta":
                     delta = str(event.get("delta", "") or "")
                     if delta:
                         reasoning_parts.append(delta)
+                        deadline.note_progress()
                         if on_thinking_chunk is not None:
                             on_thinking_chunk(delta)
                 elif etype == "response.output_item.done":
+                    deadline.note_progress()
                     raw_item = event.get("item")
                     if isinstance(raw_item, dict):
                         stripped = strip_item_for_replay(raw_item)
@@ -762,12 +783,14 @@ class OpenAIProvider(OpenAICompatibleProvider):
                                 ),
                             })
                 elif etype == "response.completed":
+                    deadline.note_progress()
                     payload = event.get("response") or {}
                     usage = build_usage_dict(
                         payload.get("usage"), subscription=subscription
                     )
                     response_model = str(payload.get("model") or response_model)
                 elif etype == "response.incomplete":
+                    deadline.note_progress()
                     payload = event.get("response") or {}
                     details = payload.get("incomplete_details") or {}
                     if "max_output_tokens" in str(details.get("reason", "")):

@@ -3,13 +3,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import time
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.auth import openai_subscription as auth
 from src.providers.openai_provider import OpenAIProvider
+from src.utils.stream_watchdog import StreamIdleTimeout
 from src.providers.openai_responses import (
     RESPONSES_ITEM_BLOCK_TYPE,
     build_usage_dict,
@@ -660,3 +664,58 @@ def test_provider_validation_accepts_subscription(tmp_path: Path, monkeypatch) -
     assert provider_has_credentials("anthropic", "")
     anth.remove_credentials()
     assert not provider_has_credentials("anthropic", "")
+
+
+# --- content-progress deadline (Responses wire) -----------------------------
+
+
+class _StallingStreamResponse(_FakeStreamResponse):
+    """A connection that stays open and keeps emitting frames carrying no
+    semantic delta — the SSE-keepalive shape a byte-liveness check can never
+    catch. Terminates on ``stop`` so the daemon worker never leaks."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.stop = threading.Event()
+        self.frames = 0
+
+    def iter_lines(self):
+        while not self.stop.wait(0.02):
+            self.frames += 1
+            yield ": keep-alive"
+
+
+def test_responses_stream_that_never_produces_content_times_out(monkeypatch) -> None:
+    """The Responses wire had the same unbounded loop as Chat Completions.
+
+    Without the deadline this test does not fail — it hangs forever, which is
+    exactly what happened in production.
+    """
+    monkeypatch.setenv("CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS", "300")
+    monkeypatch.setenv("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "300")
+    provider = _subscription_provider(monkeypatch)
+    fake_response = _StallingStreamResponse()
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def build_request(self, method, url, headers=None, json=None):
+            return "request"
+
+        def send(self, request, stream=False):
+            return fake_response
+
+        def close(self):
+            pass
+
+    try:
+        with patch(
+            "src.auth.openai_subscription.get_valid_credentials",
+            return_value=_credentials(),
+        ), patch("httpx.Client", _FakeClient), pytest.raises(StreamIdleTimeout):
+            provider.chat_stream_response([{"role": "user", "content": "hi"}])
+    finally:
+        fake_response.stop.set()
+
+    assert fake_response.frames > 0, "the stream must really have been delivering"

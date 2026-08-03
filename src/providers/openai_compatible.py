@@ -899,7 +899,17 @@ class OpenAICompatibleProvider(BaseProvider):
         the ORIGINAL exception propagates, so callers see the real cause
         rather than a retry wrapper.
         """
+        from src.utils.stream_watchdog import StreamIdleTimeout
+
         from .stream_retry import is_transient_stream_drop
+
+        def _is_retryable(exc: BaseException) -> bool:
+            # A content-idle timeout is the same decision as a dropped
+            # connection: nothing was salvaged, so re-issuing is sound. The
+            # Anthropic wire has retried its own idle timeouts since WI-5.2
+            # (and notes the retry usually starts fast, because attempt 1
+            # warmed the prompt cache); this wire now matches.
+            return isinstance(exc, StreamIdleTimeout) or is_transient_stream_drop(exc)
 
         emitted = [False]
 
@@ -924,11 +934,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     **kwargs,
                 )
             except Exception as exc:
-                if (
-                    attempt >= max_attempts
-                    or emitted[0]
-                    or not is_transient_stream_drop(exc)
-                ):
+                if attempt >= max_attempts or emitted[0] or not _is_retryable(exc):
                     raise
                 logger.warning(
                     "Stream dropped (%s); retrying once: %s",
@@ -1038,6 +1044,18 @@ class OpenAICompatibleProvider(BaseProvider):
         import queue as _queue
         import threading as _threading
 
+        from src.utils.stream_watchdog import ContentProgressDeadline
+
+        # This wire had no elapsed-time bound of any kind, so a stream that
+        # accepted the connection and then produced nothing hung until
+        # something above killed the process — 880 s of silence on
+        # terminal-bench's model-extraction-relu-logits (2026-08-02). The
+        # httpx ``read`` timeout does not cover it (that bounds the gap
+        # between BYTES, and keepalives are bytes); see the class docstring
+        # for why content progress is the right signal here and byte liveness
+        # is the right one on the Anthropic wire.
+        deadline = ContentProgressDeadline(stream=stream, label=f"model={model}")
+
         _DONE = object()
         # Bounded so an orphaned worker (abort fired but the SDK
         # iterator never honors ``response.close()`` — the LiteLLM
@@ -1066,6 +1084,13 @@ class OpenAICompatibleProvider(BaseProvider):
         with guard.attach(stream):
             worker.start()
             while True:
+                # Checked on EVERY iteration, not just when the queue is
+                # empty. A stalled provider is usually still SENDING —
+                # keepalive comments, empty delta frames — so the queue is
+                # never empty and an Empty-only check never runs. That is the
+                # exact production shape this guards, and gating it on Empty
+                # reproduced the hang.
+                deadline.check()
                 try:
                     item = chunk_queue.get(timeout=0.1)
                 except _queue.Empty:
@@ -1074,6 +1099,7 @@ class OpenAICompatibleProvider(BaseProvider):
                     # waits between pressing ESC and the prompt
                     # returning, regardless of how slow / blocked the
                     # underlying SDK iteration is.
+                    #
                     if guard.aborted:
                         # Use ``raise_if_post_aborted`` so the abort
                         # reason from the controller is preserved
@@ -1105,6 +1131,9 @@ class OpenAICompatibleProvider(BaseProvider):
                     choice = choices[0]
                     if getattr(choice, "finish_reason", None):
                         finish_reason = choice.finish_reason
+                        # The stream is concluding — that is progress even
+                        # though it carries no delta.
+                        deadline.note_progress()
 
                     delta = getattr(choice, "delta", None)
                     if delta is not None:
@@ -1112,16 +1141,20 @@ class OpenAICompatibleProvider(BaseProvider):
                         if content_piece:
                             piece = str(content_piece)
                             content_parts.append(piece)
+                            deadline.note_progress()
                             if on_text_chunk is not None:
                                 on_text_chunk(piece)
 
                         reasoning_piece = _extract_reasoning(delta)
                         if reasoning_piece:
                             reasoning_parts.append(str(reasoning_piece))
+                            deadline.note_progress()
                             if on_thinking_chunk is not None:
                                 on_thinking_chunk(str(reasoning_piece))
 
                         tool_call_deltas = getattr(delta, "tool_calls", None) or []
+                        if tool_call_deltas:
+                            deadline.note_progress()
                         for tc in tool_call_deltas:
                             idx = getattr(tc, "index", 0)
                             entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
