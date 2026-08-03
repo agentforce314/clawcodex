@@ -1,10 +1,11 @@
 """Advisor wiring in the harbor eval adapter.
 
-SKIPPED IN CI, for the same reason as ``test_harbor_adapter_fusion``:
-``eval/harbor/clawcodex_agent.py`` imports ``harbor`` at module scope and
-harbor is an eval-only uv tool, not a dev dependency. These assertions run
-for the people who run evals and nowhere else — do not read a green CI as
-coverage of this file.
+Runs ONLY in the dedicated "Harbor adapter (3.13)" CI job, which installs
+harbor explicitly. ``eval/harbor/clawcodex_agent.py`` imports ``harbor`` at
+module scope, so under the main ``test (3.11)`` job the ``importorskip``
+below fires and every assertion here skips silently. A file left out of that
+job's file list therefore never runs at all — add new ``tests/test_harbor_*``
+files to it.
 
 The failure mode being pinned here is a QUIET one. A consultation that
 cannot authenticate degrades gracefully: the worker carries on and the task
@@ -242,17 +243,36 @@ def test_subscription_requires_anthropic_in_some_role() -> None:
 
 def test_subscription_accepted_for_an_anthropic_advisor() -> None:
     """...and accepted when anthropic is the ADVISOR rather than the main
-    model — the pairing that was previously inexpressible. Getting past the
-    role gate is the assertion; it then fails on host credentials, which is
-    the next step and not this test's concern."""
+    model — the pairing that was previously inexpressible.
+
+    Getting PAST the role gate is the whole assertion, so the credential
+    fetch is stubbed to a sentinel. An earlier version of this test relied
+    on the host having no Anthropic login and asserting the resulting
+    RuntimeError: that made it pass or fail depending on whether whoever ran
+    it happened to be logged in, and it broke the moment a real
+    `clawcodex login` landed on this machine.
+    """
+    from unittest.mock import patch
+
+    import clawcodex_agent as _mod
+
+    sentinel = RuntimeError("reached the credential fetch")
+
+    def _boom():
+        raise sentinel
+
     agent = _agent(
         model_provider="openai",
         advisor="anthropic:claude-opus-5",
         subscription=True,
     )
-    with pytest.raises(RuntimeError) as excinfo:
-        asyncio.run(agent._inject_subscription_credentials(None))
-    assert "requires anthropic in some role" not in str(excinfo.value)
+    with patch.object(_mod, "fresh_subscription_credentials", _boom):
+        with pytest.raises(RuntimeError) as excinfo:
+            asyncio.run(agent._inject_subscription_credentials(None))
+    assert excinfo.value is sentinel, (
+        "the role gate rejected an anthropic ADVISOR: "
+        f"{excinfo.value}"
+    )
 
 
 def test_subscription_strips_anthropic_key_from_the_seeded_env_block() -> None:

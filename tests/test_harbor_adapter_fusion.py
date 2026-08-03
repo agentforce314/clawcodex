@@ -1,10 +1,10 @@
 """Fusion-model wiring in the harbor eval adapter.
 
-SKIPPED IN CI. ``eval/harbor/clawcodex_agent.py`` imports ``harbor`` at
-module scope, and harbor is not a dev dependency — it is installed as a
-separate uv tool by the people who run evals. So these assertions run for
-them and nowhere else, which is worth knowing before treating a green CI as
-coverage of this file. The adapter had no tests at all before this.
+Runs ONLY in the dedicated "Harbor adapter (3.13)" CI job, which installs
+harbor explicitly. ``eval/harbor/clawcodex_agent.py`` imports ``harbor`` at
+module scope, so under the main ``test (3.11)`` job the ``importorskip``
+below fires and every assertion here skips silently. A file left out of that
+job's file list therefore never runs at all.
 """
 
 from __future__ import annotations

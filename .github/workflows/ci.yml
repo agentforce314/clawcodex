@@ -71,9 +71,19 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Run adapter tests
+        # The harbor-dependent test files ALL belong here. They open with
+        # `pytest.importorskip("harbor")`, so in the main `test (3.11)` job —
+        # where harbor is not installed — they skip silently and a green tick
+        # says nothing about them. This job is the only place they can
+        # actually run, so a file omitted here is a file that never runs at
+        # all. Add new tests/test_harbor_*.py files to this list.
         run: |
           uv run --isolated --python 3.13 --with harbor --with pytest \
-            python -m pytest tests/test_headless_usage_events.py -v
+            python -m pytest \
+              tests/test_headless_usage_events.py \
+              tests/test_harbor_adapter_fusion.py \
+              tests/test_harbor_adapter_advisor.py \
+              -v
 
   event_file:
     name: "Event File"
