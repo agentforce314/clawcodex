@@ -724,8 +724,12 @@ def _advisor_error_is_retryable(exc: Exception) -> bool:
     """Whether one failed advisor attempt is worth re-issuing.
 
     Reuses the main loop's classifier so the two agree on what "transient"
-    means; 529/overloaded is added explicitly because the query layer treats
-    it as its own lane rather than a general retryable class.
+    means. The trailing checks are a BACKSTOP, not the primary path:
+    ``categorize_retryable_api_error`` already has an explicit overloaded
+    lane, so the ``status_code == 529`` arm is unreachable in practice. The
+    prose arm still earns its place — it catches an overloaded error raised
+    as a bare exception carrying no ``status_code`` at all, which the
+    classifier cannot categorise.
     """
     try:
         from src.services.api.errors import (
@@ -984,13 +988,24 @@ def execute_client_advisor(
         # body field, not ``output_config``. ``clamp_xhigh=False`` because
         # the xhigh allowlist is a list of Anthropic model NAMES and matches
         # nothing here — clamping on it silently downgraded every xhigh.
-        # Mirrors the equivalent branch in query.py::_call_model_sync.
+        # Mirrors the equivalent branch in query.py::_call_model_sync,
+        # INCLUDING the provider-vocabulary translation: without it a
+        # DeepSeek advisor received ``xhigh`` where the main loop sends
+        # ``max``, and DeepSeek drops a level it doesn't know and applies
+        # its default — silently downgraded, which is the exact bug the
+        # normalize hook exists to prevent.
         if effort:
             try:
-                from src.query.query import resolve_thinking_effort
+                from src.query.query import (
+                    normalize_effort_for_provider,
+                    resolve_thinking_effort,
+                )
 
-                resolved = resolve_thinking_effort(
-                    effort, advisor_model, clamp_xhigh=False
+                resolved = normalize_effort_for_provider(
+                    provider,
+                    resolve_thinking_effort(
+                        effort, advisor_model, clamp_xhigh=False
+                    ),
                 )
                 if resolved is not None:
                     extra_body = dict(call_kwargs.get("extra_body") or {})

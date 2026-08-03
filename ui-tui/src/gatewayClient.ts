@@ -540,7 +540,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Switch the provider', hint: '[<provider>]', name: '/provider' },
   {
     desc: 'Configure the advisor reviewer model (consulted mid-task by the worker)',
-    hint: '[<provider>:<model> [--client] | --no-client | off|unset]',
+    hint: '[<provider>:<model> [--client] [--effort <level>] | --effort <level> | --no-client | off|unset]',
     name: '/advisor'
   },
   {

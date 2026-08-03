@@ -228,6 +228,42 @@ class TestAdvisorOpenAIWire(unittest.TestCase):
         (_ok, _, _), rec = _run_advisor("glm-5.2", anthropic_wire=False)
         self.assertNotIn("extra_body", rec.kwargs)
 
+    def test_effort_is_translated_into_the_providers_vocabulary(self) -> None:
+        """The advisor must apply ``normalize_reasoning_effort`` like the main
+        loop. Skipping it sent DeepSeek ``xhigh`` — a level it does not know —
+        so it dropped the field and applied its own default: a SILENT
+        downgrade on the setting people pick when a task is hard."""
+        rec = _Recorder()
+        rec.normalize_reasoning_effort = lambda e: "max" if e == "xhigh" else e
+        (_ok, _, _), rec = _run_advisor(
+            "deepseek-v4-pro", anthropic_wire=False,
+            advisor_effort="xhigh", recorder=rec,
+        )
+        self.assertEqual(rec.kwargs["extra_body"], {"reasoning_effort": "max"})
+
+    def test_a_bogus_normalization_is_discarded_not_trusted(self) -> None:
+        """Duck-typed getattr: a MagicMock-ish provider answers every
+        attribute with a callable, so an unguarded assignment would write a
+        repr into the request body."""
+        rec = _Recorder()
+        rec.normalize_reasoning_effort = lambda e: object()
+        (_ok, _, _), rec = _run_advisor(
+            "glm-5.2", anthropic_wire=False, advisor_effort="high", recorder=rec,
+        )
+        self.assertEqual(rec.kwargs["extra_body"], {"reasoning_effort": "high"})
+
+    def test_a_raising_normalizer_never_breaks_the_call(self) -> None:
+        def _boom(_e):
+            raise RuntimeError("provider exploded")
+
+        rec = _Recorder()
+        rec.normalize_reasoning_effort = _boom
+        (ok, _, _), rec = _run_advisor(
+            "glm-5.2", anthropic_wire=False, advisor_effort="high", recorder=rec,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(rec.kwargs["extra_body"], {"reasoning_effort": "high"})
+
 
 class TestAdvisorOutputBudget(unittest.TestCase):
     """Thinking tokens come out of the same max_tokens budget as the reply."""

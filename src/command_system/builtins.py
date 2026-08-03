@@ -680,10 +680,19 @@ def _write_advisor_enabled(context: CommandContext, value: bool) -> None:
     invalidate_settings_cache()
 
 
-# Accepted values for ``/advisor --effort``. The five real levels plus
-# ``auto``, which CLEARS advisor_effort so the advisor inherits the
-# session-wide ``effort`` (there's no way to type the empty string).
-_VALID_ADVISOR_EFFORTS = ("auto", "low", "medium", "high", "xhigh", "max")
+# Accepted values for ``/advisor --effort``: DERIVED from the canonical
+# ladder rather than retyped, so a new level cannot land in one list and
+# not the other (``effort_command.py`` derives from the same constant for
+# exactly this reason). ``VALID_EFFORT_VALUES`` carries a leading "" as its
+# auto sentinel; drop it and expose ``auto`` instead, which CLEARS
+# advisor_effort so the advisor inherits the session-wide ``effort``
+# (there's no way to type an empty string as a CLI argument).
+def _valid_advisor_efforts() -> tuple[str, ...]:
+    from ..settings.constants import VALID_EFFORT_VALUES
+    return ("auto",) + tuple(v for v in VALID_EFFORT_VALUES if v)
+
+
+_VALID_ADVISOR_EFFORTS = _valid_advisor_efforts()
 
 
 def _read_current_advisor_effort(context: CommandContext) -> str:
@@ -905,10 +914,16 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
                 inherited = (getattr(get_settings(), "effort", "") or "").strip()
             except Exception:
                 inherited = ""
+            # Name the SETTING, not the command. ``/effort`` only reaches
+            # ``settings.effort`` on the registry path (REPL/SDK) and when an
+            # eval adapter seeds it; the TUI's ``/effort`` writes a
+            # session-only field and headless ``--effort`` is per-turn, so
+            # crediting "/effort" would assert a link that does not exist on
+            # the surface most users are looking at.
             effort_line = (
-                f"Effort: {inherited} (inherited from /effort)\n"
+                f"Effort: {inherited} (inherited from settings.effort)\n"
                 if inherited
-                else "Effort: model default (set with --effort)\n"
+                else "Effort: model default (set one with --effort)\n"
             )
         return (
             f"Advisor: {current_provider}:{current_advisor} — {mode_label}{suffix}\n"

@@ -253,3 +253,62 @@ def test_subscription_accepted_for_an_anthropic_advisor() -> None:
     with pytest.raises(RuntimeError) as excinfo:
         asyncio.run(agent._inject_subscription_credentials(None))
     assert "requires anthropic in some role" not in str(excinfo.value)
+
+
+def test_subscription_strips_anthropic_key_from_the_seeded_env_block() -> None:
+    """The config ``env`` block is a SECOND route to a credential.
+
+    ``get_secret`` reads the process env and THEN this block, so a stored
+    ANTHROPIC_API_KEY is found by ``resolve_api_key``, takes the API-key
+    path, and OAuth never engages — silently billing the API on a run that
+    asked for the subscription. Withholding it from the exec env is not
+    enough on its own.
+    """
+    import json as _json
+    import tempfile
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as home:
+        cfg = Path(home) / ".clawcodex"
+        cfg.mkdir()
+        (cfg / "config.json").write_text(_json.dumps({
+            "env": {"ANTHROPIC_API_KEY": "sk-leak", "TAVILY_API_KEY": "tav"}
+        }))
+        with patch.object(Path, "home", staticmethod(lambda: Path(home))):
+            agent = _agent(
+                model_provider="openai",
+                advisor="anthropic:claude-opus-5",
+                subscription=True,
+            )
+            agent._forward_keys = True
+            keys = agent._host_env_keys()
+    assert "ANTHROPIC_API_KEY" not in keys
+    assert keys.get("TAVILY_API_KEY") == "tav", "unrelated keys must survive"
+
+
+def test_non_subscription_keeps_the_whole_env_block() -> None:
+    """The strip is scoped to subscription runs — an API-key run legitimately
+    wants its stored Anthropic key."""
+    import json as _json
+    import tempfile
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as home:
+        cfg = Path(home) / ".clawcodex"
+        cfg.mkdir()
+        (cfg / "config.json").write_text(
+            _json.dumps({"env": {"ANTHROPIC_API_KEY": "sk-real"}})
+        )
+        with patch.object(Path, "home", staticmethod(lambda: Path(home))):
+            agent = _agent(model_provider="anthropic", subscription=False)
+            agent._forward_keys = True
+            keys = agent._host_env_keys()
+    assert keys.get("ANTHROPIC_API_KEY") == "sk-real"
+
+
+@pytest.mark.parametrize("bad", ["anthropic:", ":claude-opus-5", ":", "anthropic:  "])
+def test_half_empty_advisor_is_rejected(bad: str) -> None:
+    """A bare colon check let these through, each seeding a half-configured
+    advisor that is silently inert at run time."""
+    with pytest.raises(ValueError, match="both halves non-empty"):
+        _construct(advisor=bad)

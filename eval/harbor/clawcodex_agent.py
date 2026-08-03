@@ -376,11 +376,18 @@ class Clawcodex(BaseInstalledAgent):
         # container through the seeded global config instead.
         self._advisor = advisor
         self._advisor_effort = advisor_effort
-        if self._advisor and ":" not in self._advisor:
-            raise ValueError(
-                "Agent kwarg 'advisor' must be '<provider>:<model>' "
-                f"(got {self._advisor!r}) — e.g. anthropic:claude-opus-5"
-            )
+        if self._advisor:
+            # Validate BOTH halves, as ``fusion=`` does. A bare colon test
+            # lets "anthropic:" and ":claude-opus-5" through, and each seeds
+            # a half-configured advisor that is silently inert at run time —
+            # the failure mode this adapter keeps producing.
+            provider_half, _, model_half = self._advisor.partition(":")
+            if not provider_half.strip() or not model_half.strip():
+                raise ValueError(
+                    "Agent kwarg 'advisor' must be '<provider>:<model>' with "
+                    f"both halves non-empty (got {self._advisor!r}) — "
+                    "e.g. anthropic:claude-opus-5"
+                )
         if self._advisor_effort and self._advisor_effort not in (
             "low", "medium", "high", "xhigh", "max",
         ):
@@ -639,11 +646,21 @@ class Clawcodex(BaseInstalledAgent):
             return {}
         if not isinstance(block, dict):
             return {}
-        return {
+        keys = {
             str(k): str(v)
             for k, v in block.items()
             if isinstance(v, (str, int, float)) and str(v).strip()
         }
+        if self._subscription:
+            # This block is a SECOND route to a credential and it defeated the
+            # process-env exclusion. ``get_secret`` reads the process env and
+            # THEN this config ``env`` block, so a stored ANTHROPIC_API_KEY is
+            # found by ``resolve_api_key``, takes the API-key path, and OAuth
+            # never engages — silently billing the API on a run that asked for
+            # the subscription. Withholding it from the exec env alone was not
+            # enough; both doors have to be shut.
+            keys.pop("ANTHROPIC_API_KEY", None)
+        return keys
 
     def _fusion_record(self) -> dict[str, str] | None:
         """The ``fusionModels`` entry for a ``fusion=`` run, or None.

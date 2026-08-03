@@ -607,6 +607,44 @@ def resolve_thinking_effort(
     return value
 
 
+def normalize_effort_for_provider(
+    provider: Any, resolved_effort: str | None
+) -> str | None:
+    """Translate an effort level into the provider's own vocabulary.
+
+    THE single source of truth for this step, shared by the main loop
+    (:func:`_call_model_sync`) and the client-side advisor. Both send
+    ``extra_body.reasoning_effort`` on non-Anthropic wires and both must
+    translate first — the advisor originally skipped it and so silently
+    reintroduced the bug the hook exists to prevent: a DeepSeek advisor got
+    ``xhigh`` where the main loop sends ``max``, and DeepSeek — which does
+    not know ``xhigh`` — drops the field and applies its own default. No
+    error, just a level the user did not ask for, biased DOWNWARD on the
+    setting people reach for when a task is hard.
+
+    The result is VALIDATED, not trusted. This is a duck-typed ``getattr``
+    on whatever the caller passed, and providers are not all real
+    ``BaseProvider`` subclasses — mocks, gateway shims and third-party
+    wrappers all reach here. A ``MagicMock`` in particular answers every
+    attribute with a callable returning another Mock, so an unguarded
+    assignment writes a ``<MagicMock ...>`` repr into the request body.
+    Anything that is not a plain string on the known ladder is discarded in
+    favour of the level already resolved.
+    """
+    if resolved_effort is None:
+        return None
+    _normalize = getattr(provider, "normalize_reasoning_effort", None)
+    if not callable(_normalize):
+        return resolved_effort
+    try:
+        _mapped = _normalize(resolved_effort)
+    except Exception:  # noqa: BLE001 — never fail a request on this
+        return resolved_effort
+    if isinstance(_mapped, str) and _mapped in VALID_THINKING_EFFORT_LEVELS:
+        return _mapped
+    return resolved_effort
+
+
 def build_anthropic_thinking_kwargs(
     model: str | None,
     *,
@@ -1278,15 +1316,7 @@ async def _call_model_sync(
         # unguarded assignment writes a ``<MagicMock ...>`` repr into the
         # request body. Anything that is not a plain string on the known ladder
         # is discarded in favour of the level we already resolved.
-        if resolved_effort is not None:
-            _normalize = getattr(provider, "normalize_reasoning_effort", None)
-            if callable(_normalize):
-                try:
-                    _mapped = _normalize(resolved_effort)
-                except Exception:  # noqa: BLE001 — never fail a request on this
-                    _mapped = None
-                if isinstance(_mapped, str) and _mapped in VALID_THINKING_EFFORT_LEVELS:
-                    resolved_effort = _mapped
+        resolved_effort = normalize_effort_for_provider(provider, resolved_effort)
         if resolved_effort is not None:
             extra_body = dict(call_kwargs.get("extra_body") or {})
             extra_body.setdefault("reasoning_effort", resolved_effort)
