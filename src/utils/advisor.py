@@ -734,7 +734,10 @@ def _advisor_sleep(delay: float, abort_signal: Any) -> bool:
     while time.monotonic() < deadline:
         if abort_signal is not None and getattr(abort_signal, "aborted", False):
             return False
-        time.sleep(min(0.25, deadline - time.monotonic()))
+        # ``max(0.0, …)``: the loop condition and this expression read the
+        # clock separately, so the remainder can go negative in between —
+        # and ``time.sleep`` raises ValueError on a negative argument.
+        time.sleep(max(0.0, min(0.25, deadline - time.monotonic())))
     return True
 
 
