@@ -673,6 +673,17 @@ The final Messages request URLs are
 - **`settings.modelLimits`** — context/output limits for private or gateway models absent from the built-in catalog. Keys may be exact model IDs, model prefixes, or host-qualified IDs such as `localhost:4000:private-model`; exact matches beat prefixes and host-qualified keys beat bare keys within the same match type. Built-in catalog metadata remains authoritative.
 - **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Managed via `clawcodex config`; keys here are exported into the process environment without overriding anything you already set in your shell.
 
+#### Stream-stall tuning
+
+A streaming request that keeps the connection alive but stops producing content would otherwise hang until something upstream kills it. Two independent bounds catch that, one per wire — they are deliberately separate knobs, because raising one to work around a quirk on your gateway should not loosen the other.
+
+| Variable | Wire | Default | Notes |
+| --- | --- | --- | --- |
+| `CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS` | OpenAI-compatible (OpenRouter, DeepSeek, Z.AI, Groq, local servers, …) | `300000` (5 min) | Max time with **no content, reasoning, or tool-call delta**. Byte-level keepalives do *not* count — that is the point, since they defeat an HTTP read timeout. **Set to `0` to disable.** A malformed value falls back to the default rather than disabling. |
+| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` / `CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS` | Anthropic | `90000` / `300000` | Byte-aware idle watchdog; re-arms while raw bytes keep arriving. |
+
+The 300 s default is measured, not guessed: across 727 completed trials in 44 terminal-bench eval jobs, mean seconds per agent turn ran median 14.2 / p99 100.3 / max 183.8, with zero trials above 300 s — and that metric overstates model latency because it includes tool execution. If a slow gateway trips it anyway, the error names the variable.
+
 ### Run
 
 ```bash

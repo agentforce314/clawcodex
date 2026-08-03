@@ -51,6 +51,30 @@ jobs:
           path: test-results/*.xml
           retention-days: 3
 
+  harbor-adapter:
+    # The harbor eval adapter (eval/harbor/clawcodex_agent.py) cannot be
+    # imported by the 3.11 job above: it uses `typing.override` (3.12+) and
+    # imports `harbor.*`, which is not a repo dependency. So its tests SKIP
+    # there — including the guard on a real defect that shipped in #789, where
+    # the adapter reported a fabricated `num_turns: 0` for exactly the killed
+    # trials it was added to measure. A guard nobody executes is a comment, so
+    # this job runs them on the interpreter the adapter actually runs on.
+    #
+    # `--isolated` is required, not tidiness: without it `uv run` treats the
+    # repo as a project and re-syncs the checkout's venv to 3.13.
+    name: "Harbor adapter (3.13)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run adapter tests
+        run: |
+          uv run --isolated --python 3.13 --with harbor --with pytest \
+            python -m pytest tests/test_headless_usage_events.py -v
+
   event_file:
     name: "Event File"
     runs-on: ubuntu-latest

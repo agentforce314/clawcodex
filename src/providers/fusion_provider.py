@@ -471,10 +471,10 @@ class FusionProvider:
         what keeps the negative cache honest. A transport failure means the
         vision provider is unreachable, and ``_substitute`` caches that so an
         outage costs one attempt per image rather than being re-tried on every
-        turn of a replayed history — the arithmetic at
-        :data:`_FAILURE_TTL_SECONDS` (8 images x 60 s x 2 attempts per turn)
-        is why. An empty completion is the opposite situation: the provider is
-        up, answered fast, and just produced nothing that turn.
+        turn of a replayed history — the arithmetic in :meth:`_substitute`'s
+        failure branch (8 images x 60 s x 2 attempts per turn) is why. An empty
+        completion is the opposite situation: the provider is up, answered
+        fast, and just produced nothing that turn.
 
         What caching an empty 200 actually costs — stated precisely, because
         an earlier draft of this docstring got it wrong and contradicted

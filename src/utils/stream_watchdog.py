@@ -235,6 +235,19 @@ class StreamIdleTimeout(Exception):
 #: Default ceiling on a stream that delivers no semantic delta. Same value as
 #: the Anthropic first-event grace, arrived at independently: prompt processing
 #: on a large context legitimately runs minutes before the first token.
+#:
+#: Measured rather than guessed. Across 727 completed trials in 44 harbor eval
+#: jobs (2026-08-03), mean seconds per agent turn ran median 14.2, p90 38.3,
+#: p99 100.3, max 183.8 — ZERO trials over 300 s/turn and one over 150. That
+#: metric OVERSTATES model latency (it includes tool execution inside the
+#: turn), so real time-to-first-delta has even more headroom. 300 s sits ~3x
+#: above the observed p99.
+#:
+#: What the corpus cannot rule out: it contains only trials that COMPLETED, so
+#: a shape that reliably dies young is absent by construction — notably a
+#: gateway emitting SSE keepalive comments while proxying a model whose
+#: reasoning it does not forward, on a very large context queued behind
+#: capacity. That is what the off switch below is for.
 DEFAULT_CONTENT_PROGRESS_TIMEOUT_S = 300.0
 
 
@@ -368,8 +381,15 @@ class ContentProgressDeadline:
         if self._stream is not None:
             force_close_response(self._stream)
         suffix = f" ({self._label})" if self._label else ""
+        # Name the knob in the message. An escape hatch nobody can find is not
+        # a mitigation, and this is the only bound in the codebase that
+        # applies to every OpenAI-compatible provider at once — the operator
+        # who hits a false positive on some gateway reads this string, not the
+        # source.
         raise StreamIdleTimeout(
-            f"stream produced no content for {self._timeout_s:.0f}s{suffix}"
+            f"stream produced no content for {self._timeout_s:.0f}s{suffix} — "
+            "raise or disable with CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS "
+            "(0 disables)"
         )
 
 

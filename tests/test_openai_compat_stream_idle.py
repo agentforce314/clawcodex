@@ -293,3 +293,66 @@ def test_short_empty_response_completes_without_firing():
     out = _run(provider)
     assert out.content == ""
     assert provider.attempts == 1
+
+
+# --- the escape hatch's own resolution -------------------------------------
+#
+# `test_deadline_can_be_disabled` above exercises the WIRING (that `enabled`
+# short-circuits `expired()`), but it cannot pin the parsing: its stream gap is
+# ~1.2s, which passes under any timeout >= 1.2s. So the two branches that
+# matter most were unguarded — `0` disabling, and a malformed value failing
+# CLOSED rather than silently removing the bound on every OpenAI-compatible
+# provider at once. This knob is the entire mitigation for the gateway shape
+# the deadline cannot distinguish from a stall, so it gets a direct test.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, 300.0),      # unset -> the measured default
+        ("0", 0.0),         # the off switch
+        ("1500", 1.5),
+        ("600000", 600.0),
+        ("abc", 300.0),     # malformed fails CLOSED, not open
+        ("", 300.0),
+        ("-5", 300.0),      # negative is malformed, not "disable"
+    ],
+)
+def test_content_progress_timeout_resolution(monkeypatch, raw, expected):
+    from src.utils.stream_watchdog import content_progress_timeout_seconds
+
+    if raw is None:
+        monkeypatch.delenv("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", raising=False)
+    else:
+        monkeypatch.setenv("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", raw)
+    assert content_progress_timeout_seconds() == expected
+
+
+def test_disabling_survives_an_unbounded_silent_gap(monkeypatch):
+    """`enabled is False` must mean never, not merely 'a long time'."""
+    from src.utils.stream_watchdog import ContentProgressDeadline
+
+    monkeypatch.setenv("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", "0")
+    deadline = ContentProgressDeadline()
+    assert deadline.enabled is False
+    deadline._last -= 10_000  # simulate ~3 hours of silence
+    assert deadline.expired() is False
+    deadline.check()  # must not raise
+
+
+def test_the_two_wires_have_independent_knobs(monkeypatch):
+    """Raising the Anthropic first-event grace must not move this deadline.
+
+    They were one variable in the first cut, which meant working around a
+    false positive on an OpenAI-compatible gateway also loosened the
+    Anthropic idle watchdog.
+    """
+    from src.utils.stream_watchdog import (
+        content_progress_timeout_seconds,
+        stream_first_event_timeout_seconds,
+    )
+
+    monkeypatch.delenv("CLAWCODEX_CONTENT_PROGRESS_TIMEOUT_MS", raising=False)
+    monkeypatch.setenv("CLAUDE_STREAM_FIRST_EVENT_TIMEOUT_MS", "900000")
+    assert stream_first_event_timeout_seconds() == 900.0
+    assert content_progress_timeout_seconds() == 300.0
