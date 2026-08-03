@@ -504,6 +504,28 @@ class Clawcodex(BaseInstalledAgent):
             return ""
         return self._advisor.split(":", 1)[0].strip().lower()
 
+    def _advisor_env_vars(self) -> tuple[str, ...]:
+        """Env keys the ADVISOR provider needs, beyond the main loop's.
+
+        The advisor makes its own API call to its own provider, so a run
+        whose reviewer sits at a different vendor needs that vendor's key
+        too. Without this the advisor fires and dies on "Missing
+        credentials" — and because a failed consultation degrades quietly
+        (the worker carries on and can still solve the task), the run
+        LOOKS clean: reward 1.0 with an advisor that never once answered.
+        Observed exactly that on the first container smoke.
+
+        Anthropic is excluded under ``subscription``: OAuth must stay the
+        only route there, matching the main-loop rule.
+        """
+        advisor_provider = self._advisor_provider()
+        if not advisor_provider:
+            return ()
+        keys = _PROVIDER_ENV_VARS.get(advisor_provider, _ALL_PROVIDER_ENV_VARS)
+        if self._subscription:
+            keys = tuple(k for k in keys if k != "ANTHROPIC_API_KEY")
+        return keys
+
     def _build_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
         if self._subscription:
@@ -529,6 +551,11 @@ class Clawcodex(BaseInstalledAgent):
             forwarded = _PROVIDER_ENV_VARS.get(
                 (self._parsed_model_provider or "").lower(), _ALL_PROVIDER_ENV_VARS
             )
+        # The advisor calls its own provider, which may be a different
+        # vendor than the worker's. Union, deduped, order-preserving.
+        forwarded = tuple(
+            dict.fromkeys(forwarded + self._advisor_env_vars())
+        )
         for key in forwarded:
             value = self._get_env(key)
             if value:
