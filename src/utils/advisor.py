@@ -813,8 +813,22 @@ def execute_client_advisor(
         # Translate explicitly so unknown keys (default_model, plus any
         # future config fields like extra_headers) don't get forwarded
         # as kwargs and crash the constructor.
+        # Resolve the key the way every other call site does: configured
+        # ``providers.<name>.api_key`` first, then the provider's known env
+        # vars via the secret store. Reading cfg_raw["api_key"] directly
+        # meant the advisor was the ONE path that ignored the environment,
+        # so an advisor provider whose key lives in ``ZAI_API_KEY`` (how
+        # eval containers and plenty of shells supply credentials) got
+        # ``api_key=""`` and died on "Missing credentials" — while the same
+        # provider worked fine as the main loop.
+        #
+        # Empty is still a legitimate outcome and must stay non-fatal here:
+        # the Anthropic subscription path REQUIRES an empty key to fall
+        # through to OAuth (a key would silently outrank it).
+        from src.providers import resolve_api_key
+
         provider = provider_cls(
-            api_key=cfg_raw.get("api_key", ""),
+            api_key=resolve_api_key(advisor_provider, cfg_raw),
             base_url=cfg_raw.get("base_url"),
             model=advisor_model,
         )

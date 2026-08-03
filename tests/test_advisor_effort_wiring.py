@@ -51,6 +51,7 @@ class _Recorder:
 
     def __call__(self, api_key: str = "", base_url: Any = None, model: Any = None):
         self.model = model
+        self.seen_api_key = api_key
         return self
 
     def chat_stream_response(self, messages, **kwargs):
@@ -337,6 +338,63 @@ class TestSharedGateAuthority(unittest.TestCase):
             rec.kwargs["thinking"]["type"], "enabled",
             msg="advisor ignored the main loop's adaptive-thinking gate",
         )
+
+
+class TestAdvisorCredentialResolution(unittest.TestCase):
+    """The advisor must resolve its provider key the way every other call
+    site does — configured value first, then the environment."""
+
+    def _run_with_config(self, provider_cfg: dict, env: dict) -> _Recorder:
+        rec = _Recorder()
+        fake_settings = types.SimpleNamespace(effort="", advisor_effort="")
+        with (
+            patch.object(settings_mod, "get_settings", lambda: fake_settings),
+            patch.object(providers_mod, "get_provider_class", lambda key: rec),
+            patch.object(providers_mod, "is_anthropic_wire", lambda p: False),
+            patch.object(cfg_mod, "get_provider_config", lambda key: provider_cfg),
+            patch.dict("os.environ", env, clear=False),
+        ):
+            execute_client_advisor(
+                "glm-5.2", [{"role": "user", "content": "hi"}],
+                advisor_provider="zai",
+            )
+        return rec
+
+    def test_key_falls_back_to_the_environment(self) -> None:
+        """An advisor provider whose key lives in an env var — how eval
+        containers and most shells supply credentials — must authenticate.
+        Reading providers.<name>.api_key directly returned "" and the call
+        died on 'Missing credentials'."""
+        rec = self._run_with_config(
+            {"api_key": "", "base_url": None}, {"ZAI_API_KEY": "from-env"},
+        )
+        self.assertEqual(rec.model, "glm-5.2")
+        # No getattr default — a missing attribute must fail loudly rather
+        # than pass by falling back to the value under test.
+        self.assertEqual(
+            rec.seen_api_key, "from-env",
+            msg="advisor ignored the environment for its provider key",
+        )
+
+    def test_configured_key_outranks_the_environment(self) -> None:
+        """Precedence must match resolve_api_key: config wins. This is what
+        keeps an exported ANTHROPIC_API_KEY from silently outranking a
+        subscription OAuth login in the opposite direction."""
+        from src.providers import resolve_api_key
+
+        self.assertEqual(
+            resolve_api_key("zai", {"api_key": "from-config"}), "from-config",
+        )
+
+    def test_empty_key_survives_for_the_oauth_fallback(self) -> None:
+        """The Anthropic subscription path REQUIRES an empty api_key so the
+        provider falls through to OAuth — resolution must not invent one."""
+        from src.providers import resolve_api_key
+
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                resolve_api_key("anthropic", {"api_key": "", "base_url": None}), "",
+            )
 
 
 class TestSubscriptionSystemShape(unittest.TestCase):
