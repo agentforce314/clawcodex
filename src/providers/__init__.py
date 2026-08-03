@@ -360,7 +360,42 @@ def is_anthropic_wire(provider: Any) -> bool:
     from .anthropic_provider import AnthropicProvider
     from .minimax_provider import MinimaxProvider
 
-    return isinstance(provider, (AnthropicProvider, MinimaxProvider))
+    return isinstance(unwrap_provider(provider), (AnthropicProvider, MinimaxProvider))
+
+
+def unwrap_provider(provider: Any) -> Any:
+    """Follow a delegating wrapper down to the provider that owns the wire.
+
+    ``FusionProvider`` wraps a base provider to substitute image blocks; its
+    MRO is ``(FusionProvider, object)``, so it is not an instance of anything
+    the wire tests check. An ``isinstance`` test therefore reports
+    "OpenAI-compatible" for EVERY fusion model — including one whose base is
+    Anthropic or Minimax.
+
+    That is not cosmetic. Both things :func:`is_anthropic_wire` decides are
+    hard failures when decided wrongly: reasoning effort would go out as a
+    top-level ``reasoning_effort`` field, which the Anthropic API rejects with
+    ``400 invalid_request_error — reasoning_effort: Extra inputs are not
+    permitted``, and the system prompt would be prepended as a
+    ``{"role": "system"}`` message instead of passed as the ``system`` kwarg.
+    A fusion over ``anthropic:claude-opus-5`` is expressible today
+    (``fusion=anthropic:claude-opus-5+openai:gpt-5.6-luna``) and would fail on
+    its first request.
+
+    Bounded rather than a ``while True``: a cycle in ``inner`` would otherwise
+    hang the wire check. Depth 8 is far beyond any real nesting (one wrapper
+    today) and any excess simply falls back to the outermost object, which is
+    the pre-existing behaviour.
+    """
+    seen: set[int] = set()
+    current = provider
+    for _ in range(8):
+        inner = getattr(current, "inner", None)
+        if inner is None or inner is current or id(inner) in seen:
+            return current
+        seen.add(id(current))
+        current = inner
+    return current
 
 
 #: The provider ids whose classes :func:`is_anthropic_wire` matches. Kept
@@ -468,6 +503,7 @@ __all__ = [
     "get_provider_class",
     "get_provider_info",
     "is_anthropic_wire",
+    "unwrap_provider",
     "canonical_provider_name",
     "provider_env_vars",
     "provider_has_credentials",

@@ -30,6 +30,25 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     #: cache (see ``query._split_system_prompt_blocks``).
     is_deepseek = True
 
+    #: DeepSeek's OpenAI-format thinking vocabulary is ``low | high | max``
+    #: (api-docs.deepseek.com/guides/thinking_mode). Thinking is ON by
+    #: default at ``high``.
+    #:
+    #: The API does not VALIDATE this field — probed 2026-08-03 against
+    #: ``deepseek-v4-flash``, every one of ``low / medium / high / xhigh /
+    #: max / minimal`` returned 200, and so did a value the docs never list.
+    #: So an unsupported level is not an error, it is silently discarded and
+    #: the default (``high``) applies. Without the mapping below, ``xhigh``
+    #: — chosen precisely when a task is hard — quietly delivered LESS
+    #: reasoning than ``max``, which DeepSeek does support.
+    supported_reasoning_efforts = ("low", "high", "max")
+
+    #: ``medium`` has no DeepSeek equivalent and already behaved as ``high``
+    #: (unknown → default), so this makes the existing behaviour explicit
+    #: rather than changing it. ``xhigh`` is the real fix: it means "above
+    #: high", and ``max`` is the only DeepSeek level that is.
+    reasoning_effort_aliases = {"medium": "high", "xhigh": "max", "minimal": "low"}
+
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None
     ):

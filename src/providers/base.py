@@ -62,6 +62,44 @@ class BaseProvider(ABC):
     #: OpenRouter is intentionally NOT covered.
     is_deepseek: bool = False
 
+    #: Reasoning-effort levels this provider's API actually accepts, or
+    #: ``None`` for "the whole clawcodex ladder passes through untouched"
+    #: (the default, and correct for OpenAI/OpenRouter, which take all five).
+    #: See :meth:`normalize_reasoning_effort`.
+    supported_reasoning_efforts: tuple[str, ...] | None = None
+
+    #: Maps a clawcodex level this provider does NOT accept onto the nearest
+    #: one it does. Only consulted for levels absent from
+    #: ``supported_reasoning_efforts``.
+    reasoning_effort_aliases: dict[str, str] = {}
+
+    def normalize_reasoning_effort(self, effort: str | None) -> str | None:
+        """Translate a clawcodex effort level into this provider's vocabulary.
+
+        clawcodex exposes ``low | medium | high | xhigh | max``, but that
+        ladder is Anthropic's and not every API shares it. Sending a level a
+        provider does not know is not obviously harmful — nobody 400s on it —
+        which is exactly why it needs handling: the provider ignores the field
+        and silently applies its own default, so the user gets a level they
+        did not ask for and no diagnostic saying so.
+
+        The damaging direction is DOWNWARD. A user who selects ``xhigh``
+        against a provider whose ladder tops out differently is asking for
+        more than ``high``; if the value is dropped they get the default,
+        which is typically ``high`` — strictly less than requested, on the
+        setting people reach for precisely when a task is hard.
+
+        Default is identity: providers that accept the full ladder are
+        unaffected, and a provider that has not declared a vocabulary keeps
+        the pass-through behaviour it had before this hook existed.
+        """
+        if effort is None:
+            return None
+        supported = self.supported_reasoning_efforts
+        if not supported or effort in supported:
+            return effort
+        return self.reasoning_effort_aliases.get(effort, effort)
+
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None
     ):

@@ -1217,6 +1217,37 @@ async def _call_model_sync(
             getattr(provider, "model", None) or call_kwargs.get("model"),
             clamp_xhigh=False,
         )
+        # Translate onto the provider's own vocabulary before it hits the
+        # wire. The ladder above is Anthropic's; a provider that does not
+        # share it silently DISCARDS the unknown level and applies its own
+        # default, so the request goes out looking fine and the user gets a
+        # level they did not choose. Identity for providers that take the
+        # full ladder (OpenAI, OpenRouter) — see
+        # ``BaseProvider.normalize_reasoning_effort``.
+        #
+        # No explicit unwrap here, deliberately: ``FusionProvider.__getattr__``
+        # already delegates unknown attributes to its base, so this lookup
+        # lands on the BASE provider's method and its vocabulary. (Contrast
+        # ``is_anthropic_wire``, which cannot delegate — an ``isinstance``
+        # test sees the wrapper's class and needs ``unwrap_provider``.) The
+        # delegation is pinned by a test rather than left incidental.
+        # The result is VALIDATED before use, not trusted. This is a duck-typed
+        # ``getattr`` on whatever object the caller passed, and providers are
+        # not all real ``BaseProvider`` subclasses — mocks, gateway shims and
+        # third-party wrappers all reach here. A ``MagicMock`` in particular
+        # answers every attribute with a callable returning another Mock, so an
+        # unguarded assignment writes a ``<MagicMock ...>`` repr into the
+        # request body. Anything that is not a plain string on the known ladder
+        # is discarded in favour of the level we already resolved.
+        if resolved_effort is not None:
+            _normalize = getattr(provider, "normalize_reasoning_effort", None)
+            if callable(_normalize):
+                try:
+                    _mapped = _normalize(resolved_effort)
+                except Exception:  # noqa: BLE001 — never fail a request on this
+                    _mapped = None
+                if isinstance(_mapped, str) and _mapped in VALID_THINKING_EFFORT_LEVELS:
+                    resolved_effort = _mapped
         if resolved_effort is not None:
             extra_body = dict(call_kwargs.get("extra_body") or {})
             extra_body.setdefault("reasoning_effort", resolved_effort)
