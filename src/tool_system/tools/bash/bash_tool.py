@@ -173,14 +173,30 @@ def _run_bash_with_abort(
         timed_out=timed_out,
     )
 
+# ``\b`` is the WRONG boundary for a command NAME: ``-`` is a non-word
+# character, so ``\breboot\b`` matches inside ``-no-reboot`` — a standard QEMU
+# flag — and ``qemu-system-x86_64 … -no-reboot`` was refused as "potentially
+# dangerous". Measured on terminal-bench 2.1 (2026-08-02): 7 refusals across
+# ``qemu-startup`` and ``qemu-alpine-ssh``, both of which then scored 0.
+#
+# ``(?<![-\w])X(?![-\w])`` is the boundary that actually means "X is its own
+# token": it still matches a bare ``reboot``, ``/sbin/reboot`` and ``reboot -f``
+# (``/`` and space are neither ``-`` nor word chars), while a hyphenated
+# neighbour — ``-no-reboot``, ``--reboot-after``, ``reboot-helper`` — is never a
+# bare command invocation and no longer matches. Strictly more precise than
+# ``\b``; it does not widen what gets through.
+def _bare_command(name: str) -> str:
+    return rf"(?<![-\w]){name}(?![-\w])"
+
+
 _HARDCODED_DANGEROUS_PATTERNS = [
-    re.compile(r"\bsudo\b", re.IGNORECASE),
-    re.compile(r"\bshutdown\b", re.IGNORECASE),
-    re.compile(r"\breboot\b", re.IGNORECASE),
-    re.compile(r"\bmkfs\b", re.IGNORECASE),
-    re.compile(r"\bdd\b\s+if=", re.IGNORECASE),
-    re.compile(r"\brm\b.*\s+-rf\s+/\s*$", re.IGNORECASE),
-    re.compile(r"\brm\b.*\s+-rf\s+/\s+"),
+    re.compile(_bare_command("sudo"), re.IGNORECASE),
+    re.compile(_bare_command("shutdown"), re.IGNORECASE),
+    re.compile(_bare_command("reboot"), re.IGNORECASE),
+    re.compile(_bare_command("mkfs"), re.IGNORECASE),
+    re.compile(_bare_command("dd") + r"\s+if=", re.IGNORECASE),
+    re.compile(_bare_command("rm") + r".*\s+-rf\s+/\s*$", re.IGNORECASE),
+    re.compile(_bare_command("rm") + r".*\s+-rf\s+/\s+"),
     re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", re.IGNORECASE),
 ]
 
@@ -480,7 +496,39 @@ def _bash_validate_input(
     return ValidationResult.ok()
 
 
-def bash_command_safety_guard(command: str) -> None:
+def _is_bypass_permissions(context: Any) -> bool:
+    """True when the session was DELIBERATELY put in a bypass posture.
+
+    Requires ``is_bypass_permissions_mode_available`` as well as the mode, and
+    that second condition is load-bearing — it is not belt-and-braces.
+    ``ToolContext.permission_context`` defaults to
+    ``ToolPermissionContext(mode="bypassPermissions")`` (context.py:69-71), an
+    inversion of the TS default that ``entrypoints/mcp_serve.py:11-23`` already
+    documents and works around. So ``mode`` ALONE is true for every
+    default-constructed context — including ones built by callers that never
+    thought about permissions at all — and keying only on it would silently
+    drop the blocklist far outside the sessions the user opted in for.
+
+    ``is_bypass_permissions_mode_available`` is not part of that default
+    (``types.py:367`` → ``False``); it is set only where a real session
+    resolves the posture: ``--dangerously-skip-permissions`` on the headless
+    path sets both (headless.py:164-172), as do
+    ``agent_server_cli.py:273`` and ``tui_launcher.py:168``. Requiring both
+    distinguishes "the user passed the flag" from "nobody set a mode".
+
+    Fails CLOSED in every uncertain case: no context, no permission context, or
+    a mode without availability all keep the blocklist armed. Deliberately
+    stricter than the ``_bash_permissions`` passthrough above, which keys on
+    mode alone — that one governs whether to ASK, this one governs a hard
+    refusal, so it wants the stronger signal.
+    """
+    perm_ctx = getattr(context, "permission_context", None)
+    if not getattr(perm_ctx, "is_bypass_permissions_mode_available", False):
+        return False
+    return getattr(perm_ctx, "mode", None) in ("bypassPermissions", "plan")
+
+
+def bash_command_safety_guard(command: str, context: Any = None) -> None:
     """Pre-spawn safety for any shell command run through the bash machinery:
     the hardcoded-dangerous-pattern block + the C8 sandbox hard-gate.
 
@@ -489,10 +537,31 @@ def bash_command_safety_guard(command: str) -> None:
     can't be a way around these guards (critic C5-P2). Raises
     ``ToolPermissionError`` to refuse; the sandbox check is best-effort (a
     settings problem must not crash the tool), but a hard-gate refusal always
-    propagates."""
-    for pat in _HARDCODED_DANGEROUS_PATTERNS:
-        if pat.search(command):
-            raise ToolPermissionError("refusing to run potentially dangerous command")
+    propagates.
+
+    ``context`` is optional and defaults to None = KEEP GUARDING, so any caller
+    that doesn't pass one behaves exactly as before.
+    """
+    # The hardcoded blocklist is a port-added defense-in-depth layer with no TS
+    # counterpart: real Claude Code has no un-bypassable command blocklist, and
+    # ``--dangerously-skip-permissions`` genuinely skips permission checks
+    # there. Keeping it unconditional meant a bypass-mode session — the
+    # explicit "I accept the risk" mode, and the mode every sandboxed eval
+    # container runs in — still could not run ``sudo`` or a real ``reboot``.
+    # Same parity direction as PR #673 (removing the un-grantable class safety
+    # screen). Every non-bypass mode (default / acceptEdits / plan-without-
+    # bypass) is unaffected.
+    if not _is_bypass_permissions(context):
+        for pat in _HARDCODED_DANGEROUS_PATTERNS:
+            if pat.search(command):
+                raise ToolPermissionError(
+                    "refusing to run potentially dangerous command"
+                )
+
+    # NB the sandbox hard-gate below is deliberately NOT bypassed. It comes
+    # from MANAGED settings (an admin policy: "never silently run
+    # unsandboxed"), and a user-supplied CLI flag must not override an
+    # administrator's control — unlike the blocklist above, which is ours.
 
     # Sandbox guard (C8): the port has no sandbox ENFORCEMENT, so a
     # ``sandbox.enabled`` setting maps onto TS's documented sandbox-unavailable
@@ -531,7 +600,7 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     # sandbox hard-gate. Shared with the Monitor tool (which spawns via
     # spawn_background_bash directly, bypassing this function) — so the guards
     # can't drift and Monitor can't be a hole around them.
-    bash_command_safety_guard(command)
+    bash_command_safety_guard(command, context)
 
     explicit_cwd = tool_input.get("cwd")
     if explicit_cwd is not None:

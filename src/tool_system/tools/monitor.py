@@ -217,7 +217,7 @@ def _monitor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
     # hard safety gates that live below the permission layer.
     from .bash.bash_tool import bash_command_safety_guard
 
-    bash_command_safety_guard(command)
+    bash_command_safety_guard(command, context)
 
     from .bash.background import spawn_background_bash
 
