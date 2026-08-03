@@ -44,6 +44,7 @@ from src.cli_core import (
     SystemEvent,
     ToolResultEvent,
     ToolUseEvent,
+    UsageEvent,
     UserInputMessage,
     cli_error,
     ndjson_safe_dumps,
@@ -617,6 +618,13 @@ def run_headless(options: HeadlessOptions) -> int:
     aggregate_tool_events: list[dict] = []
     num_turns_total = 0
     usage_total: dict[str, int] = {}
+    # Running totals for the incremental UsageEvent lane. Deliberately a
+    # SEPARATE accumulator from ``usage_total`` above: that one folds
+    # ``result.usage`` once per completed turn, this one folds each assistant
+    # message's usage as it lands. Feeding both from either source would
+    # double-count, and this lane exists precisely for runs that never reach
+    # the per-turn accounting.
+    live_usage: dict[str, int] = {}
     exit_code = 0
     # Terminal reason of the LAST agent-loop turn, when it stopped the run
     # early rather than the model finishing (``tool_failure_loop``,
@@ -710,6 +718,34 @@ def run_headless(options: HeadlessOptions) -> int:
                                     msg.content,
                                     usage=getattr(msg, "usage", None),
                                 )
+                                # Publish the running total as we go. The
+                                # ResultEvent below is authoritative but only
+                                # exists if the run REACHES the end; a killed
+                                # run (eval ceiling, SIGKILL, dropped
+                                # connection) emitted nothing, so everything
+                                # it spent was unmeasurable. Per assistant
+                                # message is the granularity that survives a
+                                # kill mid-turn — a turn that never completes
+                                # never reaches the per-turn accounting below.
+                                #
+                                # Tracked SEPARATELY from ``usage_total``,
+                                # which folds ``result.usage`` once per turn:
+                                # accumulating both from one source would
+                                # double-count. This lane feeds the stream
+                                # only; the ResultEvent is untouched.
+                                _msg_usage = getattr(msg, "usage", None)
+                                if (
+                                    writer is not None
+                                    and msg.role == "assistant"
+                                    and _msg_usage
+                                ):
+                                    _accumulate_usage(live_usage, _msg_usage)
+                                    writer.write(
+                                        UsageEvent(
+                                            usage=dict(live_usage),
+                                            num_turns=num_turns_total,
+                                        )
+                                    )
                                 # Claude Code's stream-json exposes signed
                                 # thinking blocks as assistant content events.
                                 # Emit only the private blocks here; the visible

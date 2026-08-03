@@ -83,6 +83,33 @@ class ToolResultEvent(HeadlessEvent):
 
 
 @dataclass
+class UsageEvent(HeadlessEvent):
+    """Running token totals, emitted as the run proceeds.
+
+    ``ResultEvent`` carries the authoritative usage, but only at the very end.
+    A run that is killed — an eval harness hitting its per-task ceiling, a
+    SIGKILL, a lost connection — never emits one, so everything it spent
+    became unmeasurable. Measured on terminal-bench 2.1 (2026-08-02): 21 of
+    46 trials in one job reported no tokens and no cost at all, and they were
+    exactly the killed ones, i.e. the longest and most expensive. Job totals
+    are summed from per-trial values, so the headline cost was a floor biased
+    low by precisely the trials that cost the most.
+
+    Emitted per assistant message (one model round trip), which is the
+    granularity that survives a kill mid-turn. Cumulative, not per-message, so
+    a consumer only needs the LAST one it saw and can ignore the rest.
+
+    Additive: a new event ``type``, so existing consumers that switch on the
+    types they know are unaffected. It does not replace or change
+    ``ResultEvent.usage``.
+    """
+
+    type: str = "usage"
+    usage: dict[str, Any] = field(default_factory=dict)
+    num_turns: int = 0
+
+
+@dataclass
 class ResultEvent(HeadlessEvent):
     type: str = "result"
     subtype: str = "success"

@@ -723,6 +723,7 @@ class Clawcodex(BaseInstalledAgent):
         """
         events = self._parse_stream_events()
         result_event = self._last_result_event(events)
+        usage_event = self._last_usage_event(events)
 
         # Surface an EARLY STOP where a human reading the trial will see it.
         # clawcodex now marks a run the agent loop cut short with a non-success
@@ -752,7 +753,9 @@ class Clawcodex(BaseInstalledAgent):
             }
 
         try:
-            trajectory, totals = self._build_trajectory(events, result_event)
+            trajectory, totals = self._build_trajectory(
+                events, result_event, usage_event
+            )
         except Exception as exc:  # noqa: BLE001 — never fail a trial over this
             self.logger.debug(f"clawcodex trajectory build failed: {exc}")
             trajectory, totals = None, None
@@ -772,15 +775,19 @@ class Clawcodex(BaseInstalledAgent):
             context.n_output_tokens = totals["completion"]
             if totals["cost"] is not None:
                 context.cost_usd = totals["cost"]
-        elif result_event:
-            usage = result_event.get("usage")
-            if isinstance(usage, dict):
-                input_tokens = usage.get("input_tokens") or 0
-                cache_read = usage.get("cache_read_input_tokens") or 0
-                cache_creation = usage.get("cache_creation_input_tokens") or 0
-                context.n_input_tokens = input_tokens + cache_read + cache_creation
-                context.n_cache_tokens = cache_read
-                context.n_output_tokens = usage.get("output_tokens") or 0
+        elif result_event and isinstance(result_event.get("usage"), dict):
+            prompt, cached, completion = self._usage_columns(result_event["usage"])
+            context.n_input_tokens = prompt
+            context.n_cache_tokens = cached
+            context.n_output_tokens = completion
+        elif usage_event is not None:
+            # Killed trial: no copy-back, no result event. The stream log is
+            # a live bind mount so its last cumulative usage line survived,
+            # and it is the only measurement of what this run spent.
+            prompt, cached, completion = self._usage_columns(usage_event["usage"])
+            context.n_input_tokens = prompt
+            context.n_cache_tokens = cached
+            context.n_output_tokens = completion
 
         if trajectory is None:
             return
@@ -819,17 +826,65 @@ class Clawcodex(BaseInstalledAgent):
                 return event
         return None
 
+    @staticmethod
+    def _last_usage_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """The most recent incremental ``usage`` event, or None.
+
+        The metrics lane of last resort, for a trial that was KILLED. Harbor
+        cancels the exec on timeout, so the container copy-back never runs
+        (no session data) and clawcodex never reaches its terminal ``result``
+        event (no result usage) — the two sources below. Every killed trial
+        therefore reported no tokens and no cost at all: 21 of 46 in one
+        terminal-bench job (2026-08-02), and precisely the longest, most
+        expensive ones, because those are what time out. Job totals are summed
+        from per-trial values, so the headline cost was a floor biased low by
+        exactly the trials that cost the most.
+
+        The stream log survives a kill (it is a live bind mount of the host
+        trial dir), so the last cumulative usage line in it is a real
+        measurement of everything the run had spent up to the kill.
+        """
+        for event in reversed(events):
+            if event.get("type") == "usage" and isinstance(event.get("usage"), dict):
+                return event
+        return None
+
+    @staticmethod
+    def _usage_columns(usage: dict[str, Any]) -> tuple[int, int, int]:
+        """``(prompt, cached, completion)`` from a stream-json usage dict.
+
+        ``input_tokens`` is only the NON-cached part of the prompt, so a total
+        built from input+output alone silently omits every cached token — the
+        bug #786 fixed. One helper so the result-event and usage-event lanes
+        cannot drift apart on that arithmetic again.
+        """
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        cache_creation = usage.get("cache_creation_input_tokens") or 0
+        prompt = (usage.get("input_tokens") or 0) + cache_read + cache_creation
+        return prompt, cache_read, (usage.get("output_tokens") or 0)
+
     def _final_metrics(
         self,
         result_event: dict[str, Any] | None,
         total_steps: int,
         totals: dict[str, Any] | None,
+        usage_event: dict[str, Any] | None = None,
     ) -> FinalMetrics | None:
-        """``totals`` = authoritative session billing totals (preferred).
-        Falls back to the stream-json usage when no session cost block was
-        synced; that fallback now carries cumulative cache counters, so it is
-        no longer short by the cached portion — though it still omits
-        subagent and compaction tokens, which only the cost block sees."""
+        """Three lanes, in descending order of authority:
+
+        1. ``totals`` — the session's BILLING totals. Includes subagent and
+           compaction tokens, which nothing else sees.
+        2. the terminal ``result`` event's usage — main loop only, but
+           carries cumulative cache counters so it is not short by the
+           cached portion.
+        3. the last incremental ``usage`` event — the only one of the three
+           that survives a KILLED run, where the copy-back never ran and no
+           result event was ever emitted. See ``_last_usage_event``.
+
+        Cost is unavailable in lane 3 (the incremental event carries tokens
+        only); harbor prices those itself, and a token count is what the
+        killed trials were missing entirely.
+        """
         usage = (result_event or {}).get("usage")
         if not isinstance(usage, dict):
             usage = {}
@@ -839,17 +894,17 @@ class Clawcodex(BaseInstalledAgent):
             cached = totals["cached"]
             cost = totals["cost"]
         elif result_event:
-            input_tokens = usage.get("input_tokens") or 0
-            cache_read = usage.get("cache_read_input_tokens") or 0
-            cache_creation = usage.get("cache_creation_input_tokens") or 0
-            prompt = input_tokens + cache_read + cache_creation
-            completion = usage.get("output_tokens") or 0
-            cached = cache_read
+            prompt, cached, completion = self._usage_columns(usage)
             cost = result_event.get("total_cost_usd")
+        elif usage_event:
+            prompt, cached, completion = self._usage_columns(usage_event["usage"])
+            cost = None
         else:
             return None
         extra: dict[str, Any] = {}
         num_turns = (result_event or {}).get("num_turns")
+        if not isinstance(num_turns, int) and usage_event:
+            num_turns = usage_event.get("num_turns")
         if isinstance(num_turns, int):
             extra["num_turns"] = num_turns
         duration_ms = (result_event or {}).get("duration_ms")
@@ -992,6 +1047,7 @@ class Clawcodex(BaseInstalledAgent):
         self,
         events: list[dict[str, Any]],
         result_event: dict[str, Any] | None,
+        usage_event: dict[str, Any] | None = None,
     ) -> tuple[Trajectory | None, dict[str, Any] | None]:
         """Returns ``(trajectory, billing_totals)`` — the totals are surfaced
         so the caller can also set the leaderboard token/cost columns."""
@@ -1023,7 +1079,9 @@ class Clawcodex(BaseInstalledAgent):
             agent=agent,
             steps=steps,
             notes=notes,
-            final_metrics=self._final_metrics(result_event, len(steps), totals),
+            final_metrics=self._final_metrics(
+                result_event, len(steps), totals, usage_event
+            ),
         )
         return trajectory, totals
 

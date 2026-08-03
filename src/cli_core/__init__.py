@@ -18,6 +18,7 @@ from .structured_io import (
     StreamJsonWriter,
     SystemEvent,
     ToolResultEvent,
+    UsageEvent,
     ToolUseEvent,
     UserInputMessage,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "StreamJsonWriter",
     "SystemEvent",
     "ToolResultEvent",
+    "UsageEvent",
     "ToolUseEvent",
     "UserInputMessage",
 ]
