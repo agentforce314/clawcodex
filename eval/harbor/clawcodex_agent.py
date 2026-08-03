@@ -49,6 +49,32 @@ API keys reach the container two ways, either is sufficient:
 
 Agent kwargs (``--ak key=value``):
 
+* ``advisor`` — run with an ADVISOR (reviewer) model the worker consults
+  through the advisor tool, as ``<provider>:<model>`` (e.g.
+  ``advisor=anthropic:claude-opus-5``). Seeded into the container's global
+  config rather than passed as a flag: clawcodex reads the advisor from
+  settings, and ``/advisor`` is not reachable on the headless ``-p`` path.
+  Always seeded as CLIENT-side dispatch (a separate API call per
+  consultation), so the advisor behaves identically regardless of which
+  worker model a run is comparing — the server-side path is an
+  Anthropic-only beta that also requires a 1P Anthropic main loop.
+
+  Combines with ``subscription=true`` even when the MAIN model is another
+  vendor: ``--model openai/gpt-5.6-luna --ak subscription=true
+  --ak advisor=anthropic:claude-opus-5`` runs an API-key worker against a
+  Claude-subscription reviewer. The worker's own provider key is still
+  forwarded in that configuration; only ``ANTHROPIC_API_KEY`` is withheld,
+  so OAuth stays the single route to the subscription.
+
+  NOTE the advisor doubles the API calls on turns where it fires, and each
+  consultation forwards the whole conversation so far — budget for it.
+* ``advisor_effort`` — reasoning effort for the ADVISOR's own call
+  (low|medium|high|xhigh|max), independent of the worker's ``effort``.
+  Requires ``advisor``. Unset means the advisor inherits ``effort``; if
+  that is unset too the parameter is omitted and the API applies its model
+  default. Subject to the same per-wire gates as ``effort`` below — on the
+  Anthropic wire ``xhigh`` is clamped to ``high`` for models that reject it
+  (Opus 5 accepts it; Sonnet 4.6 does not).
 * ``fusion`` — run a FUSION model: a text-only base plus a borrowed
   vision model, as ``<base>+<vision>`` with each side ``provider:model``
   (e.g. ``fusion=deepseek:deepseek-v4-flash+openai:gpt-5.6-luna``). Pair
@@ -334,6 +360,8 @@ class Clawcodex(BaseInstalledAgent):
         source: str | None = None,
         fusion: str | None = None,
         forward_keys: bool | str = True,
+        advisor: str | None = None,
+        advisor_effort: str | None = None,
         *args,
         **kwargs,
     ):
@@ -341,6 +369,30 @@ class Clawcodex(BaseInstalledAgent):
 
         self._subscription = parse_bool_env_value(subscription, name="subscription")
         self._source = source
+        # ``advisor`` is ``<provider>:<model>`` — the reviewer model the
+        # worker consults through the advisor tool. Same rationale as
+        # ``fusion`` for living here rather than in CLI_FLAGS: it is config,
+        # not a clawcodex flag (there is no ``--advisor``), and it reaches the
+        # container through the seeded global config instead.
+        self._advisor = advisor
+        self._advisor_effort = advisor_effort
+        if self._advisor and ":" not in self._advisor:
+            raise ValueError(
+                "Agent kwarg 'advisor' must be '<provider>:<model>' "
+                f"(got {self._advisor!r}) — e.g. anthropic:claude-opus-5"
+            )
+        if self._advisor_effort and self._advisor_effort not in (
+            "low", "medium", "high", "xhigh", "max",
+        ):
+            raise ValueError(
+                "Agent kwarg 'advisor_effort' must be one of low|medium|"
+                f"high|xhigh|max (got {self._advisor_effort!r})"
+            )
+        if self._advisor_effort and not self._advisor:
+            raise ValueError(
+                "Agent kwarg 'advisor_effort' requires 'advisor' — an effort "
+                "level with no reviewer configured is silently inert."
+            )
         # Explicit constructor kwargs, NOT CLI_FLAGS entries: both are config
         # inputs with no clawcodex flag behind them, and every CLI_FLAGS entry
         # is emitted into the command by ``build_cli_flags()``. Declaring them
@@ -446,13 +498,33 @@ class Clawcodex(BaseInstalledAgent):
             ),
         )
 
+    def _advisor_provider(self) -> str:
+        """Provider half of the ``advisor`` kwarg ("" when unset)."""
+        if not self._advisor:
+            return ""
+        return self._advisor.split(":", 1)[0].strip().lower()
+
     def _build_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
         if self._subscription:
             # Subscription mode authenticates via the injected OAuth file;
             # forwarding ANTHROPIC_API_KEY would silently win over it inside
             # clawcodex (API key takes precedence), billing the API instead.
-            forwarded: tuple[str, ...] = ()
+            #
+            # That reasoning is specific to ANTHROPIC. When the subscription
+            # backs only the advisor, the MAIN loop is a different provider
+            # and still needs its own key — suppressing everything left the
+            # worker with no credentials at all.
+            model_provider = (self._parsed_model_provider or "").lower()
+            if model_provider and model_provider != "anthropic":
+                forwarded = _PROVIDER_ENV_VARS.get(
+                    model_provider, _ALL_PROVIDER_ENV_VARS
+                )
+                # Never the Anthropic key: OAuth must stay the only route to
+                # the subscription, whichever role it is filling.
+                forwarded = tuple(k for k in forwarded if k != "ANTHROPIC_API_KEY")
+            else:
+                forwarded = ()
         else:
             forwarded = _PROVIDER_ENV_VARS.get(
                 (self._parsed_model_provider or "").lower(), _ALL_PROVIDER_ENV_VARS
@@ -499,10 +571,17 @@ class Clawcodex(BaseInstalledAgent):
         import asyncio
 
         provider = (self._parsed_model_provider or "anthropic").lower()
-        if provider != "anthropic":
+        # Subscription auth is legitimate for EITHER role. The original gate
+        # assumed the subscription always backed the main loop, which made
+        # the interesting pairing — a cheap API-key worker consulting a
+        # premium subscription reviewer, e.g. openai/gpt-5.6-luna with
+        # ``--ak advisor=anthropic:claude-opus-5`` — impossible to express.
+        if provider != "anthropic" and self._advisor_provider() != "anthropic":
             raise RuntimeError(
-                "subscription=true only applies to anthropic/... models "
-                f"(got provider {provider!r})"
+                "subscription=true requires anthropic in some role: either an "
+                "anthropic/... model or --ak advisor=anthropic:<model> "
+                f"(got model provider {provider!r}, advisor "
+                f"{self._advisor or '(none)'!r})"
             )
         credentials = dict(await asyncio.to_thread(fresh_subscription_credentials))
         credentials["refresh_token"] = ""
@@ -608,6 +687,22 @@ class Clawcodex(BaseInstalledAgent):
         effort = self._resolved_flags.get("effort")
         if effort:
             settings["effort"] = effort
+
+        # Advisor (reviewer model). Settings-only by design: clawcodex reads
+        # the advisor config from settings, there is no CLI flag, and the
+        # /advisor slash command is not reachable on the headless -p path.
+        if self._advisor:
+            advisor_provider, advisor_model = self._advisor.split(":", 1)
+            settings["advisor_enabled"] = True  # master switch, default off
+            settings["advisor_provider"] = advisor_provider.strip()
+            settings["advisor_model"] = advisor_model.strip()
+            # Force client-side dispatch. Server-side is an Anthropic-only
+            # beta that additionally requires the MAIN loop to be 1P
+            # Anthropic; pinning client mode keeps the advisor behaving
+            # identically no matter which worker model a run is comparing.
+            settings["advisor_client_mode"] = True
+            if self._advisor_effort:
+                settings["advisor_effort"] = self._advisor_effort
 
         config: dict[str, Any] = {}
         if settings:

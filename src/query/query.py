@@ -607,6 +607,74 @@ def resolve_thinking_effort(
     return value
 
 
+def build_anthropic_thinking_kwargs(
+    model: str | None,
+    *,
+    explicit_effort: str | None = None,
+    max_tokens: int = 0,
+    force_thinking: bool = False,
+) -> dict[str, Any]:
+    """Build the Anthropic-wire ``thinking`` / ``output_config`` kwargs.
+
+    THE single source of truth for the adaptive-vs-budget selection and
+    the effort gate. Two callers share it and must never drift:
+
+    * the main loop (:func:`_call_model_sync`), and
+    * the client-side advisor (``src/utils/advisor.py``), whose separate
+      API call previously sent neither parameter — so a reviewer model
+      configured precisely because it reasons harder ran with thinking
+      off and the API's default effort.
+
+    The adaptive-vs-budget split mirrors TS claude.ts:1612-1640: models
+    that support the adaptive type get ``{type: "adaptive"}``; models that
+    support thinking but not adaptive get an explicit ``budget_tokens``
+    instead, because adaptive is a hard 400 on them. ``output_config.effort``
+    is gated separately and more narrowly (:func:`_model_supports_effort`).
+
+    ``max_tokens`` is only consulted on the budget branch, where the budget
+    must land in ``[1024, max_tokens)``; pass the value already resolved for
+    the request. ``force_thinking`` mirrors the caller's explicit
+    ``extended_thinking=True`` override, which enables thinking even for a
+    model the eligibility regex doesn't recognise.
+
+    Returns a dict to merge into the request kwargs — empty when the model
+    supports neither, so merging is always safe.
+    """
+    out: dict[str, Any] = {}
+    if not (force_thinking or _model_supports_extended_thinking(model)):
+        return out
+    if _model_supports_adaptive_thinking(model):
+        out["thinking"] = {"type": "adaptive"}
+    else:
+        # Budget thinking is the safe direction — it works on any
+        # thinking-capable model, whereas adaptive 400s where unsupported.
+        # TS defaults an unknown first-party alias to adaptive
+        # (thinking.ts:178-183); we deliberately prefer budget. TS clamps to
+        # maxOutputTokens-1 (claude.ts:1628-1635); we clamp identically.
+        _max_tok = int(max_tokens or 0)
+        if _max_tok > 1024:
+            out["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": max(1024, _max_tok - 1),
+            }
+        else:
+            # No budget in [1024, max_tokens) fits — omit thinking rather
+            # than send an invalid request (max_tokens this small only
+            # happens via an explicit tiny override).
+            logger.debug(
+                "thinking omitted: max_tokens=%s too small for a "
+                "valid budget on non-adaptive model %s",
+                _max_tok, model,
+            )
+    if _model_supports_effort(model):
+        resolved_effort = resolve_thinking_effort(explicit_effort, model)
+        # None = nothing requested anywhere — omit the parameter so the API
+        # applies its own model default (TS parity; see resolve_thinking_effort).
+        if resolved_effort is not None:
+            out["output_config"] = {"effort": resolved_effort}
+    return out
+
+
 def _is_overloaded_error(e: Exception) -> bool:
     """Anthropic 529 / overloaded_error classification (duck-typed so
     test fakes and other providers' shapes participate)."""
@@ -1134,43 +1202,14 @@ async def _call_model_sync(
     # subscription/OAuth path, which is how this surfaced.
     if extended_thinking is not False and is_anthropic:
         provider_model = getattr(provider, "model", None) or call_kwargs.get("model")
-        if extended_thinking is True or _model_supports_extended_thinking(provider_model):
-            if _model_supports_adaptive_thinking(provider_model):
-                call_kwargs["thinking"] = {"type": "adaptive"}
-            else:
-                # Non-adaptive (incl. an explicit ``extended_thinking=True``
-                # on an unknown alias): budget thinking. This is the safe
-                # direction — budget works on any thinking-capable model,
-                # whereas adaptive 400s where unsupported; TS defaults an
-                # unknown first-party alias to adaptive (thinking.ts:178-183),
-                # we deliberately prefer budget. budget_tokens must be ≥ 1024
-                # (API minimum) and strictly less than max_tokens, which is
-                # already resolved above for every Anthropic request. TS uses
-                # maxOutputTokens-1 (claude.ts:1628-1635); we clamp identically.
-                _max_tok = int(call_kwargs.get("max_tokens") or 0)
-                if _max_tok > 1024:
-                    call_kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": max(1024, _max_tok - 1),
-                    }
-                else:
-                    # No budget in [1024, max_tokens) fits — omit thinking
-                    # rather than send an invalid request (max_tokens this
-                    # small only happens via an explicit tiny override).
-                    logger.debug(
-                        "thinking omitted: max_tokens=%s too small for a "
-                        "valid budget on non-adaptive model %s",
-                        _max_tok, provider_model,
-                    )
-            if _model_supports_effort(provider_model):
-                resolved_effort = resolve_thinking_effort(
-                    thinking_effort, provider_model
-                )
-                # None = nothing requested anywhere — omit the parameter so
-                # the API applies its own model default (TS parity; see
-                # resolve_thinking_effort).
-                if resolved_effort is not None:
-                    call_kwargs["output_config"] = {"effort": resolved_effort}
+        call_kwargs.update(
+            build_anthropic_thinking_kwargs(
+                provider_model,
+                explicit_effort=thinking_effort,
+                max_tokens=int(call_kwargs.get("max_tokens") or 0),
+                force_thinking=extended_thinking is True,
+            )
+        )
     elif not is_anthropic:
         # NON-Anthropic wire: reasoning effort is a top-level
         # ``reasoning_effort`` body field, NOT ``output_config``. This is the

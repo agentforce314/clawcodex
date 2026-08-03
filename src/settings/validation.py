@@ -33,6 +33,18 @@ def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
             value=settings.effort,
         ))
 
+    # Advisor effort — same ladder as ``effort``; empty inherits it.
+    advisor_effort = getattr(settings, "advisor_effort", "")
+    if advisor_effort and advisor_effort not in VALID_EFFORT_VALUES:
+        errors.append(ValidationError(
+            field="advisor_effort",
+            message=(
+                f"Invalid advisor_effort value: {advisor_effort!r}. "
+                f"Must be one of {VALID_EFFORT_VALUES}"
+            ),
+            value=advisor_effort,
+        ))
+
     # Permission mode
     if settings.permission_mode not in VALID_PERMISSION_MODES:
         errors.append(ValidationError(

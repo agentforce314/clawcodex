@@ -30,6 +30,7 @@ Anthropic advisors on Anthropic main loops, or for transparency).
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, Mapping, TYPE_CHECKING
@@ -663,6 +664,80 @@ def build_advisor_forwarded_messages(
     return flattened
 
 
+# Historical flat output budget for an advisor call, now a FLOOR rather
+# than the value (see the budget note in ``execute_client_advisor``).
+_ADVISOR_MIN_MAX_TOKENS = 4096
+
+# Transient-failure budget for one consultation. Deliberately far below the
+# main loop's DEFAULT_MAX_RETRIES (10): the advisor is an auxiliary call the
+# worker is blocked on, so a rate-limited reviewer must degrade to "no advice"
+# in seconds rather than stall the turn for minutes. Before this existed a
+# single 429 — routine on a subscription bucket shared with an interactive
+# session — ended the consultation outright.
+_ADVISOR_MAX_ATTEMPTS = 3
+_ADVISOR_RETRY_BASE_DELAY = 2.0
+_ADVISOR_RETRY_MAX_DELAY = 30.0
+
+
+def _resolve_advisor_effort() -> str | None:
+    """Reasoning-effort level for the advisor's own API call.
+
+    ``advisor_effort`` when the user set one (so the reviewer can be dialled
+    independently of the worker), else the session-wide ``effort``. Returns
+    ``None`` when neither is set, which leaves the parameter off the wire and
+    lets the API apply its own default — same omit-don't-guess contract as
+    :func:`~src.query.query.resolve_thinking_effort`.
+    """
+    try:
+        from src.settings.settings import get_settings
+
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 — settings must never break the advisor
+        return None
+    for attr in ("advisor_effort", "effort"):
+        value = (getattr(settings, attr, "") or "").strip().lower()
+        if value:
+            return value
+    return None
+
+
+def _advisor_error_is_retryable(exc: Exception) -> bool:
+    """Whether one failed advisor attempt is worth re-issuing.
+
+    Reuses the main loop's classifier so the two agree on what "transient"
+    means; 529/overloaded is added explicitly because the query layer treats
+    it as its own lane rather than a general retryable class.
+    """
+    try:
+        from src.services.api.errors import (
+            categorize_retryable_api_error,
+            is_quota_exhausted,
+        )
+
+        if is_quota_exhausted(exc):
+            return False
+        if categorize_retryable_api_error(exc).retryable:
+            return True
+    except Exception:  # noqa: BLE001 — classifier unavailable: fall through
+        pass
+    status = getattr(exc, "status_code", None)
+    if status == 529:
+        return True
+    text = str(exc).lower()
+    return "overloaded" in text
+
+
+def _advisor_sleep(delay: float, abort_signal: Any) -> bool:
+    """Abort-aware backoff. Returns False if the wait was cut short by an
+    abort, so the caller stops retrying instead of sleeping through an ESC."""
+    deadline = time.monotonic() + delay
+    while time.monotonic() < deadline:
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            return False
+        time.sleep(min(0.25, deadline - time.monotonic()))
+    return True
+
+
 def execute_client_advisor(
     advisor_model: str,
     forwarded_messages: list[dict[str, Any]],
@@ -760,13 +835,84 @@ def execute_client_advisor(
 
     is_anthropic_shape = is_anthropic_wire(provider)
 
+    # Output budget. The advisor used to send a flat 4096, which was fine
+    # while it sent no thinking — but thinking tokens are drawn from the
+    # SAME max_tokens budget as the reply, so a high-effort reviewer can
+    # spend the entire allowance reasoning and come back with
+    # ``stop_reason=max_tokens`` and no text at all (surfacing here as the
+    # useless "Advisor returned no text content"). Use the same per-model
+    # resolution the main loop uses, floored at the historical 4096 so this
+    # can only ever widen the budget. It's a cap, not a target: an advisor
+    # that answers in 300 tokens still costs 300 tokens.
+    max_tokens = _ADVISOR_MIN_MAX_TOKENS
+    try:
+        from src.models.context import resolve_max_output_tokens
+
+        max_tokens = max(
+            max_tokens,
+            int(resolve_max_output_tokens(None, advisor_model) or 0),
+        )
+    except Exception:  # noqa: BLE001 — unknown model / bad env falls back
+        pass
+
     call_kwargs: dict[str, Any] = {
         "tools": [],
-        "max_tokens": 4096,
+        "max_tokens": max_tokens,
     }
+
+    # Reasoning effort for the advisor's own call. Without this the
+    # reviewer — chosen precisely because it reasons harder than the
+    # worker — ran with thinking off and the API's default effort, on
+    # both wires. ``advisor_effort`` wins when set so the advisor can be
+    # dialled independently of the main loop; otherwise the session-wide
+    # ``effort`` applies, matching what the worker is running at.
+    effort = _resolve_advisor_effort()
+
     if is_anthropic_shape:
-        call_kwargs["system"] = CLIENT_ADVISOR_SYSTEM_PROMPT
+        # System goes as a BLOCK LIST, not a bare string. This is not a
+        # style choice — it is load-bearing on the Claude subscription
+        # (OAuth) path, and getting it wrong broke the advisor outright for
+        # premium models.
+        #
+        # ``_prepare_subscription_request`` prepends the "You are Claude
+        # Code…" preamble that the subscription endpoint requires. With a
+        # STRING it concatenates, producing one blob of
+        # ``preamble + "\n\n" + advisor prompt``; with a LIST it inserts the
+        # preamble as its own block at index 0. The endpoint only accepts
+        # the latter for premium models: wire-probed 2026-08-02 against
+        # claude-opus-5 over subscription OAuth, 3/3 per cell —
+        #
+        #   system=None (bare preamble string) -> 200
+        #   system=<string>  (preamble + text) -> 429
+        #   system=[<block>] (preamble block + text block) -> 200
+        #
+        # and the rejection arrives MISLABELLED as
+        # ``{"type": "rate_limit_error", "message": "Error"}``, so it reads
+        # as capacity and invites a pointless backoff hunt. Haiku accepts
+        # the string form, which is why a cheap smoke test misses this.
+        # The main loop has always sent blocks (that is what carries the
+        # cache_control markers), which is why it works on subscription
+        # while this path did not.
+        call_kwargs["system"] = [
+            {"type": "text", "text": CLIENT_ADVISOR_SYSTEM_PROMPT}
+        ]
         request_messages = list(forwarded_messages)
+        # Shared with the main loop so the model gates (adaptive-vs-budget
+        # thinking, the effort allowlist, the xhigh clamp) can't drift.
+        try:
+            from src.query.query import build_anthropic_thinking_kwargs
+
+            call_kwargs.update(
+                build_anthropic_thinking_kwargs(
+                    advisor_model,
+                    explicit_effort=effort,
+                    max_tokens=max_tokens,
+                )
+            )
+        except Exception:  # noqa: BLE001 — never let this break the call
+            logging.getLogger(__name__).debug(
+                "advisor thinking kwargs failed", exc_info=True
+            )
     else:
         # Prepend the system message; OpenAI-compat will honor it
         # naturally as the first message in the conversation.
@@ -774,6 +920,26 @@ def execute_client_advisor(
             {"role": "system", "content": CLIENT_ADVISOR_SYSTEM_PROMPT},
             *forwarded_messages,
         ]
+        # NON-Anthropic wire: effort is a top-level ``reasoning_effort``
+        # body field, not ``output_config``. ``clamp_xhigh=False`` because
+        # the xhigh allowlist is a list of Anthropic model NAMES and matches
+        # nothing here — clamping on it silently downgraded every xhigh.
+        # Mirrors the equivalent branch in query.py::_call_model_sync.
+        if effort:
+            try:
+                from src.query.query import resolve_thinking_effort
+
+                resolved = resolve_thinking_effort(
+                    effort, advisor_model, clamp_xhigh=False
+                )
+                if resolved is not None:
+                    extra_body = dict(call_kwargs.get("extra_body") or {})
+                    extra_body["reasoning_effort"] = resolved
+                    call_kwargs["extra_body"] = extra_body
+            except Exception:  # noqa: BLE001 — never let this break the call
+                logging.getLogger(__name__).debug(
+                    "advisor reasoning_effort failed", exc_info=True
+                )
 
     # ``chat_stream_response`` is the cross-provider call that accepts
     # ``abort_signal`` uniformly (per BaseProvider) and returns a fully
@@ -783,22 +949,66 @@ def execute_client_advisor(
     # Anthropic (line 239 of anthropic_provider.py forwards unknown
     # kwargs straight to ``messages.create``). Streaming under the hood
     # but no ``on_text_chunk`` callback — we only need the final text.
+    #
+    # Bounded retry on transient failures. A consultation used to die on the
+    # first 429/5xx/connection blip; on a subscription bucket shared with an
+    # interactive session those are routine, so the reviewer was effectively
+    # unavailable under exactly the load an eval produces. Non-retryable
+    # errors (bad key, quota exhausted, 400) still fail on attempt 1.
     _t0 = time.monotonic()
-    try:
+    response = None
+    for attempt in range(1, _ADVISOR_MAX_ATTEMPTS + 1):
         try:
-            response = provider.chat_stream_response(
-                request_messages,
-                on_text_chunk=None,
-                abort_signal=abort_signal,
-                **call_kwargs,
+            try:
+                response = provider.chat_stream_response(
+                    request_messages,
+                    on_text_chunk=None,
+                    abort_signal=abort_signal,
+                    **call_kwargs,
+                )
+            except (NotImplementedError, AttributeError):
+                # Older or stub providers may not implement streaming.
+                # Fall back to plain chat() — drop abort_signal there since
+                # we can't pass it portably.
+                response = provider.chat(request_messages, **call_kwargs)
+            break
+        except Exception as e:  # noqa: BLE001 — surface as advisor failure
+            if attempt >= _ADVISOR_MAX_ATTEMPTS or not _advisor_error_is_retryable(e):
+                return (
+                    False,
+                    f"Advisor unavailable: {type(e).__name__}: {e}",
+                    _zero_usage,
+                )
+            delay = min(
+                _ADVISOR_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                _ADVISOR_RETRY_MAX_DELAY,
             )
-        except (NotImplementedError, AttributeError):
-            # Older or stub providers may not implement streaming.
-            # Fall back to plain chat() — drop abort_signal there since
-            # we can't pass it portably.
-            response = provider.chat(request_messages, **call_kwargs)
-    except Exception as e:  # noqa: BLE001 — surface as advisor failure
-        return (False, f"Advisor unavailable: {type(e).__name__}: {e}", _zero_usage)
+            # A rate limiter that tells us when to come back beats guessing:
+            # exponential backoff from a 2s base clears a burst but not a
+            # per-minute subscription window. Reuses the main loop's header
+            # reader so both lanes honour Retry-After identically; the
+            # helper's own clamp keeps a hostile header from parking the
+            # worker indefinitely.
+            try:
+                from src.query.query import _retry_after_seconds
+
+                delay = min(
+                    _retry_after_seconds(e, delay), _ADVISOR_RETRY_MAX_DELAY
+                )
+            except Exception:  # noqa: BLE001 — header unavailable: keep backoff
+                pass
+            logging.getLogger(__name__).debug(
+                "advisor attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt, _ADVISOR_MAX_ATTEMPTS, type(e).__name__, delay,
+            )
+            if not _advisor_sleep(delay, abort_signal):
+                return (
+                    False,
+                    f"Advisor unavailable: {type(e).__name__}: {e}",
+                    _zero_usage,
+                )
+    if response is None:  # pragma: no cover — loop returns or breaks
+        return (False, "Advisor unavailable: no response", _zero_usage)
 
     # Pull token counts off the ChatResponse for the session
     # accumulator. Defaults to zero when the provider didn't return
@@ -817,17 +1027,24 @@ def execute_client_advisor(
         from src.bootstrap.state import add_to_total_duration_state
         from src.cost_tracker import record_api_usage
 
+        # ``call_kwargs`` never carries a ``model`` key — the model rides on
+        # the provider instance, which is constructed per consultation with
+        # ``model=advisor_model``. Reading it from call_kwargs was dead and
+        # made the attribution look configurable when it wasn't.
         record_api_usage(
-            call_kwargs.get("model")
-            or getattr(response, "model", None)
-            or getattr(provider, "model", "unknown"),
+            getattr(response, "model", None)
+            or getattr(provider, "model", None)
+            or advisor_model
+            or "unknown",
             raw_usage,
         )
         _api_ms = int((time.monotonic() - _t0) * 1000)
         add_to_total_duration_state(_api_ms, _api_ms)
     except Exception:
-        import logging
-
+        # NOTE: no function-local ``import logging`` here — a local import
+        # binds the name for the WHOLE function scope, which shadowed the
+        # module-level import and made every earlier logging call in this
+        # function an UnboundLocalError.
         logging.getLogger(__name__).debug(
             "advisor cost recording failed", exc_info=True
         )

@@ -680,6 +680,43 @@ def _write_advisor_enabled(context: CommandContext, value: bool) -> None:
     invalidate_settings_cache()
 
 
+# Accepted values for ``/advisor --effort``. The five real levels plus
+# ``auto``, which CLEARS advisor_effort so the advisor inherits the
+# session-wide ``effort`` (there's no way to type the empty string).
+_VALID_ADVISOR_EFFORTS = ("auto", "low", "medium", "high", "xhigh", "max")
+
+
+def _read_current_advisor_effort(context: CommandContext) -> str:
+    """Resolve the configured advisor_effort ("" = inherit ``effort``).
+
+    Settings-only, deliberately: unlike model/provider/client_mode there is
+    no app-state field for this, and inventing a store-preferred read here
+    would reintroduce the restart-blind bug that made ``/advisor`` report a
+    stale config while a different one was actually firing.
+    """
+    try:
+        from ..settings.settings import get_settings
+        return (getattr(get_settings(), "advisor_effort", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _write_advisor_effort(context: CommandContext, value: str | None) -> None:
+    """Persist advisor_effort. ``None``/empty clears it (inherit ``effort``)."""
+    from .. import config as cfg_mod
+    from ..settings.settings import invalidate_settings_cache
+    normalized = (value or "").strip().lower()
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section["advisor_effort"] = normalized
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
 def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     """Handle /advisor — configure the reviewer model.
 
@@ -692,18 +729,26 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     openai (litellm), openrouter, bedrock, etc. Name-based inference
     was ambiguous and silently routed to the wrong endpoint.
 
-    Branches (after parsing optional ``--client`` / ``--no-client``):
-      * no args, no flags → status report (provider/model + mode).
+    Branches (after parsing optional ``--client`` / ``--no-client`` /
+    ``--effort <level>``):
+      * no args, no flags → status report (provider/model + mode + effort).
       * ``unset`` | ``off`` → clear advisor_model, advisor_provider,
-        and advisor_client_mode.
+        advisor_client_mode, and advisor_effort.
       * ``--no-client`` alone → keep model+provider, clear client-mode.
       * ``--client`` alone → keep model+provider, set client-mode.
+      * ``--effort <level>`` alone → retune the configured advisor;
+        ``--effort auto`` clears it so the session ``effort`` is inherited.
       * ``<provider>:<model>`` → validate provider exists in config,
-        persist both fields together. ``--client`` flag (if present)
-        also persists advisor_client_mode.
+        persist both fields together. ``--client`` / ``--effort`` flags
+        (if present) persist alongside.
+
+    ``--effort`` sets the reviewer's OWN reasoning level, which is
+    independent of the worker's ``/effort`` — the advisor is usually the
+    stronger model and is often worth running harder than the main loop.
 
     Examples:
       * ``/advisor anthropic:claude-opus-4-7``  (direct Anthropic API)
+      * ``/advisor anthropic:claude-opus-5 --effort xhigh``
       * ``/advisor openai:claude-opus-4-7``     (litellm/proxy via openai provider)
       * ``/advisor openrouter:anthropic/claude-opus-4.1``
       * ``/advisor gemini:gemini-2.5-pro``
@@ -736,14 +781,40 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     # off cleanly without breaking the model identifier.
     raw_tokens = (args or "").strip().split()
     force_client_flag: bool | None = None  # None = no flag passed
+    effort_flag: str | None = None  # None = no flag passed
     rest_tokens: list[str] = []
+    _expect_effort = False
     for tok in raw_tokens:
-        if tok == "--client":
+        if _expect_effort:
+            effort_flag = tok.strip().lower()
+            _expect_effort = False
+        elif tok == "--client":
             force_client_flag = True
         elif tok == "--no-client":
             force_client_flag = False
+        elif tok == "--effort":
+            # Value arrives as the NEXT token.
+            _expect_effort = True
+        elif tok.startswith("--effort="):
+            effort_flag = tok.split("=", 1)[1].strip().lower()
         else:
             rest_tokens.append(tok)
+    if _expect_effort:
+        return LocalCommandResult(
+            type="text",
+            value=(
+                "--effort needs a level. Expected one of: "
+                f"{', '.join(_VALID_ADVISOR_EFFORTS)}."
+            ),
+        )
+    if effort_flag is not None and effort_flag not in _VALID_ADVISOR_EFFORTS:
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Invalid effort {effort_flag!r}. Expected one of: "
+                f"{', '.join(_VALID_ADVISOR_EFFORTS)}."
+            ),
+        )
     arg = " ".join(rest_tokens).strip()
     arg_lower = arg.lower()
 
@@ -751,6 +822,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     current_provider = _read_current_advisor_provider(context)
     current_client_mode = _read_current_advisor_client_mode(context)
     current_enabled = _read_current_advisor_enabled(context)
+    current_effort = _read_current_advisor_effort(context)
 
     main_loop_model = ""
     if provider is not None:
@@ -822,15 +894,65 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             suffix = " [--client forced]"
         if not current_enabled:
             suffix += " [disabled: advisor_enabled is off]"
+        # Show where the advisor's effort comes from — an inherited level
+        # looks identical on the wire to an explicitly set one, and the
+        # difference matters the moment the session ``effort`` changes.
+        if current_effort:
+            effort_line = f"Effort: {current_effort}\n"
+        else:
+            try:
+                from ..settings.settings import get_settings
+                inherited = (getattr(get_settings(), "effort", "") or "").strip()
+            except Exception:
+                inherited = ""
+            effort_line = (
+                f"Effort: {inherited} (inherited from /effort)\n"
+                if inherited
+                else "Effort: model default (set with --effort)\n"
+            )
         return (
             f"Advisor: {current_provider}:{current_advisor} — {mode_label}{suffix}\n"
+            f"{effort_line}"
             'Use "/advisor unset" to disable or '
             '"/advisor <provider>:<model>" to change.'
         )
 
     # No model arg, no flags → status only.
-    if not arg and force_client_flag is None:
+    if not arg and force_client_flag is None and effort_flag is None:
         return LocalCommandResult(type="text", value=_render_status())
+
+    # ``--effort <level>`` with no model → retune the existing advisor.
+    # Handled before the client-mode branches so ``--effort`` can be
+    # combined with them or stand alone.
+    if not arg and effort_flag is not None:
+        if not current_advisor or not current_provider:
+            return LocalCommandResult(
+                type="text",
+                value=(
+                    "Cannot set advisor effort: advisor is not configured. "
+                    'Use "/advisor <provider>:<model> --effort <level>".'
+                ),
+            )
+        _write_advisor_effort(
+            context, None if effort_flag == "auto" else effort_flag
+        )
+        if force_client_flag is not None:
+            _write_advisor_client_mode(context, force_client_flag)
+        if effort_flag == "auto":
+            return LocalCommandResult(
+                type="text",
+                value=(
+                    "Advisor effort cleared — it now inherits the session "
+                    "effort (/effort)."
+                ),
+            )
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Advisor effort set to {effort_flag} for "
+                f"{current_provider}:{current_advisor}."
+            ),
+        )
 
     # --no-client alone (no model) → just clear the forced-client flag.
     if not arg and force_client_flag is False:
@@ -884,6 +1006,10 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             _write_advisor_client_mode(context, False)
         if current_enabled:
             _write_advisor_enabled(context, False)  # master switch off
+        if current_effort:
+            # Clear the effort too, so a later /advisor doesn't silently
+            # inherit a level the user set for a different reviewer model.
+            _write_advisor_effort(context, None)
         if previous_model or previous_provider:
             prior = (
                 f"{previous_provider}:{previous_model}"
@@ -960,6 +1086,11 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         _write_advisor_client_mode(context, True)
     elif force_client_flag is False:
         _write_advisor_client_mode(context, False)
+    if effort_flag is not None:
+        _write_advisor_effort(
+            context, None if effort_flag == "auto" else effort_flag
+        )
+        current_effort = "" if effort_flag == "auto" else effort_flag
 
     # Report what mode the chosen pair lands in, so the user can spot
     # mismatches immediately (e.g., they expected server-side but the
@@ -986,9 +1117,10 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             "Note: advisor is currently inactive (no path applies for "
             f"main loop {main_loop_model!r} + advisor {normalized!r})."
         )
+    effort_msg = f" Effort: {current_effort}." if current_effort else ""
     return LocalCommandResult(
         type="text",
-        value=f"Advisor set to {provider_part}:{normalized}. {mode_msg}",
+        value=f"Advisor set to {provider_part}:{normalized}.{effort_msg} {mode_msg}",
     )
 
 

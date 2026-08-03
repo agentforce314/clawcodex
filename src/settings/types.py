@@ -161,6 +161,13 @@ class SettingsSchema:
     # block, or by running ``/advisor <provider>:<model>`` (which flips it on).
     # ``decide_advisor_mode`` returns INACTIVE whenever this is False.
     advisor_enabled: bool = False
+    # Reasoning-effort level for the advisor's OWN API call, independent of
+    # the worker's ``effort`` above — the reviewer is usually a stronger model
+    # and is often worth running harder than the main loop. One of
+    # VALID_EFFORT_VALUES. Empty = inherit ``effort``; if that is empty too,
+    # the parameter is omitted and the API applies its model default.
+    # Set via ``/advisor <provider>:<model> --effort <level>``.
+    advisor_effort: str = ""
 
     # Auto-mode transcript classifier (ch06 round-4 PR-B). The
     # ``feature('TRANSCRIPT_CLASSIFIER')`` analog: default OFF, so `auto`

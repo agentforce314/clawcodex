@@ -341,7 +341,14 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         call = fake_provider.chat_stream_response.call_args
         self.assertEqual(call.kwargs.get("tools"), [])
         self.assertIn("system", call.kwargs)
-        self.assertIn("reviewer", call.kwargs["system"].lower())
+        # Sent as a BLOCK LIST, not a string. This assertion used to read
+        # ``call.kwargs["system"].lower()`` and so pinned the string shape —
+        # which is precisely what the Claude subscription endpoint rejects
+        # for premium models (mislabelled as a 429 rate_limit_error). See
+        # tests/test_advisor_effort_wiring.py::TestSubscriptionSystemShape.
+        system = call.kwargs["system"]
+        self.assertIsInstance(system, list)
+        self.assertIn("reviewer", system[0]["text"].lower())
         # Messages array unchanged (no system message prepended).
         forwarded_messages = call.args[0]
         self.assertEqual(forwarded_messages[0].get("role"), "user")
