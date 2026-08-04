@@ -1136,7 +1136,34 @@ def execute_client_advisor(
 
     text = getattr(response, "content", None) or ""
     if not isinstance(text, str) or not text.strip():
-        return (False, "Advisor returned no text content.", usage)
+        # An empty reply is usually the reviewer DECLINING, not a glitch.
+        # Measured across an 89-task terminal-bench run: every empty response
+        # came from one of three security-flavoured tasks
+        # (break-filter-js-from-html, crack-7z-hash, vulnerable-secret), the
+        # model emitted 2-3 tokens, and 100% of consultations on those tasks
+        # failed. The old text — "Advisor returned no text content." — told
+        # the worker nothing about why, so it simply called again and got the
+        # same non-answer, spending a turn and a full cache-write each time.
+        #
+        # Carry the stop reason (ChatResponse.finish_reason is the provider's
+        # ``stop_reason``) and say plainly that retrying is unlikely to help,
+        # so the worker proceeds instead of looping. NOT routed through the
+        # retry lane: this is a considered response, not a transient error,
+        # and re-issuing it costs a fresh consultation to reach the same
+        # place.
+        reason = str(getattr(response, "finish_reason", "") or "").strip()
+        detail = f" (stop reason: {reason})" if reason else ""
+        logging.getLogger(__name__).info(
+            "advisor returned no text%s; continuing without advice", detail
+        )
+        return (
+            False,
+            f"Advisor returned no advice{detail} — the reviewer model "
+            "declined or produced no text for this conversation. Calling it "
+            "again on this task is unlikely to help; proceed on your own "
+            "judgment.",
+            usage,
+        )
     return (True, text, usage)
 
 

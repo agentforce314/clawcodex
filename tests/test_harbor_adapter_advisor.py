@@ -332,3 +332,52 @@ def test_half_empty_advisor_is_rejected(bad: str) -> None:
     advisor that is silently inert at run time."""
     with pytest.raises(ValueError, match="both halves non-empty"):
         _construct(advisor=bad)
+
+
+# --------------------------------------------------------------------------
+# Trajectory cost (what the leaderboard reads)
+# --------------------------------------------------------------------------
+
+def _cost_of(cost_block: dict) -> float | None:
+    """Fold a session cost block the way the trajectory builder does.
+
+    ``model_usage`` must be present: the helper returns None without it, so a
+    block lacking one exercises the guard rather than the cost logic.
+    """
+    import clawcodex_agent as mod
+
+    block = {"model_usage": {"m": {"input_tokens": 1, "output_tokens": 1}}}
+    block.update(cost_block)
+    # staticmethod — call on the class, not an instance.
+    return mod.Clawcodex._billing_totals_from_cost_block(block)["cost"]
+
+
+def test_mixed_api_and_subscription_run_reports_the_full_cost() -> None:
+    """THE advisor case: an API worker (bills > 0) plus a subscription
+    reviewer (bills $0).
+
+    The old rule was "billed if billed > 0, else estimated" — correct for an
+    all-subscription run, wrong for a mixed one. Billed won because the
+    worker's cost is non-zero, and the reviewer's entire cost was dropped.
+    Measured on a real trial: $0.0373 reported against $0.7839 true, a 21x
+    understatement in the field the leaderboard reads.
+    """
+    assert _cost_of({"total_cost_usd": 0.0373, "estimated_cost_usd": 0.7839}) == 0.7839
+
+
+def test_all_subscription_run_still_uses_the_estimate() -> None:
+    assert _cost_of({"total_cost_usd": 0.0, "estimated_cost_usd": 0.51}) == 0.51
+
+
+def test_all_api_run_is_unchanged() -> None:
+    """Both figures agree when nothing ran on a subscription."""
+    assert _cost_of({"total_cost_usd": 0.42, "estimated_cost_usd": 0.42}) == 0.42
+
+
+def test_a_genuinely_free_run_reports_zero_not_none() -> None:
+    assert _cost_of({"total_cost_usd": 0.0, "estimated_cost_usd": 0.0}) == 0.0
+
+
+def test_missing_estimate_falls_back_to_billed() -> None:
+    """Older sessions predate estimated_cost_usd."""
+    assert _cost_of({"total_cost_usd": 0.19}) == 0.19

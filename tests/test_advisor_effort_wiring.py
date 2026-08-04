@@ -598,3 +598,67 @@ class TestBuildAnthropicThinkingKwargs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdvisorEmptyResponse(unittest.TestCase):
+    """An empty reply is usually the reviewer DECLINING, not a glitch.
+
+    Across an 89-task terminal-bench run every empty response came from a
+    security-flavoured task, the model emitted 2-3 tokens, and 100% of
+    consultations on those tasks failed — so the worker called again and got
+    the same non-answer, spending a turn and a full cache-write each time.
+    """
+
+    def _empty_response_recorder(self, finish_reason: str = "") -> _Recorder:
+        class _Empty:
+            content = "   "
+            usage = {"input_tokens": 5, "output_tokens": 2}
+            model = "claude-opus-5"
+
+        _Empty.finish_reason = finish_reason
+        rec = _Recorder()
+        rec_cls_response = _Empty()
+
+        def chat_stream_response(messages, **kwargs):
+            rec.calls += 1
+            rec.kwargs = kwargs
+            return rec_cls_response
+
+        rec.chat_stream_response = chat_stream_response
+        return rec
+
+    def test_empty_reply_explains_itself_and_says_not_to_retry(self) -> None:
+        rec = self._empty_response_recorder("refusal")
+        (ok, text, _usage), rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertFalse(ok)
+        self.assertIn("refusal", text, msg="the stop reason must be carried")
+        self.assertIn("declined", text.lower())
+        self.assertIn("unlikely to help", text.lower())
+
+    def test_empty_reply_is_not_retried(self) -> None:
+        """A considered non-answer is not transient; re-issuing costs a fresh
+        consultation to reach the same place."""
+        rec = self._empty_response_recorder("end_turn")
+        (_ok, _text, _u), rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertEqual(rec.calls, 1)
+
+    def test_usage_is_still_reported_for_an_empty_reply(self) -> None:
+        """The call still cost tokens; dropping them would hide the spend."""
+        rec = self._empty_response_recorder("refusal")
+        (_ok, _text, usage), _rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertEqual(usage["input_tokens"], 5)
+        self.assertEqual(usage["output_tokens"], 2)
+
+    def test_missing_stop_reason_still_produces_actionable_text(self) -> None:
+        rec = self._empty_response_recorder("")
+        (_ok, text, _u), _rec = _run_advisor(
+            "claude-opus-5", anthropic_wire=True, recorder=rec,
+        )
+        self.assertIn("declined", text.lower())
+        self.assertNotIn("stop reason:", text.lower())

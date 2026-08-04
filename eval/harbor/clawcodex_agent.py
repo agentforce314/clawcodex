@@ -1126,22 +1126,36 @@ class Clawcodex(BaseInstalledAgent):
             prompt += inp + cread + ccreate
             cached += cread
             completion += usage.get("output_tokens") or 0
-        # Cost: prefer the billed ``total_cost_usd``; when it's 0 (a
-        # subscription run consumes plan allowance, not metered credits, so
-        # the billed cost is $0) fall back to ``estimated_cost_usd`` — the
-        # always-computed list-price figure — so the leaderboard/trajectory
-        # cost column is populated and comparable with the claude-code
-        # agent, which reports a list-price cost on subscription runs too.
+        # Cost: report the LARGER of billed and estimated.
+        #
+        # ``estimated_cost_usd`` is list price across EVERY model; ``billed``
+        # is metered charges only, so a model on a subscription contributes
+        # $0 to it. This used to read "billed if billed > 0, else estimated",
+        # which is right for an all-subscription run and WRONG for a MIXED
+        # one — and the advisor creates exactly that: an API worker plus a
+        # subscription reviewer. Billed was non-zero (the worker's cost), so
+        # it won, and the reviewer's entire cost was dropped.
+        #
+        # Measured on db-wal-recovery from the 89-task advisor run: the
+        # trajectory reported $0.0373 against a true $0.7839 — a 21x
+        # understatement in the field the leaderboard reads, on the exact
+        # comparison the advisor exists to justify. Token totals were never
+        # affected; they already summed both models.
+        #
+        # ``max`` is safe in the other directions too: for an all-API run the
+        # two agree, and estimated can never be below billed because both
+        # price the same tokens and estimated ignores the $0 subscription
+        # discount rather than applying it.
         billed = cost.get("total_cost_usd")
         estimated = cost.get("estimated_cost_usd")
-        if isinstance(billed, (int, float)) and billed > 0:
-            cost_usd: float | None = float(billed)
-        elif isinstance(estimated, (int, float)) and estimated > 0:
-            cost_usd = float(estimated)
-        elif isinstance(billed, (int, float)):
-            cost_usd = float(billed)
+        _billed = float(billed) if isinstance(billed, (int, float)) else None
+        _est = float(estimated) if isinstance(estimated, (int, float)) else None
+        if _billed is not None and _est is not None:
+            cost_usd: float | None = max(_billed, _est)
+        elif _est is not None and _est > 0:
+            cost_usd = _est
         else:
-            cost_usd = None
+            cost_usd = _billed
         return {
             "prompt": prompt,
             "completion": completion,
