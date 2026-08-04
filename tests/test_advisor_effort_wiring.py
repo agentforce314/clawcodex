@@ -662,3 +662,112 @@ class TestAdvisorEmptyResponse(unittest.TestCase):
         )
         self.assertIn("declined", text.lower())
         self.assertNotIn("stop reason:", text.lower())
+
+
+class TestAdvisorAlwaysAsksForAdvice(unittest.TestCase):
+    """The forwarded conversation must always END WITH A REQUEST.
+
+    The tail-is-user case is the COMMON one — the worker calls the advisor
+    mid-tool-round, so after flattening the last turn is a `[Tool result:
+    ...]` line. The request used to be appended only when the tail was NOT
+    already a user turn, so in the common case the reviewer got a bare
+    unterminated transcript and CONTINUED it, replying in the worker's voice
+    with narration and tool calls instead of a review.
+
+    Measured on an 89-task run: 54 of 326 answered consultations (16.6%),
+    across 45 of 89 tasks.
+    """
+
+    def _fwd(self, history):
+        from src.utils.advisor import build_advisor_forwarded_messages
+
+        return build_advisor_forwarded_messages(history)
+
+    def _suffix(self) -> str:
+        from src.utils.advisor import CLIENT_ADVISOR_PROMPT_SUFFIX
+
+        return CLIENT_ADVISOR_PROMPT_SUFFIX
+
+    def test_tail_is_a_user_tool_result_still_asks(self) -> None:
+        """THE regression. This shape produced 16.6% junk consultations."""
+        history = [
+            {"role": "user", "content": "do the task"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "waiting on the build"},
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "ls"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "file.txt"},
+            ]},
+        ]
+        fwd = self._fwd(history)
+        self.assertEqual(fwd[-1]["role"], "user")
+        self.assertIn(
+            self._suffix(), fwd[-1]["content"],
+            msg="reviewer received a transcript with no request — it will "
+                "continue the transcript instead of reviewing",
+        )
+
+    def test_the_original_tool_result_text_is_preserved(self) -> None:
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "IMPORTANT"}]},
+        ]
+        fwd = self._fwd(history)
+        self.assertIn("IMPORTANT", fwd[-1]["content"])
+        self.assertIn(self._suffix(), fwd[-1]["content"])
+
+    def test_tail_is_assistant_appends_a_user_turn(self) -> None:
+        """The original behaviour, unchanged."""
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "my plan is X"}]},
+        ]
+        fwd = self._fwd(history)
+        self.assertEqual(fwd[-1]["role"], "user")
+        self.assertEqual(fwd[-1]["content"], self._suffix())
+
+    def test_no_two_consecutive_user_turns(self) -> None:
+        """Some wires reject consecutive same-role messages, so the request
+        is folded into the existing turn rather than added after it."""
+        history = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "out"}]},
+        ]
+        fwd = self._fwd(history)
+        roles = [m["role"] for m in fwd]
+        for a, b in zip(roles, roles[1:]):
+            self.assertNotEqual(a, b, msg=f"consecutive {a} turns: {roles}")
+
+    def test_request_is_not_duplicated(self) -> None:
+        history = [{"role": "user", "content": "task"}]
+        once = self._fwd(history)
+        self.assertEqual(once[-1]["content"].count(self._suffix()), 1)
+
+    def test_every_shape_ends_with_a_user_request(self) -> None:
+        shapes = {
+            "empty": [],
+            "user only": [{"role": "user", "content": "task"}],
+            "assistant tail": [
+                {"role": "user", "content": "t"},
+                {"role": "assistant", "content": [{"type": "text", "text": "plan"}]}],
+            "tool-result tail": [
+                {"role": "user", "content": "t"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "x", "content": "o"}]}],
+        }
+        for name, hist in shapes.items():
+            with self.subTest(shape=name):
+                fwd = self._fwd(hist)
+                self.assertEqual(fwd[-1]["role"], "user")
+                self.assertIn(self._suffix(), fwd[-1]["content"])

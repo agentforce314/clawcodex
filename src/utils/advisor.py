@@ -657,10 +657,40 @@ def build_advisor_forwarded_messages(
             continue
         flattened.append({"role": role, "content": text})
 
-    # Ensure the conversation ends with a user message. Vertex-fronted
-    # Anthropic (and most proxies) reject assistant-prefill.
+    # TWO requirements, and conflating them was a real defect:
+    #
+    #   (a) the forwarded conversation must END WITH A USER TURN — Vertex-
+    #       fronted Anthropic and most proxies reject assistant-prefill; and
+    #   (b) that final turn must actually ASK FOR ADVICE, or the reviewer is
+    #       handed a bare transcript with no request in it.
+    #
+    # This used to append the request ONLY when the tail was not already a
+    # user turn, which silently made (b) conditional on (a). The worker
+    # usually calls the advisor mid-tool-round, so after flattening the tail
+    # IS a user turn (a ``[Tool result: ...]`` line) — no request was added,
+    # and the reviewer did the natural thing with an unterminated transcript:
+    # it CONTINUED it, replying in the worker's own voice with narration and
+    # further tool calls instead of a review.
+    #
+    # Measured on an 89-task terminal-bench run: 54 of 326 answered
+    # consultations (16.6%), spread over 45 of 89 tasks, came back as echoed
+    # transcript. Each cost a full reviewer call and returned the worker its
+    # own words as advice — worse than no advisor at all, because the model
+    # is told to weight advice heavily.
+    #
+    # Appended to the EXISTING user turn rather than added as a second one:
+    # consecutive same-role messages are rejected on some wires, and the
+    # request belongs with the transcript it refers to.
     if not flattened or flattened[-1].get("role") != "user":
         flattened.append({"role": "user", "content": CLIENT_ADVISOR_PROMPT_SUFFIX})
+    elif CLIENT_ADVISOR_PROMPT_SUFFIX not in str(flattened[-1].get("content") or ""):
+        tail = dict(flattened[-1])
+        existing = str(tail.get("content") or "").rstrip()
+        tail["content"] = (
+            f"{existing}\n\n{CLIENT_ADVISOR_PROMPT_SUFFIX}" if existing
+            else CLIENT_ADVISOR_PROMPT_SUFFIX
+        )
+        flattened[-1] = tail
     return flattened
 
 
