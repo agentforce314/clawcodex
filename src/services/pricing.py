@@ -147,18 +147,48 @@ _TIER_MUSE_SPARK = {
 # and the Responses builder does the same, so cached input bills at the
 # cache-read rate on either wire. Measured on a real 2613-token turn with a
 # 2560-token hit, the split lowers the reported cost ~7.5x for this model.
+# CORRECTED 2026-08-04 against OpenAI's own model page
+# (developers.openai.com/api/docs/models/gpt-5.6-luna): every rate here was
+# exactly HALF the published price — $0.10/$0.60 against a real $0.20/$1.20.
+#
+# ROOT CAUSE, worth knowing before "fixing" this back: the original figures
+# came from a 2026-07-31 probe of OPENROUTER, which was and still is running
+# a 50% promotional discount off OpenAI's list price. The probe was accurate
+# about the gateway it measured; the mistake was storing a promo rate as the
+# model's price, in a row that also serves api.openai.com direct — where the
+# eval actually runs. Found by reconciling an 89-task eval against the
+# invoice: $2.89 accounted, $7.20 billed.
+#
+# THIS ROW HOLDS LIST PRICE, for both gateways, deliberately. A discount is
+# temporary and would rot into silent under-reporting the moment it ends;
+# over-reporting an OpenRouter run is the safe direction for a benchmark
+# whose cost figure gets compared against other agents'. (``get_pricing``
+# matches exactly before stripping the vendor prefix, so a discounted
+# ``openai/gpt-5.6-luna`` row COULD be added — resist it unless someone is
+# prepared to track the promo's end date.)
+#
+# The RATIOS were right all along (2x input, 1.5x output above the tier
+# limit), so nothing looked internally inconsistent and no consistency check
+# could fire. Only an external number could catch it, and nothing pinned the
+# absolute rates — see TestGpt56LunaPublishedRates, which now does.
+#
+# Published rates: input $0.20/M, cached input $0.02/M (the standard 90%
+# cache-read discount), output $1.20/M. Cache WRITES bill at 1.25x the
+# uncached input rate = $0.25/M. Prompts above the tier limit are priced at
+# 2x input and 1.5x output FOR THE FULL REQUEST, so every input-side rate
+# doubles in the LONG tier.
 _GPT_56_LUNA_INPUT_TIER_LIMIT = 272_000
 _TIER_GPT_56_LUNA = {
-    "input": 0.10 / 1_000_000,
-    "output": 0.60 / 1_000_000,
-    "cache_creation": 0.125 / 1_000_000,
-    "cache_read": 0.01 / 1_000_000,
-}
-_TIER_GPT_56_LUNA_LONG = {
     "input": 0.20 / 1_000_000,
-    "output": 0.90 / 1_000_000,
+    "output": 1.20 / 1_000_000,
     "cache_creation": 0.25 / 1_000_000,
     "cache_read": 0.02 / 1_000_000,
+}
+_TIER_GPT_56_LUNA_LONG = {
+    "input": 0.40 / 1_000_000,
+    "output": 1.80 / 1_000_000,
+    "cache_creation": 0.50 / 1_000_000,
+    "cache_read": 0.04 / 1_000_000,
 }
 
 

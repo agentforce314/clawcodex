@@ -264,3 +264,68 @@ class TestFormatCostUsd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGpt56LunaPublishedRates(unittest.TestCase):
+    """Pin gpt-5.6-luna's ABSOLUTE rates against OpenAI's published page.
+
+    These were wrong for the model's whole registered life — exactly half the
+    published price — and nothing caught it, because the internal RATIOS were
+    right (2x input / 1.5x output above the tier limit) so no consistency
+    check could fire. It surfaced only by reconciling a real eval against an
+    OpenAI invoice: $2.89 accounted against $7.20 billed.
+
+    A ratio test cannot catch a uniformly-scaled table. Pin the absolute
+    numbers, and when OpenAI changes them, change these deliberately.
+    Source: developers.openai.com/api/docs/models/gpt-5.6-luna (2026-08-04).
+    """
+
+    def test_standard_tier_matches_published_rates(self) -> None:
+        from src.services.pricing import get_pricing
+
+        p = get_pricing("gpt-5.6-luna", input_tokens=1_000)
+        self.assertAlmostEqual(p["input"] * 1e6, 0.20, places=6)
+        self.assertAlmostEqual(p["output"] * 1e6, 1.20, places=6)
+        self.assertAlmostEqual(p["cache_read"] * 1e6, 0.02, places=6)
+        self.assertAlmostEqual(p["cache_creation"] * 1e6, 0.25, places=6)
+
+    def test_cache_read_is_the_standard_90_percent_discount(self) -> None:
+        from src.services.pricing import get_pricing
+
+        p = get_pricing("gpt-5.6-luna", input_tokens=1_000)
+        self.assertAlmostEqual(p["cache_read"], p["input"] * 0.10, places=12)
+
+    def test_cache_write_is_1_25x_uncached_input(self) -> None:
+        from src.services.pricing import get_pricing
+
+        p = get_pricing("gpt-5.6-luna", input_tokens=1_000)
+        self.assertAlmostEqual(p["cache_creation"], p["input"] * 1.25, places=12)
+
+    def test_long_context_tier_doubles_input_and_1_5x_output(self) -> None:
+        """>272K prompts are priced at 2x input / 1.5x output for the FULL
+        request, so every input-side rate doubles."""
+        from src.services.pricing import get_pricing
+
+        short = get_pricing("gpt-5.6-luna", input_tokens=1_000)
+        long = get_pricing("gpt-5.6-luna", input_tokens=272_001)
+        self.assertAlmostEqual(long["input"], short["input"] * 2, places=12)
+        self.assertAlmostEqual(long["output"], short["output"] * 1.5, places=12)
+        self.assertAlmostEqual(long["cache_read"], short["cache_read"] * 2, places=12)
+        self.assertAlmostEqual(
+            long["cache_creation"], short["cache_creation"] * 2, places=12)
+
+    def test_tier_boundary_is_inclusive_of_the_limit(self) -> None:
+        from src.services.pricing import get_pricing
+
+        at = get_pricing("gpt-5.6-luna", input_tokens=272_000)
+        over = get_pricing("gpt-5.6-luna", input_tokens=272_001)
+        self.assertAlmostEqual(at["input"] * 1e6, 0.20, places=6)
+        self.assertAlmostEqual(over["input"] * 1e6, 0.40, places=6)
+
+    def test_pro_variant_shares_the_rates(self) -> None:
+        from src.services.pricing import get_pricing
+
+        self.assertEqual(
+            get_pricing("gpt-5.6-luna", input_tokens=1_000),
+            get_pricing("gpt-5.6-luna-pro", input_tokens=1_000),
+        )

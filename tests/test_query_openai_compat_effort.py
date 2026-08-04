@@ -321,28 +321,41 @@ class TestLunaOpenRouterIdRegistration(unittest.TestCase):
 
     def test_pricing_resolves_through_the_vendor_prefix(self):
         """``get_pricing`` DOES strip the vendor prefix (its own documented
-        tier 2), so one bare pricing key covers the OpenRouter id."""
+        tier 2), so one bare pricing key covers the OpenRouter id.
+
+        RATES ARE OPENAI LIST, deliberately. These assertions previously read
+        $0.10/$0.60, taken from a 2026-07-31 probe of OpenRouter — which was
+        and still is running a 50% promotional discount off OpenAI's
+        $0.20/$1.20. Pinning the promo made every OpenAI-direct run report
+        HALF its real cost, and that is how it was found: an 89-task eval
+        accounted $2.89 against a $7.20 invoice.
+
+        One row serves both gateways and it holds LIST price. A discount is
+        temporary and would rot into silent under-reporting the moment it
+        ends; over-reporting an OpenRouter run is the safe direction for a
+        benchmark whose cost figure gets compared against other agents'.
+        """
         pricing = get_pricing(LUNA)
         self.assertIsNotNone(pricing, "luna must not be priced as unknown")
-        self.assertAlmostEqual(pricing["input"] * 1_000_000, 0.10, places=6)
-        self.assertAlmostEqual(pricing["output"] * 1_000_000, 0.60, places=6)
+        self.assertAlmostEqual(pricing["input"] * 1_000_000, 0.20, places=6)
+        self.assertAlmostEqual(pricing["output"] * 1_000_000, 1.20, places=6)
 
     def test_long_context_pricing_tier(self):
-        """Above 272K prompt tokens OpenRouter roughly doubles every rate. A
-        1M-window model on a benchmark will cross that, and cost is a number
-        the eval reports."""
+        """Above 272K prompt tokens the full request is repriced at 2x input
+        and 1.5x output. A 1M-window model on a benchmark will cross that,
+        and cost is a number the eval reports."""
         short = get_pricing(LUNA, input_tokens=100_000)
         long = get_pricing(LUNA, input_tokens=300_000)
-        self.assertAlmostEqual(short["input"] * 1_000_000, 0.10, places=6)
-        self.assertAlmostEqual(long["input"] * 1_000_000, 0.20, places=6)
-        self.assertAlmostEqual(long["output"] * 1_000_000, 0.90, places=6)
+        self.assertAlmostEqual(short["input"] * 1_000_000, 0.20, places=6)
+        self.assertAlmostEqual(long["input"] * 1_000_000, 0.40, places=6)
+        self.assertAlmostEqual(long["output"] * 1_000_000, 1.80, places=6)
 
     def test_cost_uses_the_long_tier_for_a_big_prompt(self):
         """End-to-end through compute_cost, which is what the eval reports."""
         cheap = compute_cost(LUNA, {"input_tokens": 100_000, "output_tokens": 1_000})
         pricey = compute_cost(LUNA, {"input_tokens": 300_000, "output_tokens": 1_000})
-        self.assertAlmostEqual(cheap, 100_000 * 1e-7 + 1_000 * 6e-7, places=9)
-        self.assertAlmostEqual(pricey, 300_000 * 2e-7 + 1_000 * 9e-7, places=9)
+        self.assertAlmostEqual(cheap, 100_000 * 2e-7 + 1_000 * 1.2e-6, places=9)
+        self.assertAlmostEqual(pricey, 300_000 * 4e-7 + 1_000 * 1.8e-6, places=9)
 
 
 class TestEffortRoutingHasOneInjectionSite(unittest.TestCase):
