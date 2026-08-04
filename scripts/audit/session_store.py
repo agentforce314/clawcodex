@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -25,6 +26,8 @@ def save_session(session: StoredSession, directory: Path | None = None) -> Path:
 
 
 def load_session(session_id: str, directory: Path | None = None) -> StoredSession:
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', session_id):
+        raise ValueError(f'Invalid session_id: {session_id!r}')
     target_dir = directory or DEFAULT_SESSION_DIR
     data = json.loads((target_dir / f'{session_id}.json').read_text())
     return StoredSession(
