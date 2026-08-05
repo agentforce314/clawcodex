@@ -13,11 +13,23 @@ provider is independent of the worker's.
 
 ### 1. A build containing the advisor fixes
 
-Containers install clawcodex from PyPI or from a git ref. The published
-package predates this work, so the run **must** pin a source:
+Containers install clawcodex from PyPI or from a git ref, resolved **fresh
+from GitHub at container build time**. Your local checkout is never used, so
+`git pull` has no effect on what runs — the `--ak source=` pin is the only
+thing that decides.
+
+> **Re-export `CX_SOURCE` in every new shell, and after anything merges.**
+> This bit a real run: a shell still holding a feature-branch pin from before
+> the merge silently installed four-commits-stale code and reproduced a bug
+> that was already fixed, at the same 16% rate. The branch had not been
+> deleted, so the clone succeeded quietly instead of failing loudly — a
+> stale-but-alive pin is the worst case. Pin `@main`, or a SHA
+> (`@b48c055f`) when you need the run to be immutable.
+
+The published package predates this work, so the run **must** pin a source:
 
 ```bash
-export CX_SOURCE=git+https://github.com/agentforce314/clawcodex@feat/advisor-subscription-and-effort
+export CX_SOURCE=git+https://github.com/agentforce314/clawcodex@main
 ```
 
 Before this branch the advisor was unusable in exactly this configuration:
@@ -97,7 +109,7 @@ PY
 cd /Users/ericlee2/workspace/clawcodex
 export OPENAI_API_KEY=$(python3 -c \
   "import json,os;print(json.load(open(os.path.expanduser('~/.clawcodex/config.json')))['providers']['openai']['api_key'])")
-export CX_SOURCE=git+https://github.com/agentforce314/clawcodex@feat/advisor-subscription-and-effort
+export CX_SOURCE=git+https://github.com/agentforce314/clawcodex@main
 
 PYTHONPATH=$PWD/eval/harbor harbor run \
   --dataset terminal-bench/terminal-bench-2-1 \
