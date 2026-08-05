@@ -81,6 +81,26 @@ class ProviderSpec:
     #: ``hybrid`` by hand for exactly this reason; this field lets a spec row
     #: say the same thing.
     catalog_mode: str = "dynamic"
+    #: Reasoning-effort levels this provider's API actually accepts, or ``None``
+    #: for "the whole clawcodex ladder passes through untouched". Feeds
+    #: ``BaseProvider.supported_reasoning_efforts``; see
+    #: ``BaseProvider.normalize_reasoning_effort`` for why a provider that
+    #: silently IGNORES an unknown level still needs this — the user gets the
+    #: API's default rather than what they asked for, with no diagnostic.
+    #:
+    #: SCOPE CAVEAT: this is provider-scoped but describes a MODEL-scoped fact.
+    #: That is fine while a provider's models share one vocabulary (deepseek,
+    #: moonshot today), but a spec row with ``dynamic_catalog`` set can grow
+    #: models that disagree. Split to a per-model table if that happens rather
+    #: than widening the tuple to the union, which would re-admit the levels
+    #: this exists to translate away.
+    reasoning_efforts: tuple[str, ...] | None = None
+    #: Maps a clawcodex level this provider does NOT accept onto the nearest one
+    #: it does, as ``(level, replacement)`` pairs. A tuple rather than a dict so
+    #: the frozen dataclass stays hashable; ``build_provider_class`` converts it
+    #: to the dict ``BaseProvider.reasoning_effort_aliases`` expects. Only
+    #: consulted for levels absent from ``reasoning_efforts``.
+    reasoning_effort_aliases: tuple[tuple[str, str], ...] = ()
     #: Generated subclass name (for repr / debugging). Derived from ``id`` when
     #: omitted.
     class_name: str = ""
@@ -229,14 +249,54 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("ARCEE_API_KEY",),
         aliases=("arcee-ai", "arcee_ai"),
     ),
+    # Moonshot / Kimi. ``kimi-k3`` is the current flagship: a 1,048,576-token
+    # window, native image+video input, and reasoning that cannot be turned off
+    # (the catalog reports ``supports_thinking_type: "only"``).
+    #
+    # ``hybrid`` discovery, not ``dynamic``: the curated list below leads the
+    # picker, and ``GET /models`` appends the rest of the catalog (kimi-k2.6,
+    # kimi-k2.7-code-highspeed, and whatever ships next). Moonshot's endpoint
+    # serves only chat models — no embedding/speech rows to filter out — so
+    # appending it wholesale is safe. Failure falls back to the static list.
+    #
+    # Efforts are Moonshot's own published vocabulary, read off the catalog's
+    # ``reasoning_efforts.valid_efforts`` for kimi-k3: low | high | max, with
+    # ``max`` as the API default.
+    #
+    # SCOPE: that is a kimi-k3 fact applied provider-wide. Only the kimi-k3
+    # catalog row carries a ``reasoning_efforts`` block at all — the k2.x rows
+    # report ``supports_reasoning: true`` and nothing further — so the correct
+    # vocabulary for those is simply unpublished. Applying k3's is the safe
+    # reading: the levels below are a SUBSET of clawcodex's ladder, so a model
+    # that in fact accepts more receives a level it understands, just possibly
+    # a coarser one. If a future Moonshot model publishes a different ladder,
+    # split this to a per-model table rather than widening the tuple to the
+    # union — the union would re-admit the very levels this translates away.
+    #
+    # Sending a level outside it does NOT 400 —
+    # probed 2026-08-05, ``medium``, ``xhigh`` and even ``bogus`` all return
+    # 200 — the field is simply ignored, so the request lands on ``max``.
+    #
+    # That makes the aliases below matter in a way DeepSeek's do not. DeepSeek
+    # maps medium->high onto an API whose default already IS high, so the
+    # mapping only makes existing behaviour explicit. Here the ignored-value
+    # default is ``max``, the TOP of the ladder: without ``medium -> high``, a
+    # user asking for medium silently gets maximum reasoning and pays $15/Mtok
+    # of output for it. The translation is what makes the setting real.
     ProviderSpec(
         id="moonshot",
         label="Moonshot / Kimi",
         default_base_url="https://api.moonshot.ai/v1",
-        default_model="kimi-k2.7-code",
-        available_models=("kimi-k2.7-code",),
+        default_model="kimi-k3",
+        available_models=("kimi-k3", "kimi-k2.7-code"),
+        dynamic_catalog="openai-compatible",
+        catalog_mode="hybrid",
         env_vars=("MOONSHOT_API_KEY", "KIMI_API_KEY"),
         aliases=("moonshot-ai", "kimi", "kimi-k2"),
+        reasoning_efforts=("low", "high", "max"),
+        # ``minimal`` is deliberately absent: it is not on clawcodex's ladder
+        # (query.VALID_THINKING_EFFORT_LEVELS), so it can never arrive here.
+        reasoning_effort_aliases=(("medium", "high"), ("xhigh", "max")),
     ),
     ProviderSpec(
         id="sglang",
@@ -515,6 +575,12 @@ def build_provider_class(provider_id: str) -> type[_SpecOpenAICompatibleProvider
             "SPEC": spec,
             "DEFAULT_BASE_URL": spec.default_base_url,
             "DEFAULT_MODEL": spec.default_model,
+            "supported_reasoning_efforts": spec.reasoning_efforts,
+            # Fresh dict PER CLASS. ``BaseProvider.reasoning_effort_aliases`` is
+            # a mutable class-level default; handing several generated classes
+            # one shared object would let a mutation through any of them leak
+            # into every other provider.
+            "reasoning_effort_aliases": dict(spec.reasoning_effort_aliases),
             "__doc__": (
                 f"{spec.label} provider (OpenAI-compatible). Generated from "
                 "ProviderSpec; see src/providers/openai_compatible_specs.py."

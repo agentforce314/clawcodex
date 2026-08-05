@@ -398,6 +398,203 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=8_192,
         supports_cache=True,
     ),
+    # Moonshot / Kimi (api.moonshot.ai, OpenAI-compatible). Windows and vision
+    # flags below are read off the vendor's own ``GET /v1/models`` catalog
+    # (probed 2026-08-05), which publishes ``context_length`` and
+    # ``supports_image_in`` per model. Pricing lives in ``services/pricing.py``
+    # (single source), so the cost_* fields stay unset.
+    #
+    # ORDER IS LOAD-BEARING — the k2.x rows MUST stay above ``kimi-k3``.
+    # ``get_model_config`` falls back to ``key.rsplit("-", 1)[0]``, under which
+    # "kimi-k3" reduces to the broad "kimi" and claims EVERY ``kimi*`` id. Exact
+    # match protects only the four ids named here; anything else — a dated
+    # variant like ``kimi-k2.7-code-0801``, an alias like ``kimi-latest`` —
+    # falls into the prefix loop, which returns the FIRST matching row in
+    # insertion order. With kimi-k3 first, a 262K model silently inherits a
+    # 1,048,576 window: the WIDENING direction, which overflows the request
+    # with a context-length 400 instead of merely compacting early. With the
+    # k2.x rows first, unknown ``kimi*`` ids get the conservative 262,144.
+    # This is the same guard the ``claude-opus-4-20250514`` and ``gpt-oss``
+    # rows exist for. It is reachable, not hypothetical: the moonshot spec now
+    # discovers its catalog from the endpoint, so unenumerated ids are
+    # selectable.
+    #
+    # ``supports_vision`` is stated explicitly rather than left to default:
+    # ``capabilities.supports_vision`` trusts a verdict only from an exact
+    # MODEL_CONFIGS hit, so adding these rows turns "unknown -> permissive"
+    # into an asserted claim that the fusion validator will believe. All four
+    # report ``supports_image_in: true``, so True is probed, not assumed.
+    #
+    # ``max_output_tokens`` is ADVISORY here, as on every OpenAI-compatible row
+    # above: nothing sends a wire ``max_tokens`` for this provider. Its only
+    # live consumer is the auto-compact reservation, itself clamped to
+    # MAX_OUTPUT_TOKENS_FOR_SUMMARY (20_000) — so any value above that behaves
+    # identically. kimi-k3's 131_072 is Moonshot's documented default cap
+    # (raisable to 1_048_576 via ``max_completion_tokens``).
+    #
+    # NOTE these rows now OUTRANK a user's own ``modelLimits`` setting:
+    # ``get_context_window_for_model`` consults ``get_model_config`` first and
+    # only falls through to the setting when it returns None.
+    #
+    # For the four Moonshot ids named here that is corrective. It is NOT
+    # corrective for the rest of the namespace this prefix claims. A
+    # self-hosted ``kimi-*`` on ollama/vLLM — exactly the case ``_settings_limit``
+    # exists to serve — now resolves to 262,144 no matter what the user set:
+    # an explicit ``modelLimits`` of 8,192 becomes a guessed 262,144, a 32x
+    # OVER-estimate, which is the direction this block calls dangerous above.
+    #
+    # Not fixed here because the fix is not kimi-shaped: ``glm``, ``gpt`` and
+    # ``MiniMax`` are already single-token bases with the identical hole, and
+    # correcting it means reordering ``get_context_window_for_model`` to
+    # exact-hit -> settings -> prefix for every model family at once. That is
+    # its own change with its own sweep. Recorded so the next person does not
+    # rediscover it from a bug report.
+    "kimi-k2.6": ModelConfig(
+        model_id="kimi-k2.6",
+        display_name="Kimi K2.6",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "kimi-k2.7-code": ModelConfig(
+        model_id="kimi-k2.7-code",
+        display_name="Kimi K2.7 Code",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "kimi-k2.7-code-highspeed": ModelConfig(
+        model_id="kimi-k2.7-code-highspeed",
+        display_name="Kimi K2.7 Code Highspeed",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "kimi-k3": ModelConfig(
+        model_id="kimi-k3",
+        display_name="Kimi K3",
+        context_window=1_048_576,
+        max_output_tokens=131_072,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    # Vendor-qualified Kimi ids, as served by the gateways in this registry.
+    # ``get_model_config`` deliberately does NOT strip a leading ``<vendor>/``
+    # (see its docstring), so these need explicit rows — the same treatment
+    # ``openai/gpt-5.6-luna`` gets. Without them ``moonshotai/Kimi-K3``, which
+    # this repo ships in Baseten's curated ``available_models``, resolved to
+    # the 200,000 default: the exact bug the bare kimi-k3 row above fixes,
+    # one ``/model`` selection away.
+    #
+    # ORDER IS LOAD-BEARING HERE TOO, and more sharply than above: these ids
+    # contain a single hyphen, so ``key.rsplit("-", 1)[0]`` reduces
+    # ``moonshotai/kimi-k2``, ``moonshotai/kimi-k2.6`` AND ``moonshotai/kimi-k3``
+    # all to the same base ``moonshotai/kimi``. Whichever lands first claims
+    # every unenumerated ``moonshotai/kimi*`` id, so the SMALLEST window must
+    # lead. Windows read off OpenRouter's live catalogue 2026-08-05:
+    # kimi-k2 131,072; k2-0905 / k2-thinking / k2.5 / k2.6 / k2.7-code 262,144;
+    # k3 1,048,576.
+    #
+    # Left UNPRICED on purpose. ``get_pricing`` strips the vendor prefix, so
+    # the lowercase ids already reach the Moonshot tier — consistent with the
+    # module's stated policy of pricing a proxied model at its upstream rate.
+    # Baseten's capitalised ``Kimi-K3`` misses that strip (case-sensitive
+    # lookup) and stays unpriced, which is correct: Baseten sets its own rates.
+    "moonshotai/kimi-k2": ModelConfig(
+        model_id="moonshotai/kimi-k2",
+        display_name="Kimi K2",
+        context_window=131_072,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k2-0905": ModelConfig(
+        model_id="moonshotai/kimi-k2-0905",
+        display_name="Kimi K2 (0905)",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k2-thinking": ModelConfig(
+        model_id="moonshotai/kimi-k2-thinking",
+        display_name="Kimi K2 Thinking",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k2.5": ModelConfig(
+        model_id="moonshotai/kimi-k2.5",
+        display_name="Kimi K2.5",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k2.6": ModelConfig(
+        model_id="moonshotai/kimi-k2.6",
+        display_name="Kimi K2.6",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k2.7-code": ModelConfig(
+        model_id="moonshotai/kimi-k2.7-code",
+        display_name="Kimi K2.7 Code",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    "moonshotai/kimi-k3": ModelConfig(
+        model_id="moonshotai/kimi-k3",
+        display_name="Kimi K3",
+        context_window=1_048_576,
+        max_output_tokens=131_072,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    # The capitalised spelling is a SECOND namespace, not a one-off: the
+    # fallback's ``startswith`` is case-sensitive, so ``moonshotai/Kimi-*``
+    # shares no base with the lowercase rows above and needs its own guard.
+    # It is also more populated than "the id Baseten ships" suggests —
+    # ``moonshotai/`` is the HuggingFace org namespace and capitalised
+    # ``Kimi-*`` is the conventional repo-id spelling under it, so any
+    # HF-backed gateway emits ids of this shape (Kimi-K2-Instruct,
+    # Kimi-VL-A3B-Thinking, Kimi-Dev-72B …). ``--model`` is free text with no
+    # availability check, so reaching one takes nothing but typing it.
+    #
+    # Hence the same smallest-window-first discipline: without this row,
+    # ``moonshotai/Kimi-K3`` would be the only claimant of base
+    # ``moonshotai/Kimi`` AND carry the largest window in the table, handing
+    # every other capitalised id 1,048,576 — worse than the 200,000 default
+    # they had before these rows existed. 131_072 is not a Baseten-specific
+    # guess: it is the figure already pinned for the lowercase
+    # ``moonshotai/kimi-k2`` above, and the capitalisation does not change the
+    # weights. If a gateway never serves this id the row is inert except as
+    # the guard, which is exactly its job — same as ``kimi-k2.6`` above.
+    "moonshotai/Kimi-K2": ModelConfig(
+        model_id="moonshotai/Kimi-K2",
+        display_name="Kimi K2",
+        context_window=131_072,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_cache=True,
+    ),
+    # Baseten's spelling, shipped in its curated ``available_models``.
+    "moonshotai/Kimi-K3": ModelConfig(
+        model_id="moonshotai/Kimi-K3",
+        display_name="Kimi K3",
+        context_window=1_048_576,
+        max_output_tokens=131_072,
+        supports_vision=True,
+        supports_cache=True,
+    ),
     # Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Muse Spark is a
     # server-side reasoning model (usage reports ``reasoning_tokens``); like
     # DeepSeek/GLM it exposes no Anthropic-style thinking blocks (the

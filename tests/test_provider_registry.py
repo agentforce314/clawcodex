@@ -60,7 +60,7 @@ EXPECTED_NEW_PROVIDERS = {
 VENDOR_DEFAULTS = {
     "nvidia-nim": ("https://integrate.api.nvidia.com/v1", "deepseek-ai/deepseek-v4-pro"),
     "together": ("https://api.together.xyz/v1", "deepseek-ai/DeepSeek-V4-Pro"),
-    "moonshot": ("https://api.moonshot.ai/v1", "kimi-k2.7-code"),
+    "moonshot": ("https://api.moonshot.ai/v1", "kimi-k3"),
     "ollama": ("http://localhost:11434/v1", "deepseek-coder:1.3b"),
     "deepinfra": ("https://api.deepinfra.com/v1/openai", "deepseek-ai/DeepSeek-V4-Pro"),
     "stepfun": ("https://api.stepfun.ai/v1", "step-3.7-flash"),
@@ -167,7 +167,7 @@ class TestProviderResolution(unittest.TestCase):
 
     def test_get_provider_info_via_alias(self):
         info = get_provider_info("kimi")
-        self.assertEqual(info["default_model"], "kimi-k2.7-code")
+        self.assertEqual(info["default_model"], "kimi-k3")
 
 
 class TestApiKeyResolution(unittest.TestCase):

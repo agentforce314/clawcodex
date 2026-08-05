@@ -130,6 +130,37 @@ _TIER_MUSE_SPARK = {
     "cache_creation": 1.25 / 1_000_000,
     "cache_read": 0.15 / 1_000_000,
 }
+# Moonshot kimi-k3 (api.moonshot.ai, OpenAI-compatible). Moonshot's published
+# LIST rates, read off the vendor's own pricing page
+# (platform.kimi.ai/docs/pricing/chat-k3) on 2026-08-05: cache-miss input
+# $3.00/M, cache-hit input $0.30/M, output $15.00/M. Single tier — the page
+# states no context-length or time-of-day tiering, unlike the Luna row below.
+#
+# Sourced from the VENDOR, deliberately, per the post-mortem on that Luna row:
+# rates taken from a gateway can be a promotional discount that rots into
+# silent under-reporting the day it ends. Only an external number catches
+# that, so ``TestKimiK3PublishedRates`` pins these absolutes.
+#
+# ``cache_read`` is LIVE: the generic OpenAI-compat usage builder maps
+# ``prompt_tokens_details.cached_tokens`` onto ``cache_read_input_tokens``,
+# and Moonshot populates it (measured: a 1303-token prompt replayed with 1280
+# cached). That is a 10x discount on the cached portion, so the split is worth
+# real money on long agentic sessions.
+#
+# ``cache_creation`` mirrors ``input`` following _TIER_MUSE_SPARK: OpenAI-style
+# caching has no separate write charge. It is also UNREACHABLE on this wire —
+# ``openai_compatible.py`` hard-sets ``cache_creation_input_tokens = 0`` — so
+# it exists for shape only, and a test must not pin it as though a request
+# could exercise it.
+#
+# Only kimi-k3 is registered: Moonshot publishes no rates for the k2.x models,
+# and guessing one would be worse than the $0.00 they report today.
+_TIER_KIMI_K3 = {
+    "input": 3.00 / 1_000_000,
+    "output": 15.00 / 1_000_000,
+    "cache_creation": 3.00 / 1_000_000,
+    "cache_read": 0.30 / 1_000_000,
+}
 # OpenAI GPT-5.6 Luna / Luna Pro, as proxied by OpenRouter (both variants
 # publish identical rates). Read off OpenRouter's /models pricing record
 # 2026-07-31: prompt $0.10/M, completion $0.60/M, input_cache_write
@@ -226,6 +257,15 @@ PRICING: dict[str, dict[str, float]] = {
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
     "muse-spark-1.1": _TIER_MUSE_SPARK,
+    # Moonshot Kimi K3 (api.moonshot.ai). Exact-match only — this adds no
+    # family prefix, so the k2.x ids stay unpriced rather than inheriting K3's
+    # rates. Baseten serves its own ``moonshotai/Kimi-K3`` (see the spec
+    # registry); get_pricing's vendor-prefix strip reduces that to ``Kimi-K3``,
+    # which misses this key because the lookup is case-sensitive. That is the
+    # right outcome — Baseten's rates are not Moonshot's — but it survives on
+    # capitalization alone, so a future id-normalization pass must add an
+    # explicit Baseten row rather than let it fall through to here.
+    "kimi-k3": _TIER_KIMI_K3,
     # OpenAI GPT-5.6 Luna. Reached from OpenRouter's ``openai/gpt-5.6-luna``
     # via get_pricing's vendor-prefix strip, same as the DeepSeek rows.
     # VALUES UNUSED — these two rows act only as membership gates for

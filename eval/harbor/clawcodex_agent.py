@@ -200,6 +200,18 @@ _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "zai": ("ZAI_API_KEY", "Z_AI_API_KEY"),
     "minimax": ("MINIMAX_API_KEY",),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    # Mirrors the moonshot ProviderSpec's env_vars. Absent, an advisor at
+    # ``moonshot:kimi-k3`` fell back to _ALL_PROVIDER_ENV_VARS — which does not
+    # contain MOONSHOT_API_KEY — and reached the container with no credentials
+    # at all, producing exactly the silent degradation _advisor_env_vars warns
+    # about below: the run LOOKS clean because the worker carries on.
+    #
+    # Note every row added here also WIDENS _ALL_PROVIDER_ENV_VARS, which is
+    # the fallback for providers absent from this table — so an advisor at an
+    # unlisted provider now also carries the Moonshot vars into its container.
+    # Net still narrowing: a moonshot advisor goes from 9 forwarded keys to 2.
+    # Providers already listed take the exact-match branch and are unaffected.
+    "moonshot": ("MOONSHOT_API_KEY", "KIMI_API_KEY"),
 }
 _ALL_PROVIDER_ENV_VARS: tuple[str, ...] = tuple(
     dict.fromkeys(key for keys in _PROVIDER_ENV_VARS.values() for key in keys)
