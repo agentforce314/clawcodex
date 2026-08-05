@@ -771,3 +771,84 @@ class TestAdvisorAlwaysAsksForAdvice(unittest.TestCase):
                 fwd = self._fwd(hist)
                 self.assertEqual(fwd[-1]["role"], "user")
                 self.assertIn(self._suffix(), fwd[-1]["content"])
+
+
+class TestReviewerPromptMandate(unittest.TestCase):
+    """The reviewer prompt is OURS — the TS reference has no equivalent,
+    because upstream's advisor is server-side and its behaviour lives in the
+    API. So these are design invariants, not port fidelity.
+
+    Pinned after an 89-task differential where the original "your only value
+    is the gap" framing made the advisor a scope-expansion engine: measured
+    against the same worker with no advisor, cancel-async-tasks 11 steps/0.0
+    vs 7/1.0, headless-terminal 52/0.0 vs 19/1.0, sam-cell-seg 73/0.0 vs
+    18/1.0.
+    """
+
+    def _prompt(self) -> str:
+        from src.utils.advisor import CLIENT_ADVISOR_SYSTEM_PROMPT
+
+        return CLIENT_ADVISOR_SYSTEM_PROMPT
+
+    def test_approving_a_plan_is_a_first_class_verdict(self) -> None:
+        """A reviewer that can only add is half a reviewer."""
+        p = self._prompt().lower()
+        self.assertIn("proceed", p)
+        self.assertNotIn(
+            "your only value is the gap", p,
+            msg="the gap-only mandate is what made every consultation "
+                "generate work",
+        )
+
+    def test_gaps_may_be_empty(self) -> None:
+        """'None.' must be an expected answer, not a rarely-taken footnote."""
+        p = self._prompt()
+        self.assertIn("0-3", p, msg="Gaps/Risks must permit zero bullets")
+        self.assertNotIn(
+            "**Gaps:** 1-3", p,
+            msg="a mandatory 1-3 slot forces the model to manufacture gaps",
+        )
+
+    def test_suggestions_are_framed_as_costing_the_worker_work(self) -> None:
+        p = self._prompt().lower()
+        self.assertTrue(
+            "becomes work" in p or "spends their" in p,
+            msg="the reviewer must know its suggestions are not free",
+        )
+
+    def test_scope_is_justified_by_the_goal_not_best_practice(self) -> None:
+        p = self._prompt().lower()
+        self.assertIn("best practice", p)
+        self.assertTrue("overbuild" in p or "cut it" in p)
+
+    def test_reconcile_protocol_fires_from_the_reviewer_side(self) -> None:
+        """The worker-side policy already says 'surface the conflict', but
+        that text is a byte-for-byte port we must not edit — and it was not
+        firing. The reviewer must hand over the check itself."""
+        p = self._prompt().lower()
+        self.assertIn("checkable", p)
+        self.assertTrue(
+            "command" in p and "verify" in p,
+            msg="a checkable claim must come with the command that settles it",
+        )
+        self.assertIn("confidently wrong", p)
+
+    def test_worker_side_instructions_remain_a_byte_for_byte_port(self) -> None:
+        """ADVISOR_TOOL_INSTRUCTIONS mirrors typescript/src/utils/advisor.ts
+        and must not drift — the reconcile fix deliberately went into the
+        reviewer prompt instead, precisely to keep this intact."""
+        from src.utils.advisor import ADVISOR_TOOL_INSTRUCTIONS as T
+
+        for phrase in (
+            "Give the advice serious weight.",
+            "which constraint breaks the tie?",
+            "the advisor adds most of its value on the first call",
+        ):
+            self.assertIn(phrase, T, msg=f"ported text lost: {phrase!r}")
+
+    def test_style_and_anti_echo_rules_survive(self) -> None:
+        """The rebalance must not lose what already worked."""
+        p = self._prompt()
+        self.assertIn("DO NOT restate", p)
+        self.assertIn("DO NOT respond in the worker's voice", p)
+        self.assertIn("Terse.", p)
