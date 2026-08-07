@@ -44,6 +44,9 @@ def _agent(
     agent = Clawcodex.__new__(Clawcodex)
     agent._subscription = subscription
     agent._advisor = advisor
+    # Constructed agents always carry this; the helper must mirror the
+    # constructor or _build_env raises AttributeError on the vision path.
+    agent._vision = None
     agent._advisor_effort = advisor_effort
     agent._parsed_model_provider = model_provider
     agent._forward_keys = False
