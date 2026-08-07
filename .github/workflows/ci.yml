@@ -83,6 +83,7 @@ jobs:
               tests/test_headless_usage_events.py \
               tests/test_harbor_adapter_fusion.py \
               tests/test_harbor_adapter_advisor.py \
+              tests/test_harbor_adapter_vision.py \
               -v
 
   event_file:

@@ -85,6 +85,14 @@ Agent kwargs (``--ak key=value``):
   The name carries no ``/``, which leaves the env allowlist on its
   all-providers fallback — required here, since a fusion run legitimately
   needs two vendors' keys at once.
+* ``vision`` — configure the ``vision_analyze`` TOOL, as
+  ``<provider>:<model>`` (e.g. ``vision=openai:gpt-5.6-luna``). Gives a
+  TEXT-ONLY worker eyes it can aim: ``Read`` on an image returns a stub
+  naming the tool, and the model calls it with its own question. Distinct
+  from ``fusion``, which rewrites every image before the wire with one fixed
+  description and cannot be asked a follow-up. The two compose — fusion
+  covers images already in flight, this covers "look again, at the VAT line".
+  The vision provider's key is forwarded automatically.
 * ``max_turns`` — clawcodex ``--max-turns`` (default 300 here; the CLI's
   own default of 50 is too low for terminal-bench tasks). The
   ``CLAWCODEX_MAX_TURNS`` host env var works as a fallback.
@@ -374,6 +382,7 @@ class Clawcodex(BaseInstalledAgent):
         forward_keys: bool | str = True,
         advisor: str | None = None,
         advisor_effort: str | None = None,
+        vision: str | None = None,
         *args,
         **kwargs,
     ):
@@ -407,6 +416,21 @@ class Clawcodex(BaseInstalledAgent):
                 "Agent kwarg 'advisor_effort' must be one of low|medium|"
                 f"high|xhigh|max (got {self._advisor_effort!r})"
             )
+        # ``vision`` is ``<provider>:<model>`` — the model that answers the
+        # ``vision_analyze`` tool, letting a TEXT-ONLY worker ask targeted
+        # questions about an image. Distinct from ``fusion``: fusion rewrites
+        # every image before the wire with one fixed description, this is a
+        # tool the model calls on demand with its own question. Config, not a
+        # flag, so it rides the seeded global config like the advisor.
+        self._vision = vision
+        if self._vision:
+            provider_half, _, model_half = self._vision.partition(":")
+            if not provider_half.strip() or not model_half.strip():
+                raise ValueError(
+                    "Agent kwarg 'vision' must be '<provider>:<model>' with "
+                    f"both halves non-empty (got {self._vision!r}) — "
+                    "e.g. openai:gpt-5.6-luna"
+                )
         if self._advisor_effort and not self._advisor:
             raise ValueError(
                 "Agent kwarg 'advisor_effort' requires 'advisor' — an effort "
@@ -545,6 +569,25 @@ class Clawcodex(BaseInstalledAgent):
             keys = tuple(k for k in keys if k != "ANTHROPIC_API_KEY")
         return keys
 
+    def _vision_env_vars(self) -> tuple[str, ...]:
+        """Env keys the VISION provider needs, beyond the main loop's.
+
+        ``vision_analyze`` makes its own API call to its own provider, so a
+        run whose eyes sit at a different vendor needs that vendor's key too.
+        Without this the tool is advertised, the model calls it, and it dies
+        on a missing key — and because ``Read``'s stub starts naming the tool
+        the moment vision is configured, the failure reads like a tool bug
+        rather than a credentials one. Exactly the shape of the moonshot
+        advisor gap that produced a clean-looking run with a dead advisor.
+        """
+        if not self._vision:
+            return ()
+        provider = self._vision.split(":", 1)[0].strip().lower()
+        keys = _PROVIDER_ENV_VARS.get(provider, _ALL_PROVIDER_ENV_VARS)
+        if self._subscription:
+            keys = tuple(k for k in keys if k != "ANTHROPIC_API_KEY")
+        return keys
+
     def _build_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
         if self._subscription:
@@ -573,7 +616,9 @@ class Clawcodex(BaseInstalledAgent):
         # The advisor calls its own provider, which may be a different
         # vendor than the worker's. Union, deduped, order-preserving.
         forwarded = tuple(
-            dict.fromkeys(forwarded + self._advisor_env_vars())
+            dict.fromkeys(
+                forwarded + self._advisor_env_vars() + self._vision_env_vars()
+            )
         )
         for key in forwarded:
             value = self._get_env(key)
@@ -766,6 +811,16 @@ class Clawcodex(BaseInstalledAgent):
         env_block = self._host_env_keys()
         if env_block:
             config["env"] = env_block
+        if self._vision:
+            vision_provider, vision_model = self._vision.split(":", 1)
+            # Top-level, NOT under settings: src/providers/vision_config.py
+            # reads the global tier only, deliberately — this key names the
+            # provider that receives image bytes.
+            config["vision"] = {
+                "enabled": True,
+                "provider": vision_provider.strip(),
+                "model": vision_model.strip(),
+            }
         fusion = self._fusion_record()
         if fusion:
             config["fusionModels"] = [fusion]
