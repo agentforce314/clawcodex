@@ -548,6 +548,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
     hint: '[list | create <name> <base> <vision> | delete|enable|disable <name>]',
     name: '/fusion'
   },
+  {
+    desc: 'Set the vision model the vision_analyze tool asks about images',
+    hint: '[<provider>:<model> | on | off]',
+    name: '/vision'
+  },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   {
@@ -1491,6 +1496,16 @@ export class GatewayClient extends EventEmitter {
         if (!r || Object.keys(r).length === 0) {return out('fusion: backend not ready')}
 
         return out(String(r.text ?? r.error ?? 'fusion: no response'))
+      }
+      case 'vision': {
+        // Configure the vision model behind the vision_analyze tool. The
+        // backend owns the grammar (<provider>:<model> | on | off), so this
+        // relays the arg and prints the reply, exactly like /fusion above.
+        const r = (await this.controlQuery('vision', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('vision: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'vision: no response'))
       }
       case 'memory': {
         // Arg-ful /memory (status | pending | approve | reject) — the

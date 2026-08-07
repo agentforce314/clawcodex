@@ -857,6 +857,9 @@ class _AgentSession:
         if subtype == "fusion":
             self._do_fusion_command(request_id, inner.get("arg"))
             return
+        if subtype == "vision":
+            self._do_vision_command(request_id, inner.get("arg"))
+            return
         if subtype == "worktree_status":
             await self._do_worktree_status(request_id)
             return
@@ -3867,6 +3870,51 @@ class _AgentSession:
             })
         except Exception as exc:  # noqa: BLE001 — must not kill the control channel
             logger.exception("[agent-server] advisor command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_vision_command(self, request_id: object, arg: object) -> None:
+        """Control handler for /vision — set the vision_analyze model.
+
+        Bridges to ``vision_command.vision_command_call``, which owns the
+        grammar (``<provider>:<model>`` | on | off).
+
+        ``single_session``-gated for the same reason as /fusion and /advisor:
+        this persists USER-level config (``~/.clawcodex/config.json`` ->
+        ``vision``), so on the multi-session WS transport one client's
+        ``/vision off`` would disable the tool for every other session on the
+        host.
+
+        Reply shape mirrors /fusion: transport-level ``ok`` is True whenever
+        the command ran; command-level rejections ride ``text``.
+        """
+        if not self.config.single_session:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "/vision is only available on single-session "
+                         "(stdio) transports — it persists user-level "
+                         "settings.",
+            })
+            return
+        try:
+            from src.command_system.types import CommandContext
+            from src.command_system.vision_command import vision_command_call
+
+            ctx = CommandContext(
+                workspace_root=Path(self.cwd),
+                cwd=Path(self.cwd),
+                conversation=getattr(self.session, "conversation", None),
+                cost_tracker=None,
+                history=None,
+                app_state_store=None,
+                provider=self.provider,
+            )
+            result = vision_command_call(str(arg or ""), ctx)
+            self._reply(request_id, {
+                "ok": True,
+                "text": str(getattr(result, "value", "") or ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — must not kill the control channel
+            logger.exception("[agent-server] /vision command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_fusion_command(self, request_id: object, arg: object) -> None:

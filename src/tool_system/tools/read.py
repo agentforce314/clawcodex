@@ -284,6 +284,90 @@ def _is_partial_read(fp_entry: tuple[int, ...] | tuple[int, int, bool]) -> bool:
 # Core call implementation
 # ---------------------------------------------------------------------------
 
+def _text_only_vision_stub(
+    path: Path, context: ToolContext, kind: str = "image"
+) -> ToolResult | None:
+    """A text stub instead of an image block, when the model cannot see.
+
+    Returns ``None`` — meaning "proceed with the normal image pipeline" — in
+    every case except a model KNOWN to be text-only running WITHOUT a fusion
+    wrapper.
+
+    Why this exists: this tool decides on file extension alone, so ``Read
+    foo.png`` emits an image block for any model. A text-only provider
+    (DeepSeek V4, gpt-oss-120b) answers that with ``400 unknown variant
+    `image_url`, expected `text``` and the turn is spent before the model can
+    do anything about it — including calling ``vision_analyze``. Handing back
+    a path-bearing note instead keeps the turn alive AND tells the model
+    exactly how to see the image.
+
+    THE FUSION TRAP, and why the ``unwrap_provider`` check is load-bearing:
+    when a fusion model is active the provider on the context is a
+    ``FusionProvider`` whose ``.model`` reports the BASE model — text-only by
+    definition, since that is the entire reason someone configures fusion. A
+    naive capability check therefore fires on exactly the configuration that
+    already works, and would replace the image block that ``FusionProvider``
+    needs to substitute. ``unwrap_provider`` follows ``.inner``, so a wrapper
+    is detectable; anything wrapped is left alone.
+
+    Unknown models are left alone too: ``supports_vision`` only returns False
+    on an exact ``MODEL_CONFIGS`` hit, so an uncatalogued model keeps today's
+    behaviour rather than silently losing image support.
+    """
+    provider = getattr(context, "_active_provider", None)
+    if provider is None:
+        # No provider on the context (unit tests, pre-startup): unchanged.
+        return None
+
+    from src.providers import unwrap_provider
+
+    if unwrap_provider(provider) is not provider:
+        return None  # wrapped (fusion) — it will substitute; do not interfere
+
+    model = getattr(provider, "model", "") or ""
+    if not model:
+        return None
+
+    from src.models.capabilities import supports_vision
+
+    if supports_vision(model):
+        return None
+
+    from src.providers.vision_config import vision_is_configured
+
+    if kind == "pdf":
+        # A PDF must NOT be sent to vision_analyze: that tool accepts only
+        # the image extensions above, so naming it here would cost the model
+        # a second tool call and a hard refusal. Rendered pages are images,
+        # so the capability problem is the same, but the remedy is not.
+        return ToolResult(
+            name="Read",
+            output=(
+                f"[PDF pages not rendered: the active model ({model}) cannot "
+                "see images, and page rendering produces images. Extract the "
+                "text instead — e.g. `pdftotext` via Bash — or read the file "
+                "without the 'pages' argument.]"
+            ),
+            content_type="text",
+        )
+
+    if vision_is_configured():
+        hint = (
+            f' Call vision_analyze with image_url="{path}" and a specific '
+            "question to have it described."
+        )
+    else:
+        hint = (
+            " No vision model is configured — run /vision <provider>:<model> "
+            "to enable image support for this model."
+        )
+    return ToolResult(
+        name="Read",
+        output=f"[Image not loaded: the active model ({model}) cannot see images.{hint}]",
+        content_type="text",
+    )
+
+
 def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     file_path = tool_input["file_path"]
     if not isinstance(file_path, str) or not file_path:
@@ -393,6 +477,12 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
             # User asked for specific pages -> extract them via poppler and
             # return as image blocks. Mirrors TS FileReadTool.ts:898-948 PDF
             # page-extraction flow.
+            #
+            # Same capability gate as the image branch: rendered pages ARE
+            # image blocks, so a text-only model 400s on them identically.
+            _stub = _text_only_vision_stub(path, context, kind="pdf")
+            if _stub is not None:
+                return _stub
             first_page, last_page = _parse_pdf_pages(pages_param)
             from src.utils.pdf_extraction import (
                 PdfExtractionFailed as _PdfErr,
@@ -490,6 +580,11 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     # the same reason -- see FileReadTool.ts:528-529.
     ext_no_dot = suffix.lstrip(".")
     if ext_no_dot in IMAGE_EXTENSIONS:
+        # Before building an image block, check the model can actually
+        # receive one. See _text_only_vision_stub for the fusion carve-out.
+        _stub = _text_only_vision_stub(path, context)
+        if _stub is not None:
+            return _stub
         if stat.st_size == 0:
             raise ToolInputError(f"Image file is empty: {path}")
         # Lazy import keeps the read.py import cheap for non-image paths.

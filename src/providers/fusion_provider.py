@@ -566,6 +566,64 @@ class FusionProvider:
             text = text[:_MAX_DESCRIPTION_CHARS] + "… [description truncated]"
         return text
 
+    @staticmethod
+    def _requery_handle(source: dict[str, Any]) -> str:
+        """A trailing hint telling the base model how to look again.
+
+        Ported from hermes-agent (``run_agent.py:4455-4458``), which appends
+        ``[If you need a closer look, use vision_analyze with image_url: …]``
+        to the note it substitutes for an image.
+
+        Why this matters: a description is ONE fixed pass, and this provider
+        discards ``source`` the moment it returns — nothing here can produce
+        those bytes again. Before this hint, a base model that needed the VAT
+        line off an invoice the generic pass skimmed had no recourse at all.
+        The budget-exhausted branch below has been telling the model to "ask
+        about this image on its own" since it was written; only now is that
+        instruction something it can actually act on.
+
+        Emitted on EVERY branch, not just success — hermes appends its handle
+        on failure paths too (``gateway/run.py:13421,:13428``), and a failed
+        description is precisely when a second look is worth most.
+
+        HANDLE CHOICE. hermes's handle is the image's own path/URL, and it
+        deliberately emits NO handle for ``data:`` URLs rather than a dead
+        one. This provider sits at egress and usually holds only base64, so
+        the same rule applies: a URL source gets an exact handle, and base64
+        gets a path-free pointer that leans on the model already knowing where
+        the image came from (it just called ``Read`` on it). Inventing a
+        handle for pasted bytes would need a byte registry, which hermes
+        declines to build and which would blow up this module's small
+        description cache.
+
+        Silent when no vision tool is configured — an instruction the user
+        cannot satisfy is worse than none.
+        """
+        try:
+            from src.providers.vision_config import vision_is_configured
+
+            if not vision_is_configured():
+                return ""
+        except Exception:  # noqa: BLE001 — a hint must never break substitution
+            return ""
+
+        url = source.get("url")
+        if isinstance(url, str) and url.strip():
+            # NOT "use vision_analyze with image_url: <url>" as hermes writes
+            # it: hermes's tool downloads URLs (httpx + SSRF validation +
+            # a size cap), and this port deliberately does not. Telling the
+            # model to pass a URL to a tool that refuses URLs would spend a
+            # tool call to earn a refusal, so the instruction names the step
+            # that actually works.
+            return (
+                f"\n[If you need a closer look, download {url.strip()} (e.g. "
+                "with Bash) and call vision_analyze on the saved file.]"
+            )
+        return (
+            "\n[If you need a closer look, call vision_analyze with the file "
+            "path you read this image from and a specific question.]"
+        )
+
     def _substitute(self, block: Any, budget: "_Budget") -> Any:
         """Return the replacement for one image block (or the block itself)."""
         source = _image_source(block)
@@ -575,13 +633,14 @@ class FusionProvider:
         label = _describe_size(source)
         prefix = f"[Image ({label})" if label else "[Image"
         vision = self._fusion.vision.selector
+        handle = self._requery_handle(source)
 
         key = _image_key(self._scope(), source)
         if key is None:
             logger.warning("[fusion] image block has no data or url; substituting note")
             return {
                 "type": "text",
-                "text": f"{prefix}: not described — the image block carried no data.]",
+                "text": f"{prefix}: not described — the image block carried no data.]{handle}",
             }
 
         cached = _cache_get(key)
@@ -591,9 +650,12 @@ class FusionProvider:
             if isinstance(cached, _Failure):
                 return {
                     "type": "text",
-                    "text": f"{prefix}: could not be described ({vision}): {cached.reason}]",
+                    "text": f"{prefix}: could not be described ({vision}): {cached.reason}]{handle}",
                 }
-            return {"type": "text", "text": f"{prefix}, described by {vision}]\n{cached}"}
+            return {
+                "type": "text",
+                "text": f"{prefix}, described by {vision}]\n{cached}{handle}",
+            }
 
         exhausted = budget.exhausted()
         if exhausted:
@@ -602,7 +664,7 @@ class FusionProvider:
                 "type": "text",
                 "text": (
                     f"{prefix}: not described — {exhausted}. Ask about this image "
-                    "on its own to have it described.]"
+                    f"on its own to have it described.]{handle}"
                 ),
             }
 
@@ -626,11 +688,14 @@ class FusionProvider:
                 "type": "text",
                 "text": (
                     f"{prefix}: could not be described — the vision model "
-                    f"({vision}) failed: {exc}]"
+                    f"({vision}) failed: {exc}]{handle}"
                 ),
             }
         _cache_put(key, description)
-        return {"type": "text", "text": f"{prefix}, described by {vision}]\n{description}"}
+        return {
+            "type": "text",
+            "text": f"{prefix}, described by {vision}]\n{description}{handle}",
+        }
 
     def _fuse_content(self, content: Any, budget: "_Budget") -> tuple[Any, bool]:
         """Rewrite a content list. Returns ``(content, changed)``.

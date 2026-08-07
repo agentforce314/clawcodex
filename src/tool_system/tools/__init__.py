@@ -38,6 +38,7 @@ from .tasks_v2 import (
 from .team import TeamCreateTool, TeamDeleteTool
 from .todo_write import TodoWriteTool
 from .tool_search import make_tool_search_tool
+from .vision_analyze import VisionAnalyzeTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
 from .worktree import EnterWorktreeTool, ExitWorktreeTool
@@ -91,6 +92,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
     TeamCreateTool,
     TeamDeleteTool,
     TodoWriteTool,
+    VisionAnalyzeTool,
     WebFetchTool,
     WebSearchTool,
     WriteTool,
@@ -139,6 +141,7 @@ __all__ = [
     "TeamCreateTool",
     "TeamDeleteTool",
     "TodoWriteTool",
+    "VisionAnalyzeTool",
     "WebFetchTool",
     "WebSearchTool",
     "WriteTool",

@@ -31,6 +31,7 @@ from .statusline import STATUSLINE_COMMAND
 from .theme_command import THEME_COMMAND
 from .eco_command import ECO_COMMAND
 from .fusion_command import FUSION_COMMAND
+from .vision_command import VISION_COMMAND
 from .effort_command import EFFORT_COMMAND
 from .model_command import MODEL_COMMAND
 from .logo_command import LOGO_COMMAND
@@ -1499,6 +1500,7 @@ def get_builtin_commands() -> list[Command]:
         CONTEXT_COMMAND,
         COMPACT_COMMAND,
         ADVISOR_COMMAND,
+        VISION_COMMAND,
         INIT_COMMAND,
         AUTO_FIX_COMMAND,
         REVIEW_COMMAND,
