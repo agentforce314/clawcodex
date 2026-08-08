@@ -11,7 +11,9 @@ downloads/
 eggs/
 .eggs/
 lib/
-# ui-tui/src/lib is TypeScript source, not Python build output — keep tracking it
+# ui-tui/src/lib and ui-desktop's lib/ dirs are TypeScript source, not Python
+# build output — keep tracking them
+!ui-desktop/**/lib/
 # (the bare `lib/` above is from the Python template and would otherwise drop it).
 !ui-tui/src/lib/
 lib64/
