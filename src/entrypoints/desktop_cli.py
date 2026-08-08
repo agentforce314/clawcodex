@@ -54,6 +54,27 @@ def build_launch_plan(app_dir: Path, *, install: bool, dev: bool) -> list[list[s
     return plan
 
 
+# The dev renderer binds this fixed port (ui-desktop package.json dev:renderer).
+DEV_RENDERER_PORT = 5174
+
+
+def dev_port_busy(port: int | None = None, host: str = "127.0.0.1") -> bool:
+    """True when something already listens on the dev renderer port.
+
+    A second `clawcodex desktop` would otherwise die mid-boot on vite's raw
+    "Port 5174 is already in use" stack trace — the app is almost certainly
+    just already running. The port resolves at call time so tests (and a
+    future config override) can repoint DEV_RENDERER_PORT.
+    """
+    import socket
+
+    if port is None:
+        port = DEV_RENDERER_PORT
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        return probe.connect_ex((host, port)) == 0
+
+
 def run_desktop_subcommand(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="clawcodex desktop",
@@ -77,6 +98,11 @@ def run_desktop_subcommand(argv: list[str]) -> int:
         print("desktop: npm not found on PATH — install Node.js 22+ first.",
               file=sys.stderr)
         return 2
+    if not args.no_dev and dev_port_busy():
+        print("desktop: ClawCodex Desktop appears to be already running "
+              f"(port {DEV_RENDERER_PORT} is in use). Switch to its window, "
+              "or quit it and run this again.", file=sys.stderr)
+        return 1
 
     env = launch_env(root)
     for cmd in build_launch_plan(app_dir, install=args.install, dev=not args.no_dev):

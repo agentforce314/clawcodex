@@ -251,3 +251,34 @@ def test_desktop_subcommand_refuses_without_app(tmp_path: Path,
 
     monkeypatch.setattr(mod, "repo_root", lambda: tmp_path)
     assert mod.run_desktop_subcommand([]) == 2
+
+
+def test_desktop_port_guard_detects_running_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    import socket
+
+    import src.entrypoints.desktop_cli as mod
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        # Backlog > 1: each dev_port_busy probe completes a handshake that
+        # sits unaccepted in the queue; a backlog of 1 makes the second probe
+        # fail spuriously.
+        listener.listen(8)
+        port = listener.getsockname()[1]
+
+        assert mod.dev_port_busy(port) is True
+
+        # The subcommand refuses cleanly when the dev port is held.
+        app_dir = tmp_path / "ui-desktop"
+        app_dir.mkdir()
+        (app_dir / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(mod, "repo_root", lambda: tmp_path)
+        monkeypatch.setattr(mod, "DEV_RENDERER_PORT", port)
+        monkeypatch.setattr(mod.shutil, "which", lambda n: "/usr/bin/npm")
+        assert mod.run_desktop_subcommand([]) == 1
+        assert "already running" in capsys.readouterr().err
+
+    # Listener closed — the guard clears.
+    assert mod.dev_port_busy(port) is False
