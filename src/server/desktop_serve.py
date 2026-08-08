@@ -166,6 +166,60 @@ def build_app(state: DesktopServeState) -> Starlette:
         except Exception:  # noqa: BLE001 — inspection endpoint, degrade soft
             return JSONResponse({"provider": None, "model": None})
 
+    async def model_options_rest(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_gateway_methods import _catalog_from_config
+
+        import asyncio as _asyncio
+        return JSONResponse(await _asyncio.to_thread(_catalog_from_config))
+
+    async def model_auxiliary(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # Auxiliary task-model assignments aren't wired to a control yet; the
+        # panel reads `main` and an (empty) task list and renders "using the
+        # main model for everything", which is the true state.
+        from src.config import get_default_provider, get_provider_config
+
+        try:
+            provider = get_default_provider()
+            model = (get_provider_config(provider) or {}).get("default_model")
+        except Exception:  # noqa: BLE001
+            provider, model = None, None
+        return JSONResponse({"main": {"model": model, "provider": provider}, "tasks": []})
+
+    async def config_schema(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # No dynamic config schema in this backend — the structured settings
+        # panels render from their own known fields; the schema only drives the
+        # Advanced tab's generated rows, which degrade to none.
+        return JSONResponse({"fields": {}, "category_order": []})
+
+    async def cron_jobs(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return JSONResponse({"jobs": []})
+
+    async def elevenlabs_voices(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return JSONResponse({"voices": []})
+
+    async def session_detail(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_sessions import load_session_messages
+
+        sid = request.path_params["session_id"]
+        found = load_session_messages(state.saved_sessions_dir(), sid)
+        if found is None:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return JSONResponse({"session_id": found["session_id"],
+                             "messages": found["messages"],
+                             "message_count": found["message_count"]})
+
     def _sessions_slice(request: Request, *, profile_tag: str = "default") -> dict[str, Any]:
         """One filtered slice of the saved-session list (shared by the
         profile-scoped route and the batched sidebar)."""
@@ -334,6 +388,12 @@ def build_app(state: DesktopServeState) -> Starlette:
         Route("/api/profiles/sessions", profile_sessions),
         Route("/api/profiles/sessions/sidebar", sidebar_sessions),
         Route("/api/model/info", model_info),
+        Route("/api/model/options", model_options_rest),
+        Route("/api/model/auxiliary", model_auxiliary),
+        Route("/api/config/schema", config_schema),
+        Route("/api/cron/jobs", cron_jobs),
+        Route("/api/audio/elevenlabs/voices", elevenlabs_voices),
+        Route("/api/sessions/{session_id}", session_detail),
         Route("/api/audio/transcribe", audio_transcribe, methods=["POST"]),
         Route("/", index),
         WebSocketRoute("/api/ws", gateway_ws),

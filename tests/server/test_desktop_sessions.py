@@ -141,6 +141,45 @@ def test_model_info_reports_defaults(
     assert body == {"provider": "anthropic", "model": "claude-fable-5"}
 
 
+def test_settings_panel_rest_routes(
+    rest: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Model/Voice/Advanced settings panels each await a REST route; a 404
+    on any leaves the panel stuck on skeletons. Assert the shapes they read."""
+    monkeypatch.setattr("src.config.get_default_provider", lambda: "anthropic")
+    monkeypatch.setattr("src.config.get_provider_config",
+                        lambda n: {"default_model": "claude-sonnet-4-6"})
+
+    options = rest.get("/api/model/options", headers=AUTH).json()
+    assert "providers" in options and len(options["providers"]) > 5
+
+    aux = rest.get("/api/model/auxiliary", headers=AUTH).json()
+    assert aux["main"] == {"model": "claude-sonnet-4-6", "provider": "anthropic"}
+    assert aux["tasks"] == []
+
+    schema = rest.get("/api/config/schema", headers=AUTH).json()
+    assert schema == {"fields": {}, "category_order": []}
+
+    assert rest.get("/api/cron/jobs", headers=AUTH).json() == {"jobs": []}
+    assert rest.get("/api/audio/elevenlabs/voices", headers=AUTH).json() == {"voices": []}
+
+    # All are token-gated.
+    for path in ("/api/model/options", "/api/model/auxiliary", "/api/config/schema",
+                 "/api/cron/jobs", "/api/audio/elevenlabs/voices"):
+        assert rest.get(path).status_code == 401
+
+
+def test_session_detail_route(rest: TestClient, tmp_path: Path) -> None:
+    _write_session(
+        tmp_path / "sessions", "chat-x", preview="hi", count=1,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    body = rest.get("/api/sessions/chat-x", headers=AUTH).json()
+    assert body["session_id"] == "chat-x"
+    assert body["message_count"] == 1
+    assert rest.get("/api/sessions/missing", headers=AUTH).status_code == 404
+
+
 def test_profile_sessions_slice_filters_sources(
     rest: TestClient, tmp_path: Path
 ) -> None:
