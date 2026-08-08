@@ -2906,6 +2906,7 @@ export const en: Translations = {
     newChatsProfile: name => `New chats will use profile ${name}.`,
     setProfileFailed: 'Failed to set profile',
     sttDisabled: 'Speech-to-text is disabled in settings.',
+    sttFailed: 'Voice transcription failed.',
     stopFailed: 'Stop failed',
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',

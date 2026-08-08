@@ -3068,6 +3068,7 @@ export const zh: Translations = {
     newChatsProfile: name => `新对话将使用配置档案 ${name}。`,
     setProfileFailed: '设置配置档案失败',
     sttDisabled: '设置中已禁用语音转文字。',
+    sttFailed: 'Voice transcription failed.',
     stopFailed: '停止失败',
     regenerateFailed: '重新生成失败',
     editFailed: '编辑失败',

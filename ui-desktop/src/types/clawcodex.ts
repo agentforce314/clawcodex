@@ -18,6 +18,9 @@ export interface ConfigSchemaResponse {
 
 export interface AudioTranscriptionResponse {
   ok: boolean
+  /** Actionable reason when `ok` is false (no STT provider configured, the
+   *  provider rejected the clip, …). Surfaced to the user by the mic flow. */
+  error?: string
   provider?: string
   transcript: string
 }

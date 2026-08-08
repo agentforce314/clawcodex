@@ -2745,6 +2745,7 @@ export const ja = defineLocale({
     newChatsProfile: name => `新しいチャットはプロファイル ${name} を使用します。`,
     setProfileFailed: 'プロファイルの設定に失敗しました',
     sttDisabled: '音声認識は設定で無効になっています。',
+    sttFailed: 'Voice transcription failed.',
     stopFailed: '停止に失敗しました',
     regenerateFailed: '再生成に失敗しました',
     editFailed: '編集に失敗しました',

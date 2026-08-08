@@ -2535,6 +2535,7 @@ export const ar = defineLocale({
     newChatsProfile: name => `المحادثات الجديدة تستخدم ${name}`,
     setProfileFailed: 'فشل ضبط الملف الشخصي',
     sttDisabled: 'تحويل الكلام إلى نص معطل',
+    sttFailed: 'Voice transcription failed.',
     stopFailed: 'فشل الإيقاف',
     regenerateFailed: 'فشلت إعادة التوليد',
     editFailed: 'فشل التحرير',

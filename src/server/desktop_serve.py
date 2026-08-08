@@ -267,6 +267,27 @@ def build_app(state: DesktopServeState) -> Starlette:
 
         return JSONResponse(redact_secrets(get_default_config()))
 
+    async def audio_transcribe(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_audio import transcribe_data_url
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        result = await transcribe_data_url(
+            str(body.get("data_url") or ""), body.get("mime_type")
+        )
+        payload: dict[str, Any] = {"ok": result.ok, "transcript": result.transcript}
+        if result.provider:
+            payload["provider"] = result.provider
+        if result.error:
+            payload["error"] = result.error
+        # 200 with ok:false is the renderer's soft-fail shape; a hard status
+        # would surface a generic "request failed" instead of our message.
+        return JSONResponse(payload)
+
     async def index(_: Request) -> Response:
         # dashboard-token.ts scrapes this global from the served page to adopt
         # a running backend's token. Serve nothing else here — the desktop
@@ -313,6 +334,7 @@ def build_app(state: DesktopServeState) -> Starlette:
         Route("/api/profiles/sessions", profile_sessions),
         Route("/api/profiles/sessions/sidebar", sidebar_sessions),
         Route("/api/model/info", model_info),
+        Route("/api/audio/transcribe", audio_transcribe, methods=["POST"]),
         Route("/", index),
         WebSocketRoute("/api/ws", gateway_ws),
         Route("/{rest:path}", not_found,

@@ -2460,6 +2460,7 @@ export interface Translations {
     newChatsProfile: (name: string) => string
     setProfileFailed: string
     sttDisabled: string
+    sttFailed: string
     stopFailed: string
     regenerateFailed: string
     editFailed: string

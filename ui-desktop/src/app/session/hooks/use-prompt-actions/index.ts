@@ -596,9 +596,16 @@ export function usePromptActions({
       const dataUrl = await blobToDataUrl(audio)
       const result = await transcribeAudio(dataUrl, audio.type)
 
+      // A failed transcription carries an actionable reason (no STT provider
+      // configured, provider rejected the audio, …). Surface it — returning
+      // the empty transcript silently made the mic look broken.
+      if (result.ok === false) {
+        throw new Error(result.error?.trim() || copy.sttFailed)
+      }
+
       return result.transcript
     },
-    [copy.sttDisabled, sttEnabled]
+    [copy.sttDisabled, copy.sttFailed, sttEnabled]
   )
 
   const cancelRun = useCallback(async () => {
