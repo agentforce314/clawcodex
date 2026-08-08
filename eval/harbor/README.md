@@ -228,6 +228,10 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
   --ak version=1.2.1        # pin the clawcodex-cli PyPI version
   --ak source=git+https://github.com/agentforce314/clawcodex@main
                             # install from git instead of PyPI (unreleased code)
+  --ak source=dist/clawcodex_cli-1.4.0-py3-none-any.whl
+                            # a local wheel: uploaded into each container and
+                            # installed there, so a working tree can be
+                            # benchmarked without pushing (uv build --wheel)
   --ak subscription=true    # Claude Pro/Max OAuth instead of ANTHROPIC_API_KEY
 
 # Pass the key explicitly instead of exporting it
@@ -238,6 +242,32 @@ aggregate accuracy; each trial dir has the agent's stream-json log under
   --model anthropic/claude-opus-4-8   # the previous tb2.1 baseline
   --model anthropic/claude-opus-4-5   # needs ANTHROPIC_API_KEY
 ```
+
+## Measuring prefix-cache efficiency
+
+`prefix_cache_probe.py` answers "how many tokens is each request re-sending?",
+which is the number that actually moves cost on DeepSeek. Aggregate hit rate
+hides the failure mode: a harness can sit at 90% while re-billing the same
+multi-thousand-token block every single turn.
+
+```bash
+# 1. Record — wraps any clawcodex invocation, capturing every wire payload
+python eval/harbor/prefix_cache_probe.py record --out /tmp/pl -- \
+  --print --dangerously-skip-permissions \
+  --model deepseek-v4-flash --provider deepseek -- "your task"
+
+# 2. Analyse — diff consecutive requests, attribute the misses
+python eval/harbor/prefix_cache_probe.py analyse --out /tmp/pl
+```
+
+`analyse` prints, per consecutive pair, the longest common message prefix and
+the bytes that had to be recomputed, next to the provider's own
+`cached_tokens`. A healthy session diverges only at the append point. Anything
+re-sent every turn (the DeepSeek REQUEST-scope tail) shows up immediately.
+
+Reference points, terminal-bench 2.1 on deepseek-v4-flash: Reasonix 98.24% hit
+/ ~1,295 miss tokens per request; clawcodex ~1,600-3,400 after the tail split
+(~6,764 before it).
 
 ## Notes
 

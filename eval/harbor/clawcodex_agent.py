@@ -140,6 +140,12 @@ Agent kwargs (``--ak key=value``):
 * ``source`` — full pip-installable spec overriding the PyPI package, e.g.
   ``git+https://github.com/agentforce314/clawcodex@main`` to eval unreleased
   code. Mutually exclusive with ``version``.
+
+  A path to a local ``.whl``/``.tar.gz`` on the host also works and is the
+  fast loop for harness changes that are not pushed anywhere: the file is
+  uploaded into each container and installed from there, so a working-tree
+  build can be benchmarked without a commit. Build one with
+  ``uv build --wheel`` and pass ``--ak source=dist/clawcodex_cli-…-py3-none-any.whl``.
 * ``subscription`` — ``true`` to authenticate the Anthropic provider with a
   Claude Pro/Max subscription instead of an API key. Reads the host's
   ``~/.clawcodex/anthropic-oauth.json`` (created by ``clawcodex login``;
@@ -390,6 +396,20 @@ class Clawcodex(BaseInstalledAgent):
 
         self._subscription = parse_bool_env_value(subscription, name="subscription")
         self._source = source
+        # A ``source`` that resolves to a real file on the host is a
+        # working-tree build to upload rather than a spec for uv to resolve
+        # over the network. Resolved once, here, so ``install`` fails fast on
+        # a typo'd path instead of once per container.
+        self._local_artifact: Path | None = None
+        if source and not source.startswith(("git+", "http://", "https://")):
+            candidate = Path(source).expanduser()
+            if candidate.is_file():
+                self._local_artifact = candidate.resolve()
+            elif candidate.suffix in (".whl", ".gz") or "/" in source:
+                raise ValueError(
+                    f"Agent kwarg 'source' looks like a local path but does not "
+                    f"exist: {candidate}"
+                )
         # ``advisor`` is ``<provider>:<model>`` — the reviewer model the
         # worker consults through the advisor tool. Same rationale as
         # ``fusion`` for living here rather than in CLI_FLAGS: it is config,
@@ -509,7 +529,13 @@ class Clawcodex(BaseInstalledAgent):
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
 
-        if self._source:
+        if self._local_artifact is not None:
+            # Working-tree build: ship the artifact into the container and
+            # install from there. uv treats a bare path as a local install.
+            remote = f"/tmp/{self._local_artifact.name}"
+            await environment.upload_file(self._local_artifact, remote)
+            install_spec = remote
+        elif self._source:
             install_spec = self._source
         elif self._version:
             install_spec = f"clawcodex-cli=={self._version}"

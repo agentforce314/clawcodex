@@ -20,8 +20,10 @@ from .memdir import (
     MAX_ENTRYPOINT_LINES,
     build_memory_lines,
     build_memory_prompt,
+    build_memory_prompt_parts,
     ensure_memory_dir_exists,
     load_memory_prompt,
+    load_memory_prompt_parts,
     truncate_entrypoint_content,
 )
 from .memory_age import (
@@ -105,8 +107,10 @@ __all__ = [
     "MAX_ENTRYPOINT_LINES",
     "build_memory_lines",
     "build_memory_prompt",
+    "build_memory_prompt_parts",
     "ensure_memory_dir_exists",
     "load_memory_prompt",
+    "load_memory_prompt_parts",
     "truncate_entrypoint_content",
     # scan / recall
     "FRONTMATTER_MAX_LINES",

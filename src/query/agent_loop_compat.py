@@ -205,8 +205,8 @@ def build_effective_system_prompt(
     *auto-memory* (``MEMORY.md`` via ``load_memory_prompt``), **not** CLAWCODEX.md.
     On the engine path CLAWCODEX.md is injected into the *messages* via
     ``prepend_user_context``; the cutover does not do that, so we keep
-    ``build_context_prompt`` (which emits ``## Project Instructions``) to
-    preserve CLAWCODEX.md — option (b) in
+    ``build_context_prompt_parts`` (whose second half emits
+    ``## Project Instructions``) to preserve CLAWCODEX.md — option (b) in
     ``my-docs/get-parity-by-folder/live-base-system-prompt-gap-analysis.md``.
     This overlaps the base ``# Environment`` section on CWD/date (a benign,
     documented duplication).
@@ -232,7 +232,7 @@ def build_effective_system_prompt(
     """
     # Local imports — context_system is a heavier dep; only the cutover
     # callers need it, no need to drag it into agent_loop_compat's import time.
-    from ..context_system import build_context_prompt
+    from ..context_system import build_context_prompt_parts
     from ..context_system.prompt_assembly import build_full_system_prompt_blocks
     from ..context_system.system_prompt_cache import CacheScope
     from ..coordinator.mode import is_coordinator_mode
@@ -288,27 +288,37 @@ def build_effective_system_prompt(
             skills=skills,
         )
 
-    # Preserve the existing workspace + git + CLAWCODEX.md context verbatim as a
-    # trailing uncached block (CLAWCODEX.md is NOT in the base blocks above).
+    # Preserve the workspace + git + CLAWCODEX.md context (CLAWCODEX.md is NOT
+    # in the base blocks above), but as TWO trailing blocks split by volatility.
     #
-    # Tag it REQUEST-scope. This block is a *live workspace snapshot*: it embeds
-    # ``git status`` (and file counts / top-level entries) that mutate the moment
-    # the agent edits a file — which, for a coding agent, is essentially every
-    # turn. For DeepSeek, ``query._split_system_prompt_blocks`` relocates
-    # REQUEST-scope sections out of the byte-stable ``system + tools + history``
-    # prefix into the trailing tail; without the tag this snapshot would sit in
-    # the prefix and a single mid-session file edit would bust DeepSeek's
-    # automatic prefix cache for the entire prefix. The tag honours the block's
-    # already-intended "uncached" status while keeping the prefix stable. It is a
-    # strict no-op for every other provider: relocation only fires for DeepSeek,
-    # and the Anthropic path strips ``_cache_scope`` before the wire.
+    # The snapshot half is REQUEST-scope. It embeds ``git status`` (and file
+    # counts / top-level entries) that mutate the moment the agent edits a file
+    # — for a coding agent, essentially every turn. For DeepSeek,
+    # ``query._split_system_prompt_blocks`` relocates REQUEST-scope sections out
+    # of the byte-stable ``system + tools + history`` prefix into a trailing
+    # tail; without the tag this snapshot would sit in the prefix and a single
+    # mid-session file edit would bust the cache for the whole prefix.
+    #
+    # The instructions half (``## Project Instructions``, i.e. CLAWCODEX.md) is
+    # SESSION-scope. It is read once and fixed for the session, and the tail is
+    # not free: it sits after the conversation, so it is re-sent and re-billed
+    # as a cache miss on EVERY request. A large CLAWCODEX.md was paying its full
+    # token count per turn for nothing. Keeping it in the cached prefix is the
+    # same trade Reasonix makes (internal/boot/boot.go: project instructions
+    # "fold into the system prompt exactly here, once ... so memory costs
+    # nothing per turn").
+    #
+    # Snapshot is appended first so the flattened prompt keeps the order
+    # ``build_context_prompt`` produced; providers that do not relocate
+    # REQUEST scope therefore see unchanged bytes.
     try:
-        context_prompt = build_context_prompt(
+        context_snapshot, context_instructions = build_context_prompt_parts(
             tool_context.workspace_root,
             cwd=tool_context.cwd,
         )
     except Exception:
-        context_prompt = ""
+        context_snapshot, context_instructions = "", ""
+    context_prompt = context_snapshot
 
     if coordinator:
         # workerToolsContext — TS merges this into the per-session userContext
@@ -333,16 +343,30 @@ def build_effective_system_prompt(
             scratchpad_dir=scratchpad_dir,
         ).get("workerToolsContext", "")
         if worker_ctx:
+            # Session-stable (MCP server names + scratchpad dir), so it rides
+            # with the instructions half rather than the live snapshot.
             entry = f"# workerToolsContext\n{worker_ctx}"
-            context_prompt = (
-                f"{context_prompt}\n\n{entry}" if context_prompt.strip() else entry
+            context_instructions = (
+                f"{context_instructions}\n\n{entry}"
+                if context_instructions.strip()
+                else entry
             )
 
+    # Snapshot first, instructions second: that is the order
+    # ``build_context_prompt`` produced, and providers which do not relocate
+    # REQUEST scope flatten blocks in list order — so their bytes are
+    # unchanged. Only DeepSeek pulls the REQUEST block out to the tail.
     if context_prompt.strip():
         blocks = blocks + [{
             "type": "text",
             "text": context_prompt,
             "_cache_scope": CacheScope.REQUEST.value,
+        }]
+    if context_instructions.strip():
+        blocks = blocks + [{
+            "type": "text",
+            "text": context_instructions,
+            "_cache_scope": CacheScope.SESSION.value,
         }]
 
     return blocks
