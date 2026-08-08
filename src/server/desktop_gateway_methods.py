@@ -326,13 +326,34 @@ class DesktopSession:
         return {"resolved": True}
 
 
+def configured_providers_only(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only providers the user has actually configured.
+
+    The registry knows ~30 providers, but the desktop picker should show just
+    the ones the user set up: a key-taking provider with credentials present
+    (an ``api_key`` in config, or a subscription/OAuth — the catalog folds both
+    into ``authenticated``), plus whichever the live session is running on.
+    Everything else is disabled by not appearing.
+
+    Local, no-key providers (Ollama / vLLM / SGLang, ``auth_type == "none"``)
+    report as ``authenticated`` because they need no key — but the user didn't
+    *configure* them, so they're excluded unless they're the active provider.
+    """
+    return [
+        p for p in providers
+        if p.get("is_current")
+        or (p.get("authenticated") and p.get("auth_type") == "api_key")
+    ]
+
+
 def _catalog_from_config() -> dict[str, Any]:
-    """Full model catalog from config alone — no live session required.
+    """Configured model catalog from config alone — no live session required.
 
     Mirrors the agent-server's ``list_model_providers`` control, but reads the
     default provider + its configured model list straight from config so the
     desktop model picker populates on the welcome screen (before any session
-    exists). Sync (config + registry access); call via ``to_thread``.
+    exists), and filters to only configured providers. Sync (config + registry
+    access); call via ``to_thread``.
     """
     from src.providers.catalog import provider_catalog
 
@@ -350,9 +371,12 @@ def _catalog_from_config() -> dict[str, Any]:
         provider = None
 
     try:
+        # current_models is left unset so the active provider shows its FULL
+        # registry model list (e.g. every deepseek model), not just the one
+        # `default_model` from config — the picker is where you switch models.
         providers = provider_catalog(
             current=provider,
-            current_models=models or None,
+            current_models=None,
             current_ready=bool(provider),
         )
     except Exception:  # noqa: BLE001
@@ -361,7 +385,7 @@ def _catalog_from_config() -> dict[str, Any]:
     return {
         "model": models[0] if models else None,
         "provider": provider,
-        "providers": providers,
+        "providers": configured_providers_only(providers),
     }
 
 
@@ -578,10 +602,13 @@ class GatewayConnection:
         if session is not None:
             result = await session.control_query("list_model_providers", {})
             if isinstance(result, dict) and result.get("providers"):
+                # Only configured providers (+ the running one) — same rule as
+                # the config-only path, so the picker is consistent whether or
+                # not a session is live.
                 return {
                     "model": result.get("fusion") or result.get("model"),
                     "provider": result.get("provider"),
-                    "providers": result.get("providers"),
+                    "providers": configured_providers_only(result["providers"]),
                 }
         # No live session yet (the welcome screen opens the picker before the
         # first prompt), or the session couldn't answer — enumerate the whole

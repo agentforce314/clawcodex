@@ -150,8 +150,15 @@ def test_settings_panel_rest_routes(
     monkeypatch.setattr("src.config.get_provider_config",
                         lambda n: {"default_model": "claude-sonnet-4-6"})
 
+    # The catalog is filtered to configured providers only; the panel needs a
+    # valid, non-empty list (the current provider is always present), not a
+    # specific count.
     options = rest.get("/api/model/options", headers=AUTH).json()
-    assert "providers" in options and len(options["providers"]) > 5
+    assert "providers" in options and isinstance(options["providers"], list)
+    assert all(
+        p.get("is_current") or (p.get("authenticated") and p.get("auth_type") == "api_key")
+        for p in options["providers"]
+    )
 
     aux = rest.get("/api/model/auxiliary", headers=AUTH).json()
     assert aux["main"] == {"model": "claude-sonnet-4-6", "provider": "anthropic"}

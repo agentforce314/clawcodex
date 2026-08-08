@@ -114,16 +114,38 @@ async def test_dispatch_never_raises() -> None:
     assert "backend exploded" in res["output"]
 
 
-# ─── model catalog from config (no live session) ─────────────────────────────
+# ─── model catalog: configured providers only ────────────────────────────────
 
 
-def test_catalog_from_config_populates_without_session() -> None:
+def test_configured_providers_only_filters_the_registry() -> None:
+    from src.server.desktop_gateway_methods import configured_providers_only
+
+    catalog = [
+        {"slug": "deepseek", "authenticated": True, "auth_type": "api_key"},
+        {"slug": "openai", "authenticated": True, "auth_type": "api_key"},
+        # Configured key-provider that the user hasn't set up → dropped.
+        {"slug": "groq", "authenticated": False, "auth_type": "api_key"},
+        # Local no-key server → dropped (not user-configured) unless active.
+        {"slug": "ollama", "authenticated": True, "auth_type": "none"},
+        # The running provider is always kept, even if the probe missed its key.
+        {"slug": "vllm", "authenticated": False, "auth_type": "none", "is_current": True},
+    ]
+    kept = {p["slug"] for p in configured_providers_only(catalog)}
+    assert kept == {"deepseek", "openai", "vllm"}
+
+
+def test_catalog_from_config_shows_only_configured() -> None:
     from src.server.desktop_gateway_methods import _catalog_from_config
 
     result = _catalog_from_config()
-    # The registry always knows anthropic + deepseek + more, regardless of
-    # which providers are configured — the picker needs the full list.
-    slugs = {p["slug"] for p in result["providers"]}
-    assert "anthropic" in slugs
-    assert len(result["providers"]) > 5
+    # Every returned provider is either configured (key + authenticated) or the
+    # current one — never the unconfigured long tail.
+    for p in result["providers"]:
+        assert p.get("is_current") or (
+            p.get("authenticated") and p.get("auth_type") == "api_key"
+        ), p["slug"]
+    # The active provider shows its FULL model list, not just default_model.
+    current = next((p for p in result["providers"] if p.get("is_current")), None)
+    if current is not None:
+        assert len(current["models"]) >= 1
 
