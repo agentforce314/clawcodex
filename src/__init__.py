@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("clawcodex-cli")
 except PackageNotFoundError:  # Running directly from an unpackaged checkout.
-    __version__ = "1.4.0"
+    __version__ = "1.5.0"
 __author__ = "Claw Codex Team"
 
 from .config import load_config, get_provider_config

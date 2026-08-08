@@ -7,24 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-08
+
 ### Added
 
-- **ClawCodex Desktop — a native desktop app** (`ui-desktop/`). The full
-  agent in a polished Electron window: streaming chat with live tool
-  activity, approval prompts, session sidebar with resume, side-by-side
-  previews, and settings — no terminal required.
+- **ClawCodex Desktop — a native desktop app** (`ui-desktop/`, #802–#805).
+  The full agent in a polished Electron window: streaming chat with live
+  tool activity and reasoning, permission approvals with
+  once/session/always grants, a session sidebar with resume (same durable
+  store as the TUI), side-by-side previews, settings, and the official
+  pixel-art crab as the app icon and in-app brand mark.
 
   ```
   clawcodex desktop
   ```
 
-  launches it from a checkout (installs UI deps on first run). Under the
-  hood the app spawns `clawcodex serve` — a new loopback HTTP + WebSocket
-  gateway (`/api/*` REST + JSON-RPC `/api/ws`) that runs sessions on the
-  same in-process agent core as the TUI, so both surfaces share one config,
-  one session store, and one set of skills. Ported from the reference
-  desktop implementation and fully rebranded, with a claw-mark icon set,
-  staged in PRs #802/#803/#804.
+  launches it from a checkout (installs UI deps on first run; `--no-dev`
+  builds once and launches Electron directly). Under the hood the app
+  spawns **`clawcodex serve`** — a new loopback HTTP + WebSocket gateway
+  (`/api/*` REST + JSON-RPC `/api/ws`) that runs sessions on the same
+  in-process agent core as the TUI, so both surfaces share one config, one
+  session store, and one set of skills. Ported from the reference desktop
+  implementation (~310K lines of TypeScript across ~1,500 files) and fully
+  rebranded, verified live end-to-end (boot → real chat turn → streamed
+  reply rendered), with macOS packaging producing a DMG/zip via
+  electron-builder.
+
+### Fixed
+
+- The desktop app's `lib/` source directories are tracked again — the root
+  `.gitignore`'s Python-oriented `lib/` pattern had silently excluded 180
+  renderer source files from the initial import; fresh clones failed at
+  boot (#806).
+- Desktop default UI scale is 100% (Chromium actual size) instead of the
+  reference's dense 90% preset, which read too small on typical displays;
+  per-install zoom choices persist (#807).
+- A second `clawcodex desktop` now explains the app is already running
+  (dev port probe) instead of dying on a vite stack trace (#808).
 
 ## [1.4.0] - 2026-08-02
 
