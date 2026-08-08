@@ -13,6 +13,50 @@ from datetime import date
 from pathlib import Path
 
 
+def build_context_prompt_parts(
+    workspace_root: str | Path,
+    *,
+    cwd: str | Path | None = None,
+) -> tuple[str, str]:
+    """Split the context prompt into ``(snapshot, instructions)``.
+
+    * ``snapshot`` — ``## Runtime Context`` + ``## Git Context``. A live view of
+      the workspace; ``git status`` moves the moment the agent edits a file, so
+      for a coding agent this changes essentially every turn.
+    * ``instructions`` — ``## Project Instructions``, i.e. the CLAWCODEX.md
+      bodies. Read once and fixed for the life of the session.
+
+    Callers that place these separately can keep ``instructions`` in the cached
+    prefix and relocate only ``snapshot``. That matters because the relocated
+    tail sits *after* the conversation and is therefore re-sent — and re-billed
+    as a prefix-cache miss — on every request, so a large CLAWCODEX.md was
+    costing its full token count per turn. Same reasoning as
+    :func:`src.memdir.build_memory_prompt_parts`.
+
+    Either half may be empty. ``build_context_prompt`` joins them back in this
+    order, so its output is unchanged.
+    """
+    root = Path(workspace_root).expanduser().resolve()
+    current = Path(cwd).expanduser().resolve() if cwd is not None else root
+
+    snapshot_sections: list[str] = []
+
+    # Workspace info section
+    snapshot_sections.append(_build_workspace_section(root, current))
+
+    # Git context (sync wrapper around async collect)
+    git_section = _build_git_section(str(root))
+    if git_section:
+        snapshot_sections.append(git_section)
+
+    # CLAWCODEX.md context (sync wrapper around async get_memory_files)
+    claude_section = _build_clawcodex_md_section(str(current), root)
+
+    snapshot = "\n\n".join(s for s in snapshot_sections if s.strip())
+    instructions = claude_section if claude_section and claude_section.strip() else ""
+    return snapshot, instructions
+
+
 def build_context_prompt(
     workspace_root: str | Path,
     *,
@@ -24,25 +68,8 @@ def build_context_prompt(
     Uses the new WS-5 context system under the hood.
     For new code, prefer fetch_system_prompt_parts() directly.
     """
-    root = Path(workspace_root).expanduser().resolve()
-    current = Path(cwd).expanduser().resolve() if cwd is not None else root
-
-    sections: list[str] = []
-
-    # Workspace info section
-    sections.append(_build_workspace_section(root, current))
-
-    # Git context (sync wrapper around async collect)
-    git_section = _build_git_section(str(root))
-    if git_section:
-        sections.append(git_section)
-
-    # CLAWCODEX.md context (sync wrapper around async get_memory_files)
-    claude_section = _build_clawcodex_md_section(str(current), root)
-    if claude_section:
-        sections.append(claude_section)
-
-    return "\n\n".join(section for section in sections if section.strip())
+    snapshot, instructions = build_context_prompt_parts(workspace_root, cwd=cwd)
+    return "\n\n".join(part for part in (snapshot, instructions) if part)
 
 
 def _run_async(coro):

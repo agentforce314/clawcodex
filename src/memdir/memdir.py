@@ -290,6 +290,60 @@ def build_memory_lines(
     return lines
 
 
+def build_memory_prompt_parts(
+    *,
+    display_name: str,
+    memory_dir: str,
+    extra_guidelines: Iterable[str] | None = None,
+) -> tuple[str, str]:
+    """Split the memory section into its stable and volatile halves.
+
+    Returns ``(guidance, index)``:
+
+    * ``guidance`` — the typed-memory behavioral doctrine. Interpolates only
+      ``display_name`` and ``memory_dir``, both fixed for the life of a
+      session, so these bytes never change between turns.
+    * ``index`` — the ``## MEMORY.md`` heading plus the entrypoint body, which
+      the model rewrites mid-session via the Memory tool.
+
+    The split exists for prefix caching. DeepSeek (and any other automatic
+    prefix cache) re-bills every token from the first changed byte onward, and
+    ``query`` relocates REQUEST-scope prompt sections to a trailing message
+    *after* the conversation — so anything left in that tail is recomputed on
+    every single request. Tagging the whole memory section REQUEST-scope put
+    ~3.4K tokens of unchanging doctrine in that tail and re-billed it every
+    turn; measured against terminal-bench 2.1 that was the single largest
+    source of cache misses. Only ``index`` genuinely belongs there.
+
+    ``build_memory_prompt`` remains the concatenation of the two, so callers
+    that want the whole section are byte-for-byte unaffected.
+    """
+    entrypoint_path = Path(memory_dir) / ENTRYPOINT_NAME
+    entrypoint_content = ""
+    try:
+        entrypoint_content = entrypoint_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        entrypoint_content = ""
+
+    guidance_lines = build_memory_lines(
+        display_name=display_name,
+        memory_dir=memory_dir,
+        extra_guidelines=extra_guidelines,
+    )
+
+    if entrypoint_content.strip():
+        truncation = truncate_entrypoint_content(entrypoint_content)
+        index_lines = [f"## {ENTRYPOINT_NAME}", "", truncation.content]
+    else:
+        index_lines = [
+            f"## {ENTRYPOINT_NAME}",
+            "",
+            f"Your {ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here.",
+        ]
+
+    return "\n".join(guidance_lines), "\n".join(index_lines)
+
+
 def build_memory_prompt(
     *,
     display_name: str,
@@ -302,33 +356,52 @@ def build_memory_prompt(
     :func:`truncate_entrypoint_content`, and appends after the prose
     lines. Used by both auto-memory (this module's
     :func:`load_memory_prompt`) and the eventual agent-memory variant.
-    """
-    entrypoint_path = Path(memory_dir) / ENTRYPOINT_NAME
-    entrypoint_content = ""
-    try:
-        entrypoint_content = entrypoint_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        entrypoint_content = ""
 
-    lines = build_memory_lines(
+    Equivalent to joining :func:`build_memory_prompt_parts` with a newline;
+    that function is the one to reach for when the caller needs to place the
+    stable and volatile halves at different points in the request.
+    """
+    guidance, index = build_memory_prompt_parts(
         display_name=display_name,
         memory_dir=memory_dir,
         extra_guidelines=extra_guidelines,
     )
+    return f"{guidance}\n{index}"
 
-    if entrypoint_content.strip():
-        truncation = truncate_entrypoint_content(entrypoint_content)
-        lines.extend([f"## {ENTRYPOINT_NAME}", "", truncation.content])
-    else:
-        lines.extend(
-            [
-                f"## {ENTRYPOINT_NAME}",
-                "",
-                f"Your {ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here.",
-            ]
-        )
 
-    return "\n".join(lines)
+def load_memory_prompt_parts() -> tuple[str | None, str | None]:
+    """``load_memory_prompt`` split into ``(guidance, index)``.
+
+    Same dispatch and same directory side effects; the only difference is that
+    the caller receives the session-stable doctrine separately from the
+    mutable ``MEMORY.md`` body so each can be placed in the request where it
+    belongs (see :func:`build_memory_prompt_parts` for why that matters).
+
+    The team-memory prompt carries no entrypoint body at all — it is doctrine
+    end to end — so that branch returns ``index=None``.
+    """
+    if not is_auto_memory_enabled():
+        return None, None
+
+    # Lazy import to avoid a circular import at module load time
+    # (team_mem_prompts imports from this module).
+    from .team_mem_paths import get_team_mem_path, is_team_memory_enabled
+
+    if is_team_memory_enabled():
+        from .team_mem_prompts import build_combined_memory_prompt
+
+        # team_dir is nested under auto_dir, so creating team_dir with
+        # parents=True creates auto_dir as a side effect.
+        team_dir = get_team_mem_path()
+        ensure_memory_dir_exists(team_dir)
+        return build_combined_memory_prompt(), None
+
+    auto_dir = get_auto_mem_path()
+    ensure_memory_dir_exists(auto_dir)
+    return build_memory_prompt_parts(
+        display_name=_AUTO_MEM_DISPLAY_NAME,
+        memory_dir=auto_dir,
+    )
 
 
 def load_memory_prompt() -> str | None:
@@ -347,25 +420,7 @@ def load_memory_prompt() -> str | None:
     KAIROS daily-log mode is still deferred (Slice D in the refactor
     plan).
     """
-    if not is_auto_memory_enabled():
+    guidance, index = load_memory_prompt_parts()
+    if guidance is None:
         return None
-
-    # Lazy import to avoid a circular import at module load time
-    # (team_mem_prompts imports from this module).
-    from .team_mem_paths import get_team_mem_path, is_team_memory_enabled
-
-    if is_team_memory_enabled():
-        from .team_mem_prompts import build_combined_memory_prompt
-
-        # team_dir is nested under auto_dir, so creating team_dir with
-        # parents=True creates auto_dir as a side effect.
-        team_dir = get_team_mem_path()
-        ensure_memory_dir_exists(team_dir)
-        return build_combined_memory_prompt()
-
-    auto_dir = get_auto_mem_path()
-    ensure_memory_dir_exists(auto_dir)
-    return build_memory_prompt(
-        display_name=_AUTO_MEM_DISPLAY_NAME,
-        memory_dir=auto_dir,
-    )
+    return guidance if index is None else f"{guidance}\n{index}"
