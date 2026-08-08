@@ -28,6 +28,21 @@ def test_decode_rejects_non_data_url() -> None:
     assert _decode_data_url("not a data url") is None
 
 
+def test_decode_mediarecorder_mime_with_codec_param() -> None:
+    """Regression: MediaRecorder emits ``audio/webm;codecs=opus`` — the mediatype
+    carries a ``;codecs=`` param before ``;base64``. The old regex failed this
+    and the mic showed 'invalid audio payload'."""
+    raw = b"\x1aE\xdf\xa3webm-bytes"
+    for header in ("audio/webm;codecs=opus", "audio/ogg; codecs=opus", "audio/mp4"):
+        url = f"data:{header};base64," + base64.b64encode(raw).decode()
+        decoded = _decode_data_url(url)
+        assert decoded is not None, header
+        audio, mime = decoded
+        assert audio == raw
+        # Base mediatype only — params stripped.
+        assert mime == header.split(";", 1)[0].strip()
+
+
 @pytest.mark.asyncio
 async def test_transcribe_no_provider_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(desktop_audio, "_configured_stt_provider", lambda: None)

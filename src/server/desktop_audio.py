@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-import re
 from dataclasses import dataclass
 
 import httpx
@@ -26,7 +25,6 @@ logger = logging.getLogger(__name__)
 # 404 the route, so we don't guess.
 _STT_PROVIDERS = ("openai", "groq")
 _STT_MODEL = {"openai": "whisper-1", "groq": "whisper-large-v3"}
-_DATA_URL_RE = re.compile(r"^data:([^;,]*)(;base64)?,(.*)$", re.DOTALL)
 
 
 @dataclass
@@ -38,14 +36,33 @@ class TranscriptionResult:
 
 
 def _decode_data_url(data_url: str) -> tuple[bytes, str] | None:
-    """(bytes, mime) from a data: URL, or None if it isn't one."""
-    match = _DATA_URL_RE.match(data_url or "")
-    if not match:
+    """(bytes, mime) from a data: URL, or None if it isn't one.
+
+    MediaRecorder produces MIME types with parameters, e.g.
+    ``data:audio/webm;codecs=opus;base64,<data>`` — the mediatype segment can
+    carry its own ``;param=value`` pairs before the ``;base64`` marker. Split
+    on the FIRST comma (the mediatype can't contain one) rather than a regex
+    that assumes the mediatype is parameter-free.
+    """
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
         return None
-    mime = match.group(1) or "audio/webm"
-    payload = match.group(3)
+    comma = data_url.find(",")
+    if comma == -1:
+        return None
+    header = data_url[len("data:"):comma]  # e.g. "audio/webm;codecs=opus;base64"
+    payload = data_url[comma + 1:]
+    is_base64 = header.rstrip().endswith(";base64")
+    if is_base64:
+        header = header.rstrip()[: -len(";base64")]
+    # Base mediatype is everything before the first parameter (";codecs=…").
+    mime = header.split(";", 1)[0].strip() or "audio/webm"
     try:
-        raw = base64.b64decode(payload) if match.group(2) else payload.encode("utf-8")
+        if is_base64:
+            raw = base64.b64decode(payload)
+        else:
+            from urllib.parse import unquote_to_bytes
+
+            raw = unquote_to_bytes(payload)
     except (binascii.Error, ValueError):
         return None
     return raw, mime
