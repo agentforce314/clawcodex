@@ -30,7 +30,8 @@ def test_decode_rejects_non_data_url() -> None:
 
 @pytest.mark.asyncio
 async def test_transcribe_no_provider_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(desktop_audio, "_configured_stt_provider", lambda: None)
+    monkeypatch.setattr(desktop_audio, "_stt_config", lambda: {})
+    monkeypatch.setattr(desktop_audio, "_voice_config", lambda: {})
     monkeypatch.setattr("src.config.get_provider_config", lambda pid: {})
     result = await transcribe_data_url(_wav_data_url())
     assert result.ok is False
@@ -43,8 +44,8 @@ async def test_transcribe_success(monkeypatch: pytest.MonkeyPatch) -> None:
         "src.config.get_provider_config",
         lambda pid: {"api_key": "k", "base_url": "https://stt.example/v1"} if pid == "openai" else {},
     )
-    monkeypatch.setattr(desktop_audio, "_configured_stt_provider", lambda: None)
-    monkeypatch.setattr(desktop_audio, "_stt_model_for", lambda p: "whisper-1")
+    monkeypatch.setattr(desktop_audio, "_stt_config", lambda: {})
+    monkeypatch.setattr(desktop_audio, "_voice_config", lambda: {})
 
     captured = {}
 
@@ -56,29 +57,59 @@ async def test_transcribe_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     transport = httpx.MockTransport(handler)
     orig_client = httpx.AsyncClient
-
-    def client_factory(*a, **k):
-        k["transport"] = transport
-        return orig_client(*a, **k)
-
-    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda *a, **k: orig_client(*a, **{**k, "transport": transport}))
 
     result = await transcribe_data_url(_wav_data_url(), "audio/wav")
     assert result.ok is True
     assert result.transcript == "hello world"
     assert result.provider == "openai"
-    assert captured["url"] == "https://stt.example/v1/audio/transcriptions"
+    # openai STT defaults to the CANONICAL OpenAI endpoint (not the provider's
+    # chat base_url, which may be a proxy without /audio/transcriptions).
+    assert captured["url"] == "https://api.openai.com/v1/audio/transcriptions"
     assert captured["auth"] == "Bearer k"
     assert captured["has_multipart"] is True
+
+
+@pytest.mark.asyncio
+async def test_transcribe_honors_explicit_stt_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stt.openai.{base_url,api_key,model} override the provider + canonical
+    defaults — this is how a user points STT at their own endpoint/model."""
+    monkeypatch.setattr("src.config.get_provider_config", lambda pid: {})
+    monkeypatch.setattr(desktop_audio, "_stt_config", lambda: {
+        "provider": "openai",
+        "openai": {"base_url": "https://my.stt/v1", "api_key": "sk-real", "model": "gpt-4o-transcribe"},
+    })
+    monkeypatch.setattr(desktop_audio, "_voice_config", lambda: {})
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        captured["model_ok"] = b"gpt-4o-transcribe" in request.content
+        return httpx.Response(200, json={"text": "hi"})
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda *a, **k: orig_client(*a, **{**k, "transport": transport}))
+
+    result = await transcribe_data_url(_wav_data_url(), "audio/wav")
+    assert result.ok is True
+    assert captured["url"] == "https://my.stt/v1/audio/transcriptions"
+    assert captured["auth"] == "Bearer sk-real"
+    assert captured["model_ok"] is True
 
 
 @pytest.mark.asyncio
 async def test_transcribe_model_rejection_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "src.config.get_provider_config",
-        lambda pid: {"api_key": "k", "base_url": "https://chat.example/v1"} if pid == "openai" else {},
+        lambda pid: {"api_key": "k"} if pid == "openai" else {},
     )
-    monkeypatch.setattr(desktop_audio, "_configured_stt_provider", lambda: None)
+    monkeypatch.setattr(desktop_audio, "_stt_config", lambda: {})
+    monkeypatch.setattr(desktop_audio, "_voice_config", lambda: {})
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": "Invalid model name passed in model=whisper-1"})
@@ -89,7 +120,7 @@ async def test_transcribe_model_rejection_is_actionable(monkeypatch: pytest.Monk
 
     result = await transcribe_data_url(_wav_data_url(), "audio/wav")
     assert result.ok is False
-    assert "doesn't offer a speech-to-text model" in result.error
+    assert "Settings → Voice" in result.error
 
 
 @pytest.mark.asyncio
@@ -99,6 +130,16 @@ async def test_transcribe_empty_clip() -> None:
     assert "empty" in result.error.lower()
 
 
-def test_stt_model_config_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("src.config.load_config", lambda: {"voice": {"stt_model": "whisper-large-v3"}})
+def test_stt_model_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Per-provider stt.<p>.model wins.
+    monkeypatch.setattr("src.config.load_config",
+                        lambda: {"stt": {"openai": {"model": "gpt-4o-transcribe"}}})
+    assert desktop_audio._stt_model_for("openai") == "gpt-4o-transcribe"
+    # Legacy voice.stt_model still honored.
+    monkeypatch.setattr("src.config.load_config",
+                        lambda: {"voice": {"stt_model": "whisper-large-v3"}})
     assert desktop_audio._stt_model_for("openai") == "whisper-large-v3"
+    # Default when nothing set.
+    monkeypatch.setattr("src.config.load_config", lambda: {})
+    assert desktop_audio._stt_model_for("openai") == "whisper-1"
+    assert desktop_audio._stt_model_for("groq") == "whisper-large-v3"

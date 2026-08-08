@@ -62,53 +62,87 @@ def _ext_for(mime: str) -> str:
     }.get(mime.split(";")[0].strip(), "webm")
 
 
-def _configured_stt_provider() -> str | None:
-    """An explicit ``voice.stt_provider`` from config, if set."""
+# Canonical transcription endpoints. Whisper lives here regardless of a
+# provider's CHAT base URL — a user's `openai` block may point at a chat-only
+# proxy (e.g. LiteLLM) that has no /audio/transcriptions route, so STT defaults
+# to the provider's real audio endpoint unless the config overrides it.
+_STT_BASE_URL = {
+    "openai": "https://api.openai.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
+
+def _stt_config() -> dict[str, Any]:
     try:
         from src.config import load_config
 
-        voice = (load_config() or {}).get("voice") or {}
-        stt = (load_config() or {}).get("stt") or {}
-        return voice.get("stt_provider") or stt.get("provider")
+        return (load_config() or {}).get("stt") or {}
     except Exception:  # noqa: BLE001
-        return None
+        return {}
+
+
+def _voice_config() -> dict[str, Any]:
+    try:
+        from src.config import load_config
+
+        return (load_config() or {}).get("voice") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _configured_stt_provider() -> str | None:
+    """An explicit STT provider from config (``stt.provider`` /
+    ``voice.stt_provider``), if set."""
+    return _stt_config().get("provider") or _voice_config().get("stt_provider")
 
 
 def _stt_model_for(provider: str) -> str:
-    """The transcription model id: config override, else the provider default."""
-    try:
-        from src.config import load_config
-
-        cfg = load_config() or {}
-        override = (cfg.get("voice") or {}).get("stt_model") or (cfg.get("stt") or {}).get("model")
-        if override:
-            return str(override)
-    except Exception:  # noqa: BLE001
-        pass
-    return _STT_MODEL.get(provider, "whisper-1")
+    """The transcription model id: ``stt.<provider>.model`` → ``stt.model`` →
+    ``voice.stt_model`` → the provider's default (whisper-1 / whisper-large-v3)."""
+    stt = _stt_config()
+    per = stt.get(provider) if isinstance(stt.get(provider), dict) else {}
+    override = per.get("model") or stt.get("model") or _voice_config().get("stt_model")
+    return str(override) if override else _STT_MODEL.get(provider, "whisper-1")
 
 
-def _pick_provider() -> tuple[str, str, str] | None:
-    """(provider_id, base_url, api_key) of the STT-capable provider to use.
+def _resolve_stt() -> tuple[str, str, str] | None:
+    """(provider_id, base_url, api_key) for transcription, or None.
 
-    An explicit ``voice.stt_provider`` wins; otherwise the first configured
-    provider known to host Whisper.
+    Resolution, most specific first:
+      * ``stt.<provider>`` block — ``base_url`` / ``api_key`` overrides,
+      * ``voice.stt_base_url`` / ``voice.stt_api_key`` (flat overrides),
+      * the provider's own config block (its chat ``api_key``),
+      * the canonical audio endpoint for the provider (``_STT_BASE_URL``).
+    The api_key is required; the base URL always has a canonical fallback so
+    "use the OpenAI endpoint with an OpenAI key" works with just a key set.
     """
     from src.config import get_provider_config
 
     configured = _configured_stt_provider()
     candidates = ([configured] if configured else []) + list(_STT_PROVIDERS)
+    stt = _stt_config()
+    voice = _voice_config()
+
     for pid in candidates:
         if not pid:
             continue
+        per = stt.get(pid) if isinstance(stt.get(pid), dict) else {}
         try:
-            cfg = get_provider_config(pid) or {}
+            prov_cfg = get_provider_config(pid) or {}
         except Exception:  # noqa: BLE001
+            prov_cfg = {}
+        key = per.get("api_key") or voice.get("stt_api_key") or prov_cfg.get("api_key")
+        if not key:
             continue
-        key = cfg.get("api_key")
-        base = cfg.get("base_url")
-        if key and base:
-            return str(pid), str(base).rstrip("/"), str(key)
+        base = (
+            per.get("base_url")
+            or voice.get("stt_base_url")
+            or _STT_BASE_URL.get(pid)
+            or prov_cfg.get("base_url")
+        )
+        if not base:
+            continue
+        return str(pid), str(base).rstrip("/"), str(key)
     return None
 
 
@@ -122,12 +156,13 @@ async def transcribe_data_url(data_url: str, mime_type: str | None = None) -> Tr
     if not audio:
         return TranscriptionResult(ok=False, error="empty audio clip")
 
-    picked = _pick_provider()
+    picked = _resolve_stt()
     if picked is None:
         return TranscriptionResult(
             ok=False,
-            error="Voice input needs a speech-to-text provider. Configure an "
-            "OpenAI or Groq API key (they host Whisper) in ~/.clawcodex/config.json.",
+            error="Voice input needs a speech-to-text provider. Add an OpenAI "
+            "or Groq API key (they host Whisper), then pick the transcription "
+            "model in Settings → Voice.",
         )
     provider, base, key = picked
     filename = f"clip.{_ext_for(mime)}"
@@ -155,9 +190,9 @@ async def transcribe_data_url(data_url: str, mime_type: str | None = None) -> Tr
         ):
             return TranscriptionResult(
                 ok=False, provider=provider,
-                error=f"The '{provider}' endpoint doesn't offer a speech-to-text "
-                "model. Point an OpenAI or Groq provider at a Whisper-capable "
-                "base URL, or set voice.stt_model in ~/.clawcodex/config.json.",
+                error=f"The '{provider}' endpoint rejected the transcription "
+                "model. Pick a valid one in Settings → Voice (Transcription "
+                "model), or point the provider at a Whisper-capable base URL.",
             )
         return TranscriptionResult(
             ok=False, provider=provider,

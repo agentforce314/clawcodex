@@ -74,6 +74,59 @@ def test_index_serves_adoptable_token(client: TestClient) -> None:
     assert json.dumps(TOKEN) in res.text
 
 
+def test_config_put_deep_merges_preserving_secrets(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PUT /api/config layers the (secret-redacted) edit over the stored config
+    so api_keys/env survive — the Voice panel writes stt.* this way."""
+    stored = {
+        "display": {"skin": "dark"},
+        "providers": {"openai": {"api_key": "sk-keep", "base_url": "https://x"}},
+        "env": {"TAVILY_API_KEY": "tvly-keep"},
+    }
+    saved: dict = {}
+
+    class _Manager:
+        def load_global(self):
+            return dict(stored)
+
+        def save_global(self, data):
+            saved.update(data)
+
+        def invalidate(self):
+            pass
+
+    monkeypatch.setattr("src.config._get_default_manager", lambda: _Manager())
+
+    # The renderer sends a redacted draft (no api_key/env) plus its edit,
+    # wrapped as {"config": {...}} by saveClawCodexConfig.
+    res = client.put(
+        "/api/config",
+        headers={"X-ClawCodex-Session-Token": TOKEN},
+        json={"config": {"display": {"skin": "dark"}, "stt": {"provider": "openai",
+              "openai": {"model": "whisper-1"}}}},
+    )
+    assert res.status_code == 200 and res.json() == {"ok": True}
+    # The edit applied…
+    assert saved["stt"] == {"provider": "openai", "openai": {"model": "whisper-1"}}
+    # …and the secrets the draft omitted were preserved by the deep-merge.
+    assert saved["providers"]["openai"]["api_key"] == "sk-keep"
+    assert saved["env"]["TAVILY_API_KEY"] == "tvly-keep"
+
+
+def test_config_put_requires_token(client: TestClient) -> None:
+    assert client.put("/api/config", json={"x": 1}).status_code == 401
+
+
+def test_config_schema_exposes_transcription_model(client: TestClient) -> None:
+    schema = client.get("/api/config/schema",
+                        headers={"X-ClawCodex-Session-Token": TOKEN}).json()
+    fields = schema["fields"]
+    assert "stt.openai.model" in fields
+    assert fields["stt.provider"]["type"] == "select"
+    assert "openai" in fields["stt.provider"]["options"]
+
+
 def test_config_requires_token_and_redacts_secrets(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

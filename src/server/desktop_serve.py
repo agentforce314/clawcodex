@@ -141,6 +141,19 @@ def build_app(state: DesktopServeState) -> Starlette:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         from src.config import load_config
 
+        if request.method == "PUT":
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001
+                body = None
+            if not isinstance(body, dict):
+                return JSONResponse({"ok": False, "error": "invalid config body"},
+                                    status_code=400)
+            # The renderer wraps the payload as {"config": {...}}
+            # (saveClawCodexConfig); accept the bare object too.
+            incoming = body.get("config") if isinstance(body.get("config"), dict) else body
+            return JSONResponse(_save_config_merged(incoming))
+
         return JSONResponse(redact_secrets(load_config()))
 
     def _int_param(request: Request, name: str, default: int) -> int:
@@ -220,10 +233,38 @@ def build_app(state: DesktopServeState) -> Starlette:
     async def config_schema(request: Request) -> Response:
         if not _token_ok(state, _rest_token(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        # No dynamic config schema in this backend — the structured settings
-        # panels render from their own known fields; the schema only drives the
-        # Advanced tab's generated rows, which degrade to none.
-        return JSONResponse({"fields": {}, "category_order": []})
+        # There's no generated dataclass schema in this backend. Ship a focused
+        # schema for the voice fields the user configures — most importantly the
+        # transcription model, so Settings → Voice can pick it when STT fails.
+        # Other panels render from their own known fields.
+        return JSONResponse({
+            "fields": {
+                "stt.enabled": {
+                    "type": "boolean",
+                    "description": "Enable voice input (speech-to-text).",
+                },
+                "stt.provider": {
+                    "type": "select",
+                    "options": ["openai", "groq"],
+                    "description": "Which provider transcribes your recordings. "
+                    "OpenAI (whisper-1) uses api.openai.com; Groq hosts Whisper too.",
+                },
+                "stt.openai.model": {
+                    "type": "string",
+                    "description": "OpenAI transcription model — whisper-1, or a "
+                    "newer id like gpt-4o-transcribe / gpt-4o-mini-transcribe.",
+                },
+                "stt.groq.model": {
+                    "type": "string",
+                    "description": "Groq transcription model — e.g. whisper-large-v3.",
+                },
+                "voice.auto_tts": {
+                    "type": "boolean",
+                    "description": "Automatically speak assistant replies.",
+                },
+            },
+            "category_order": [],
+        })
 
     async def cron_jobs(request: Request) -> Response:
         if not _token_ok(state, _rest_token(request)):
@@ -443,7 +484,7 @@ def build_app(state: DesktopServeState) -> Starlette:
     routes = [
         Route("/api/health", health),
         Route("/api/status", status),
-        Route("/api/config", config),
+        Route("/api/config", config, methods=["GET", "PUT"]),
         Route("/api/config/defaults", config_defaults),
         Route("/api/sessions", sessions_list),
         Route("/api/sessions/{session_id}/messages", session_messages),
@@ -467,6 +508,30 @@ def build_app(state: DesktopServeState) -> Starlette:
               methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
     ]
     return Starlette(routes=routes)
+
+
+def _save_config_merged(incoming: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge the (secret-redacted) incoming config over the stored global
+    config and persist it.
+
+    GET /api/config redacts secrets, so the renderer's config draft has no
+    api_keys or ``env`` block. A REPLACE would wipe them — deep-merge layers
+    the user's edits (voice.stt.*, display, …) on top of the stored config so
+    credentials survive. Mirrors ``saveClawCodexConfig``'s documented merge
+    semantics (not the REPLACE variant).
+    """
+    from src.config import _deep_merge, _get_default_manager
+
+    try:
+        manager = _get_default_manager()
+        current = manager.load_global()
+        merged = _deep_merge(current, incoming)
+        manager.save_global(merged)
+        manager.invalidate()
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("desktop: config save failed", exc_info=True)
+        return {"ok": False, "error": str(exc)}
 
 
 _SECRET_KEY_MARKERS = ("api_key", "apikey", "token", "secret", "password")

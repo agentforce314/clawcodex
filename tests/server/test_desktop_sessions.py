@@ -165,7 +165,9 @@ def test_settings_panel_rest_routes(
     assert aux["tasks"] == []
 
     schema = rest.get("/api/config/schema", headers=AUTH).json()
-    assert schema == {"fields": {}, "category_order": []}
+    assert "fields" in schema and isinstance(schema["fields"], dict)
+    # Ships a focused voice schema (transcription model, provider, …).
+    assert "stt.openai.model" in schema["fields"]
 
     assert rest.get("/api/cron/jobs", headers=AUTH).json() == {"jobs": []}
     assert rest.get("/api/audio/elevenlabs/voices", headers=AUTH).json() == {"voices": []}
