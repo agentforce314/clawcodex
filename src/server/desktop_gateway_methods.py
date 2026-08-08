@@ -85,10 +85,11 @@ class DesktopSession:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
-    async def start(self, cwd: str) -> None:
+    async def start(self, cwd: str, spawn: Any = None) -> None:
         # spawn's third arg is a permission-mode override, NOT a resume id;
         # resuming a stored session is a post-init `resume` control request.
-        self.agent = await self.state.spawn_agent(self.session_id, cwd, None)
+        spawn = spawn or self.state.spawn_agent
+        self.agent = await spawn(self.session_id, cwd, None)
         self.pump_task = asyncio.create_task(
             self._pump(), name=f"desktop-session-{self.session_id}"
         )
@@ -364,6 +365,13 @@ def _catalog_from_config() -> dict[str, Any]:
     }
 
 
+def _clean(value: Any) -> str | None:
+    """A non-empty trimmed string, or None (empty selections → base config)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _suggestion_scope(suggestion: dict[str, Any]) -> str:
     """Bucket a permission suggestion as a session or always/persistent grant."""
     destination = str(suggestion.get("destination") or "").lower()
@@ -424,7 +432,8 @@ class GatewayConnection:
             raise ValueError(f"unknown session: {session_id or '<missing>'}")
         return session
 
-    async def _create(self, cwd: str | None, resume: str | None) -> DesktopSession:
+    async def _create(self, cwd: str | None, resume: str | None,
+                      params: dict[str, Any] | None = None) -> DesktopSession:
         manager = self.state.manager
         workspace = cwd or self.state.workspace
         if resume and resume in self.state.sessions:
@@ -436,8 +445,18 @@ class GatewayConnection:
         session = DesktopSession(session_id, self.state)
         session.sockets.add(self.websocket)
         self.state.sessions[session_id] = session
+        # Honor the composer's provider/model/effort selection at spawn time, so
+        # a session can use a working provider even when the config default is
+        # broken (expired subscription, missing key). Empty values → the base
+        # config's default provider.
+        params = params or {}
+        spawn = self.state.spawn_for(
+            _clean(params.get("provider")),
+            _clean(params.get("model")),
+            _clean(params.get("reasoning_effort") or params.get("effort")),
+        )
         try:
-            await session.start(workspace)
+            await session.start(workspace, spawn=spawn)
         except Exception:
             self.state.sessions.pop(session_id, None)
             raise
@@ -460,7 +479,7 @@ class GatewayConnection:
     # ── methods ──────────────────────────────────────────────────────────────
 
     async def session_create(self, params: dict[str, Any]) -> dict[str, Any]:
-        session = await self._create(params.get("cwd"), None)
+        session = await self._create(params.get("cwd"), None, params)
         return {
             "session_id": session.session_id,
             "stored_session_id": session.session_id,
@@ -469,7 +488,7 @@ class GatewayConnection:
 
     async def session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         wanted = str(params.get("session_id") or "") or None
-        session = await self._create(params.get("cwd"), wanted)
+        session = await self._create(params.get("cwd"), wanted, params)
         response: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": wanted or session.session_id,

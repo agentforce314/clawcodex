@@ -247,6 +247,7 @@ async def _serve(args, workspace: str, token: str,
         workspace=workspace,
         manager=manager,
         spawn_agent=spawn,
+        agent_config=agent_config,
         protocol_version=PROTOCOL_VERSION,
     )
     app = build_app(state)

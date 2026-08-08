@@ -45,10 +45,38 @@ class DesktopServeState:
     manager: Any
     spawn_agent: Callable[..., Awaitable[Any]]
     protocol_version: str
+    # The base AgentServerConfig every session inherits. A session.create that
+    # names a provider/model/effort (the composer's selection) is spawned from
+    # a per-session copy of this — otherwise every session would boot the
+    # default provider and a bad default (e.g. an expired Claude subscription)
+    # would make the app unusable even after switching models.
+    agent_config: Any = None
     # session_id -> live DesktopSession (created lazily by the gateway).
     sessions: dict[str, Any] = field(default_factory=dict)
     # Saved-transcript dir override (tests); default resolves per request.
     sessions_dir: Path | None = None
+
+    def spawn_for(self, provider: str | None, model: str | None,
+                  effort: str | None) -> Callable[..., Awaitable[Any]]:
+        """A spawn closure honoring a session's provider/model/effort override.
+
+        Falls back to the shared ``spawn_agent`` when nothing is overridden or
+        no base config is available (tests inject a bare spawn).
+        """
+        if self.agent_config is None or not (provider or model or effort):
+            return self.spawn_agent
+        import dataclasses
+
+        from src.server.agent_server import make_spawn_agent
+
+        overrides: dict[str, Any] = {}
+        if provider:
+            overrides["provider_name"] = provider
+        if model:
+            overrides["model"] = model
+        if effort:
+            overrides["effort"] = effort
+        return make_spawn_agent(dataclasses.replace(self.agent_config, **overrides))
 
     def saved_sessions_dir(self) -> Path:
         if self.sessions_dir is not None:

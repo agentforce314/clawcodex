@@ -280,6 +280,56 @@ def test_approval_roundtrip_fake(tmp_path: Path) -> None:
         assert reply["response"]["updatedInput"] == {"command": "rm -rf /tmp/x"}
 
 
+def test_session_create_honors_provider_override(tmp_path: Path) -> None:
+    """A composer selection (provider/model) must reach the spawn, so a session
+    can use a working provider even when the config default is broken."""
+    import dataclasses
+
+    from src.server.agent_server import AgentServerConfig
+
+    spawned_with: list = []
+
+    def make_spawn(config):
+        async def spawn(session_id, cwd, resume):
+            spawned_with.append((config.provider_name, config.model, config.effort))
+            agent = FakeAgent()
+            return agent
+        return spawn
+
+    base = AgentServerConfig(provider_name="anthropic", model="claude-sonnet-4-6")
+    state, _ = _fake_state(tmp_path)
+    state.agent_config = base
+    state.spawn_agent = make_spawn(base)
+    # Real make_spawn_agent is heavy; substitute ours for the override path.
+    import src.server.desktop_serve as serve_mod
+    import src.server.agent_server as agent_mod
+    orig = agent_mod.make_spawn_agent
+    agent_mod.make_spawn_agent = make_spawn
+    try:
+        with TestClient(build_app(state)) as client, _connect(client) as ws:
+            ws.receive_json()
+            events: list[dict] = []
+            _rpc(ws, 1, "session.create",
+                 {"cwd": "/tmp", "source": "desktop", "provider": "deepseek",
+                  "model": "deepseek-v4-flash", "reasoning_effort": "high"})
+            _drain_for_response(ws, 1, events)
+    finally:
+        agent_mod.make_spawn_agent = orig
+
+    assert spawned_with[-1] == ("deepseek", "deepseek-v4-flash", "high")
+
+
+def test_session_create_without_override_uses_base_spawn(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    # No agent_config → spawn_for returns the shared spawn_agent unchanged.
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {"cwd": "/tmp", "source": "desktop"})
+        _drain_for_response(ws, 1, events)
+    assert len(agents) == 1  # the base spawn was used
+
+
 def test_resume_hydrates_saved_transcript(tmp_path: Path) -> None:
     state, agents = _fake_state(tmp_path)
     sessions_dir = tmp_path / "saved"
