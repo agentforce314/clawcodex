@@ -16,6 +16,12 @@ httpx-sse>=0.4
 # THIS is the file CI installs from (ci.yml -> requirements.dev.txt -> here);
 # pyproject.toml is packaging metadata only, so both need the cap.
 mcp>=1.27.0,<2
+
+# Desktop gateway server (`clawcodex serve`, ui-desktop backend). Both are
+# already transitive deps of `mcp`; declared directly because
+# src/server/desktop_serve.py imports them directly.
+starlette>=0.27
+uvicorn>=0.31.1
 Pillow>=10.0
 markdownify>=0.11
 pydantic>=2.0

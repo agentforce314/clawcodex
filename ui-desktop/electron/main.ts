@@ -33,7 +33,7 @@ import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
-import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, clawcodexManagedNodePathEntries, normalizeClawCodexHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForClawCodexReady } from './backend-health'
@@ -589,7 +589,9 @@ function pathWithClawCodexManagedNode(...entries) {
 // up with identical layouts and can share one install.
 const ACTIVE_CLAWCODEX_ROOT = path.join(CLAWCODEX_CONFIG_DIR, 'clawcodex')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
-const VENV_ROOT = path.join(ACTIVE_CLAWCODEX_ROOT, 'venv')
+// install.sh creates the uv venv INSIDE the clone, named `.venv`
+// (~/.clawcodex/clawcodex/.venv) — same layout a dev checkout uses.
+const VENV_ROOT = path.join(ACTIVE_CLAWCODEX_ROOT, '.venv')
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -1879,15 +1881,15 @@ function unwrapWindowsVenvClawCodexCommand(command, backendArgs) {
 }
 
 // Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `clawcodex serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+// spawns `clawcodex serve`; a runtime cloned before serve shipped doesn't know
+// it, and the CLI would misparse `serve` as a free-form prompt — so detection
+// gates the launch and assertBackendServes() turns "too old" into an
+// actionable update error instead of a hung/garbled spawn.
 //
-// Fast path: read the runtime's own dashboard.py (instant, covers managed
-// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `clawcodex` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
+// Fast path: read the runtime's own src/cli.py (instant, covers managed
+// installs and dev checkouts). Fallback: probe the CLI once (covers a bare
+// `clawcodex` resolved from PATH with no known source root). Result is cached
+// per resolved runtime so we probe at most once per backend.
 const _serveSupportCache = new Map()
 
 function backendSupportsServe(backend) {
@@ -1905,7 +1907,7 @@ function backendSupportsServe(backend) {
 
   if (backend.root) {
     try {
-      const src = fs.readFileSync(path.join(backend.root, 'clawcodex_cli', 'subcommands', 'dashboard.py'), 'utf8')
+      const src = fs.readFileSync(path.join(backend.root, 'src', 'cli.py'), 'utf8')
       supported = sourceDeclaresServe(src)
     } catch {
       supported = null // source unreadable — fall through to the probe
@@ -1941,17 +1943,23 @@ function backendSupportsServe(backend) {
 
   _serveSupportCache.set(key, supported)
   rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → runtime update required'} for ${backend.label || key}`
   )
 
   return supported
 }
 
-// Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
-function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+// Refuse to spawn a runtime that predates `clawcodex serve`. There is no
+// legacy invocation that can back the desktop, so the only correct outcome is
+// a boot failure whose message tells the user to update the runtime (the
+// standard backend-start-failure surface renders it with the log tail).
+function assertBackendServes(backend) {
+  if (!backendSupportsServe(backend)) {
+    throw new Error(
+      `The ClawCodex runtime at ${backend.root || backend.command} does not support \`clawcodex serve\`. ` +
+        'Update it (re-run install.sh, or `git pull` in the runtime checkout) and relaunch the app.'
+    )
+  }
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -1998,7 +2006,7 @@ function looksLikeDesktopAppBinary(commandPath) {
 }
 
 function isClawCodexSourceRoot(root) {
-  return directoryExists(root) && fileExists(path.join(root, 'clawcodex_cli', 'main.py'))
+  return directoryExists(root) && fileExists(path.join(root, 'src', 'cli.py'))
 }
 
 function findPythonForRoot(root) {
@@ -3837,7 +3845,7 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     kind: 'python',
     label,
     command,
-    args: ['-m', 'clawcodex_cli.main', ...backendArgs],
+    args: ['-m', 'src.cli', ...backendArgs],
     env: buildDesktopBackendEnv({
       clawcodexHome: CLAWCODEX_CONFIG_DIR,
       pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
@@ -3861,7 +3869,7 @@ function createActiveBackend(backendArgs) {
     kind: 'python',
     label: `ClawCodex at ${ACTIVE_CLAWCODEX_ROOT}`,
     command,
-    args: ['-m', 'clawcodex_cli.main', ...backendArgs],
+    args: ['-m', 'src.cli', ...backendArgs],
     env: buildDesktopBackendEnv({
       clawcodexHome: CLAWCODEX_CONFIG_DIR,
       pythonPathEntries: [ACTIVE_CLAWCODEX_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
@@ -4014,7 +4022,7 @@ function resolveClawCodexBackend(backendArgs) {
         kind: 'python',
         label: `installed clawcodex_cli module via ${python}`,
         command: python,
-        args: ['-m', 'clawcodex_cli.main', ...backendArgs],
+        args: ['-m', 'src.cli', ...backendArgs],
         bootstrap: false,
         env: {},
         shell: false
@@ -8184,8 +8192,8 @@ async function spawnPoolBackend(profile, entry) {
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
   const backend = await ensureRuntime(resolveClawCodexBackend(backendArgs))
-  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-  backend.args = getBackendArgsForRuntime(backend)
+  // A runtime without `serve` cannot back the desktop — fail with guidance.
+  assertBackendServes(backend)
   const clawcodexCwd = resolveClawCodexCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -8471,8 +8479,8 @@ async function startClawCodex() {
     }
 
     const backend = setup.backend
-    // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-    backend.args = getBackendArgsForRuntime(backend)
+    // A runtime without `serve` cannot back the desktop — fail with guidance.
+    assertBackendServes(backend)
     const clawcodexCwd = resolveClawCodexCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -11432,19 +11440,19 @@ ipcMain.handle('clawcodex:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical ClawCodex version (the one `release.py` bumps in
-// clawcodex_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real ClawCodex version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
+// Resolve the canonical ClawCodex version (the `version` field in the
+// runtime's pyproject.toml) so the desktop About panel shows the real
+// ClawCodex version instead of the Electron app's own package.json version.
+// Falls back to app.getVersion() when the source tree can't be read (e.g. a
+// packaged build without the repo).
 function resolveClawCodexVersion() {
   try {
     const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'clawcodex_cli', '__init__.py')
+    const pyprojectPath = path.join(root, 'pyproject.toml')
 
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
+    if (fileExists(pyprojectPath)) {
+      const raw = fs.readFileSync(pyprojectPath, 'utf8')
+      const match = raw.match(/^version\s*=\s*["']([^"']+)["']/m)
 
       if (match) {
         return match[1]
@@ -11535,7 +11543,7 @@ async function getUninstallSummary() {
     try {
       const child = spawn(
         py,
-        ['-m', 'clawcodex_cli.main', 'uninstall', '--gui-summary'],
+        ['-m', 'src.cli', 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
           cwd: agentRoot,
           env: { ...process.env, CLAWCODEX_CONFIG_DIR, NO_COLOR: '1' },

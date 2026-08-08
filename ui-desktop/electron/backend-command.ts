@@ -1,13 +1,12 @@
 // Backend subcommand routing for the desktop-managed ClawCodex process.
 //
-// The desktop app launches its own headless backend via `clawcodex serve` — it
-// must NEVER depend on or launch the browser `dashboard`. But `serve` is a
-// newer subcommand: a runtime that predates it (an older managed install the
-// app hasn't updated yet, or an older `clawcodex` resolved from PATH) only knows
-// `dashboard --no-open`. To avoid bricking those users mid-upgrade we detect
-// whether the resolved runtime understands `serve` and, only when it does not,
-// fall back to the legacy `dashboard --no-open` invocation. Both produce the
-// exact same headless gateway; `serve` is just the decoupled name.
+// The desktop app launches its own headless backend via `clawcodex serve`
+// (src/entrypoints/serve_cli.py in the backend repo). `serve` shipped after
+// some managed installs were cloned, so a stale runtime may not know the
+// subcommand. There is no legacy fallback form — a runtime without `serve`
+// cannot back the desktop at all — so detection exists to fail the launch
+// with an actionable "update the runtime" error instead of letting the CLI
+// misparse `serve` as a free-form prompt.
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
@@ -22,27 +21,11 @@ export function serveBackendArgs(profile?: string) {
 }
 
 /**
- * Rewrite a resolved backend argv from `serve` to the legacy
- * `dashboard --no-open` form, preserving every other argument (incl. a leading
- * `-m clawcodex_cli.main` and any `--profile <name>`). Returns a copy; if there is
- * no `serve` token the argv is returned unchanged.
+ * True when a runtime's `src/cli.py` source routes the `serve` subcommand.
+ * Matches the subcommand sieve (`token == 'serve'` / `token == "serve"`)
+ * specifically so substrings like "server" (e.g. `agent-server`,
+ * "web server") never produce a false positive.
  */
-export function dashboardFallbackArgs(args) {
-  const i = args.indexOf('serve')
-
-  if (i === -1) {
-    return args.slice()
-  }
-
-  return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
-}
-
-/**
- * True when a runtime's `clawcodex_cli/subcommands/dashboard.py` source registers
- * the `serve` subcommand. Matches `add_parser("serve"` / `add_parser('serve'`
- * specifically so the substring "server" (e.g. "start_server", "web server")
- * never produces a false positive.
- */
-export function sourceDeclaresServe(dashboardPySource) {
-  return /add_parser\(\s*["']serve["']/.test(String(dashboardPySource || ''))
+export function sourceDeclaresServe(cliPySource) {
+  return /token\s*==\s*["']serve["']/.test(String(cliPySource || ''))
 }

@@ -66,6 +66,10 @@ dependencies = [
     # new; ``experimental`` is gone). Do that on its own branch, with the
     # websocket transport either ported or explicitly dropped.
     "mcp>=1.27.0,<2",
+    # Desktop gateway server (`clawcodex serve`): direct imports in
+    # src/server/desktop_serve.py; already transitive via mcp.
+    "starlette>=0.27",
+    "uvicorn>=0.31.1",
     # Image decode/resize/encode for the FileReadTool image pipeline (port
     # of TS imageResizer.ts which uses sharp). Pillow has pure-Python wheels
     # for all platforms and covers PNG/JPEG/GIF/WebP and palette quantization.

@@ -118,6 +118,9 @@ def main():
         if token == 'agent-server':
             from src.entrypoints.agent_server_cli import run_agent_server_subcommand
             return run_agent_server_subcommand(rest)
+        if token == 'serve':
+            from src.entrypoints.serve_cli import run_serve_subcommand
+            return run_serve_subcommand(rest)
         if token == 'tui':
             return _run_tui_subcommand(rest)
         if token == 'migrate':
