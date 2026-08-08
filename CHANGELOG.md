@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ClawCodex Desktop — a native desktop app** (`ui-desktop/`). The full
+  agent in a polished Electron window: streaming chat with live tool
+  activity, approval prompts, session sidebar with resume, side-by-side
+  previews, and settings — no terminal required.
+
+  ```
+  clawcodex desktop
+  ```
+
+  launches it from a checkout (installs UI deps on first run). Under the
+  hood the app spawns `clawcodex serve` — a new loopback HTTP + WebSocket
+  gateway (`/api/*` REST + JSON-RPC `/api/ws`) that runs sessions on the
+  same in-process agent core as the TUI, so both surfaces share one config,
+  one session store, and one set of skills. Ported from the reference
+  desktop implementation and fully rebranded, with a claw-mark icon set,
+  staged in PRs #802/#803/#804.
+
 ## [1.4.0] - 2026-08-02
 
 ### Added

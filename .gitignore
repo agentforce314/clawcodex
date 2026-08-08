@@ -177,3 +177,7 @@ coverage/
 .env.test.local
 .env.production.local
 .gstack/
+
+# ClawCodex Desktop packaged installers (electron-builder output)
+ui-desktop/release/
+ui-desktop/test-results/

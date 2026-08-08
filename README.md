@@ -552,6 +552,22 @@ Use `clawcodex config` to check connection status and
 
 **See [FEATURE_LIST.md](FEATURE_LIST.md) for detailed feature status and PR guidelines.**
 
+## 🖥️ ClawCodex Desktop
+
+The agent also ships as a **native desktop app** (`ui-desktop/`): streaming
+chat with live tool activity and approval prompts, a session sidebar with
+resume, side-by-side previews, and settings — no terminal required. It runs
+on the same backend, config, and session store as the CLI/TUI.
+
+```bash
+# from a source checkout (installs UI deps on first run)
+clawcodex desktop
+```
+
+The app boots its own backend via `clawcodex serve` (loopback HTTP +
+WebSocket gateway over the in-process agent core). See
+[`ui-desktop/README.md`](ui-desktop/README.md) for development docs.
+
 ## 🚀 Quick Start
 
 ### Install

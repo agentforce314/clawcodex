@@ -5,10 +5,10 @@ import { useTheme } from './context'
 // Retired skin names land on the canonical Nous skin so old muscle memory works.
 const ALIASES: Record<string, string> = {
   ares: 'ember',
-  default: 'nous',
-  gold: 'nous',
-  clawcodex: 'nous',
-  'nous-light': 'nous'
+  default: 'clawcodex',
+  gold: 'clawcodex',
+  clawcodex: 'clawcodex',
+  'clawcodex-light': 'clawcodex'
 }
 
 export function useSkinCommand() {

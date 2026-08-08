@@ -134,7 +134,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(5)
+    reportBackendContract(1)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -142,17 +142,17 @@ describe('reportBackendContract', () => {
   it('warns when the backend is behind (or reports no contract)', () => {
     reportBackendContract(undefined)
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    reportBackendContract(1)
+    reportBackendContract(0)
     expect(notifySpy).toHaveBeenCalledTimes(2)
   })
 
   it('stays quiet on later session opens once the user closed it', () => {
-    reportBackendContract(1)
+    reportBackendContract(0)
     lastToast().onDismiss() // user closes it → cooldown starts
     notifySpy.mockClear()
 
     // Opening another pre-existing session re-runs the check within cooldown.
-    reportBackendContract(1)
+    reportBackendContract(0)
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
@@ -160,22 +160,22 @@ describe('reportBackendContract', () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
 
-    reportBackendContract(1)
+    reportBackendContract(0)
     lastToast().onDismiss()
     notifySpy.mockClear()
 
     vi.setSystemTime(25 * 60 * 60 * 1000) // > 24h cooldown
-    reportBackendContract(1)
+    reportBackendContract(0)
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
   it('clears the snooze once the backend catches up, so a regression warns again', () => {
-    reportBackendContract(1)
+    reportBackendContract(0)
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(5) // backend updated → satisfied, snooze cleared
-    reportBackendContract(4) // a later regression must warn immediately
+    reportBackendContract(1) // backend updated → satisfied, snooze cleared
+    reportBackendContract(0) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 })
