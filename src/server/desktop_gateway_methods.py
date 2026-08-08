@@ -387,6 +387,8 @@ class GatewayConnection:
             "session.list": self.session_active_list,
             "session.interrupt": self.session_interrupt,
             "session.clear": self.session_clear,
+            "session.title": self.session_title,
+            "session.usage": self.session_usage,
             "prompt.submit": self.prompt_submit,
             "approval.respond": self.approval_respond,
             "permission.cycle": self.permission_cycle,
@@ -518,6 +520,26 @@ class GatewayConnection:
     async def session_clear(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("clear", {})
         return {"ok": (result or {}).get("ok", True) is not False}
+
+    async def session_title(self, params: dict[str, Any]) -> dict[str, Any]:
+        title = str(params.get("title") or params.get("name") or "").strip()
+        result = await self._session(params).control_query("rename", {"name": title})
+        name = (result or {}).get("name") if isinstance(result, dict) else None
+        # Also stamp the saved-session file so the sidebar row updates without a
+        # live turn (rename control persists the runtime session; the sidebar
+        # reads the file).
+        try:
+            from src.server.desktop_sessions import update_session_meta
+
+            update_session_meta(self.state.saved_sessions_dir(),
+                                str(params.get("session_id") or ""), name=name or None)
+        except Exception:  # noqa: BLE001 — best-effort file sync
+            pass
+        return {"title": name or title, "ok": True}
+
+    async def session_usage(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._session(params).control_query("get_context_usage", {})
+        return result if isinstance(result, dict) else {}
 
     async def prompt_submit(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)

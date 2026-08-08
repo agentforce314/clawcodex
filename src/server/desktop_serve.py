@@ -210,15 +210,51 @@ def build_app(state: DesktopServeState) -> Starlette:
     async def session_detail(request: Request) -> Response:
         if not _token_ok(state, _rest_token(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+        sid = request.path_params["session_id"]
+
+        if request.method == "DELETE":
+            from src.server.desktop_sessions import delete_session
+
+            ok = delete_session(state.saved_sessions_dir(), sid)
+            return JSONResponse({"ok": ok})
+
+        if request.method == "PATCH":
+            from src.server.desktop_sessions import update_session_meta
+
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001
+                body = {}
+            fields: dict[str, Any] = {}
+            # The renderer sends whichever it's changing: name / archived / pinned.
+            if "name" in body:
+                fields["name"] = body["name"]
+            if "title" in body:
+                fields["name"] = body["title"]
+            if "archived" in body:
+                fields["archived"] = bool(body["archived"])
+            if "pinned" in body:
+                fields["pinned"] = bool(body["pinned"])
+            ok = update_session_meta(state.saved_sessions_dir(), sid, **fields) if fields else False
+            return JSONResponse({"ok": ok})
+
         from src.server.desktop_sessions import load_session_messages
 
-        sid = request.path_params["session_id"]
         found = load_session_messages(state.saved_sessions_dir(), sid)
         if found is None:
             return JSONResponse({"error": "session not found"}, status_code=404)
         return JSONResponse({"session_id": found["session_id"],
                              "messages": found["messages"],
                              "message_count": found["message_count"]})
+
+    async def sessions_search(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_sessions import search_sessions
+
+        return JSONResponse(
+            search_sessions(state.saved_sessions_dir(), request.query_params.get("q", ""))
+        )
 
     def _sessions_slice(request: Request, *, profile_tag: str = "default") -> dict[str, Any]:
         """One filtered slice of the saved-session list (shared by the
@@ -393,7 +429,9 @@ def build_app(state: DesktopServeState) -> Starlette:
         Route("/api/config/schema", config_schema),
         Route("/api/cron/jobs", cron_jobs),
         Route("/api/audio/elevenlabs/voices", elevenlabs_voices),
-        Route("/api/sessions/{session_id}", session_detail),
+        Route("/api/sessions/search", sessions_search),
+        Route("/api/sessions/{session_id}", session_detail,
+              methods=["GET", "PATCH", "DELETE"]),
         Route("/api/audio/transcribe", audio_transcribe, methods=["POST"]),
         Route("/", index),
         WebSocketRoute("/api/ws", gateway_ws),

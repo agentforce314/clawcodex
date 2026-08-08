@@ -180,6 +180,62 @@ def test_session_detail_route(rest: TestClient, tmp_path: Path) -> None:
     assert rest.get("/api/sessions/missing", headers=AUTH).status_code == 404
 
 
+def test_session_rename_archive_delete(rest: TestClient, tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    _write_session(d, "chat-y", preview="original", count=2)
+
+    # Rename via PATCH → the sidebar row's title updates.
+    assert rest.patch("/api/sessions/chat-y", headers=AUTH,
+                      json={"name": "Renamed"}).json() == {"ok": True}
+    rows = rest.get("/api/sessions", headers=AUTH).json()["sessions"]
+    assert next(r for r in rows if r["id"] == "chat-y")["title"] == "Renamed"
+
+    # Archive flag persists on the file.
+    assert rest.patch("/api/sessions/chat-y", headers=AUTH,
+                      json={"archived": True}).json() == {"ok": True}
+    saved = json.loads((d / "chat-y.json").read_text())
+    assert saved["archived"] is True
+    assert saved["name"] == "Renamed"
+
+    # Delete removes the file.
+    assert rest.request("DELETE", "/api/sessions/chat-y", headers=AUTH).json() == {"ok": True}
+    assert not (d / "chat-y.json").exists()
+    assert rest.request("DELETE", "/api/sessions/chat-y", headers=AUTH).json() == {"ok": False}
+
+
+def test_session_search_route(rest: TestClient, tmp_path: Path) -> None:
+    d = tmp_path / "sessions"
+    _write_session(d, "find-me", preview="a unique needle here", count=1)
+    _write_session(d, "other", preview="nothing matching", count=1)
+
+    hits = rest.get("/api/sessions/search?q=unique+needle", headers=AUTH).json()
+    assert [s["id"] for s in hits["sessions"]] == ["find-me"]
+    assert hits["query"] == "unique needle"
+    # Empty query returns all, doesn't error.
+    assert len(rest.get("/api/sessions/search?q=", headers=AUTH).json()["sessions"]) == 2
+    # Search route wins over the {id} route (literal precedence).
+    assert rest.get("/api/sessions/search").status_code == 401
+
+
+def test_session_mutations_refuse_traversal(rest: TestClient, tmp_path: Path) -> None:
+    # A traversal id is refused (either the router 404s the malformed path, or
+    # the handler's id-charset guard returns ok:false) — never a write.
+    sentinel = tmp_path / "etc"
+    for method in ("PATCH", "DELETE"):
+        res = rest.request(method, "/api/sessions/..%2Fetc", headers=AUTH,
+                           json={"name": "x"})
+        assert res.status_code == 404 or res.json() == {"ok": False}
+    assert not sentinel.exists()
+
+
+def test_session_meta_helper_refuses_bad_id(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import delete_session, update_session_meta
+
+    assert update_session_meta(tmp_path, "../etc", name="x") is False
+    assert update_session_meta(tmp_path, "has/slash", name="x") is False
+    assert delete_session(tmp_path, "../etc") is False
+
+
 def test_profile_sessions_slice_filters_sources(
     rest: TestClient, tmp_path: Path
 ) -> None:

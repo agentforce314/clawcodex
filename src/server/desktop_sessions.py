@@ -133,4 +133,72 @@ def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any]
     }
 
 
-__all__ = ["list_session_rows", "load_session_messages"]
+def _write_session_file(path: Path, data: dict[str, Any]) -> bool:
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except OSError:
+        logger.warning("desktop: could not write %s", path, exc_info=True)
+        return False
+
+
+def update_session_meta(sessions_dir: Path, session_id: str, **fields: Any) -> bool:
+    """Patch metadata (name/archived/pinned) on a saved session file.
+
+    Only the given keys are touched; ``name=None`` clears a custom title.
+    Unknown session id or unreadable file → False.
+    """
+    safe = _safe_id(session_id)
+    if safe is None:
+        return False
+    path = sessions_dir / f"{safe}.json"
+    data = _read_session_file(path)
+    if data is None:
+        return False
+    for key, value in fields.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return _write_session_file(path, data)
+
+
+def delete_session(sessions_dir: Path, session_id: str) -> bool:
+    safe = _safe_id(session_id)
+    if safe is None:
+        return False
+    path = sessions_dir / f"{safe}.json"
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("desktop: could not delete %s", path, exc_info=True)
+        return False
+
+
+def search_sessions(sessions_dir: Path, query: str, *, limit: int = 40) -> dict[str, Any]:
+    """Substring search over saved sessions' title/preview, newest-first."""
+    needle = (query or "").strip().lower()
+    listing = list_session_rows(sessions_dir, limit=1000)
+    if not needle:
+        return {"sessions": listing["sessions"][:limit], "query": query}
+    hits = [
+        row for row in listing["sessions"]
+        if needle in str(row.get("title", "")).lower()
+        or needle in str(row.get("preview", "")).lower()
+        or needle in str(row.get("id", "")).lower()
+    ]
+    return {"sessions": hits[:limit], "query": query}
+
+
+__all__ = [
+    "delete_session",
+    "list_session_rows",
+    "load_session_messages",
+    "search_sessions",
+    "update_session_meta",
+]
