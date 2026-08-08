@@ -1,0 +1,6 @@
+export { ingestBackendSkin } from './backend-sync'
+export { ThemeProvider, useTheme } from './context'
+export { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
+export { skinToDesktopTheme } from './skin'
+export type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
+export type { ClawCodexSkin } from '@clawcodex/shared/skin'
