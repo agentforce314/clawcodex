@@ -97,8 +97,13 @@ def test_prompt_branch_replaces_base_blocks(
     marked = [i for i, b in enumerate(blocks) if "cache_control" in b]
     assert marked == [0]
     assert blocks[0]["cache_control"]["type"] == "ephemeral"
-    # Trailing context block survives, REQUEST-scoped (DeepSeek splitter).
-    assert blocks[-1]["_cache_scope"] == "request"
+    # Trailing context survives. It is emitted as up to two blocks — the live
+    # workspace/git snapshot (REQUEST, relocated to the tail by the DeepSeek
+    # splitter) and the session-stable CLAWCODEX.md / workerToolsContext
+    # (SESSION, kept in the cached prefix) — so assert on the scopes present
+    # rather than on which one happens to be last.
+    trailing_scopes = {b.get("_cache_scope") for b in blocks[1:]}
+    assert "request" in trailing_scopes
 
 
 def test_prompt_branch_style_appends_and_carries_marker(
@@ -175,7 +180,7 @@ def test_prompt_branch_off_matches_reference_composition(
 
     monkeypatch.delenv("CLAUDE_CODE_COORDINATOR_MODE", raising=False)
     from src.command_system import get_skill_tool_commands
-    from src.context_system import build_context_prompt
+    from src.context_system import build_context_prompt_parts
     from src.context_system.prompt_assembly import build_full_system_prompt_blocks
     from src.context_system.system_prompt_cache import CacheScope
     from src.query.agent_loop_compat import build_effective_system_prompt
@@ -195,12 +200,25 @@ def test_prompt_branch_off_matches_reference_composition(
         mcp_servers=None,
         skills=skills,
     )
-    ctx = build_context_prompt(tc.workspace_root, cwd=tc.cwd)
-    if ctx.strip():
+    # Two trailing blocks, split by volatility: the live workspace/git snapshot
+    # stays REQUEST-scoped (relocated to the tail for DeepSeek), while
+    # CLAWCODEX.md is SESSION-scoped so it is cached in the prefix instead of
+    # being re-sent every request. Snapshot first — that order keeps the
+    # flattened prompt byte-identical for providers that do not relocate.
+    ctx_snapshot, ctx_instructions = build_context_prompt_parts(
+        tc.workspace_root, cwd=tc.cwd
+    )
+    if ctx_snapshot.strip():
         expected = expected + [{
             "type": "text",
-            "text": ctx,
+            "text": ctx_snapshot,
             "_cache_scope": CacheScope.REQUEST.value,
+        }]
+    if ctx_instructions.strip():
+        expected = expected + [{
+            "type": "text",
+            "text": ctx_instructions,
+            "_cache_scope": CacheScope.SESSION.value,
         }]
 
     actual = build_effective_system_prompt("STYLE-REF", tc)

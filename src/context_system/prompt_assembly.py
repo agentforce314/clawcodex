@@ -520,10 +520,8 @@ def build_full_system_prompt(
     if env_section:
         sections.append(env_section)
 
-    # 25. Auto-memory section (MEMORY.md + behavioral instructions)
-    memory_section = _build_memory_section()
-    if memory_section:
-        sections.append(memory_section)
+    # 25. Auto-memory doctrine (SESSION) + 26. MEMORY.md index (REQUEST)
+    sections.extend(_build_memory_sections())
 
     # 26. Bounded persistent-memory snapshot (hermes-agent port)
     memory_store_section = _build_memory_store_section()
@@ -694,9 +692,7 @@ def build_full_system_prompt_blocks(
     env_section = _build_env_section(cwd, use_cache)
     if env_section:
         sections.append(env_section)
-    memory_section = _build_memory_section()
-    if memory_section:
-        sections.append(memory_section)
+    sections.extend(_build_memory_sections())
     memory_store_section = _build_memory_store_section()
     if memory_store_section:
         sections.append(memory_store_section)
@@ -1260,29 +1256,74 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     return SystemPromptSection(id="environment", content=content, cache_scope=CacheScope.REQUEST, order=20)
 
 
-def _build_memory_section() -> SystemPromptSection | None:
-    """Build the auto-memory system-prompt section.
+def _build_memory_sections() -> list[SystemPromptSection]:
+    """Build the auto-memory system-prompt section(s), split by volatility.
 
     Mirrors TS ``constants/prompts.ts:495`` (``systemPromptSection('memory',
-    () => loadMemoryPrompt())``). Returned with ``REQUEST`` scope so any
-    upstream caching layer rebuilds the section per render — ``MEMORY.md``
-    can change mid-session as the model writes to it, and none of the
-    existing cache scopes invalidate on file mtime. The work is small
-    (one read of a ≤25KB file), so correctness over cache hit-rate.
+    () => loadMemoryPrompt())``), but emits up to two sections instead of one:
+
+    * ``memory`` — the typed-memory doctrine, at ``SESSION`` scope. It
+      interpolates only the memory directory path, which is fixed for the life
+      of the process, so these bytes are identical on every render.
+    * ``memory_index`` — the ``## MEMORY.md`` body, at ``REQUEST`` scope. This
+      genuinely can change mid-session as the model writes to it, and no
+      existing cache scope invalidates on file mtime.
+
+    Why the split, rather than one REQUEST-scope section as before: for
+    DeepSeek, ``query`` relocates REQUEST-scope sections into a trailing
+    message placed *after* the conversation history, to keep the cached prefix
+    byte-stable. Anything in that tail is therefore re-sent — and re-billed as
+    a cache miss — on every single request. The combined section is ~3.4K
+    tokens of which ~95% is doctrine, so the old scoping paid ~3.4K miss
+    tokens per turn to keep a ~150-token index fresh. Measured on
+    terminal-bench 2.1 that was the largest single contributor to the gap
+    between clawcodex's 90.2% cache hit rate and Reasonix's 98.2%.
+
+    Effect on other providers, precisely:
+
+    * ``build_full_system_prompt`` (the flattened-string path) sorts purely by
+      section ``order``, and 25-then-26 preserves the original adjacency, so
+      its output is byte-for-byte unchanged.
+    * ``build_full_system_prompt_blocks`` (Anthropic) emits GLOBAL → boundary
+      → SESSION → REQUEST, so the doctrine block does move earlier — out of
+      the volatile REQUEST group and into the cache_control-marked SESSION
+      group. That is a deliberate improvement, not a regression: ~13KB stops
+      riding the least-cacheable group. It is a prompt-order change, though,
+      so it is not a no-op there.
     """
     try:
-        from src.memdir import load_memory_prompt
+        from src.memdir import load_memory_prompt_parts
     except Exception:
-        return None
-    content = load_memory_prompt()
-    if not content:
-        return None
-    return SystemPromptSection(
-        id="memory",
-        content=content,
-        cache_scope=CacheScope.REQUEST,
-        order=25,
-    )
+        return []
+    try:
+        guidance, index = load_memory_prompt_parts()
+    except Exception:
+        return []
+    sections: list[SystemPromptSection] = []
+    if guidance:
+        sections.append(
+            SystemPromptSection(
+                id="memory",
+                # The doctrine's last line is blank, so ``guidance`` ends in a
+                # newline. Sections are joined with "\n\n" whereas the old
+                # single section joined these two halves with "\n"; rstripping
+                # here makes the flattened prompt byte-identical to before for
+                # every provider that does not relocate REQUEST scope.
+                content=guidance.rstrip("\n"),
+                cache_scope=CacheScope.SESSION,
+                order=25,
+            )
+        )
+    if index:
+        sections.append(
+            SystemPromptSection(
+                id="memory_index",
+                content=index,
+                cache_scope=CacheScope.REQUEST,
+                order=26,
+            )
+        )
+    return sections
 
 
 #: Behavioral guidance injected alongside the bounded-memory snapshot
@@ -1411,6 +1452,11 @@ def _build_mcp_instructions_section(
     return SystemPromptSection(
         id="mcp_instructions",
         content=content,
+        # Deliberately REQUEST, unlike the other static-ish sections re-scoped
+        # for prefix caching: MCP servers can connect mid-session (on-demand
+        # start), so this block genuinely can change between turns. Chapter C2
+        # / PR #650 pinned that split on purpose — see
+        # tests/test_mcp_instructions_live_wiring.py.
         cache_scope=CacheScope.REQUEST,
         order=31,
     )
@@ -1493,7 +1539,10 @@ _NON_INTERACTIVE_PROMPT = (
 
 
 def _build_non_interactive_section(use_cache: bool) -> SystemPromptSection | None:
-    return SystemPromptSection(id="non_interactive", content=_NON_INTERACTIVE_PROMPT, cache_scope=CacheScope.REQUEST, order=80)
+    # SESSION, not REQUEST: the content is a module constant, so it cannot
+    # differ between turns. REQUEST-scope sections are relocated behind the
+    # conversation for DeepSeek and re-billed as a cache miss every request.
+    return SystemPromptSection(id="non_interactive", content=_NON_INTERACTIVE_PROMPT, cache_scope=CacheScope.SESSION, order=80)
 
 
 def _build_tool_restrictions_section(
@@ -1505,4 +1554,7 @@ def _build_tool_restrictions_section(
     for r in restrictions:
         parts.append(f"- {r}")
     content = "\n".join(parts)
-    return SystemPromptSection(id="tool_restrictions", content=content, cache_scope=CacheScope.REQUEST, order=90)
+    # SESSION: the restriction list is fixed when the session's tool set is
+    # resolved, so this never changes turn to turn (see the non_interactive
+    # note above for why REQUEST is expensive).
+    return SystemPromptSection(id="tool_restrictions", content=content, cache_scope=CacheScope.SESSION, order=90)
