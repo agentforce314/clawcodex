@@ -121,6 +121,9 @@ def main():
         if token == 'serve':
             from src.entrypoints.serve_cli import run_serve_subcommand
             return run_serve_subcommand(rest)
+        if token == 'desktop':
+            from src.entrypoints.desktop_cli import run_desktop_subcommand
+            return run_desktop_subcommand(rest)
         if token == 'tui':
             return _run_tui_subcommand(rest)
         if token == 'migrate':

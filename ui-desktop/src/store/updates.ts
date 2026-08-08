@@ -90,11 +90,13 @@ function isUpdateToastSnoozed(): boolean {
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
 // value (or none — a pre-GUI checkout) means GUI<->backend skew.
-// v2: requires the file.attach RPC (remote-gateway non-image file upload).
-// v3: requires approvals.mode config RPCs and session.info reconciliation.
-// v4: requires explicit Fast-off session creation and session-scoped Fast edits.
-// v5: requires raised WebSocket frame size for large one-shot file.attach.
-const REQUIRED_BACKEND_CONTRACT = 5
+// The ClawCodex contract ladder restarts at v1 (the reference implementation
+// retired at v5 — its v2-v5 capabilities land stage by stage and will bump
+// this again):
+// v1: serve core — /api/ws JSON-RPC gateway, sessions REST, resume control.
+// The backend reports its value in session runtime info
+// (src/server/desktop_gateway_methods.py DESKTOP_CONTRACT — keep in sync).
+const REQUIRED_BACKEND_CONTRACT = 1
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even

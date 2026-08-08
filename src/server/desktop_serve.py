@@ -22,7 +22,9 @@ connection config.
 from __future__ import annotations
 
 import hmac
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from starlette.applications import Starlette
@@ -30,6 +32,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,6 +47,15 @@ class DesktopServeState:
     protocol_version: str
     # session_id -> live DesktopSession (created lazily by the gateway).
     sessions: dict[str, Any] = field(default_factory=dict)
+    # Saved-transcript dir override (tests); default resolves per request.
+    sessions_dir: Path | None = None
+
+    def saved_sessions_dir(self) -> Path:
+        if self.sessions_dir is not None:
+            return self.sessions_dir
+        from src.utils.clawcodex_dirs import get_sessions_dir
+
+        return Path(get_sessions_dir())
 
     async def shutdown(self) -> None:
         """Best-effort shutdown of every live agent session."""
@@ -102,6 +115,158 @@ def build_app(state: DesktopServeState) -> Starlette:
 
         return JSONResponse(redact_secrets(load_config()))
 
+    def _int_param(request: Request, name: str, default: int) -> int:
+        try:
+            return int(request.query_params.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    async def sessions_list(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_sessions import list_session_rows
+
+        result = list_session_rows(
+            state.saved_sessions_dir(),
+            limit=_int_param(request, "limit", 20),
+            offset=_int_param(request, "offset", 0),
+            min_messages=_int_param(request, "min_messages", 0),
+        )
+        live = {
+            getattr(s, "session_id", None) for s in state.sessions.values()
+        }
+        for row in result["sessions"]:
+            if row["id"] in live:
+                row["is_active"] = True
+        return JSONResponse(result)
+
+    async def session_messages(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_sessions import load_session_messages
+
+        found = load_session_messages(
+            state.saved_sessions_dir(), request.path_params["session_id"]
+        )
+        if found is None:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return JSONResponse(found)
+
+    async def model_info(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.config import get_default_provider, get_provider_config
+
+        try:
+            provider = get_default_provider()
+            cfg = get_provider_config(provider) or {}
+            return JSONResponse(
+                {"provider": provider, "model": cfg.get("default_model")}
+            )
+        except Exception:  # noqa: BLE001 — inspection endpoint, degrade soft
+            return JSONResponse({"provider": None, "model": None})
+
+    def _sessions_slice(request: Request, *, profile_tag: str = "default") -> dict[str, Any]:
+        """One filtered slice of the saved-session list (shared by the
+        profile-scoped route and the batched sidebar)."""
+        from src.server.desktop_sessions import list_session_rows
+
+        params = request.query_params
+        source = params.get("source") or None
+        exclude = {
+            s for s in (params.get("exclude_sources") or "").split(",") if s
+        }
+        result = list_session_rows(
+            state.saved_sessions_dir(),
+            limit=_int_param(request, "limit", 40),
+            offset=_int_param(request, "offset", 0),
+            min_messages=_int_param(request, "min_messages", 0),
+        )
+        rows = [
+            {**row, "profile": profile_tag}
+            for row in result["sessions"]
+            if (source is None or row.get("source") == source)
+            and row.get("source") not in exclude
+        ]
+        return {**result, "sessions": rows}
+
+    async def profile_sessions(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        # Single-profile serve: every row belongs to "default"; the profile
+        # query param only scopes recency windows, which is a no-op here.
+        return JSONResponse(_sessions_slice(request))
+
+    async def sidebar_sessions(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.server.desktop_sessions import list_session_rows
+
+        params = request.query_params
+        exclude = {
+            s for s in (params.get("recents_exclude") or "").split(",") if s
+        }
+        try:
+            recents_limit = max(1, int(params.get("recents_limit", 20)))
+        except ValueError:
+            recents_limit = 20
+        listing = list_session_rows(
+            state.saved_sessions_dir(), limit=recents_limit, min_messages=1
+        )
+        recents = [
+            {**row, "profile": "default"}
+            for row in listing["sessions"]
+            if row.get("source") not in exclude
+        ]
+        # cron/messaging surfaces don't exist on this backend yet — empty
+        # slices are the documented degrade shape.
+        return JSONResponse(
+            {
+                "recents": {"sessions": recents},
+                "cron": {"sessions": []},
+                "messaging": {"sessions": []},
+            }
+        )
+
+    def _default_profile_info() -> dict[str, Any]:
+        from src.config import get_default_provider, get_provider_config, load_config
+        from src.utils.clawcodex_dirs import get_user_config_dir
+
+        model = provider = None
+        has_env = False
+        try:
+            provider = get_default_provider()
+            model = (get_provider_config(provider) or {}).get("default_model")
+            has_env = bool((load_config() or {}).get("env"))
+        except Exception:  # noqa: BLE001 — profile card degrades soft
+            pass
+        return {
+            "name": "default",
+            "is_default": True,
+            "path": str(get_user_config_dir()),
+            "model": model,
+            "provider": provider,
+            "has_env": has_env,
+            "skill_count": 0,
+        }
+
+    async def profiles(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return JSONResponse({"profiles": [_default_profile_info()]})
+
+    async def profiles_active(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return JSONResponse({"active": "default", "current": "default"})
+
+    async def config_defaults(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.config import get_default_config
+
+        return JSONResponse(redact_secrets(get_default_config()))
+
     async def index(_: Request) -> Response:
         # dashboard-token.ts scrapes this global from the served page to adopt
         # a running backend's token. Serve nothing else here — the desktop
@@ -127,12 +292,31 @@ def build_app(state: DesktopServeState) -> Starlette:
 
         await handle_gateway_socket(websocket, state)
 
+    async def not_found(request: Request) -> Response:
+        # Named 404s: the remaining REST surface is being built stage by
+        # stage — logging which paths the shell actually asks for is the
+        # to-do list (and the fastest way to spot a wrong route).
+        # warning: the default logging setup surfaces WARNING+ on stderr, and
+        # an unimplemented route IS a warning during the staged port.
+        logger.warning("serve: 404 %s %s", request.method, request.url.path)
+        return JSONResponse({"error": "not found"}, status_code=404)
+
     routes = [
         Route("/api/health", health),
         Route("/api/status", status),
         Route("/api/config", config),
+        Route("/api/config/defaults", config_defaults),
+        Route("/api/sessions", sessions_list),
+        Route("/api/sessions/{session_id}/messages", session_messages),
+        Route("/api/profiles", profiles),
+        Route("/api/profiles/active", profiles_active),
+        Route("/api/profiles/sessions", profile_sessions),
+        Route("/api/profiles/sessions/sidebar", sidebar_sessions),
+        Route("/api/model/info", model_info),
         Route("/", index),
         WebSocketRoute("/api/ws", gateway_ws),
+        Route("/{rest:path}", not_found,
+              methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
     ]
     return Starlette(routes=routes)
 

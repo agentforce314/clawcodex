@@ -105,6 +105,14 @@ def test_ws_rejects_missing_or_wrong_token(client: TestClient) -> None:
                 ws.receive_json()
 
 
+def test_unknown_route_is_a_clean_404(client: TestClient) -> None:
+    res = client.get("/api/learning/graph")
+    assert res.status_code == 404
+    assert res.json() == {"error": "not found"}
+    res = client.post("/api/nothing/here")
+    assert res.status_code == 404
+
+
 def test_announce_ready_prints_marker_and_writes_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

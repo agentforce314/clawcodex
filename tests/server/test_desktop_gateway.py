@@ -78,6 +78,20 @@ class FakeAgent:
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
+        if frame.get("type") == "control_request":
+            request = frame.get("request") or {}
+            if request.get("subtype") == "resume":
+                await self.queue.put(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": frame.get("request_id"),
+                            "response": {"ok": True},
+                        },
+                    }
+                )
+            return
         if frame.get("type") == "user":
             # One scripted streamed turn per user message.
             await self.queue.put(
@@ -264,6 +278,49 @@ def test_approval_roundtrip_fake(tmp_path: Path) -> None:
         assert reply["request_id"] == "ask-1"
         assert reply["response"]["behavior"] == "allow"
         assert reply["response"]["updatedInput"] == {"command": "rm -rf /tmp/x"}
+
+
+def test_resume_hydrates_saved_transcript(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    sessions_dir = tmp_path / "saved"
+    sessions_dir.mkdir()
+    state.sessions_dir = sessions_dir
+    (sessions_dir / "old-chat.json").write_text(
+        json.dumps(
+            {
+                "session_id": "old-chat",
+                "preview": "hello?",
+                "message_count": 2,
+                "conversation": {
+                    "messages": [
+                        {"role": "user", "content": "hello?"},
+                        {"role": "assistant",
+                         "content": [{"type": "text", "text": "hi back"}]},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "old-chat"})
+        result = _drain_for_response(ws, 1, events)["result"]
+
+        assert result["resumed"] == "old-chat"
+        assert result["stored_session_id"] == "old-chat"
+        assert result["session_id"] == "fake-1"  # fresh runtime session
+        assert result["message_count"] == 2
+        assert [m["role"] for m in result["messages"]] == ["user", "assistant"]
+        # The agent got the resume control with the stored id.
+        resumes = [
+            f for f in agents[0].inbound
+            if f.get("type") == "control_request"
+            and (f.get("request") or {}).get("subtype") == "resume"
+        ]
+        assert resumes and resumes[0]["request"]["session_id"] == "old-chat"
 
 
 # ─── real-spawn tier (provider/tool stack stubbed, agent real) ───────────────

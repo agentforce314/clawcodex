@@ -39,10 +39,16 @@ logger = logging.getLogger(__name__)
 
 CONTROL_TIMEOUT_S = 30.0
 
+# GUI↔backend contract version. The ClawCodex ladder restarts at 1 (the
+# reference implementation was at 5); bump when the desktop starts requiring
+# a capability this server ships (the renderer's REQUIRED_BACKEND_CONTRACT in
+# ui-desktop/src/store/updates.ts must match).
+DESKTOP_CONTRACT = 1
+
 
 def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     """system/init frame → the ``session.info`` payload the renderer reads."""
-    payload: dict[str, Any] = {"running": False}
+    payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
     cwd = init.get("cwd")
     if cwd:
         payload["cwd"] = cwd
@@ -153,6 +159,8 @@ class DesktopSession:
             mode = frame.get("permission_mode")
             if mode:
                 await self._broadcast("session.info", {"approval_mode": mode, "running": False})
+            # Turn end persisted the transcript — nudge sidebars to refresh.
+            await self._broadcast("sessions.changed", {})
 
     async def _route_ask(self, frame: dict[str, Any]) -> None:
         rid = str(frame.get("request_id") or "")
@@ -274,7 +282,10 @@ class GatewayConnection:
     async def on_open(self) -> None:
         for session in self.state.sessions.values():
             session.sockets.add(self.websocket)
-        await send_event(self.websocket, "gateway.ready", {"app": "clawcodex"})
+        # change_events: sessions.changed is pushed after every turn, so the
+        # renderer can demote its sidebar polling.
+        await send_event(self.websocket, "gateway.ready",
+                         {"app": "clawcodex", "change_events": True})
 
     async def on_close(self) -> None:
         for session in self.state.sessions.values():
@@ -335,18 +346,25 @@ class GatewayConnection:
     async def session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         wanted = str(params.get("session_id") or "") or None
         session = await self._create(params.get("cwd"), wanted)
-        return {
+        response: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": wanted or session.session_id,
             "resumed": wanted or session.session_id,
-            # Transcript hydration ships with the sessions REST stage; the
-            # agent's context IS restored (resume control), history paints
-            # lazily once /api/sessions lands.
             "message_count": 0,
             "messages": [],
-            "messages_omitted": True,
             "info": _init_session_info(session.init_info),
         }
+        omit = bool(params.get("omit_messages") or params.get("lazy"))
+        if wanted and not omit:
+            from src.server.desktop_sessions import load_session_messages
+
+            stored = load_session_messages(self.state.saved_sessions_dir(), wanted)
+            if stored is not None:
+                response["messages"] = stored["messages"]
+                response["message_count"] = stored["message_count"]
+        elif wanted and omit:
+            response["messages_omitted"] = True
+        return response
 
     async def session_activate(self, params: dict[str, Any]) -> dict[str, Any]:
         if params.get("session_id"):
