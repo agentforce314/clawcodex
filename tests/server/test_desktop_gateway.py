@@ -75,19 +75,36 @@ class FakeAgent:
         self.inbound: list[dict] = []
         self.queue: asyncio.Queue = asyncio.Queue()
         self.shutdown_called = False
+        self.model = "fake"
+        self.provider = "fakeprov"
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
         if frame.get("type") == "control_request":
             request = frame.get("request") or {}
-            if request.get("subtype") == "resume":
+            subtype = request.get("subtype")
+            reply: dict | None = None
+            if subtype == "resume":
+                reply = {"ok": True}
+            elif subtype == "set_model":
+                # Record the switch so get_settings reports the new state.
+                self.model = request.get("model") or self.model
+                self.provider = request.get("provider") or self.provider
+                reply = {"ok": True, "model": self.model}
+            elif subtype == "get_settings":
+                reply = {
+                    "model": self.model,
+                    "provider": self.provider,
+                    "permission_mode": "default",
+                }
+            if reply is not None:
                 await self.queue.put(
                     {
                         "type": "control_response",
                         "response": {
                             "subtype": "success",
                             "request_id": frame.get("request_id"),
-                            "response": {"ok": True},
+                            "response": reply,
                         },
                     }
                 )
@@ -195,10 +212,12 @@ def test_create_submit_stream_complete(tmp_path: Path) -> None:
         _drain_for_response(ws, 2, events)
         complete = _drain_for_event(ws, "message.complete", events)
 
-        assert agents[0].inbound[-1] == {
+        # The prompt reached the agent. (Not necessarily the LAST frame: turn
+        # end schedules a get_settings refresh for the session.info republish.)
+        assert {
             "type": "user",
             "message": {"role": "user", "content": "hi"},
-        }
+        } in agents[0].inbound
         types = [e["type"] for e in events] + ["message.complete"]
         assert "message.start" in types
         deltas = [e for e in events if e["type"] == "message.delta"]
@@ -278,6 +297,69 @@ def test_approval_roundtrip_fake(tmp_path: Path) -> None:
         assert reply["request_id"] == "ask-1"
         assert reply["response"]["behavior"] == "allow"
         assert reply["response"]["updatedInput"] == {"command": "rm -rf /tmp/x"}
+
+
+def test_init_session_info_carries_provider() -> None:
+    """The picker only prefers the session's selection when BOTH model and
+    provider are set; without provider it fell back to the catalog while the
+    composer chip kept the session's model — the two disagreed."""
+    from src.server.desktop_gateway_methods import _init_session_info
+
+    info = _init_session_info({
+        "cwd": "/w", "model": "m1", "provider": "p1",
+        "permissionMode": "default", "session_id": "s1",
+    })
+    assert info["model"] == "m1"
+    assert info["provider"] == "p1"
+
+
+def test_model_switch_publishes_session_info(tmp_path: Path) -> None:
+    """The composer chip reads the SESSION's model (not the draft), so a switch
+    that doesn't republish session.info leaves it showing the spawn-time model
+    forever — the reported bug."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {"cwd": "/tmp"})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        events.clear()
+        _rpc(ws, 2, "config.set", {
+            "session_id": sid, "key": "model",
+            "value": "new-model --provider newprov --session",
+        })
+        result = _drain_for_response(ws, 2, events)["result"]
+        assert result["ok"] is True
+
+        # A session.info carrying the NEW model+provider must have been pushed.
+        infos = [e for e in events if e["type"] == "session.info"]
+        assert infos, "no session.info published after the model switch"
+        latest = infos[-1]["payload"]
+        assert latest["model"] == "new-model"
+        assert latest["provider"] == "newprov"
+
+
+def test_turn_end_republishes_session_info_without_deadlock(tmp_path: Path) -> None:
+    """Turn end refreshes the info line. The refresh issues a control query
+    whose response is routed by the pump, so it must be SCHEDULED — awaiting it
+    inside the pump would deadlock until the control timeout."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {"cwd": "/tmp"})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        events.clear()
+        _rpc(ws, 2, "prompt.submit", {"session_id": sid, "text": "hi"})
+        _drain_for_response(ws, 2, events)
+        # message.complete proves the pump kept draining (no deadlock)…
+        _drain_for_event(ws, "message.complete", events)
+        # …and the scheduled refresh lands with model/provider stamped.
+        info = _drain_for_event(ws, "session.info", events)
+        assert info["payload"]["model"] == "fake"
+        assert info["payload"]["provider"] == "fakeprov"
 
 
 def test_session_create_honors_provider_override(tmp_path: Path) -> None:

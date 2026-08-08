@@ -58,6 +58,13 @@ def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     model = init.get("model")
     if model:
         payload["model"] = model
+    # The renderer's picker only prefers the session's selection when BOTH
+    # model and provider are set (currentPickerSelection); omitting provider
+    # made the picker fall back to the catalog while the composer chip kept
+    # showing the session's model — the two disagreed.
+    provider = init.get("provider")
+    if provider:
+        payload["provider"] = provider
     session_id = init.get("session_id")
     if session_id:
         payload["stored_session_id"] = session_id
@@ -82,6 +89,8 @@ class DesktopSession:
         self._pending_asks: dict[str, dict[str, Any]] = {}
         self._last_ask_id: str | None = None
         self.sockets: set[WebSocket] = set()
+        # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
+        self._background: set[asyncio.Task] = set()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -95,6 +104,9 @@ class DesktopSession:
         )
 
     async def shutdown(self) -> None:
+        for task in list(self._background):
+            task.cancel()
+        self._background.clear()
         if self.pump_task is not None:
             self.pump_task.cancel()
         if self.agent is not None:
@@ -111,6 +123,47 @@ class DesktopSession:
     async def _broadcast(self, type_: str, payload: Any = None) -> None:
         for ws in list(self.sockets):
             await send_event(ws, type_, payload, session_id=self.session_id)
+
+    async def publish_session_info(self, **extra: Any) -> None:
+        """Re-read live settings and broadcast a full ``session.info``.
+
+        The renderer reconciles model/provider/effort from session.info and
+        expects them stamped on every one — a switch that doesn't publish
+        leaves the composer chip showing the session's spawn-time model
+        forever (it reads the session state, not the composer draft).
+
+        NEVER await this from inside ``_pump``/``_route``: it issues a control
+        query whose response is routed BY the pump, so awaiting there would
+        deadlock until the timeout. Schedule it with ``refresh_session_info``.
+        """
+        settings = await self.control_query("get_settings", {})
+        payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
+        if isinstance(settings, dict):
+            model = settings.get("fusion") or settings.get("model")
+            if model:
+                payload["model"] = str(model)
+            if settings.get("provider"):
+                payload["provider"] = str(settings["provider"])
+            if settings.get("permission_mode"):
+                payload["approval_mode"] = settings["permission_mode"]
+            effort = settings.get("reasoning_effort") or settings.get("effort")
+            if effort:
+                payload["reasoning_effort"] = str(effort)
+        payload.update(extra)
+        await self._broadcast("session.info", payload)
+
+    def refresh_session_info(self) -> None:
+        """Schedule a session.info republish (safe to call from the pump)."""
+        task = asyncio.create_task(self._safe_publish_session_info())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _safe_publish_session_info(self) -> None:
+        try:
+            await self.publish_session_info()
+        except Exception:  # noqa: BLE001 — a refresh must never kill a session
+            logger.debug("desktop session %s: session.info refresh failed",
+                         self.session_id, exc_info=True)
 
     # ── the pump: agent frames → gateway events ─────────────────────────────
 
@@ -160,6 +213,11 @@ class DesktopSession:
             mode = frame.get("permission_mode")
             if mode:
                 await self._broadcast("session.info", {"approval_mode": mode, "running": False})
+            # …and republish the full line (model/provider/effort) — a turn can
+            # change them server-side (fallback model, plan-mode flip).
+            # Scheduled, never awaited: this control response routes through
+            # THIS pump.
+            self.refresh_session_info()
             # Turn end persisted the transcript — nudge sidebars to refresh.
             await self._broadcast("sessions.changed", {})
 
@@ -245,6 +303,29 @@ class DesktopSession:
         return {"ok": True, "value": result.get("model") or model,
                 "warning": result.get("warning")}
 
+    async def _config_set_model(self, value: Any) -> dict[str, Any]:
+        """Parse the renderer's model string and apply it.
+
+        The composer sends ``"<model> --provider <p> --session"`` (the TUI's
+        ``/model`` grammar); scope flags are informational here — this
+        transport applies to the live session either way.
+        """
+        tokens = str(value or "").split()
+        provider: str | None = None
+        parts: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--provider":
+                i += 1
+                provider = tokens[i] if i < len(tokens) else None
+            elif tok in ("--global", "--session", "--tui-session"):
+                pass
+            else:
+                parts.append(tok)
+            i += 1
+        return await self.apply_model(" ".join(parts), provider)
+
     async def config_set(self, key: str, value: Any, persist: bool = False) -> dict[str, Any]:
         """Route a settings write to the matching agent control.
 
@@ -263,21 +344,12 @@ class DesktopSession:
                 "persisted": res.get("persisted"),
             }
         if key == "model":
-            tokens = str(value or "").split()
-            provider: str | None = None
-            parts: list[str] = []
-            i = 0
-            while i < len(tokens):
-                tok = tokens[i]
-                if tok == "--provider":
-                    i += 1
-                    provider = tokens[i] if i < len(tokens) else None
-                elif tok in ("--global", "--session", "--tui-session"):
-                    pass
-                else:
-                    parts.append(tok)
-                i += 1
-            return await self.apply_model(" ".join(parts), provider)
+            result = await self._config_set_model(value)
+            # Publish the REAL post-switch state (a cross-provider switch can
+            # land on a different model than requested), so the chip, picker
+            # and settings all reconcile to the truth.
+            await self.publish_session_info()
+            return result
         if key == "logoColor":
             reply = await self.control_query("set_logo_color", {"name": value})
             ok = isinstance(reply, dict) and reply.get("ok") is True
@@ -288,6 +360,11 @@ class DesktopSession:
             await self.send_control("set_provider", {"provider": value})
         elif key == "thinking":
             await self.send_control("set_thinking", {"action": value})
+        else:
+            return {"ok": True}
+        # A fire-and-forget control still changed the session — republish so
+        # the composer/picker reconcile instead of showing the old value.
+        self.refresh_session_info()
         return {"ok": True}
 
     async def send_control(self, subtype: str, params: dict[str, Any]) -> None:
