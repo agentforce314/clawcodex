@@ -67,7 +67,7 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
 }
 
 // UI scale presets, as zoom percentages. 100 is Chromium's actual-size
-// baseline; the shipped default is the 90% preset. Ids double as the percent
+// baseline and the shipped default. Ids double as the percent
 // values sent to the main process. A Cmd/Ctrl +/- step landing between
 // presets highlights nothing, and the row description keeps showing the
 // exact current percent.
