@@ -218,6 +218,86 @@ class DesktopSession:
             self._pending_control.pop(rid, None)
             return None
 
+    async def apply_model(self, model: str, provider: str | None,
+                          allow_switch: bool = True) -> dict[str, Any]:
+        """set_model with the picker's cross-provider retry.
+
+        set_model refuses to point the live provider at another provider's
+        model id (that needs set_provider's registry rebuild). The picker
+        selects provider-then-model, so on ``provider_mismatch`` switch the
+        provider first, then re-apply the model — mirroring the TUI client.
+        """
+        params: dict[str, Any] = {"model": model}
+        if provider:
+            params["provider"] = provider
+        result = await self.control_query("set_model", params)
+        if not isinstance(result, dict):
+            return {"ok": True, "value": model, "indeterminate": True}
+        if result.get("ok") is False:
+            if result.get("provider_mismatch") and provider and allow_switch:
+                switched = await self.control_query("set_provider", {"provider": provider})
+                if isinstance(switched, dict) and switched.get("ok") is not False:
+                    return await self.apply_model(model, None, allow_switch=False)
+                err = (switched or {}).get("error") if isinstance(switched, dict) else None
+                return {"ok": False, "error": err or f"could not switch to provider '{provider}'"}
+            return {"ok": False, "error": result.get("error") or "could not set model"}
+        return {"ok": True, "value": result.get("model") or model,
+                "warning": result.get("warning")}
+
+    async def config_set(self, key: str, value: Any, persist: bool = False) -> dict[str, Any]:
+        """Route a settings write to the matching agent control.
+
+        Display-only prefs the backend doesn't own (skin, statusbar, …) have
+        no control and succeed locally in the renderer, so an unknown key is a
+        silent ok here rather than an error.
+        """
+        if key == "permission_mode":
+            reply = await self.control_query("set_permission_mode",
+                                             {"mode": value, "persist": persist})
+            res = reply if isinstance(reply, dict) else {}
+            return {
+                "error": res.get("error"),
+                "mode": res.get("mode"),
+                "ok": res.get("ok") is not False,
+                "persisted": res.get("persisted"),
+            }
+        if key == "model":
+            tokens = str(value or "").split()
+            provider: str | None = None
+            parts: list[str] = []
+            i = 0
+            while i < len(tokens):
+                tok = tokens[i]
+                if tok == "--provider":
+                    i += 1
+                    provider = tokens[i] if i < len(tokens) else None
+                elif tok in ("--global", "--session", "--tui-session"):
+                    pass
+                else:
+                    parts.append(tok)
+                i += 1
+            return await self.apply_model(" ".join(parts), provider)
+        if key == "logoColor":
+            reply = await self.control_query("set_logo_color", {"name": value})
+            ok = isinstance(reply, dict) and reply.get("ok") is True
+            return {"ok": True, "value": str(value)} if ok else {"ok": False}
+        if key in ("effort", "reasoning"):
+            await self.send_control("set_effort", {"effort": value})
+        elif key == "provider":
+            await self.send_control("set_provider", {"provider": value})
+        elif key == "thinking":
+            await self.send_control("set_thinking", {"action": value})
+        return {"ok": True}
+
+    async def send_control(self, subtype: str, params: dict[str, Any]) -> None:
+        """Fire-and-forget control request (no reply awaited)."""
+        import uuid as _uuid
+
+        await self.agent.send_to_agent(
+            {"type": "control_request", "request_id": f"srv-{_uuid.uuid4().hex[:12]}",
+             "request": {"subtype": subtype, **params}}
+        )
+
     async def respond_approval(self, choice: str) -> dict[str, Any]:
         rid = self._last_ask_id
         request = self._pending_asks.pop(rid, None) if rid else None
@@ -243,6 +323,45 @@ class DesktopSession:
                 reply["chosen_updates"] = chosen
         await self._reply_ask(rid, reply)
         return {"resolved": True}
+
+
+def _catalog_from_config() -> dict[str, Any]:
+    """Full model catalog from config alone — no live session required.
+
+    Mirrors the agent-server's ``list_model_providers`` control, but reads the
+    default provider + its configured model list straight from config so the
+    desktop model picker populates on the welcome screen (before any session
+    exists). Sync (config + registry access); call via ``to_thread``.
+    """
+    from src.providers.catalog import provider_catalog
+
+    provider = None
+    models: list[str] = []
+    try:
+        from src.config import get_default_provider, get_provider_config
+
+        provider = get_default_provider()
+        cfg = get_provider_config(provider) or {}
+        default_model = cfg.get("default_model")
+        if default_model:
+            models = [default_model]
+    except Exception:  # noqa: BLE001 — degrade to an unmarked catalog
+        provider = None
+
+    try:
+        providers = provider_catalog(
+            current=provider,
+            current_models=models or None,
+            current_ready=bool(provider),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("desktop: catalog_from_config failed")
+        providers = []
+    return {
+        "model": models[0] if models else None,
+        "provider": provider,
+        "providers": providers,
+    }
 
 
 def _suggestion_scope(suggestion: dict[str, Any]) -> str:
@@ -273,9 +392,12 @@ class GatewayConnection:
             "permission.cycle": self.permission_cycle,
             "model.options": self.model_options,
             "config.get": self.config_get,
+            "config.set": self.config_set_rpc,
             "commands.catalog": self.commands_catalog,
-            "complete.slash": self.complete_empty,
+            "complete.slash": self.complete_slash,
             "complete.path": self.complete_empty,
+            "slash.exec": self.slash_exec,
+            "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
         }
 
@@ -412,32 +534,19 @@ class GatewayConnection:
 
     async def model_options(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._first_session(params)
-        if session is None:
-            return {"providers": []}
-        result = await session.control_query("list_model_providers", {})
-        if isinstance(result, dict) and result.get("providers"):
-            return {
-                "model": result.get("fusion") or result.get("model"),
-                "provider": result.get("provider"),
-                "providers": result.get("providers"),
-            }
-        settings = await session.control_query("get_settings", {}) or {}
-        models = settings.get("available_models") or []
-        provider = str(settings.get("provider") or "clawcodex")
-        return {
-            "model": settings.get("fusion") or settings.get("model"),
-            "provider": provider,
-            "providers": [
-                {
-                    "authenticated": True,
-                    "is_current": True,
-                    "models": models,
-                    "name": provider,
-                    "slug": provider,
-                    "total_models": len(models),
+        if session is not None:
+            result = await session.control_query("list_model_providers", {})
+            if isinstance(result, dict) and result.get("providers"):
+                return {
+                    "model": result.get("fusion") or result.get("model"),
+                    "provider": result.get("provider"),
+                    "providers": result.get("providers"),
                 }
-            ],
-        }
+        # No live session yet (the welcome screen opens the picker before the
+        # first prompt), or the session couldn't answer — enumerate the whole
+        # registry directly from config. The catalog is session-independent;
+        # it only needs the default provider + its model list.
+        return await asyncio.to_thread(_catalog_from_config)
 
     def _first_session(self, params: dict[str, Any]) -> DesktopSession | None:
         session_id = str(params.get("session_id") or "")
@@ -453,11 +562,58 @@ class GatewayConnection:
             return {}
         return await session.control_query("get_settings", {}) or {}
 
-    async def commands_catalog(self, _: dict[str, Any]) -> dict[str, Any]:
-        return {"commands": []}
+    async def config_set_rpc(self, params: dict[str, Any]) -> dict[str, Any]:
+        session = self._session(params)
+        return await session.config_set(
+            str(params.get("key") or ""),
+            params.get("value"),
+            persist=bool(params.get("persist")),
+        )
+
+    async def _live_catalog(self, params: dict[str, Any]) -> dict[str, Any]:
+        from src.server.desktop_commands import build_catalog
+
+        session = self._first_session(params)
+        skills: list = []
+        workflows: list = []
+        if session is not None:
+            skills_reply = await session.control_query("list_skills", {})
+            if isinstance(skills_reply, dict):
+                skills = skills_reply.get("skills") or []
+            wf_reply = await session.control_query("list_workflow_commands", {})
+            if isinstance(wf_reply, dict):
+                workflows = wf_reply.get("commands") or wf_reply.get("workflows") or []
+        return build_catalog(skills=skills, workflows=workflows)
+
+    async def commands_catalog(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._live_catalog(params)
+
+    async def complete_slash(self, params: dict[str, Any]) -> dict[str, Any]:
+        from src.server.desktop_commands import complete
+
+        catalog = await self._live_catalog(params)
+        return complete(str(params.get("text") or "/"), catalog)
 
     async def complete_empty(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"items": []}
+
+    async def slash_exec(self, params: dict[str, Any]) -> dict[str, Any]:
+        from src.server.desktop_slash import dispatch_slash
+
+        session = self._session(params)
+        raw = str(params.get("command") or "").strip()
+        name, _, arg = raw.partition(" ")
+        return await dispatch_slash(session.control_query, name, arg or None)
+
+    async def command_dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+        from src.server.desktop_slash import dispatch_slash
+
+        session = self._session(params)
+        return await dispatch_slash(
+            session.control_query,
+            str(params.get("name") or ""),
+            params.get("arg"),
+        )
 
     async def setup_status(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"provider_configured": True}
