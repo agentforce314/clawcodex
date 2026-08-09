@@ -1,0 +1,172 @@
+{
+  "bash": {
+    "complete": {
+      "name": "terminal",
+      "result": {
+        "output": "app\nlib\n"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "command": "ls src/"
+      },
+      "context": "ls src/",
+      "name": "terminal",
+      "tool_id": "call"
+    }
+  },
+  "edit": {
+    "complete": {
+      "name": "edit_file",
+      "result": {
+        "inline_diff": "--- /w/a.py\n+++ /w/a.py\n@@ -1,1 +1,1 @@\n-old\n+new",
+        "path": "/w/a.py"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "file_path": "/w/a.py",
+        "new_string": "new",
+        "old_string": "old",
+        "path": "/w/a.py"
+      },
+      "context": "/w/a.py",
+      "name": "edit_file",
+      "tool_id": "call"
+    }
+  },
+  "failure": {
+    "complete": {
+      "error": "Error: no such file",
+      "name": "terminal",
+      "result": {},
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "command": "cat nope"
+      },
+      "context": "cat nope",
+      "name": "terminal",
+      "tool_id": "call"
+    }
+  },
+  "glob": {
+    "complete": {
+      "name": "list_files",
+      "result": {
+        "context": "a.py\nb.py\nc.py",
+        "file_count": 3,
+        "output": "a.py\nb.py\nc.py"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "pattern": "*.py"
+      },
+      "context": "*.py",
+      "name": "list_files",
+      "tool_id": "call"
+    }
+  },
+  "grep": {
+    "complete": {
+      "name": "search_files",
+      "result": {
+        "context": "a.py:1:TODO\nb.py:4:TODO",
+        "match_count": 2,
+        "output": "a.py:1:TODO\nb.py:4:TODO"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "path": "/w",
+        "pattern": "TODO"
+      },
+      "context": "TODO",
+      "name": "search_files",
+      "tool_id": "call"
+    }
+  },
+  "read": {
+    "complete": {
+      "name": "read_file",
+      "result": {
+        "content": "1\tprint('seed')\n2\tprint('again')",
+        "context": "Read 2 lines"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "file_path": "/w/seed.py",
+        "path": "/w/seed.py"
+      },
+      "context": "/w/seed.py",
+      "name": "read_file",
+      "tool_id": "call"
+    }
+  },
+  "unknown_tool": {
+    "complete": {
+      "name": "Task",
+      "result": {
+        "context": "done",
+        "output": "done"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "description": "refactor"
+      },
+      "context": "refactor",
+      "name": "Task",
+      "tool_id": "call"
+    }
+  },
+  "web_search": {
+    "complete": {
+      "name": "web_search",
+      "result": {
+        "context": "Did 3 searches in 2s",
+        "duration_s": 2.4,
+        "output": "\u2026blob\u2026",
+        "result_count": 3
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "query": "weather"
+      },
+      "context": "weather",
+      "name": "web_search",
+      "tool_id": "call"
+    }
+  },
+  "write": {
+    "complete": {
+      "name": "write_file",
+      "result": {
+        "inline_diff": "--- /dev/null\n+++ /w/hi.py\n+print('hi')",
+        "path": "/w/hi.py"
+      },
+      "tool_id": "call"
+    },
+    "start": {
+      "args": {
+        "content": "print('hi')",
+        "file_path": "/w/hi.py",
+        "path": "/w/hi.py"
+      },
+      "context": "/w/hi.py",
+      "name": "write_file",
+      "tool_id": "call"
+    }
+  }
+}

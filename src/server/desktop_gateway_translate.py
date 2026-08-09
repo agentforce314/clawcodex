@@ -12,6 +12,7 @@ Each translator returns a list of ``(event_type, payload)`` tuples to push
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # ── usage mapping ────────────────────────────────────────────────────────────
@@ -80,6 +81,246 @@ def _tool_output_text(content: Any) -> str:
     return _text_of(content)
 
 
+# ── tool vocabulary adapter ──────────────────────────────────────────────────
+# clawcodex speaks the Claude Code tool vocabulary (Read/Bash/Glob/…). The
+# desktop's tool renderer keys every per-tool formatter — icon, title, diff
+# view, split stdout/stderr, count chip — off its OWN fixed set of names
+# (ui-desktop/.../tool/fallback-model/index.ts ``TOOL_META`` plus its
+# ``toolName === …`` branches), and it reads a tool's output out of *named
+# result fields* rather than raw text: a plain-string ``result`` is dropped
+# outright by the renderer's ``parseMaybeJsonObject``. Unadapted, every row
+# fell through to the generic path — no title, no icon, and no output at all.
+#
+# Summaries deliberately mirror the TUI's (ui-tui/src/gatewayClient.ts
+# ``toolContext`` / ``formatToolResult``) so both surfaces describe the same
+# tool run the same way.
+
+_RENDER_TOOL_NAMES: dict[str, str] = {
+    "read": "read_file",
+    "write": "write_file",
+    "edit": "edit_file",
+    "multiedit": "edit_file",
+    "notebookedit": "edit_file",
+    "bash": "terminal",
+    "bashoutput": "terminal",
+    "killshell": "terminal",
+    "killbash": "terminal",
+    "glob": "list_files",
+    "ls": "list_files",
+    "grep": "search_files",
+    "websearch": "web_search",
+    "webfetch": "web_extract",
+    "todowrite": "todo",
+    "askuserquestion": "clarify",
+}
+
+
+def render_tool_name(name: str) -> str:
+    """clawcodex tool name → the name the desktop renderer formats for.
+
+    Unknown tools (Task, custom MCP tools, …) pass through unchanged and get
+    the renderer's generic treatment, which is the right fallback.
+    """
+    return _RENDER_TOOL_NAMES.get(name.strip().lower(), name)
+
+
+def tool_context(tool_input: Any) -> str:
+    """The single argument worth showing beside the tool name.
+
+    Priority order is the TUI's ``toolContext``, so a Bash row reads
+    ``ls src/`` on both surfaces and a Grep row shows its pattern rather than
+    its search path. The renderer picks this up as ``context`` — the key its
+    generic title/preview path is built around.
+    """
+    if not isinstance(tool_input, dict):
+        return ""
+    pattern = tool_input.get("pattern")
+    if pattern is not None:
+        return str(pattern)
+    for key in ("file_path", "path", "notebook_path"):
+        value = tool_input.get(key)
+        if value is not None:
+            return str(value)
+    for key in ("command", "url", "query", "description", "prompt"):
+        value = tool_input.get(key)
+        if value is not None:
+            return str(value)
+    return ""
+
+
+def render_tool_args(tool_input: Any) -> dict[str, Any]:
+    """Tool input plus the aliases the renderer reads.
+
+    It looks for ``path``/``file``/``filepath`` when resolving a file target;
+    clawcodex spells it ``file_path``/``notebook_path``. Aliased rather than
+    renamed so the raw arguments stay intact for the args view.
+    """
+    if not isinstance(tool_input, dict):
+        return {}
+    args = dict(tool_input)
+    if not isinstance(args.get("path"), str):
+        for key in ("file_path", "notebook_path"):
+            if isinstance(args.get(key), str):
+                args["path"] = args[key]
+                break
+    return args
+
+
+_SANDBOX_BLOCK_RE = re.compile(r"<sandbox_violations>.*?</sandbox_violations>", re.DOTALL)
+_ERROR_TAG_RE = re.compile(r"</?(?:tool_use_error|error)>")
+_PREFIXED_ERROR_RE = re.compile(r"^(?:Error|Cancelled):\s")
+_NUMBERED_LINE_RE = re.compile(r"^\s*\d+\t")
+
+
+def clean_tool_error(text: str) -> str:
+    """Tool failure text → the sentence a row should show (TUI parity).
+
+    Strips the model-facing markup (``<tool_use_error>`` wrappers, sandbox
+    violation blocks) that is bookkeeping for the agent, not for a reader.
+    """
+    cleaned = _ERROR_TAG_RE.sub("", _SANDBOX_BLOCK_RE.sub("", text)).strip()
+    if not cleaned:
+        return "Tool execution failed"
+    if "InputValidationError: " in cleaned:
+        return "Invalid tool parameters"
+    if _PREFIXED_ERROR_RE.match(cleaned):
+        return cleaned
+    return f"Error: {cleaned}"
+
+
+def _format_file_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} bytes"
+    value = float(size)
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f}".removesuffix(".0") + unit
+    return f"{size} bytes"
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def summarize_tool_result(name: str, text: str, display: Any) -> str:
+    """One-line description of what a tool produced, matching the TUI.
+
+    Returned as the row's ``context``. The renderer prefers ``context`` over
+    everything else on its generic detail path, so this is set ONLY where the
+    summary is the whole story — never where it would hide real output the
+    expanded row should show (a Grep's matches get a count chip instead).
+    Empty means "the raw output speaks for itself".
+    """
+    if name == "Read":
+        if isinstance(display, dict) and display.get("type") == "image":
+            size = display.get("originalSize")
+            if isinstance(size, int) and not isinstance(size, bool):
+                return f"Read image ({_format_file_size(size)})"
+            return "Read image"
+        lines = [line for line in text.split("\n") if line]
+        if lines and _NUMBERED_LINE_RE.match(lines[0]):
+            return f"Read {_plural(len(lines), 'line')}"
+        return ""
+    if name == "WebSearch" and isinstance(display, dict):
+        count = display.get("searchCount")
+        if isinstance(count, int) and not isinstance(count, bool):
+            summary = f"Did {count} search{'' if count == 1 else 'es'}"
+            seconds = display.get("durationSeconds")
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                summary += f" in {round(seconds)}s" if seconds >= 1 else f" in {round(seconds * 1000)}ms"
+            return summary
+    return ""
+
+
+def inline_diff_from_display(display: Any) -> str:
+    """``structuredPatch`` display envelope → a unified diff string.
+
+    The renderer paints ``inline_diff`` as a real diff and counts its +/-
+    lines for the "Added N, removed M" summary, mirroring how the TUI treats
+    an edit's diff AS its result rather than printing result text.
+    """
+    if not isinstance(display, dict):
+        return ""
+    path = display.get("filePath")
+    path_label = path if isinstance(path, str) else "file"
+    patch = display.get("structuredPatch")
+    if not isinstance(patch, list) or not patch:
+        content = display.get("content")
+        if display.get("type") == "create" and isinstance(content, str) and content:
+            body = "\n".join(f"+{line}" for line in content.split("\n"))
+            return f"--- /dev/null\n+++ {path_label}\n{body}"
+        return ""
+    lines = [f"--- {path_label}", f"+++ {path_label}"]
+    for hunk in patch:
+        if not isinstance(hunk, dict):
+            continue
+        body = hunk.get("lines")
+        if not isinstance(body, list):
+            continue
+        lines.append(
+            "@@ -{},{} +{},{} @@".format(
+                hunk.get("oldStart", 0), hunk.get("oldLines", 0),
+                hunk.get("newStart", 0), hunk.get("newLines", 0),
+            )
+        )
+        lines.extend(str(line) for line in body)
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+def render_tool_result(name: str, text: str, display: Any) -> dict[str, Any]:
+    """Tool output → the result object the renderer knows how to read.
+
+    Each renderer tool family reads its output from a different field
+    (``content`` for a file read, ``output`` for a shell run, ``inline_diff``
+    for an edit); a bare string reaches none of them.
+    """
+    render = render_tool_name(name)
+    result: dict[str, Any] = {}
+
+    if render in ("read_file", "web_extract"):
+        if text:
+            result["content"] = text
+    elif render == "terminal":
+        # The renderer paints this as an ANSI terminal body.
+        result["output"] = text
+    elif render in ("edit_file", "write_file"):
+        diff = inline_diff_from_display(display)
+        if diff:
+            result["inline_diff"] = diff
+        elif text:
+            result["message"] = text
+        if isinstance(display, dict) and isinstance(display.get("filePath"), str):
+            result["path"] = display["filePath"]
+    elif text:
+        # No dedicated renderer branch, so the body comes from the generic
+        # path — which prefers the *argument* context ("*.py") over anything
+        # in the result, and would print the glob back at the user instead of
+        # the files it matched. Repeating the output under `context` is what
+        # outranks it; `output` stays for the copy and subtitle paths, which
+        # read that key instead. A real summary below replaces the `context`
+        # copy where one exists.
+        result["output"] = text
+        result["context"] = text
+
+    if render == "list_files" and text:
+        result["file_count"] = len([line for line in text.split("\n") if line.strip()])
+    elif render == "search_files" and text:
+        result["match_count"] = len([line for line in text.split("\n") if line.strip()])
+    elif render == "web_search" and isinstance(display, dict):
+        count = display.get("searchCount")
+        if isinstance(count, int) and not isinstance(count, bool):
+            result["result_count"] = count
+        seconds = display.get("durationSeconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+            result["duration_s"] = seconds
+
+    summary = summarize_tool_result(name, text, display)
+    if summary:
+        result["context"] = summary
+    return result
+
+
 # ── frame translators ────────────────────────────────────────────────────────
 
 
@@ -110,13 +351,13 @@ def translate_sdk_envelope(
 
     ``tool_names`` carries tool_use_id → tool name across the two frames. A
     ``tool_result`` names only the id, but the renderer labels each row from
-    ``name`` (falling back to the literal "tool") and matches rows by name +
-    id — so completing without it produced the bare, contentless "Tool" rows.
+    ``name`` (falling back to the literal "tool") and matches a completion to
+    its running row by name + id — so completing without it produced the
+    bare, contentless "Tool" rows.
 
-    Field names follow what the renderer actually reads (``toolResult`` /
-    ``toolArgs`` in lib/chat-messages.ts): ``result`` (not "output"),
-    ``error`` (not "is_error"), plus ``inline_diff``/``summary``/``duration_s``
-    when the agent supplies its richer display envelope.
+    Names, arguments and results all go through the vocabulary adapter above,
+    which is what engages the renderer's per-tool formatting instead of its
+    unlabelled generic fallback.
     """
     kind = frame.get("type")
     message = frame.get("message") or {}
@@ -131,10 +372,16 @@ def translate_sdk_envelope(
             name = str(block.get("name") or "")
             if tool_names is not None and tool_id:
                 tool_names[tool_id] = name
-            events.append(
-                ("tool.start", {"tool_id": tool_id, "name": name,
-                                "args": block.get("input") or {}}),
-            )
+            tool_input = block.get("input") or {}
+            payload: dict[str, Any] = {
+                "tool_id": tool_id,
+                "name": render_tool_name(name),
+                "args": render_tool_args(tool_input),
+            }
+            context = tool_context(tool_input)
+            if context:
+                payload["context"] = context
+            events.append(("tool.start", payload))
         return events
 
     if kind != "user":
@@ -148,21 +395,16 @@ def translate_sdk_envelope(
         if block.get("type") != "tool_result":
             continue
         tool_id = str(block.get("tool_use_id") or "")
-        payload: dict[str, Any] = {
-            "tool_id": tool_id,
-            "name": (tool_names or {}).pop(tool_id, "") if tool_names else "",
-            "result": _tool_output_text(block.get("content")),
-        }
+        name = (tool_names or {}).pop(tool_id, "") if tool_names else ""
+        text = _tool_output_text(block.get("content"))
+        payload = {"tool_id": tool_id, "name": render_tool_name(name)}
         if block.get("is_error"):
-            # The renderer flags a failed row from `error` being truthy; keep
-            # the message so the row can show WHY it failed.
-            payload["error"] = payload["result"] or "tool failed"
-        if isinstance(display, dict):
-            for key in ("inline_diff", "summary", "preview", "duration_s",
-                        "structuredPatch", "filePath", "type", "originalSize",
-                        "numLines", "totalLines"):
-                if display.get(key) is not None:
-                    payload.setdefault(key, display[key])
+            # A failed row shows the reason, not the output — and no diff:
+            # nothing was written. The renderer flags failure off `error`.
+            payload["error"] = clean_tool_error(text)
+            payload["result"] = {}
+        else:
+            payload["result"] = render_tool_result(name, text, display)
         events.append(("tool.complete", payload))
     return events
 
@@ -245,6 +487,13 @@ def translate_frame(
 __all__ = [
     "approval_request_payload",
     "as_text",
+    "clean_tool_error",
+    "inline_diff_from_display",
+    "render_tool_args",
+    "render_tool_name",
+    "render_tool_result",
+    "summarize_tool_result",
+    "tool_context",
     "translate_frame",
     "translate_result",
     "translate_sdk_envelope",
