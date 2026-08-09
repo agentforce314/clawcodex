@@ -1571,7 +1571,9 @@ _DEEPSEEK_AGENT_PROMPT = (
     "- Bias to action. Keep private deliberation short: investigate by "
     "running commands and reading files, not by extended analysis. When "
     "unsure between approaches, try the simplest one and iterate on real "
-    "output.\n"
+    "output. Short deliberation does NOT mean fewer checks — searches, "
+    "sweeps, and verification passes are cheap actions; run as many as the "
+    "task needs and chase every loose end they surface.\n"
     "- Do not re-derive your plan after every tool result. Decide once, then "
     "carry the plan forward, updating it only when new evidence contradicts "
     "it.\n"
@@ -1584,7 +1586,11 @@ _DEEPSEEK_AGENT_PROMPT = (
     "- A task is done only when verified: re-read the original task "
     "statement, check every requirement with a concrete command (run the "
     "tests, execute the produced artifact, inspect the output file), and "
-    "fix what fails before finishing."
+    "fix what fails before finishing.\n"
+    "- When the task supplies tests or acceptance checks, they ARE the "
+    "spec: make your implementation pass them. Never edit a provided check "
+    "so it passes — a failing provided test means your code is wrong, not "
+    "the test."
 )
 
 
