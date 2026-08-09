@@ -135,13 +135,13 @@ def test_profile_is_opt_in_and_gated_on_is_deepseek():
     )
 
 
-def test_headless_arms_sticky_fuse_via_setdefault():
-    """Headless (time-budgeted, unattended) arms the sticky escalation the
-    provider deliberately defaults off for interactive sessions; setdefault
-    so an explicit user value — including 0 — wins. Independent of the tool
-    profile."""
+def test_headless_does_not_arm_sticky_fuse():
+    """Sticky thinking-off is NOT armed by headless: a 12-task subset run
+    showed it regressing genuine deep-reasoning tasks (feal-linear tripped
+    on productive reasoning, went sticky, lost thinking, failed). The safe
+    per-request retry stands alone; sticky stays opt-in via the env."""
     src = inspect.getsource(headless_mod)
-    assert 'os.environ.setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")' in src
+    assert 'setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY"' not in src
 
 
 def test_harbor_adapter_arms_profile_for_deepseek_trials():

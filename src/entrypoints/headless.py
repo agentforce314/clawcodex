@@ -417,15 +417,16 @@ def run_headless(options: HeadlessOptions) -> int:
             "(unset CLAWCODEX_DEEPSEEK_CORE_TOOLS to disable)",
             file=sys.stderr,
         )
-    if getattr(provider, "is_deepseek", False):
-        # Arm the reasoning fuse's sticky escalation for this time-budgeted,
-        # unattended context (see DeepSeekProvider.DEFAULT_FUSE_STICKY_TRIPS
-        # — the provider default is 0 so interactive sessions, which have no
-        # trial clock, never lose thinking permanently). ``setdefault`` so an
-        # explicit user value — including 0 — wins. Independent of the tool
-        # profile: the fuse guards the runaway failure mode regardless of
-        # which tools are registered.
-        os.environ.setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")
+    # NOTE: sticky thinking-off (CLAWCODEX_DEEPSEEK_FUSE_STICKY) is
+    # deliberately NOT armed here. A 12-task subset run (2026-08-09) showed
+    # it regressing genuine deep-reasoning tasks: feal-linear-cryptanalysis
+    # (a baseline PASS) tripped the fuse repeatedly on productive reasoning,
+    # went sticky, lost thinking for the rest of the trial, and failed.
+    # The per-request fuse retry — which only fires when a truncation
+    # produced NOTHING actionable, and leaves thinking on for the next turn
+    # — captures the pathological "stuck deliberating" case without the
+    # permanent capability loss. Sticky remains available for anyone who
+    # sets the env explicitly.
     if allow is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
     if deny is not None:

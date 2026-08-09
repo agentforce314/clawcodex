@@ -25,9 +25,9 @@ per-request cap + fuse beats any turn-indexed effort decay.
 
 | lever | default | env |
 |---|---|---|
-| per-request `max_tokens` | 16384 (explicit values clamped to 2x) | `CLAWCODEX_DEEPSEEK_MAX_OUTPUT` (0 = off) |
+| per-request `max_tokens` | 40960 (explicit values clamped to 2x) | `CLAWCODEX_DEEPSEEK_MAX_OUTPUT` (0 = off) |
 | reasoning fuse: length-truncated + nothing actionable → retry once with thinking disabled; a length-truncated JSON-repaired TRAILING tool call is dropped rather than executed | on | `CLAWCODEX_DEEPSEEK_FUSE=0` |
-| sticky thinking-off after N consecutive fuse trips (resets on any non-burn; cleared by `/clear`) | 0 (off) — headless arms 3 | `CLAWCODEX_DEEPSEEK_FUSE_STICKY` |
+| sticky thinking-off after N consecutive fuse trips (resets on any non-burn; cleared by `/clear`) | **0 (off) everywhere** — see subset finding below | `CLAWCODEX_DEEPSEEK_FUSE_STICKY` |
 | headless core-tool profile (14 tools = the observed working set) | **opt-in**; the harbor adapter sets it for deepseek trials | `CLAWCODEX_DEEPSEEK_CORE_TOOLS=1` |
 | `# Working Style` prompt section (act > deliberate, verify before done) | on | `CLAWCODEX_DEEPSEEK_PROMPT=0` |
 | memory systems off in trial containers | adapter-set | (harbor adapter `_build_env` / seeded settings) |
@@ -67,6 +67,35 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 
 Keep `effort=max` + `vision=openai:gpt-5.6-luna` identical to the baseline
 job so only the harness differs.
+
+## Subset-A finding (2026-08-09) — why the cap is 40K and sticky is off
+
+A deliberately adversarial 12-task subset (the hardest reasoning-runaway
+tasks) run at the 16K cap + headless-armed sticky came out **net negative**:
++1 fixed (extract-elf), −2 regressed (feal-linear-cryptanalysis,
+sanitize-git-repo), 9 same. The lesson, not the number, is the point (this
+subset is not representative of the full 74 — it excludes every task the
+harness already passes):
+
+- **feal-linear-cryptanalysis (1.0 → 0.0)**: legitimate reasoning bursts of
+  p90 21,732 / max 37,071 tokens. The 16K cap truncated them, the fuse
+  tripped 4×, sticky disabled thinking, and a task whose *work is the
+  reasoning* could no longer do it. → cap raised to 40,960 (above its max);
+  sticky no longer armed. The per-request retry (fires only on a
+  nothing-actionable truncation, thinking back on next turn) keeps the
+  pathological-runaway protection without the permanent loss.
+- **sanitize-git-repo (1.0 → 0.0)**: "keep deliberation short" read as "do
+  fewer sweeps"; it missed a third contaminated file. → Working Style now
+  says sweeps/verification are cheap actions to run freely.
+- The persistent timeouts (gcode, raman, model-extraction, polyglot,
+  dna-assembly) fail whether or not the cap is present — flash simply does
+  not solve them in budget; the cap converts one giant request into several
+  smaller ones without changing the outcome. Do not read those as
+  cap-induced regressions, but do not claim the cap fixes them either.
+
+Takeaway: the cap is a **runaway backstop sized above real reasoning**, not
+a reasoning throttle; the fuse *retry* is the load-bearing win; sticky is
+too blunt for reasoning-heavy work and is opt-in only.
 
 ## Measurement discipline
 

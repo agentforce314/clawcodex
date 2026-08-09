@@ -75,10 +75,19 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     #: produced single requests of 131,071 output tokens that were 100%
     #: ``reasoning_content`` — at the observed ~90-145 tok/s one such request
     #: consumes an entire 900s task budget before the agent takes a single
-    #: action. Per-request output distribution on that run: p95 = 8,076,
-    #: p97 = 12,061, p99 = 26,191 — so 16K clears ~98% of real requests and
-    #: bounds a runaway to ~2-3 minutes instead of the whole trial.
-    DEFAULT_OUTPUT_CAP = 16_384
+    #: action.
+    #:
+    #: Sizing (revised after a 12-task subset run, 2026-08-09): 16,384 was
+    #: BELOW the legitimate-reasoning size of genuine deep-reasoning tasks
+    #: and regressed them — feal-linear-cryptanalysis, a baseline PASS, has
+    #: per-request reasoning bursts of p90 21,732 / max 37,071; the 16K cap
+    #: truncated them and the task failed. The cap must sit ABOVE real
+    #: reasoning and only catch the pathological 131K runaways. 40,960
+    #: clears feal's max, still cuts a 131K monster to <1/3, and at
+    #: ~120 tok/s bounds a true runaway to ~5.5 min rather than the whole
+    #: trial. The genuinely-stuck case (a model deliberating when it could
+    #: act) is handled by the fuse RETRY, not by squeezing the cap.
+    DEFAULT_OUTPUT_CAP = 40_960
 
     #: Total pure-reasoning truncations after which thinking is disabled for
     #: the REST of the session (``CLAWCODEX_DEEPSEEK_FUSE_STICKY`` sets the
