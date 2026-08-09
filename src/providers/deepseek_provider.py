@@ -9,6 +9,8 @@ deprecated and resolve to the non-thinking / thinking modes of
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Optional
 
 try:
@@ -16,7 +18,21 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     OpenAI = None
 
+from .base import ChatResponse
 from .openai_compatible import OpenAICompatibleProvider
+
+logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        logger.debug("ignoring invalid %s=%r", name, raw)
+        return default
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
@@ -49,6 +65,29 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     #: high", and ``max`` is the only DeepSeek level that is.
     reasoning_effort_aliases = {"medium": "high", "xhigh": "max", "minimal": "low"}
 
+    #: Default per-request ``max_tokens`` when the caller didn't set one
+    #: (``CLAWCODEX_DEEPSEEK_MAX_OUTPUT`` overrides; ``0`` disables the cap).
+    #:
+    #: Why a cap at all: DeepSeek's thinking models do NOT budget reasoning
+    #: to fit ``max_tokens`` — and with no ``max_tokens`` the server default
+    #: is 131,072. Measured on terminal-bench 2.1 (tb21-flash-visiontool,
+    #: 2026-08-08), ``deepseek-v4-flash`` at ``reasoning_effort=max``
+    #: produced single requests of 131,071 output tokens that were 100%
+    #: ``reasoning_content`` — at the observed ~90-145 tok/s one such request
+    #: consumes an entire 900s task budget before the agent takes a single
+    #: action. Per-request output distribution on that run: p95 = 8,076,
+    #: p97 = 12,061, p99 = 26,191 — so 16K clears ~98% of real requests and
+    #: bounds a runaway to ~2-3 minutes instead of the whole trial.
+    DEFAULT_OUTPUT_CAP = 16_384
+
+    #: Consecutive pure-reasoning truncations after which thinking is
+    #: disabled for the REST of the session (``CLAWCODEX_DEEPSEEK_FUSE_STICKY``
+    #: overrides; ``0`` disables the sticky escalation). A model that burns
+    #: its whole output budget on reasoning several times in a row on the
+    #: same task has demonstrated the pattern is stable; acting without
+    #: thinking beats deliberating until the trial clock runs out.
+    DEFAULT_FUSE_STICKY_TRIPS = 3
+
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None
     ):
@@ -64,6 +103,182 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             base_url or self.DEFAULT_BASE_URL,
             model or "deepseek-v4-pro",
         )
+        # Reasoning-fuse state (see ``_recover_reasoning_burn``). Session
+        # lifetime == provider instance lifetime.
+        self._fuse_trips = 0
+        self._thinking_disabled_sticky = False
+
+    # ------------------------------------------------------------------ #
+    # Reasoning-runaway protection ("the fuse")
+    # ------------------------------------------------------------------ #
+    #
+    # Failure shape this guards (terminal-bench 2.1, deepseek-v4-flash,
+    # effort=max): a request streams reasoning_content indefinitely, never
+    # emits content or a tool call, and is eventually truncated by
+    # ``max_tokens`` (``finish_reason="length"``). The stream watchdog can't
+    # catch it — reasoning chunks ARE progress — and the httpx read timeout
+    # can't either (bytes keep flowing). Uncapped, the truncation point is
+    # the server-default 131,072 tokens ≈ 15-25 minutes of wall clock.
+    #
+    # Three layers, all env-tunable:
+    #   1. a default per-request ``max_tokens`` (``_apply_output_cap``) so a
+    #      runaway is bounded in the first place;
+    #   2. on a truncated response with NOTHING actionable (no content, no
+    #      tool calls), one immediate retry of the same request with
+    #      ``thinking: {"type": "disabled"}`` — probed 2026-08-09: the same
+    #      prompt that burned 4,096 reasoning tokens and returned nothing
+    #      answered in 4.7s / 527 tokens with thinking disabled;
+    #   3. after ``DEFAULT_FUSE_STICKY_TRIPS`` such burns in one session,
+    #      thinking is disabled for every subsequent request.
+
+    @property
+    def _output_cap(self) -> int:
+        return _env_int("CLAWCODEX_DEEPSEEK_MAX_OUTPUT", self.DEFAULT_OUTPUT_CAP)
+
+    @property
+    def _fuse_enabled(self) -> bool:
+        return os.environ.get("CLAWCODEX_DEEPSEEK_FUSE", "").lower() not in (
+            "0", "false", "no",
+        )
+
+    def _apply_output_cap(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Default ``max_tokens`` to the cap; clamp explicit values to 2x cap.
+
+        The clamp bounds the query loop's 64K max-output-tokens escalation
+        (which exists for Anthropic's withheld-content case) — on this wire
+        64K of output is 7-12 minutes of generation, longer than most
+        terminal-bench task budgets have left by the time it fires.
+        """
+        cap = self._output_cap
+        if cap <= 0:
+            return kwargs
+        current = kwargs.get("max_tokens")
+        if current is None:
+            kwargs = dict(kwargs)
+            kwargs["max_tokens"] = cap
+        elif isinstance(current, int) and current > cap * 2:
+            kwargs = dict(kwargs)
+            kwargs["max_tokens"] = cap * 2
+        return kwargs
+
+    @staticmethod
+    def _force_thinking_disabled(kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Return kwargs with thinking hard-off (OpenAI-format shape).
+
+        ``reasoning_effort`` is dropped rather than kept alongside: the two
+        fields configure the same mode and the docs define no precedence
+        between a level and an explicit disable.
+        """
+        kwargs = dict(kwargs)
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body.pop("reasoning_effort", None)
+        extra_body["thinking"] = {"type": "disabled"}
+        kwargs["extra_body"] = extra_body
+        return kwargs
+
+    @staticmethod
+    def _is_reasoning_burn(response: ChatResponse) -> bool:
+        """True when a truncated response contains nothing actionable.
+
+        ``finish_reason == "length"`` with no content and no tool calls means
+        the entire output budget went to ``reasoning_content`` (or, equally
+        useless, to nothing) — the agent loop cannot advance on it.
+        """
+        if response.finish_reason != "length":
+            return False
+        if (response.content or "").strip():
+            return False
+        if response.tool_uses:
+            return False
+        return True
+
+    @staticmethod
+    def _merge_burn_usage(
+        burned: dict[str, Any], final: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fold the burned request's usage into the returned response's.
+
+        The query loop records usage from the response it receives; without
+        the merge, the burned request's tokens (real, billed) would vanish
+        from cost accounting.
+        """
+        merged = dict(final)
+        for key, value in burned.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                base = merged.get(key)
+                merged[key] = (base if isinstance(base, (int, float)) else 0) + value
+        return merged
+
+    def _note_fuse_trip(self) -> None:
+        self._fuse_trips += 1
+        sticky_at = _env_int(
+            "CLAWCODEX_DEEPSEEK_FUSE_STICKY", self.DEFAULT_FUSE_STICKY_TRIPS
+        )
+        if sticky_at > 0 and self._fuse_trips >= sticky_at and not self._thinking_disabled_sticky:
+            self._thinking_disabled_sticky = True
+            logger.warning(
+                "deepseek reasoning fuse: %d pure-reasoning truncations this "
+                "session — disabling thinking for all subsequent requests",
+                self._fuse_trips,
+            )
+
+    def chat(self, messages, tools=None, **kwargs):
+        kwargs = self._apply_output_cap(kwargs)
+        if self._thinking_disabled_sticky:
+            kwargs = self._force_thinking_disabled(kwargs)
+        response = super().chat(messages, tools=tools, **kwargs)
+        if not (self._fuse_enabled and self._is_reasoning_burn(response)):
+            return response
+        self._note_fuse_trip()
+        logger.warning(
+            "deepseek reasoning fuse tripped (trip %d): request truncated at "
+            "max_tokens with 100%% reasoning — retrying with thinking disabled",
+            self._fuse_trips,
+        )
+        retry = super().chat(
+            messages, tools=tools, **self._force_thinking_disabled(kwargs)
+        )
+        retry.usage = self._merge_burn_usage(response.usage or {}, retry.usage or {})
+        return retry
+
+    def chat_stream_response(
+        self,
+        messages,
+        tools=None,
+        on_text_chunk=None,
+        abort_signal=None,
+        on_thinking_chunk=None,
+        **kwargs,
+    ):
+        kwargs = self._apply_output_cap(kwargs)
+        if self._thinking_disabled_sticky:
+            kwargs = self._force_thinking_disabled(kwargs)
+        response = super().chat_stream_response(
+            messages,
+            tools=tools,
+            on_text_chunk=on_text_chunk,
+            abort_signal=abort_signal,
+            on_thinking_chunk=on_thinking_chunk,
+            **kwargs,
+        )
+        if not (self._fuse_enabled and self._is_reasoning_burn(response)):
+            return response
+        self._note_fuse_trip()
+        logger.warning(
+            "deepseek reasoning fuse tripped (trip %d): request truncated at "
+            "max_tokens with 100%% reasoning — retrying with thinking disabled",
+            self._fuse_trips,
+        )
+        retry = super().chat_stream_response(
+            messages,
+            tools=tools,
+            on_text_chunk=on_text_chunk,
+            abort_signal=abort_signal,
+            on_thinking_chunk=on_thinking_chunk,
+            **self._force_thinking_disabled(kwargs),
+        )
+        retry.usage = self._merge_burn_usage(response.usage or {}, retry.usage or {})
+        return retry
 
     def _create_client(self) -> Any:
         """Create OpenAI SDK client pointed at DeepSeek."""

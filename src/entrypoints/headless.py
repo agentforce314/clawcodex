@@ -370,6 +370,32 @@ def run_headless(options: HeadlessOptions) -> int:
         if options.disallowed_tools
         else None
     )
+    # DeepSeek headless core-tool profile (CLAWCODEX_DEEPSEEK_CORE_TOOLS=0
+    # disables). The full registry puts ~40 tool schemas (~12K tokens) on an
+    # OpenAI-compatible wire that has no tool_reference deferral, and most of
+    # them cannot do anything useful in a one-shot headless run (CronCreate,
+    # TeamCreate, EnterWorktree, Skill, ScheduleWakeup, ...). For DeepSeek's
+    # thinking models the cost is worse than tokens: every extra tool is
+    # decision surface the model deliberates over. Measured on terminal-bench
+    # 2.1 (tb21-flash-visiontool, 2026-08-08), deepseek-v4-flash spent 80-95%
+    # of its output tokens on reasoning, and the tools it actually used were
+    # Bash/Read/Write/Edit/Grep/Glob/TodoWrite/TaskOutput/TaskStop/Monitor/
+    # vision_analyze/WebFetch/WebSearch (+2 calls elsewhere) — the profile
+    # below is that observed working set, not a guess. Interactive sessions
+    # are untouched, other providers are untouched, and a tool the user
+    # explicitly names in --allowed-tools is kept even when off-profile.
+    if getattr(provider, "is_deepseek", False) and os.environ.get(
+        "CLAWCODEX_DEEPSEEK_CORE_TOOLS", ""
+    ).lower() not in ("0", "false", "no"):
+        core = {
+            "bash", "read", "write", "edit", "grep", "glob", "notebookedit",
+            "todowrite", "webfetch", "websearch", "taskoutput", "taskstop",
+            "monitor", "vision_analyze",
+        }
+        _filter_registry(
+            tool_registry,
+            keep=lambda n: n.lower() in core or (allow is not None and n.lower() in allow),
+        )
     if allow is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
     if deny is not None:

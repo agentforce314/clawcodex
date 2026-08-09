@@ -67,8 +67,17 @@ def _install_recorder(out_dir: str) -> None:
                         "model": kwargs.get("model"),
                         "messages": kwargs.get("messages"),
                         "tools": kwargs.get("tools"),
+                        # Everything else on the call (reasoning_effort,
+                        # max_tokens, stream flags, extra_body, ...) — the
+                        # fields above stay stable for existing consumers.
+                        "other_kwargs": {
+                            k: v
+                            for k, v in kwargs.items()
+                            if k not in ("model", "messages", "tools")
+                        },
                     },
                     fh,
+                    default=str,
                 )
         except Exception as exc:  # never break the session being measured
             print(f"[probe] dump failed: {exc}", file=sys.stderr)

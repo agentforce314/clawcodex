@@ -654,6 +654,16 @@ class Clawcodex(BaseInstalledAgent):
         # Open clawcodex's root safety gate for --dangerously-skip-permissions
         # (task containers usually run the agent as root).
         env["IS_SANDBOX"] = "1"
+        # Trial containers are ephemeral: nothing persists past the verifier,
+        # so "save this for future sessions" is pure waste. With memory ON,
+        # trials were observed spending whole turns writing memories mid-task
+        # (tb21-flash-visiontool: cancel-async-tasks step 15 "Let me save the
+        # preference you stated so future async work honors it",
+        # configure-git-webserver step 15 same pattern) — and the auto-memory
+        # doctrine alone is ~13K chars of system prompt. Kill both memory
+        # systems: the memdir doctrine+index via this env, the MEMORY.md
+        # snapshot + Memory tool via the seeded settings file below.
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         # Config dir lives OUTSIDE /logs (token privacy in subscription
         # mode); run() copies sessions/transcripts back into /logs/agent
         # post-run so the host still gets them.
@@ -814,6 +824,16 @@ class Clawcodex(BaseInstalledAgent):
         effort = self._resolved_flags.get("effort")
         if effort:
             settings["effort"] = effort
+
+        # Persistent memory is meaningless in a trial container — nothing
+        # survives the verifier — and it is not free: agents were observed
+        # spending turns writing "for future sessions" memories mid-task
+        # (see the CLAUDE_CODE_DISABLE_AUTO_MEMORY note in ``_build_env``).
+        # This is a capability removal (the capability's premise, a future
+        # session, does not exist here), not behavioural guidance, so it
+        # stays inside this adapter's remit. Pairs with the env var, which
+        # kills the OTHER memory system (memdir auto-memory).
+        settings["memory_store_enabled"] = False
 
         # Advisor (reviewer model). Settings-only by design: clawcodex reads
         # the advisor config from settings, there is no CLI flag, and the

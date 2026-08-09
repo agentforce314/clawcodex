@@ -716,6 +716,9 @@ def build_full_system_prompt_blocks(
         ni_section = _build_non_interactive_section(use_cache)
         if ni_section:
             sections.append(ni_section)
+    deepseek_section = _build_deepseek_agent_section(provider)
+    if deepseek_section:
+        sections.append(deepseek_section)
     if tool_restrictions:
         restrict_section = _build_tool_restrictions_section(tool_restrictions)
         if restrict_section:
@@ -1548,6 +1551,60 @@ _NON_INTERACTIVE_PROMPT = (
     "- Complete the task to the best of your ability\n"
     "- Report errors clearly but continue working"
 )
+
+
+#: Working-style guidance for DeepSeek's thinking models. Every line
+#: counters a failure mode measured on terminal-bench 2.1
+#: (tb21-flash-visiontool, deepseek-v4-flash @ effort=max, 2026-08-08):
+#: 80-95% of output tokens were reasoning_content, single requests ran away
+#: to the 131K output cap as pure reasoning (polyglot-rust-c: the whole
+#: 900s trial spent on ONE request that never produced an action), plans
+#: were re-derived from scratch after every tool result, and a quarter of
+#: the completed-but-failed trials ended with "verified"-worded claims the
+#: verifier then rejected.
+_DEEPSEEK_AGENT_PROMPT = (
+    "# Working Style\n"
+    "- Bias to action. Keep private deliberation short: investigate by "
+    "running commands and reading files, not by extended analysis. When "
+    "unsure between approaches, try the simplest one and iterate on real "
+    "output.\n"
+    "- Do not re-derive your plan after every tool result. Decide once, then "
+    "carry the plan forward, updating it only when new evidence contradicts "
+    "it.\n"
+    "- Per-response output is limited. Write long artifacts to files with "
+    "Write/Edit instead of printing them, and split large outputs across "
+    "steps.\n"
+    "- For anything that may run long (builds, downloads, training, "
+    "solvers), start it with Bash run_in_background and poll with "
+    "TaskOutput while you prepare the next step; never sit idle waiting.\n"
+    "- A task is done only when verified: re-read the original task "
+    "statement, check every requirement with a concrete command (run the "
+    "tests, execute the produced artifact, inspect the output file), and "
+    "fix what fails before finishing."
+)
+
+
+def _build_deepseek_agent_section(provider: Any | None) -> SystemPromptSection | None:
+    """DeepSeek-only working-style section (``CLAWCODEX_DEEPSEEK_PROMPT=0``
+    disables).
+
+    Gated on the provider rather than the model so it follows the same
+    boundary as every other ``is_deepseek`` behaviour (prefix-cache tail
+    relocation, the reasoning fuse): the ``deepseek`` provider class only,
+    never a DeepSeek model routed through OpenRouter. SESSION scope for the
+    same reason as ``non_interactive`` above — constant bytes must not ride
+    the relocated REQUEST tail.
+    """
+    if provider is None or not getattr(provider, "is_deepseek", False):
+        return None
+    if os.environ.get("CLAWCODEX_DEEPSEEK_PROMPT", "").lower() in ("0", "false", "no"):
+        return None
+    return SystemPromptSection(
+        id="deepseek_agent",
+        content=_DEEPSEEK_AGENT_PROMPT,
+        cache_scope=CacheScope.SESSION,
+        order=81,
+    )
 
 
 def _build_non_interactive_section(use_cache: bool) -> SystemPromptSection | None:
