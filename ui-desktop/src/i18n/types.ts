@@ -2055,6 +2055,7 @@ export interface Translations {
       smartDescription: string
       off: string
       offDescription: string
+      scopeNote: string
     }
     statusbar: {
       unknown: string

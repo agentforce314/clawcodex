@@ -2636,7 +2636,8 @@ export const zh: Translations = {
       smart: '智能',
       smartDescription: '自动评估操作，并在需要时询问',
       off: '关闭',
-      offDescription: '不显示审批提示，直接运行'
+      offDescription: '不显示审批提示，直接运行',
+      scopeNote: '将成为新会话的默认设置，包括命令行'
     },
     statusbar: {
       unknown: '未知',

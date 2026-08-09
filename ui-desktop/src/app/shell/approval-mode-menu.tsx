@@ -68,6 +68,13 @@ export function useApprovalModeStatusbarItem(profile: string, requestGateway: Ap
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        {/* Picking a level here writes `permissions.defaultMode` to the user
+            settings file — the same tier `/permissions` writes and the CLI
+            and TUI read. Persisting is deliberate (a deliberate step DOWN
+            must survive a relaunch), but a toolbar dropdown gives no hint
+            that it reaches past this window, so say so. */}
+        <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{copy.scopeNote}</p>
       </>
     ),
     title: copy.ariaLabel(labels[mode]),

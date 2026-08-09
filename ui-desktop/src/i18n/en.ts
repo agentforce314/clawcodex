@@ -2455,7 +2455,8 @@ export const en: Translations = {
       smart: 'Smart',
       smartDescription: 'Automatically assess actions and ask when needed',
       off: 'Off',
-      offDescription: 'Run without approval prompts'
+      offDescription: 'Run without approval prompts',
+      scopeNote: 'Becomes your default for new sessions, including the CLI'
     },
     statusbar: {
       unknown: 'unknown',

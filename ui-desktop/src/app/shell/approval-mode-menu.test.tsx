@@ -73,6 +73,17 @@ describe('approval mode statusbar item', () => {
     })
   })
 
+  it('says the choice reaches past this window', async () => {
+    // Selecting a level writes permissions.defaultMode to the user settings
+    // file, which the CLI and TUI read too. A toolbar dropdown reads like a
+    // local toggle, so the menu has to admit its real scope.
+    render(<Harness requestGateway={vi.fn(async () => ({ value: 'smart' }))} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /smart/i }), { button: 0 })
+
+    expect(await screen.findByText(/default for new sessions, including the CLI/i)).toBeTruthy()
+  })
+
   it('renders the shared trigger and menu in the active locale', async () => {
     const response = new Promise<never>(() => undefined)
     render(

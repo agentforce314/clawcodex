@@ -22,7 +22,17 @@ PROJECT_SETTINGS_DIRNAME = ".clawcodex"
 
 
 def user_settings_path() -> str:
-    return os.path.expanduser(USER_SETTINGS_FILENAME)
+    """The user tier: ``$CLAWCODEX_CONFIG_DIR/settings.json``, else ``~/.clawcodex``.
+
+    Resolved through :func:`get_user_config_dir` so a relocated config dir
+    keeps its permissions, hooks and trust settings with the rest of its state
+    — sessions and transcripts have honored the override since the config-dir
+    work, and reading this tier from ``~/.clawcodex`` regardless meant a
+    profile pointed elsewhere silently answered from the default home.
+    """
+    from src.utils.clawcodex_dirs import get_user_config_dir
+
+    return str(get_user_config_dir() / "settings.json")
 
 
 def project_settings_path(cwd: str | None = None) -> str:

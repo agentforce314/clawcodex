@@ -2292,7 +2292,8 @@ export const ja = defineLocale({
       smart: 'スマート',
       smartDescription: '必要な場合にのみ確認します',
       off: 'オフ',
-      offDescription: '承認プロンプトなしで実行します'
+      offDescription: '承認プロンプトなしで実行します',
+      scopeNote: 'CLI を含む新しいセッションの既定値になります'
     },
     statusbar: {
       unknown: '不明',

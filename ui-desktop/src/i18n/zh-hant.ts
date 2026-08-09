@@ -2215,7 +2215,8 @@ export const zhHant = defineLocale({
       smart: '智慧',
       smartDescription: '自動評估操作，並在需要時詢問',
       off: '關閉',
-      offDescription: '不顯示核准提示，直接執行'
+      offDescription: '不顯示核准提示，直接執行',
+      scopeNote: '將成為新工作階段的預設值，包括命令列'
     },
     statusbar: {
       unknown: '未知',
