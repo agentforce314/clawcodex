@@ -123,6 +123,8 @@ class DesktopSession:
         self.sockets: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
+        # tool_use_id -> tool name, so a tool_result can label its row.
+        self._tool_names: dict[str, str] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -237,7 +239,7 @@ class DesktopSession:
                 await self._broadcast("session.info", _init_session_info(frame))
             return
 
-        for type_, payload in translate_frame(frame):
+        for type_, payload in translate_frame(frame, self._tool_names):
             await self._broadcast(type_, payload)
         if kind == "result":
             # The renderer clears busy from message.complete; refresh the info

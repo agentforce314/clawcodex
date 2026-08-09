@@ -49,6 +49,30 @@ def _text_of(content: Any) -> str:
     return "".join(p for p in parts if isinstance(p, str))
 
 
+def as_text(value: Any) -> str:
+    """Anything the agent hands us where the UI expects prose → a string.
+
+    The renderer's coerceGatewayText JSON-stringifies a bare object it can't
+    read, which is how a raw ``{"type":"tool_use",…}`` block ended up printed
+    inside an assistant bubble. Flatten content blocks here and keep only the
+    text ones, so a tool block can never reach the transcript as prose.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(as_text(item) for item in value)
+    if isinstance(value, dict):
+        if value.get("type") in ("tool_use", "tool_result", "thinking"):
+            return ""
+        for key in ("text", "output_text", "content"):
+            if key in value:
+                return as_text(value[key])
+        return ""
+    return str(value)
+
+
 def _tool_output_text(content: Any) -> str:
     """Best-effort plain text of a tool_result block's content."""
     if isinstance(content, str):
@@ -66,65 +90,91 @@ def translate_stream_event(frame: dict[str, Any]) -> list[tuple[str, Any]]:
     delta = event.get("delta") or {}
     kind = delta.get("type")
     if kind == "text_delta":
-        text = delta.get("text")
+        text = as_text(delta.get("text"))
         return [("message.delta", {"text": text})] if text else []
     if kind == "thinking_delta":
-        thinking = delta.get("thinking")
+        thinking = as_text(delta.get("thinking"))
         return [("reasoning.delta", {"text": thinking})] if thinking else []
     return []
 
 
-def translate_sdk_envelope(frame: dict[str, Any]) -> list[tuple[str, Any]]:
+def translate_sdk_envelope(
+    frame: dict[str, Any], tool_names: dict[str, str] | None = None
+) -> list[tuple[str, Any]]:
     """Tool lifecycle out of SDK message envelopes.
 
     An assistant envelope's ``tool_use`` blocks start tools; a user envelope's
     ``tool_result`` blocks complete them. Streaming text itself already arrived
     via ``stream_event`` deltas, so text blocks are NOT re-emitted here (the
     renderer would double-print).
+
+    ``tool_names`` carries tool_use_id → tool name across the two frames. A
+    ``tool_result`` names only the id, but the renderer labels each row from
+    ``name`` (falling back to the literal "tool") and matches rows by name +
+    id — so completing without it produced the bare, contentless "Tool" rows.
+
+    Field names follow what the renderer actually reads (``toolResult`` /
+    ``toolArgs`` in lib/chat-messages.ts): ``result`` (not "output"),
+    ``error`` (not "is_error"), plus ``inline_diff``/``summary``/``duration_s``
+    when the agent supplies its richer display envelope.
     """
+    kind = frame.get("type")
     message = frame.get("message") or {}
     content = message.get("content")
     events: list[tuple[str, Any]] = []
-    if frame.get("type") == "assistant":
+
+    if kind == "assistant":
         for block in _iter_blocks(content):
-            if block.get("type") == "tool_use":
-                events.append(
-                    (
-                        "tool.start",
-                        {
-                            "tool_id": block.get("id") or "",
-                            "name": block.get("name") or "",
-                            "args": block.get("input") or {},
-                        },
-                    )
-                )
-    elif frame.get("type") == "user":
-        for block in _iter_blocks(content):
-            if block.get("type") == "tool_result":
-                events.append(
-                    (
-                        "tool.complete",
-                        {
-                            "tool_id": block.get("tool_use_id") or "",
-                            # The renderer keys rows by tool_id and falls back
-                            # to name; the id is authoritative here.
-                            "name": "",
-                            "output": _tool_output_text(block.get("content")),
-                            "is_error": bool(block.get("is_error")),
-                        },
-                    )
-                )
+            if block.get("type") != "tool_use":
+                continue
+            tool_id = str(block.get("id") or "")
+            name = str(block.get("name") or "")
+            if tool_names is not None and tool_id:
+                tool_names[tool_id] = name
+            events.append(
+                ("tool.start", {"tool_id": tool_id, "name": name,
+                                "args": block.get("input") or {}}),
+            )
+        return events
+
+    if kind != "user":
+        return events
+
+    # The agent's trimmed display envelope for the tool that just finished
+    # (Edit/Write structuredPatch, Read image size, WebSearch counts …). It
+    # rides the same frame as the tool_result block.
+    display = frame.get("tool_use_result")
+    for block in _iter_blocks(content):
+        if block.get("type") != "tool_result":
+            continue
+        tool_id = str(block.get("tool_use_id") or "")
+        payload: dict[str, Any] = {
+            "tool_id": tool_id,
+            "name": (tool_names or {}).pop(tool_id, "") if tool_names else "",
+            "result": _tool_output_text(block.get("content")),
+        }
+        if block.get("is_error"):
+            # The renderer flags a failed row from `error` being truthy; keep
+            # the message so the row can show WHY it failed.
+            payload["error"] = payload["result"] or "tool failed"
+        if isinstance(display, dict):
+            for key in ("inline_diff", "summary", "preview", "duration_s",
+                        "structuredPatch", "filePath", "type", "originalSize",
+                        "numLines", "totalLines"):
+                if display.get(key) is not None:
+                    payload.setdefault(key, display[key])
+        events.append(("tool.complete", payload))
     return events
 
 
 def translate_result(frame: dict[str, Any]) -> list[tuple[str, Any]]:
     is_error = bool(frame.get("is_error"))
     payload: dict[str, Any] = {
-        "text": frame.get("result") or "",
+        "text": as_text(frame.get("result")),
         "status": "error" if is_error else "ok",
     }
     if is_error:
-        error = frame.get("error") or frame.get("result") or "agent error"
+        error = as_text(frame.get("error")) or as_text(frame.get("result")) or "agent error"
         payload["error"] = error
         # The streamed text (if any) is real output worth keeping.
         payload["partial"] = bool(frame.get("result"))
@@ -164,8 +214,13 @@ def approval_request_payload(request: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def translate_frame(frame: dict[str, Any]) -> list[tuple[str, Any]]:
+def translate_frame(
+    frame: dict[str, Any], tool_names: dict[str, str] | None = None
+) -> list[tuple[str, Any]]:
     """Translate one agent frame into desktop gateway events.
+
+    ``tool_names`` is the session's tool_use_id → name map, threaded so a
+    ``tool_result`` can label its row (see :func:`translate_sdk_envelope`).
 
     Server-initiated ``control_request`` frames (permissions) are NOT handled
     here — they need connection state (pending map) and are handled by the
@@ -175,20 +230,21 @@ def translate_frame(frame: dict[str, Any]) -> list[tuple[str, Any]]:
     if kind == "stream_event":
         return translate_stream_event(frame)
     if kind in ("assistant", "user"):
-        return translate_sdk_envelope(frame)
+        return translate_sdk_envelope(frame, tool_names)
     if kind == "result":
         return translate_result(frame)
     if kind == "text":
         # Final rendered text also arrives via `result`; interim standalone
         # text frames seal an interim bubble so the final complete doesn't
         # wipe streamed commentary.
-        text = frame.get("text") or ""
+        text = as_text(frame.get("text"))
         return [("message.interim", {"text": text})] if text else []
     return []
 
 
 __all__ = [
     "approval_request_payload",
+    "as_text",
     "translate_frame",
     "translate_result",
     "translate_sdk_envelope",
