@@ -46,6 +46,38 @@ CONTROL_TIMEOUT_S = 30.0
 DESKTOP_CONTRACT = 1
 
 
+# The agent's permission modes vs the desktop's approval vocabulary. The
+# renderer's normalizeApprovalMode only knows manual|smart|off and silently
+# coerces anything else to "manual", so sending the raw mode made a Full
+# Access session render as "ask every time".
+_APPROVAL_MODE_FOR = {
+    "bypassPermissions": "off",   # Full Access — nothing to approve
+    "auto": "smart",              # the classifier lane
+    "default": "manual",
+    "acceptEdits": "manual",      # edits auto-approve, everything else asks
+    "plan": "manual",
+}
+_PERMISSION_MODE_FOR = {
+    "off": "bypassPermissions",
+    "smart": "auto",
+    "manual": "default",
+}
+
+
+def approval_mode_for(permission_mode: Any) -> str | None:
+    """Agent permission mode → the desktop's manual|smart|off vocabulary."""
+    if not isinstance(permission_mode, str) or not permission_mode:
+        return None
+    return _APPROVAL_MODE_FOR.get(permission_mode, "manual")
+
+
+def permission_mode_for(approval_mode: Any) -> str | None:
+    """The desktop's approval mode → an agent permission mode."""
+    if not isinstance(approval_mode, str):
+        return None
+    return _PERMISSION_MODE_FOR.get(approval_mode.strip().lower())
+
+
 def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     """system/init frame → the ``session.info`` payload the renderer reads."""
     payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
@@ -54,7 +86,7 @@ def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
         payload["cwd"] = cwd
     mode = init.get("permissionMode") or init.get("permission_mode")
     if mode:
-        payload["approval_mode"] = mode
+        payload["approval_mode"] = approval_mode_for(mode)
     model = init.get("model")
     if model:
         payload["model"] = model
@@ -145,7 +177,7 @@ class DesktopSession:
             if settings.get("provider"):
                 payload["provider"] = str(settings["provider"])
             if settings.get("permission_mode"):
-                payload["approval_mode"] = settings["permission_mode"]
+                payload["approval_mode"] = approval_mode_for(settings["permission_mode"])
             effort = settings.get("reasoning_effort") or settings.get("effort")
             if effort:
                 payload["reasoning_effort"] = str(effort)
@@ -212,7 +244,10 @@ class DesktopSession:
             # line too (permission mode may have flipped server-side).
             mode = frame.get("permission_mode")
             if mode:
-                await self._broadcast("session.info", {"approval_mode": mode, "running": False})
+                await self._broadcast(
+                    "session.info",
+                    {"approval_mode": approval_mode_for(mode), "running": False},
+                )
             # …and republish the full line (model/provider/effort) — a turn can
             # change them server-side (fallback model, plan-mode flip).
             # Scheduled, never awaited: this control response routes through
@@ -333,6 +368,18 @@ class DesktopSession:
         no control and succeed locally in the renderer, so an unknown key is a
         silent ok here rather than an error.
         """
+        if key == "approvals.mode":
+            # Safety panel / `/approvals`: manual|smart|off → a permission mode.
+            mode = permission_mode_for(value)
+            if mode is None:
+                return {"ok": False, "error": f"unknown approvals mode {value!r}"}
+            reply = await self.control_query("set_permission_mode",
+                                             {"mode": mode, "persist": True})
+            res = reply if isinstance(reply, dict) else {}
+            applied = approval_mode_for(res.get("mode") or mode)
+            await self.publish_session_info()
+            return {"ok": res.get("ok") is not False, "value": applied,
+                    "error": res.get("error")}
         if key == "permission_mode":
             reply = await self.control_query("set_permission_mode",
                                              {"mode": value, "persist": persist})
@@ -705,7 +752,13 @@ class GatewayConnection:
         session = self._first_session(params)
         if session is None:
             return {}
-        return await session.control_query("get_settings", {}) or {}
+        settings = await session.control_query("get_settings", {}) or {}
+        # The Safety panel + /approvals read this single key and expect
+        # {value}; without it they always resolved to "manual" (the fallback)
+        # and misreported a Full Access session as asking every time.
+        if str(params.get("key") or "") == "approvals.mode":
+            return {"value": approval_mode_for(settings.get("permission_mode")) or "manual"}
+        return settings
 
     async def config_set_rpc(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)

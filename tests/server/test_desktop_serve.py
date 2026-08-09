@@ -186,7 +186,10 @@ def test_serve_cli_parser_defaults() -> None:
     args = _build_parser().parse_args([])
     assert args.host == "127.0.0.1"
     assert args.port == 0
-    assert args.permission_mode == "default"
+    # Unset, NOT "default": the interactive resolver supplies the mode (Full
+    # Access floor, honoring persisted defaultMode + lockdown). Pinning a
+    # value here would defeat it — see test_serve_defaults_to_full_access.
+    assert args.permission_mode is None
 
 
 def test_serve_cli_accepts_desktop_spawn_shape() -> None:

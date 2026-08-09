@@ -90,7 +90,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fallback-model", default=None, dest="fallback_model",
         help="Model to switch to after repeated overloaded errors.",
     )
-    parser.add_argument("--permission-mode", default="default", dest="permission_mode",
+    parser.add_argument("--permission-mode", default=None, dest="permission_mode",
                         help="default | acceptEdits | bypassPermissions | plan | auto")
     parser.add_argument("--dangerously-skip-permissions", action="store_true",
                         dest="dangerously_skip_permissions",
@@ -160,27 +160,28 @@ def run_serve_subcommand(argv: list[str]) -> int:
         bypass_requested=dangerously or allow_dangerously,
     )
 
-    from src.permissions.modes import is_bypass_permissions_mode_disabled
-
-    disabled = is_bypass_permissions_mode_disabled()
-    if dangerously and not disabled:
-        args.permission_mode = "bypassPermissions"
-    elif dangerously and disabled:
-        logger.warning("Bypass permissions mode disabled by settings/policy; "
-                       "ignoring --dangerously-skip-permissions")
-    if args.permission_mode == "bypassPermissions" and disabled:
-        logger.warning("Bypass permissions mode disabled by settings/policy; "
-                       "ignoring --permission-mode bypassPermissions")
-        args.permission_mode = "default"
-
-    # Multi-session transport: bypass availability comes from FLAGS only,
-    # exactly like the agent-server's --http path. The desktop launcher (the
-    # single local operator) resolves settings at ITS boundary and forwards
-    # flags; folding host settings in here would unlock bypass for every
-    # client of this port. Lockdown still revokes an explicit request.
-    is_bypass_available = (dangerously or allow_dangerously) and not disabled
-
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
+
+    # The desktop is an INTERACTIVE surface with a real user at the window, and
+    # this server is its own loopback, token-gated child — the same trust model
+    # as the TUI launcher spawning its agent-server. So it resolves permissions
+    # through the shared interactive resolver (src/cli.py + tui_launcher use it
+    # too), which means Full Access by default, exactly like `clawcodex`.
+    #
+    # Without this the desktop ran in "default" mode and asked approval for
+    # every Write/Bash; the resolver also carries the guards that make the
+    # implicit floor safe — an operator `disableBypassPermissionsMode`
+    # lockdown and root-outside-sandbox both drop it back to prompting, and a
+    # persisted `permissions.defaultMode` still wins.
+    from src.permissions.modes import resolve_interactive_permission_state
+
+    mode, is_bypass_available, bypass_selectable = resolve_interactive_permission_state(
+        permission_mode_cli=args.permission_mode,
+        dangerously_skip_permissions=dangerously,
+        allow_dangerously_skip_permissions=allow_dangerously,
+        cwd=workspace,
+    )
+    args.permission_mode = mode
 
     if args.fallback_model and args.fallback_model == args.model:
         print("serve: --fallback-model must differ from --model", file=sys.stderr)
@@ -197,7 +198,7 @@ def run_serve_subcommand(argv: list[str]) -> int:
         fallback_model=args.fallback_model,
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,
-        bypass_selectable=is_bypass_available,
+        bypass_selectable=bypass_selectable,
         max_turns=args.max_turns,
     )
 

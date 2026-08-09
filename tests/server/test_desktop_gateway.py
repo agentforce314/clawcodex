@@ -77,6 +77,7 @@ class FakeAgent:
         self.shutdown_called = False
         self.model = "fake"
         self.provider = "fakeprov"
+        self.permission_mode = "bypassPermissions"
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -91,11 +92,14 @@ class FakeAgent:
                 self.model = request.get("model") or self.model
                 self.provider = request.get("provider") or self.provider
                 reply = {"ok": True, "model": self.model}
+            elif subtype == "set_permission_mode":
+                self.permission_mode = request.get("mode") or self.permission_mode
+                reply = {"ok": True, "mode": self.permission_mode, "persisted": True}
             elif subtype == "get_settings":
                 reply = {
                     "model": self.model,
                     "provider": self.provider,
-                    "permission_mode": "default",
+                    "permission_mode": self.permission_mode,
                 }
             if reply is not None:
                 await self.queue.put(
@@ -145,7 +149,7 @@ class FakeAgent:
             "type": "system",
             "subtype": "init",
             "cwd": "/tmp/w",
-            "permissionMode": "default",
+            "permissionMode": "bypassPermissions",
             "model": "fake",
         }
         while True:
@@ -206,7 +210,8 @@ def test_create_submit_stream_complete(tmp_path: Path) -> None:
         created = _drain_for_response(ws, 1, events)
         session_id = created["result"]["session_id"]
         assert session_id == "fake-1"
-        assert created["result"]["info"]["approval_mode"] == "default"
+        # Full Access maps to the desktop vocabulary: manual|smart|off.
+        assert created["result"]["info"]["approval_mode"] == "off"
 
         _rpc(ws, 2, "prompt.submit", {"session_id": session_id, "text": "hi"})
         _drain_for_response(ws, 2, events)
@@ -299,6 +304,77 @@ def test_approval_roundtrip_fake(tmp_path: Path) -> None:
         assert reply["response"]["updatedInput"] == {"command": "rm -rf /tmp/x"}
 
 
+def test_serve_defaults_to_full_access_like_the_cli() -> None:
+    """The desktop is an interactive surface, so serve resolves permissions
+    through the SAME resolver as `clawcodex` / the TUI launcher — Full Access
+    by default. Running in "default" mode made every Write/Bash raise an
+    approval the user never answered, and the tools timed out."""
+    from src.entrypoints.serve_cli import _build_parser
+    from src.permissions.modes import resolve_interactive_permission_state
+
+    # No --permission-mode → None, so the resolver's floor applies (pinning it
+    # to "default" here would defeat the implicit Full Access floor).
+    assert _build_parser().parse_args([]).permission_mode is None
+
+    mode, _available, selectable = resolve_interactive_permission_state(
+        permission_mode_cli=None,
+        dangerously_skip_permissions=False,
+        allow_dangerously_skip_permissions=False,
+        cwd=None,
+    )
+    assert mode == "bypassPermissions"
+    assert selectable is True
+
+
+def test_approval_mode_vocabulary_mapping() -> None:
+    """The renderer only knows manual|smart|off and coerces anything else to
+    "manual" — so a Full Access session rendered as "ask every time"."""
+    from src.server.desktop_gateway_methods import approval_mode_for, permission_mode_for
+
+    assert approval_mode_for("bypassPermissions") == "off"
+    assert approval_mode_for("auto") == "smart"
+    assert approval_mode_for("default") == "manual"
+    assert approval_mode_for("acceptEdits") == "manual"
+    assert approval_mode_for("plan") == "manual"
+    assert approval_mode_for(None) is None
+
+    assert permission_mode_for("off") == "bypassPermissions"
+    assert permission_mode_for("smart") == "auto"
+    assert permission_mode_for("manual") == "default"
+    assert permission_mode_for("nonsense") is None
+
+
+def test_approvals_mode_get_and_set(tmp_path: Path) -> None:
+    """The Safety panel round-trips a single `approvals.mode` key; without a
+    handler config.get returned the settings blob (no `value`) and the panel
+    always showed "manual"."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        # Reads the live mode in the desktop's vocabulary.
+        _rpc(ws, 2, "config.get", {"session_id": sid, "key": "approvals.mode"})
+        assert _drain_for_response(ws, 2, events)["result"] == {"value": "off"}
+
+        # Writing maps back to a permission mode and persists it.
+        _rpc(ws, 3, "config.set", {"session_id": sid, "key": "approvals.mode",
+                                   "value": "manual"})
+        result = _drain_for_response(ws, 3, events)["result"]
+        assert result["ok"] is True and result["value"] == "manual"
+        assert agents[0].permission_mode == "default"
+
+        _rpc(ws, 4, "config.get", {"session_id": sid, "key": "approvals.mode"})
+        assert _drain_for_response(ws, 4, events)["result"] == {"value": "manual"}
+
+        # An unknown mode is refused rather than silently mapped.
+        _rpc(ws, 5, "config.set", {"session_id": sid, "key": "approvals.mode",
+                                   "value": "bogus"})
+        assert _drain_for_response(ws, 5, events)["result"]["ok"] is False
+
+
 def test_init_session_info_carries_provider() -> None:
     """The picker only prefers the session's selection when BOTH model and
     provider are set; without provider it fell back to the catalog while the
@@ -307,7 +383,7 @@ def test_init_session_info_carries_provider() -> None:
 
     info = _init_session_info({
         "cwd": "/w", "model": "m1", "provider": "p1",
-        "permissionMode": "default", "session_id": "s1",
+        "permissionMode": "bypassPermissions", "session_id": "s1",
     })
     assert info["model"] == "m1"
     assert info["provider"] == "p1"
