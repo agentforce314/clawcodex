@@ -45,6 +45,15 @@ class ChatResponse:
     # follow-up tool turns.  ``thinking`` text may be empty/redacted while the
     # signature carries the opaque state the API validates.
     thinking_blocks: Optional[list[dict[str, Any]]] = None
+    # Indices into ``tool_uses`` whose streamed argument JSON was NOT strictly
+    # valid and went through truncation repair (``_close_truncated_json`` /
+    # the ``{}`` fallback). Metadata only — the repaired dict still flows as
+    # before for every consumer. Exists so a provider that caps ``max_tokens``
+    # (DeepSeek) can tell a genuinely-complete trailing tool call from one
+    # amputated by the cap and silently patched into a valid-looking call
+    # (e.g. a ``Write`` whose ``content`` was cut mid-string): on
+    # ``finish_reason="length"`` that distinction is a data-integrity issue.
+    repaired_tool_indices: Optional[list[int]] = None
 
 
 MessageInput: TypeAlias = ChatMessage | dict[str, Any]

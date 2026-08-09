@@ -26,15 +26,23 @@ per-request cap + fuse beats any turn-indexed effort decay.
 | lever | default | env |
 |---|---|---|
 | per-request `max_tokens` | 16384 (explicit values clamped to 2x) | `CLAWCODEX_DEEPSEEK_MAX_OUTPUT` (0 = off) |
-| reasoning fuse: length-truncated + no content + no tool calls → retry once with thinking disabled | on | `CLAWCODEX_DEEPSEEK_FUSE=0` |
-| sticky thinking-off after N fuse trips | 3 | `CLAWCODEX_DEEPSEEK_FUSE_STICKY` (0 = never) |
-| headless core-tool profile (14 tools = the observed working set) | on | `CLAWCODEX_DEEPSEEK_CORE_TOOLS=0` |
+| reasoning fuse: length-truncated + nothing actionable → retry once with thinking disabled; a length-truncated JSON-repaired TRAILING tool call is dropped rather than executed | on | `CLAWCODEX_DEEPSEEK_FUSE=0` |
+| sticky thinking-off after N consecutive fuse trips (resets on any non-burn; cleared by `/clear`) | 0 (off) — headless arms 3 | `CLAWCODEX_DEEPSEEK_FUSE_STICKY` |
+| headless core-tool profile (14 tools = the observed working set) | **opt-in**; the harbor adapter sets it for deepseek trials | `CLAWCODEX_DEEPSEEK_CORE_TOOLS=1` |
 | `# Working Style` prompt section (act > deliberate, verify before done) | on | `CLAWCODEX_DEEPSEEK_PROMPT=0` |
 | memory systems off in trial containers | adapter-set | (harbor adapter `_build_env` / seeded settings) |
 
+Supporting fix outside the profile: the OpenAI-compat wire's
+`finish_reason="length"` now normalizes onto the internal `max_tokens`
+stop-reason vocabulary (`query.py`), so capped truncations engage the
+loop's existing escalation (64K, clamped to 32K here) and "resume" recovery
+lanes — previously they fell through as normal end-of-turn on EVERY
+OpenAI-compatible provider.
+
 Wire effect on a trivial headless request: 86.9K chars → 50.8K (-41%),
-tools 40 → 15, system prompt 36.5K → 24.5K chars, `max_tokens: 16384` and
-`# Working Style` / `# Non-Interactive Mode` present.
+registry 44 tools → 14 on the wire (15 with a configured advisor), system
+prompt 36.5K → 24.5K chars, `max_tokens: 16384` and `# Working Style` /
+`# Non-Interactive Mode` present; container-side init confirms the same 14.
 
 ## Running
 

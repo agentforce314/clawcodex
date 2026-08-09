@@ -125,12 +125,17 @@ def test_reasoning_burn_retries_with_thinking_disabled(monkeypatch):
     assert "reasoning_effort" not in retry_body
 
 
-def test_burn_usage_merged_into_returned_response(monkeypatch):
+def test_burn_usage_merged_output_side_only(monkeypatch):
     _Script(monkeypatch, [_burn(), _ok()])
     result = _provider().chat_stream_response([{"role": "user", "content": "hi"}])
-    # 16384 burned + 50 real
+    # Output side sums (16384 burned + 50 real): billed generation must not
+    # vanish from cost accounting.
     assert result.usage["output_tokens"] == 16434
-    assert result.usage["input_tokens"] == 200
+    assert result.usage["reasoning_tokens"] == 16384
+    # Input side is LAST-WINS: it is the documented "live context" measure
+    # (agent_loop_compat usage notes) and summing two requests' prompt sides
+    # would double the context every fused turn reports.
+    assert result.usage["input_tokens"] == 100
 
 
 def test_truncation_with_tool_calls_is_not_a_burn(monkeypatch):
@@ -223,3 +228,102 @@ def test_streaming_callbacks_forwarded_on_retry(monkeypatch):
         [{"role": "user", "content": "hi"}], on_text_chunk=cb
     )
     assert seen == [cb, cb]
+
+
+# --- consecutive-trip semantics + reset -------------------------------------
+
+
+def test_trip_counter_resets_on_any_successful_response(monkeypatch):
+    """Sticky means CONSECUTIVE burns: a success between burns is evidence
+    the model recovered, so three burns spread across a long session must
+    not accumulate into a permanent thinking-off."""
+    monkeypatch.setenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")
+    provider = _provider()
+    _Script(
+        monkeypatch,
+        # burn->ok (trip 1, then reset via the ok that follows in a fresh
+        # call), repeated — the counter never reaches 3.
+        [_burn(), _ok(), _ok(), _burn(), _ok(), _ok(), _burn(), _ok(), _ok()],
+    )
+    for _ in range(3):
+        provider.chat_stream_response([{"role": "user", "content": "hi"}])  # burn+retry
+        provider.chat_stream_response([{"role": "user", "content": "hi"}])  # clean
+        assert provider._fuse_trips == 0
+    assert not provider._thinking_disabled_sticky
+
+
+def test_reset_fuse_clears_sticky_and_trips(monkeypatch):
+    monkeypatch.setenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "1")
+    provider = _provider()
+    _Script(monkeypatch, [_burn(), _ok()])
+    provider.chat_stream_response([{"role": "user", "content": "hi"}])
+    assert provider._thinking_disabled_sticky
+    provider.reset_fuse()
+    assert not provider._thinking_disabled_sticky
+    assert provider._fuse_trips == 0
+
+
+def test_no_duplicate_retry_once_sticky(monkeypatch):
+    """With sticky on, the first attempt already ran thinking-disabled; a
+    burn then is a plain content truncation and a re-issue would be
+    byte-identical. The loop's max-tokens recovery owns it."""
+    monkeypatch.setenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "1")
+    provider = _provider()
+    script = _Script(monkeypatch, [_burn(), _ok(), _burn()])
+    provider.chat_stream_response([{"role": "user", "content": "hi"}])  # trips sticky
+    result = provider.chat_stream_response([{"role": "user", "content": "hi"}])
+    assert result.finish_reason == "length"
+    assert len(script.calls) == 3  # no 4th (duplicate) request
+
+
+# --- amputated trailing tool call -------------------------------------------
+
+
+def _truncated_tool_response(repaired_last: bool, n_calls: int = 2) -> ChatResponse:
+    tool_uses = [
+        {"id": f"t{i}", "name": "Bash", "input": {"command": "ls"}}
+        for i in range(n_calls)
+    ]
+    return ChatResponse(
+        content="",
+        model="deepseek-v4-flash",
+        usage={},
+        finish_reason="length",
+        tool_uses=tool_uses,
+        repaired_tool_indices=[n_calls - 1] if repaired_last else None,
+    )
+
+
+def test_amputated_trailing_tool_call_dropped(monkeypatch):
+    script = _Script(monkeypatch, [_truncated_tool_response(repaired_last=True)])
+    result = _provider().chat_stream_response([{"role": "user", "content": "hi"}])
+    # The repaired last call is dropped; the earlier complete one survives.
+    assert [t["id"] for t in result.tool_uses] == ["t0"]
+    assert len(script.calls) == 1
+
+
+def test_amputation_drop_to_empty_becomes_burn_and_fuses(monkeypatch):
+    script = _Script(
+        monkeypatch,
+        [_truncated_tool_response(repaired_last=True, n_calls=1), _ok("acted")],
+    )
+    result = _provider().chat_stream_response([{"role": "user", "content": "hi"}])
+    # Sole call was amputated -> dropped -> nothing actionable -> fuse retry.
+    assert result.content == "acted"
+    assert script.calls[1]["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_complete_trailing_tool_call_untouched_on_length(monkeypatch):
+    _Script(monkeypatch, [_truncated_tool_response(repaired_last=False)])
+    result = _provider().chat_stream_response([{"role": "user", "content": "hi"}])
+    assert len(result.tool_uses) == 2
+
+
+def test_repaired_call_kept_when_not_length_truncated(monkeypatch):
+    """Repair without truncation is the pre-existing recovery semantics
+    (arg recovery on malformed JSON) — must stay untouched."""
+    resp = _truncated_tool_response(repaired_last=True)
+    resp.finish_reason = "stop"
+    _Script(monkeypatch, [resp])
+    result = _provider().chat_stream_response([{"role": "user", "content": "hi"}])
+    assert len(result.tool_uses) == 2

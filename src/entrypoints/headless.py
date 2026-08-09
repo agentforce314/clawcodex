@@ -370,37 +370,55 @@ def run_headless(options: HeadlessOptions) -> int:
         if options.disallowed_tools
         else None
     )
-    # DeepSeek headless core-tool profile (CLAWCODEX_DEEPSEEK_CORE_TOOLS=0
-    # disables). The full registry puts ~40 tool schemas (~12K tokens) on an
-    # OpenAI-compatible wire that has no tool_reference deferral, and most of
-    # them cannot do anything useful in a one-shot headless run (CronCreate,
-    # TeamCreate, EnterWorktree, Skill, ScheduleWakeup, ...). For DeepSeek's
-    # thinking models the cost is worse than tokens: every extra tool is
-    # decision surface the model deliberates over. Measured on terminal-bench
-    # 2.1 (tb21-flash-visiontool, 2026-08-08), deepseek-v4-flash spent 80-95%
-    # of its output tokens on reasoning, and the tools it actually used were
-    # Bash/Read/Write/Edit/Grep/Glob/TodoWrite/TaskOutput/TaskStop/Monitor/
-    # vision_analyze/WebFetch/WebSearch (+2 calls elsewhere) — the profile
-    # below is that observed working set, not a guess. Interactive sessions
-    # are untouched, other providers are untouched, and a tool the user
-    # explicitly names in --allowed-tools is kept even when off-profile.
-    if getattr(provider, "is_deepseek", False) and os.environ.get(
-        "CLAWCODEX_DEEPSEEK_CORE_TOOLS", ""
-    ).lower() not in ("0", "false", "no"):
+    # DeepSeek headless core-tool profile — OPT-IN via
+    # CLAWCODEX_DEEPSEEK_CORE_TOOLS=1 (the harbor adapter sets it for trial
+    # containers). The full registry puts ~44 tool schemas (~12K tokens) on
+    # an OpenAI-compatible wire that has no tool_reference deferral, and in a
+    # one-shot trial container most of them cannot do anything useful
+    # (CronCreate, TeamCreate, EnterWorktree, ScheduleWakeup, ...). For
+    # DeepSeek's thinking models the cost is worse than tokens: every extra
+    # tool is decision surface the model deliberates over. Measured on
+    # terminal-bench 2.1 (tb21-flash-visiontool, 2026-08-08),
+    # deepseek-v4-flash spent 80-95% of its output tokens on reasoning, and
+    # the tools it actually used were Bash/Read/Write/Edit/Grep/Glob/
+    # TodoWrite/TaskOutput/TaskStop/Monitor/vision_analyze/WebFetch/
+    # WebSearch — the profile below is that observed working set, not a
+    # guess. Opt-in rather than default-on because it is a CAPABILITY
+    # removal: a user's -p script that relies on Agent/Skill/Task tools with
+    # a DeepSeek model must not lose them silently. A tool the user
+    # explicitly names in --allowed-tools is kept even when off-profile —
+    # the clause below is load-bearing: the later allow-filter can only
+    # REMOVE, so without it an explicitly-allowed off-profile tool could
+    # never survive the trim.
+    deepseek_core_profile = getattr(provider, "is_deepseek", False) and (
+        os.environ.get("CLAWCODEX_DEEPSEEK_CORE_TOOLS", "").lower()
+        in ("1", "true", "yes")
+    )
+    if deepseek_core_profile:
         core = {
             "bash", "read", "write", "edit", "grep", "glob", "notebookedit",
             "todowrite", "webfetch", "websearch", "taskoutput", "taskstop",
             "monitor", "vision_analyze",
         }
+        before_count = len(tool_registry.list_tools())
         _filter_registry(
             tool_registry,
             keep=lambda n: n.lower() in core or (allow is not None and n.lower() in allow),
         )
+        print(
+            f"deepseek core-tool profile: {before_count} -> "
+            f"{len(tool_registry.list_tools())} tools "
+            "(CLAWCODEX_DEEPSEEK_CORE_TOOLS=0 disables)",
+            file=sys.stderr,
+        )
+    if getattr(provider, "is_deepseek", False):
         # Arm the reasoning fuse's sticky escalation for this time-budgeted,
         # unattended context (see DeepSeekProvider.DEFAULT_FUSE_STICKY_TRIPS
         # — the provider default is 0 so interactive sessions, which have no
         # trial clock, never lose thinking permanently). ``setdefault`` so an
-        # explicit user value — including 0 — wins.
+        # explicit user value — including 0 — wins. Independent of the tool
+        # profile: the fuse guards the runaway failure mode regardless of
+        # which tools are registered.
         os.environ.setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")
     if allow is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
@@ -729,6 +747,10 @@ def run_headless(options: HeadlessOptions) -> int:
                         effective_system_prompt = (
                             build_effective_system_prompt(
                                 _style_prompt, tool_context, provider=provider,
+                                # The core-tool profile removed the Skill
+                                # tool; advertising skills the model cannot
+                                # invoke would decouple prompt from tools.
+                                include_skills=not deepseek_core_profile,
                             )
                         )
 

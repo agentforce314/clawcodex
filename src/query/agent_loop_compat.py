@@ -180,6 +180,7 @@ def build_effective_system_prompt(
     provider: Any | None = None,
     mcp_servers: list[Any] | None = None,
     query_source: str = "main",
+    include_skills: bool = True,
 ) -> list[dict[str, Any]]:
     """Assemble the cold-start system prompt for the headless+TUI cutover.
 
@@ -272,11 +273,17 @@ def build_effective_system_prompt(
         }
     else:
         # Skills listing (best-effort; mirrors engine.py:183).
-        try:
-            from ..command_system import get_skill_tool_commands
-            skills = get_skill_tool_commands(cwd)
-        except Exception:
-            skills = None
+        # ``include_skills=False`` when the caller removed the Skill TOOL
+        # (the DeepSeek headless core-tool profile): advertising 50+ skills
+        # the model has no tool to invoke is exactly the prompt/tool
+        # decoupling the plan-mode removal comment in headless warns about.
+        skills = None
+        if include_skills:
+            try:
+                from ..command_system import get_skill_tool_commands
+                skills = get_skill_tool_commands(cwd)
+            except Exception:
+                skills = None
 
         blocks = build_full_system_prompt_blocks(
             cwd=cwd,

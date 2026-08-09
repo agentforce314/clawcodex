@@ -664,6 +664,14 @@ class Clawcodex(BaseInstalledAgent):
         # systems: the memdir doctrine+index via this env, the MEMORY.md
         # snapshot + Memory tool via the seeded settings file below.
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        # DeepSeek trials additionally opt into the headless core-tool
+        # profile (44 -> 14 tool schemas; entrypoints/headless.py). Opt-in
+        # by env because for general users it is a capability removal; a
+        # one-shot trial container is precisely the context it was measured
+        # for. Scoped to the deepseek provider — the flag is inert for
+        # every other model, but scoping keeps the env honest.
+        if (self._parsed_model_provider or "").lower() == "deepseek":
+            env["CLAWCODEX_DEEPSEEK_CORE_TOOLS"] = "1"
         # Config dir lives OUTSIDE /logs (token privacy in subscription
         # mode); run() copies sessions/transcripts back into /logs/agent
         # post-run so the host still gets them.

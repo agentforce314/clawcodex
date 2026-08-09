@@ -882,6 +882,19 @@ class _AgentSession:
                 # silently attach it to an unrelated prompt.
                 with self._lock:
                     self._pending_images = []
+                # DeepSeek reasoning-fuse state (trips + sticky thinking-off)
+                # is evidence about the conversation the user just discarded;
+                # left in place it would silently override a later /effort in
+                # the fresh one. Best-effort duck-typed: only the DeepSeek
+                # provider (or a wrapper delegating to it) has reset_fuse.
+                try:
+                    reset_fuse = getattr(self.provider, "reset_fuse", None)
+                    if callable(reset_fuse):
+                        reset_fuse()
+                except Exception:  # noqa: BLE001 — never break /clear
+                    logger.debug(
+                        "[agent-server] fuse reset on /clear failed", exc_info=True
+                    )
                 # /clear starts a FRESH plan file (TS clearAllPlanSlugs on
                 # clear — plans.ts:75-86): drop every session's slug so the
                 # next plan-mode turn mints a new file instead of appending

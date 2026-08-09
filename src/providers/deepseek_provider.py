@@ -148,10 +148,14 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     def _apply_output_cap(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Default ``max_tokens`` to the cap; clamp explicit values to 2x cap.
 
-        The clamp bounds the query loop's 64K max-output-tokens escalation
-        (which exists for Anthropic's withheld-content case) — on this wire
-        64K of output is 7-12 minutes of generation, longer than most
-        terminal-bench task budgets have left by the time it fires.
+        The clamp bounds explicit escalations — most concretely the query
+        loop's 64K max-output-tokens retry (``ESCALATED_MAX_TOKENS``), which
+        reaches this wire now that ``finish_reason="length"`` is normalized
+        onto the internal ``max_tokens`` stop-reason vocabulary. On this
+        wire 64K of output is 7-12 minutes of generation at the observed
+        90-145 tok/s — longer than most terminal-bench task budgets have
+        left by the time it fires; 2x cap keeps the retry meaningfully
+        bigger while staying inside a budget.
         """
         cap = self._output_cap
         if cap <= 0:
@@ -160,9 +164,14 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         if current is None:
             kwargs = dict(kwargs)
             kwargs["max_tokens"] = cap
-        elif isinstance(current, int) and current > cap * 2:
-            kwargs = dict(kwargs)
-            kwargs["max_tokens"] = cap * 2
+        else:
+            try:
+                current_int = int(current)
+            except (TypeError, ValueError):
+                current_int = None
+            if current_int is not None and current_int > cap * 2:
+                kwargs = dict(kwargs)
+                kwargs["max_tokens"] = cap * 2
         return kwargs
 
     @staticmethod
@@ -197,17 +206,58 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         return True
 
     @staticmethod
+    def _drop_amputated_trailing_tool_call(response: ChatResponse) -> ChatResponse:
+        """Refuse a length-truncated trailing tool call that was JSON-repaired.
+
+        When the output cap lands mid-tool-call, the base parser closes the
+        dangling JSON and returns a VALID-LOOKING call — a ``Write`` cut
+        mid-``content`` becomes a well-formed ``Write`` with silently
+        truncated content that would be executed and report success. On
+        ``finish_reason="length"``, a repaired LAST call is that amputation
+        (earlier calls completed before the cap and keep their repair-only
+        semantics). Dropping it converts the hazard into one of two safe
+        shapes: earlier complete calls still run, or — if nothing is left —
+        the response becomes a reasoning-burn the fuse/loop recovery handles.
+        """
+        if response.finish_reason != "length":
+            return response
+        if not response.tool_uses or not response.repaired_tool_indices:
+            return response
+        last = len(response.tool_uses) - 1
+        if last not in response.repaired_tool_indices:
+            return response
+        dropped = response.tool_uses[last]
+        logger.warning(
+            "deepseek output cap amputated trailing tool call %s(%s) — "
+            "dropping it rather than executing a JSON-repaired truncation",
+            dropped.get("name"),
+            ", ".join(list(dropped.get("input") or {})[:4]),
+        )
+        response.tool_uses = response.tool_uses[:last] or None
+        response.repaired_tool_indices = [
+            i for i in response.repaired_tool_indices if i != last
+        ] or None
+        return response
+
+    @staticmethod
     def _merge_burn_usage(
         burned: dict[str, Any], final: dict[str, Any]
     ) -> dict[str, Any]:
-        """Fold the burned request's usage into the returned response's.
+        """Fold the burned request's OUTPUT-side usage into the response's.
 
         The query loop records usage from the response it receives; without
-        the merge, the burned request's tokens (real, billed) would vanish
-        from cost accounting.
+        the merge, the burned request's generated tokens (real, billed)
+        would vanish from cost accounting. Only output-side counters are
+        summed: the input-side fields (``input_tokens``, ``cache_*``) are
+        the documented last-wins "live context" measure (see
+        agent_loop_compat's usage notes), and summing two requests' prompt
+        sides would double the context every fused turn reports. The one
+        consequence — the burned attempt's prompt-side billing is
+        undercounted — is accepted.
         """
         merged = dict(final)
-        for key, value in burned.items():
+        for key in ("output_tokens", "total_tokens", "reasoning_tokens"):
+            value = burned.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 base = merged.get(key)
                 merged[key] = (base if isinstance(base, (int, float)) else 0) + value
@@ -221,17 +271,45 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         if sticky_at > 0 and self._fuse_trips >= sticky_at and not self._thinking_disabled_sticky:
             self._thinking_disabled_sticky = True
             logger.warning(
-                "deepseek reasoning fuse: %d pure-reasoning truncations this "
-                "session — disabling thinking for all subsequent requests",
+                "deepseek reasoning fuse: %d consecutive pure-reasoning "
+                "truncations — disabling thinking for all subsequent requests",
                 self._fuse_trips,
             )
 
-    def chat(self, messages, tools=None, **kwargs):
+    def reset_fuse(self) -> None:
+        """Forget fuse state (trips + sticky thinking-off).
+
+        Called on conversation resets (``/clear``): a fresh conversation is
+        fresh evidence, and sticky state silently overriding a later
+        ``/effort`` in a context the user has reset would be a trap.
+        Subagents ``copy.copy`` the provider, so they inherit the flags at
+        copy time but their trips never propagate back — deliberate: a
+        subagent's pathology says little about the parent's next turn.
+        """
+        self._fuse_trips = 0
+        self._thinking_disabled_sticky = False
+
+    def _fused_call(self, issue: Any, kwargs: dict[str, Any]) -> ChatResponse:
+        """Shared cap + fuse logic for ``chat`` and ``chat_stream_response``.
+
+        ``issue(kwargs)`` performs one request. The fuse fires at most once
+        per call: a length-truncated response with nothing actionable is
+        re-issued with thinking disabled. Successful (non-burn) responses
+        reset the consecutive-trip counter, so the sticky escalation only
+        triggers on an unbroken run of burns — three burns spread across a
+        long session are three independent recoveries, not a pathology.
+        """
         kwargs = self._apply_output_cap(kwargs)
         if self._thinking_disabled_sticky:
             kwargs = self._force_thinking_disabled(kwargs)
-        response = super().chat(messages, tools=tools, **kwargs)
+        response = self._drop_amputated_trailing_tool_call(issue(kwargs))
         if not (self._fuse_enabled and self._is_reasoning_burn(response)):
+            if self._fuse_trips:
+                self._fuse_trips = 0
+            return response
+        if self._thinking_disabled_sticky:
+            # Thinking was already off — a re-issue would be byte-identical.
+            # Return the truncation; the loop's max-tokens recovery owns it.
             return response
         self._note_fuse_trip()
         logger.warning(
@@ -239,11 +317,19 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             "max_tokens with 100%% reasoning — retrying with thinking disabled",
             self._fuse_trips,
         )
-        retry = super().chat(
-            messages, tools=tools, **self._force_thinking_disabled(kwargs)
+        retry = self._drop_amputated_trailing_tool_call(
+            issue(self._force_thinking_disabled(kwargs))
         )
         retry.usage = self._merge_burn_usage(response.usage or {}, retry.usage or {})
         return retry
+
+    def chat(self, messages, tools=None, **kwargs):
+        return self._fused_call(
+            lambda kw: super(DeepSeekProvider, self).chat(
+                messages, tools=tools, **kw
+            ),
+            kwargs,
+        )
 
     def chat_stream_response(
         self,
@@ -254,35 +340,17 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         on_thinking_chunk=None,
         **kwargs,
     ):
-        kwargs = self._apply_output_cap(kwargs)
-        if self._thinking_disabled_sticky:
-            kwargs = self._force_thinking_disabled(kwargs)
-        response = super().chat_stream_response(
-            messages,
-            tools=tools,
-            on_text_chunk=on_text_chunk,
-            abort_signal=abort_signal,
-            on_thinking_chunk=on_thinking_chunk,
-            **kwargs,
+        return self._fused_call(
+            lambda kw: super(DeepSeekProvider, self).chat_stream_response(
+                messages,
+                tools=tools,
+                on_text_chunk=on_text_chunk,
+                abort_signal=abort_signal,
+                on_thinking_chunk=on_thinking_chunk,
+                **kw,
+            ),
+            kwargs,
         )
-        if not (self._fuse_enabled and self._is_reasoning_burn(response)):
-            return response
-        self._note_fuse_trip()
-        logger.warning(
-            "deepseek reasoning fuse tripped (trip %d): request truncated at "
-            "max_tokens with 100%% reasoning — retrying with thinking disabled",
-            self._fuse_trips,
-        )
-        retry = super().chat_stream_response(
-            messages,
-            tools=tools,
-            on_text_chunk=on_text_chunk,
-            abort_signal=abort_signal,
-            on_thinking_chunk=on_thinking_chunk,
-            **self._force_thinking_disabled(kwargs),
-        )
-        retry.usage = self._merge_burn_usage(response.usage or {}, retry.usage or {})
-        return retry
 
     def _create_client(self) -> Any:
         """Create OpenAI SDK client pointed at DeepSeek."""

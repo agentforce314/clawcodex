@@ -557,16 +557,32 @@ def _parse_tool_call_arguments(raw: str | None) -> dict[str, Any]:
     top-level array/scalar (exotic or malformed) coerces to ``{}`` rather than
     flowing downstream where ``input`` is consumed as a mapping.
     """
+    parsed, _repaired = _parse_tool_call_arguments_tagged(raw)
+    return parsed
+
+
+def _parse_tool_call_arguments_tagged(raw: str | None) -> tuple[dict[str, Any], bool]:
+    """:func:`_parse_tool_call_arguments` plus a "was repaired" flag.
+
+    The flag is True whenever ``raw`` was non-empty and NOT strictly valid
+    JSON — i.e. the returned dict came from truncation repair (or the ``{}``
+    fallback), not from the model completing its arguments. Consumers that
+    cap ``max_tokens`` use it to refuse a length-truncated trailing tool
+    call instead of executing a silently-patched one. Empty/absent ``raw``
+    is NOT a repair: a zero-argument tool call legitimately streams no
+    argument bytes.
+    """
     if not raw:
-        return {}
+        return {}, False
     try:
         parsed = json.loads(raw)
     except Exception:
         try:
             parsed = json.loads(_close_truncated_json(raw))
         except Exception:
-            return {}
-    return parsed if isinstance(parsed, dict) else {}
+            return {}, True
+        return (parsed if isinstance(parsed, dict) else {}), True
+    return (parsed if isinstance(parsed, dict) else {}), False
 
 
 def _extract_reasoning(source: Any) -> Optional[str]:
@@ -804,10 +820,15 @@ class OpenAICompatibleProvider(BaseProvider):
 
         # Extract tool calls (OpenAI format -> Anthropic format)
         tool_uses: Optional[list[dict[str, Any]]] = None
+        repaired_indices: list[int] = []
         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
             tool_uses = []
             for tc in choice.message.tool_calls:
-                args = _parse_tool_call_arguments(tc.function.arguments)
+                args, repaired = _parse_tool_call_arguments_tagged(
+                    tc.function.arguments
+                )
+                if repaired:
+                    repaired_indices.append(len(tool_uses))
                 tool_uses.append({
                     "id": tc.id,
                     "name": tc.function.name,
@@ -821,6 +842,7 @@ class OpenAICompatibleProvider(BaseProvider):
             finish_reason=choice.finish_reason,
             reasoning_content=reasoning_content,
             tool_uses=tool_uses,
+            repaired_tool_indices=repaired_indices or None,
         )
 
     def chat_stream(
@@ -1186,11 +1208,16 @@ class OpenAICompatibleProvider(BaseProvider):
         guard.raise_if_post_aborted()
 
         tool_uses: list[dict[str, Any]] = []
+        repaired_indices: list[int] = []
         for idx in sorted(tool_calls_by_index.keys()):
             item = tool_calls_by_index[idx]
             if not item["name"]:
                 continue
-            parsed_args = _parse_tool_call_arguments(item["arguments"])
+            parsed_args, repaired = _parse_tool_call_arguments_tagged(
+                item["arguments"]
+            )
+            if repaired:
+                repaired_indices.append(len(tool_uses))
             tool_uses.append({
                 "id": item["id"] or f"tool_call_{idx}",
                 "name": item["name"],
@@ -1205,4 +1232,5 @@ class OpenAICompatibleProvider(BaseProvider):
             finish_reason=finish_reason,
             reasoning_content=reasoning_content,
             tool_uses=tool_uses or None,
+            repaired_tool_indices=repaired_indices or None,
         )

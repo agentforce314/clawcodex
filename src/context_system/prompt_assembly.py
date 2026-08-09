@@ -665,7 +665,11 @@ def build_full_system_prompt_blocks(
 
     # Re-use the same section builders as the str path so content is
     # bit-identical. Any divergence between the two paths would let one
-    # path cache while the other busts — explicitly avoided.
+    # path cache while the other busts — explicitly avoided, with ONE
+    # deliberate exception: the deepseek working-style section below is
+    # blocks-path-only, because it gates on ``provider`` and the str path
+    # has no provider parameter (and no deepseek consumer — every request
+    # that reaches a DeepSeek wire is built through this blocks path).
     intro = _build_intro_section(use_cache)
     if intro:
         sections.append(intro)

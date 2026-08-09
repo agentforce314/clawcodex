@@ -1525,7 +1525,21 @@ async def _call_model_sync(
         for raw in response.raw_content_blocks:
             assistant_blocks.append(dict(raw))
 
-    stop_reason = response.finish_reason or "end_turn"
+    # Normalize the OpenAI-compat truncation vocabulary onto the internal
+    # (Anthropic) one. Every consumer of stop_reason in this codebase keys on
+    # "max_tokens" — the withheld-content escalation lane, the recovery-nudge
+    # lane, `_is_withheld_max_output_tokens` — and none of them ever matched
+    # the OpenAI wire's "length", so a truncated response on that wire fell
+    # through as a normal end-of-turn: no escalation, no "resume" nudge, and
+    # a headless run would end with a silently-clipped answer. That was
+    # latent while non-Anthropic requests carried no max_tokens at all; the
+    # DeepSeek per-request output cap makes truncation an expected, recovered
+    # state, so the vocabulary gap became a real hole.
+    stop_reason = (
+        "max_tokens"
+        if response.finish_reason == "length"
+        else (response.finish_reason or "end_turn")
+    )
 
     if _diag:
         _elapsed = time.monotonic() - _t0
