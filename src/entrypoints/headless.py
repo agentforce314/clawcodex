@@ -396,6 +396,12 @@ def run_headless(options: HeadlessOptions) -> int:
             tool_registry,
             keep=lambda n: n.lower() in core or (allow is not None and n.lower() in allow),
         )
+        # Arm the reasoning fuse's sticky escalation for this time-budgeted,
+        # unattended context (see DeepSeekProvider.DEFAULT_FUSE_STICKY_TRIPS
+        # — the provider default is 0 so interactive sessions, which have no
+        # trial clock, never lose thinking permanently). ``setdefault`` so an
+        # explicit user value — including 0 — wins.
+        os.environ.setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")
     if allow is not None:
         _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
     if deny is not None:

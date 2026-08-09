@@ -128,3 +128,11 @@ def test_profile_runs_before_user_allow_deny_filters():
     assert src.index("CLAWCODEX_DEEPSEEK_CORE_TOOLS") < src.index(
         'keep=lambda n: n.lower() in allow'
     )
+
+
+def test_headless_arms_sticky_fuse_via_setdefault():
+    """Headless (time-budgeted, unattended) arms the sticky escalation the
+    provider deliberately defaults off for interactive sessions; setdefault
+    so an explicit user value — including 0 — wins."""
+    src = _headless_src()
+    assert 'os.environ.setdefault("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")' in src

@@ -80,13 +80,17 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     #: bounds a runaway to ~2-3 minutes instead of the whole trial.
     DEFAULT_OUTPUT_CAP = 16_384
 
-    #: Consecutive pure-reasoning truncations after which thinking is
-    #: disabled for the REST of the session (``CLAWCODEX_DEEPSEEK_FUSE_STICKY``
-    #: overrides; ``0`` disables the sticky escalation). A model that burns
-    #: its whole output budget on reasoning several times in a row on the
-    #: same task has demonstrated the pattern is stable; acting without
-    #: thinking beats deliberating until the trial clock runs out.
-    DEFAULT_FUSE_STICKY_TRIPS = 3
+    #: Total pure-reasoning truncations after which thinking is disabled for
+    #: the REST of the session (``CLAWCODEX_DEEPSEEK_FUSE_STICKY`` sets the
+    #: threshold; ``0`` — the default — never goes sticky). A model that
+    #: burns its whole output budget on reasoning repeatedly on the same
+    #: task has demonstrated the pattern is stable; acting without thinking
+    #: beats deliberating until the clock runs out. Deliberately opt-in:
+    #: only time-budgeted contexts want it, so the headless entrypoint sets
+    #: the env (default 3) and interactive sessions — which have no trial
+    #: clock and live long enough for 3 unrelated burns to accumulate —
+    #: keep thinking available unless the user opts in.
+    DEFAULT_FUSE_STICKY_TRIPS = 0
 
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None

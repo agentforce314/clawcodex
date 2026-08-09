@@ -168,6 +168,7 @@ def test_fuse_disabled_via_env(monkeypatch):
 
 
 def test_sticky_disable_after_repeated_burns(monkeypatch):
+    monkeypatch.setenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "3")
     provider = _provider()
     script = _Script(
         monkeypatch,
@@ -187,8 +188,11 @@ def test_sticky_disable_after_repeated_burns(monkeypatch):
     assert "reasoning_effort" not in first_attempt_body
 
 
-def test_sticky_threshold_zero_never_sticks(monkeypatch):
-    monkeypatch.setenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", "0")
+def test_sticky_off_by_default_for_interactive_sessions(monkeypatch):
+    """The provider default is NO sticky escalation: an interactive session
+    has no trial clock, and burns hours apart must not permanently cost the
+    user thinking. Headless arms it via env (pinned by the profile test)."""
+    monkeypatch.delenv("CLAWCODEX_DEEPSEEK_FUSE_STICKY", raising=False)
     provider = _provider()
     _Script(
         monkeypatch,
