@@ -68,6 +68,27 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 Keep `effort=max` + `vision=openai:gpt-5.6-luna` identical to the baseline
 job so only the harness differs.
 
+## Results so far (2026-08-09)
+
+Hard-subset (the 12 tasks most affected by reasoning runaway),
+re-tuned harness `flash-h2-subsetA`:
+
+| | baseline | tuned |
+|---|---|---|
+| mean reward (12 hardest) | 0.250 | **0.500** |
+| fixed / regressed | — | **+3 / −0** |
+
+Fixed: `polyglot-rust-c` (the canonical 131K-runaway death → solves in 14
+steps), `model-extraction-relu-logits`, `configure-git-webserver`.
+Recovered after the re-tune: `feal-linear-cryptanalysis`, `sanitize-git-repo`.
+Still failing: genuine timeouts (`dna-assembly`, `gcode-to-text`,
+`raman-fitting`, `largest-eigenval`) + `cancel-async-tasks` (wrong answer)
++ `extract-elf` (flipped 1→0 vs the prior run — same-code k=1 variance, per
+the measurement-discipline note). This subset is the HARDEST tasks, chosen
+to stress the runaway path — it is not representative of the full 74, where
+most tasks already pass; treat it as a mechanism check, not the headline
+number.
+
 ## Subset-A finding (2026-08-09) — why the cap is 40K and sticky is off
 
 A deliberately adversarial 12-task subset (the hardest reasoning-runaway
