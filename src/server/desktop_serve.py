@@ -151,10 +151,12 @@ def build_app(state: DesktopServeState) -> Starlette:
                                     status_code=400)
             # The renderer wraps the payload as {"config": {...}}
             # (saveClawCodexConfig); accept the bare object too.
-            incoming = body.get("config") if isinstance(body.get("config"), dict) else body
-            return JSONResponse(_save_config_merged(incoming))
+            return JSONResponse(_save_config_merged(unwrap_config_envelope(body)))
 
-        return JSONResponse(redact_secrets(load_config()))
+        # Strip a stale envelope on the way out too, so a config that already
+        # picked one up can't be round-tripped straight back by the renderer's
+        # whole-record autosave.
+        return JSONResponse(redact_secrets(strip_config_envelope(load_config())))
 
     def _int_param(request: Request, name: str, default: int) -> int:
         try:
@@ -510,6 +512,35 @@ def build_app(state: DesktopServeState) -> Starlette:
     return Starlette(routes=routes)
 
 
+# ``config`` is not a key in the config schema — the file holds
+# default_provider / providers / session / settings / env / projects / … at the
+# top level. So a ``config`` key can only be a transport envelope that got
+# stored by mistake, and treating it as data is what let one escape into
+# ~/.clawcodex/config.json: the renderer autosaves the WHOLE record it last
+# read, so a single mis-nested write is copied forward on every later save.
+# It then shadows real settings — a voice/STT block written into the envelope
+# is invisible to the backend, which reads the top level.
+
+
+def unwrap_config_envelope(body: dict[str, Any]) -> dict[str, Any]:
+    """``{"config": {...}}`` → the record. Idempotent, and unwraps repeats.
+
+    A double wrap is the shape that does the damage: unwrapping once leaves a
+    ``config`` key that then merges in as data.
+    """
+    record = body
+    while isinstance(record, dict) and isinstance(record.get("config"), dict):
+        record = record["config"]
+    return record if isinstance(record, dict) else {}
+
+
+def strip_config_envelope(record: dict[str, Any]) -> dict[str, Any]:
+    """Drop a stored envelope key. Returns the same object when there is none."""
+    if not isinstance(record, dict) or "config" not in record:
+        return record
+    return {k: v for k, v in record.items() if k != "config"}
+
+
 def _save_config_merged(incoming: dict[str, Any]) -> dict[str, Any]:
     """Deep-merge the (secret-redacted) incoming config over the stored global
     config and persist it.
@@ -525,8 +556,11 @@ def _save_config_merged(incoming: dict[str, Any]) -> dict[str, Any]:
     try:
         manager = _get_default_manager()
         current = manager.load_global()
-        merged = _deep_merge(current, incoming)
-        manager.save_global(merged)
+        merged = _deep_merge(current, strip_config_envelope(incoming))
+        # `_deep_merge` only ever adds, so an envelope already on disk would
+        # outlive every future save. Dropping it here repairs a config that
+        # picked one up, on the next write, without a migration step.
+        manager.save_global(strip_config_envelope(merged))
         manager.invalidate()
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
