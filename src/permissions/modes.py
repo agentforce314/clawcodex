@@ -201,6 +201,31 @@ def _read_settings_file_default_mode(path: str) -> PermissionMode | None:
     return mode  # type: ignore[return-value]
 
 
+def _read_config_default_mode() -> PermissionMode | None:
+    """``config.json`` → ``settings.permissions.defaultMode`` (user tier).
+
+    Global tier only, deliberately: ``load_global`` rather than the merged
+    view, because a repo-committed ``.clawcodex/config.json`` must not be able
+    to raise the mode — that is the same trust split the repo-scoped settings
+    files get below.
+    """
+    try:
+        from src.config import ConfigManager
+
+        perms = ConfigManager().load_global().get("settings", {}).get("permissions")
+    except Exception:  # noqa: BLE001 — an unreadable config tier is simply absent
+        log.debug("config.json unreadable for defaultMode", exc_info=True)
+        return None
+    if not isinstance(perms, dict):
+        # `permissions` is also modeled as a flat rule LIST elsewhere in the
+        # schema; a list here just means no mode is configured.
+        return None
+    mode = perms.get("defaultMode")
+    if not isinstance(mode, str) or mode not in EXTERNAL_PERMISSION_MODES:
+        return None
+    return mode  # type: ignore[return-value]
+
+
 def read_settings_default_mode(
     cwd: str | None = None,
     *,
@@ -258,6 +283,16 @@ def read_settings_default_mode(
         log.debug("managed settings unavailable for defaultMode", exc_info=True)
 
     if trusted is None:
+        # User tier. `~/.clawcodex/config.json` is the primary home: its
+        # `settings.permissions` block is already the source of truth for
+        # `allowBypassPermissionsMode` / `disableBypassPermissionsMode` (see
+        # has_allow_bypass_permissions_mode and is_bypass_permissions_mode_disabled),
+        # so the MODE belongs beside them rather than in a second file whose
+        # existence surprised the one person it was meant to serve. The
+        # standalone settings.json stays readable as a fallback so an existing
+        # choice keeps working; it is no longer where new ones are written.
+        trusted = _read_config_default_mode()
+    if trusted is None:
         trusted = _read_settings_file_default_mode(user_settings_path())
 
     effective = trusted if trusted is not None else baseline_mode
@@ -310,22 +345,32 @@ def set_settings_default_mode(mode: PermissionMode) -> bool:
     :data:`EXTERNAL_PERMISSION_MODES` member. Writing it would clobber a real
     prior choice with a value nothing consumes.
     """
-    from .settings_paths import settings_path_for_destination
-    from .types import PermissionUpdateSetMode
-    from .updates import persist_permission_update
-
     if mode not in EXTERNAL_PERMISSION_MODES:
         log.debug("refusing to persist non-external defaultMode %r", mode)
         return False
 
-    return persist_permission_update(
-        PermissionUpdateSetMode(
-            type="setMode",
-            destination="userSettings",
-            mode=mode,
-        ),
-        settings_path_for_destination=settings_path_for_destination,
-    )
+    # Writes go to config.json, beside the bypass flags that already live in
+    # `settings.permissions`, so a user has one file to read and edit. The
+    # legacy settings.json is still READ (read_settings_default_mode), but
+    # nothing writes it any more — a stale value there is shadowed by the
+    # write here, which is what makes this a migration and not a second store.
+    try:
+        from src.config import ConfigManager
+
+        cm = ConfigManager()
+        data = cm.load_global()
+        settings = dict(data.get("settings") or {})
+        perms = settings.get("permissions")
+        # `permissions` doubles as a flat rule LIST in the schema; only a dict
+        # can carry the mode, so start one rather than clobbering rules.
+        settings["permissions"] = {**perms, "defaultMode": mode} if isinstance(perms, dict) else {"defaultMode": mode}
+        data["settings"] = settings
+        cm.save_global(data)
+        cm.invalidate()
+        return True
+    except Exception:  # noqa: BLE001 — a failed write must not fail the set
+        log.debug("config.json defaultMode persist failed", exc_info=True)
+        return False
 
 
 def is_elevated_without_sandbox() -> bool:
