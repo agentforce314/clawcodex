@@ -218,6 +218,12 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         semantics). Dropping it converts the hazard into one of two safe
         shapes: earlier complete calls still run, or — if nothing is left —
         the response becomes a reasoning-burn the fuse/loop recovery handles.
+
+        DeepSeek-only today because only this provider caps ``max_tokens``,
+        but ``repaired_tool_indices`` is produced base-wide and any
+        OpenAI-compat provider can length-truncate at its server default —
+        promoting this guard to ``OpenAICompatibleProvider`` is the natural
+        follow-up when another provider grows a cap.
         """
         if response.finish_reason != "length":
             return response

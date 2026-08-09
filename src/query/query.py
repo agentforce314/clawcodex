@@ -1587,7 +1587,17 @@ async def _call_model_sync(
         # Preserve provider thinking metadata for follow-up turns.
         assistant_msg.reasoning_content = response.reasoning_content  # type: ignore[attr-defined]
 
-    if stop_reason == "max_tokens":
+    # Tag ONLY tool-free truncations. The tag routes the message into the
+    # withholding gate + escalation/recovery lanes — but those lanes live
+    # under ``not needs_follow_up``, so for a truncated response that still
+    # carries surviving tool calls the tag would buy nothing and cost the
+    # turn: the assistant message is withheld from the yield stream while
+    # its tools execute anyway, so ``on_message`` consumers (headless
+    # persistence — the ONLY route into the saved session and the Harbor
+    # trajectory) never see the turn, and the persisted tool_result is
+    # orphaned on resume. With tool calls present, the truncation is
+    # recoverable the ordinary way: run the tools, let the model continue.
+    if stop_reason == "max_tokens" and not tool_use_blocks:
         assistant_msg._api_error = "max_output_tokens"  # type: ignore[attr-defined]
         assistant_msg.isApiErrorMessage = False
 

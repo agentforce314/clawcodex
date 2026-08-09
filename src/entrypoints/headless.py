@@ -137,6 +137,16 @@ def _json_result_subtype(
 OUTPUT_FORMATS = ("text", "json", "stream-json")
 INPUT_FORMATS = ("text", "stream-json")
 
+#: The DeepSeek headless core-tool profile (lowercased tool names): the
+#: observed working set from terminal-bench 2.1 (tb21-flash-visiontool,
+#: 2026-08-08). Module-level so tests assert against THIS set rather than a
+#: copy — a drive-by edit here fails the profile test, not just the eval.
+DEEPSEEK_CORE_TOOLS = frozenset({
+    "bash", "read", "write", "edit", "grep", "glob", "notebookedit",
+    "todowrite", "webfetch", "websearch", "taskoutput", "taskstop",
+    "monitor", "vision_analyze",
+})
+
 
 @dataclass
 class HeadlessOptions:
@@ -395,20 +405,16 @@ def run_headless(options: HeadlessOptions) -> int:
         in ("1", "true", "yes")
     )
     if deepseek_core_profile:
-        core = {
-            "bash", "read", "write", "edit", "grep", "glob", "notebookedit",
-            "todowrite", "webfetch", "websearch", "taskoutput", "taskstop",
-            "monitor", "vision_analyze",
-        }
         before_count = len(tool_registry.list_tools())
         _filter_registry(
             tool_registry,
-            keep=lambda n: n.lower() in core or (allow is not None and n.lower() in allow),
+            keep=lambda n: n.lower() in DEEPSEEK_CORE_TOOLS
+            or (allow is not None and n.lower() in allow),
         )
         print(
             f"deepseek core-tool profile: {before_count} -> "
             f"{len(tool_registry.list_tools())} tools "
-            "(CLAWCODEX_DEEPSEEK_CORE_TOOLS=0 disables)",
+            "(unset CLAWCODEX_DEEPSEEK_CORE_TOOLS to disable)",
             file=sys.stderr,
         )
     if getattr(provider, "is_deepseek", False):

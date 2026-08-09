@@ -31,11 +31,7 @@ def _flatten(blocks) -> str:
     return "\n".join(b.get("text", "") for b in blocks)
 
 
-CORE = {
-    "bash", "read", "write", "edit", "grep", "glob", "notebookedit",
-    "todowrite", "webfetch", "websearch", "taskoutput", "taskstop",
-    "monitor", "vision_analyze",
-}
+CORE = headless_mod.DEEPSEEK_CORE_TOOLS
 
 
 def _trimmed_registry(allow: set[str] | None = None):

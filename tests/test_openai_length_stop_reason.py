@@ -101,6 +101,71 @@ class TestLengthFinishReasonNormalization(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(provider.chat.call_count, 1)
 
+    def test_truncated_turn_with_surviving_tool_call_is_yielded(self):
+        """A length-truncated response that still carries a complete tool
+        call must reach the yield stream (and thus on_message persistence).
+
+        The max_output_tokens tag routes a message into the withholding
+        gate, whose re-surfacing lanes live under ``not needs_follow_up`` —
+        with tool calls present nothing re-surfaces, so tagging a
+        tool-carrying truncation withheld the assistant turn while its
+        tool_result still flowed: the saved session lost the turn and the
+        orphaned result was dropped on resume. The tag must therefore be
+        tool-free-only.
+        """
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        truncated_with_tool = ChatResponse(
+            content="",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 8000},
+            finish_reason="length",
+            tool_uses=[{
+                "id": "t1",
+                "name": "Bash",
+                "input": {"command": "echo hi"},
+            }],
+        )
+        done = ChatResponse(
+            content="Finished.",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            finish_reason="stop",
+            tool_uses=None,
+        )
+        provider.chat.side_effect = [truncated_with_tool, done]
+
+        yielded = []
+
+        async def run():
+            async for msg in query(self._params(provider)):
+                yielded.append(msg)
+
+        asyncio.run(run())
+
+        def _has_block(msg, btype):
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                return False
+            return any(getattr(b, "type", None) == btype for b in content)
+
+        tool_use_yielded = any(_has_block(m, "tool_use") for m in yielded)
+        tool_result_yielded = any(
+            isinstance(getattr(m, "content", None), list)
+            and any(
+                (isinstance(b, dict) and b.get("type") == "tool_result")
+                or getattr(b, "type", None) == "tool_result"
+                for b in m.content
+            )
+            for m in yielded
+        )
+        self.assertTrue(
+            tool_use_yielded,
+            "assistant turn carrying the tool_use must be yielded "
+            f"(yielded types: {[type(m).__name__ for m in yielded]})",
+        )
+        self.assertTrue(tool_result_yielded)
+
 
 if __name__ == "__main__":
     unittest.main()
