@@ -172,13 +172,24 @@ them:
   Net: the Responses path offers no multi-turn advantage for this model and
   doesn't touch vision / speed / blind-spot failures. Not implemented.
 
+- **Vision preprocessing** (implemented + measured). Added a Working Style
+  directive to transform images (crop/rotate/upscale/threshold via PIL/cv2)
+  before re-querying vision, targeting `gcode-to-text`'s 10 no-preprocess
+  retries. Measured `flash-vision2`: the directive WORKS — the model now
+  preprocesses (gcode 0→12 preprocess Bash calls, extract-moves→16) instead
+  of blindly re-reading — but both tasks still fail (gpt-5.6-luna can't read
+  the rotated 3D-printed text / video frames even from cleaned crops, and
+  the extra work worsens the timeout); `chess-best-move` (the easier vision
+  task) stays 1.0. Direct proof the vision bucket is vision-MODEL-limited,
+  not harness-limited. Kept the directive (correct behavior, helps easier
+  vision tasks) but it does not move these.
+
 - **Residual failure modes are capability, not harness** (verified):
-  vision tasks (`gcode-to-text` 10 vision retries — gpt-5.6-luna can't read
-  rotated 3D text; flash isn't vision-capable), slow-reasoning timeouts
-  (`raman`/`largest-eigenval`/`dna-assembly` run the full 900 s at
-  90-145 tok/s — failing faster only yields wrong-answer-0), and
-  false-confidence wrong answers (`cancel-async-tasks` wrote its OWN passing
-  test; the hidden verifier wanted different semantics).
+  vision (above), slow-reasoning timeouts (`raman`/`largest-eigenval`/
+  `dna-assembly` run the full 900 s at 90-145 tok/s — failing faster only
+  yields wrong-answer-0), and false-confidence wrong answers
+  (`cancel-async-tasks` wrote its OWN passing test; the hidden verifier
+  wanted different semantics).
 
 **Bottom line:** matching opus-5 (0.81) with deepseek-v4-flash via clawcodex
 harness changes is not achievable; DeepSeek's claimed >0.8 relies on an
