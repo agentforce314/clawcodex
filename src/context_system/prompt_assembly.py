@@ -1590,7 +1590,14 @@ _DEEPSEEK_AGENT_PROMPT = (
     "- When the task supplies tests or acceptance checks, they ARE the "
     "spec: make your implementation pass them. Never edit a provided check "
     "so it passes — a failing provided test means your code is wrong, not "
-    "the test."
+    "the test.\n"
+    "- Reading text or details from an image is unreliable. If a vision "
+    "read looks wrong, ambiguous, or you must retry it, do NOT just call "
+    "the vision tool again on the same image — first transform the image "
+    "with a script (crop to the region of interest, rotate/deskew, upscale "
+    "2-4x, increase contrast or binarize with PIL/OpenCV via Bash), then "
+    "read the cleaned-up crop. Two failed reads of the same pixels means "
+    "change the pixels, not the prompt."
 )
 
 
