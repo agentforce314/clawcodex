@@ -1700,8 +1700,56 @@ async def query(
     # anywhere in the session suppressed the check for every prompt after it.
     _outbox_watermark = len(getattr(params.tool_use_context, "outbox", None) or [])
 
+    # Deadline wrap-up nudge (DeepSeek, env-driven). DeepSeek-flash has no
+    # sense of the trial's wall-clock budget and, on compute/fit tasks
+    # (raman-fitting, largest-eigenval, dna-assembly), keeps refining past the
+    # point where it already had a working artifact — then the 900 s agent
+    # timeout kills it with nothing saved. When the harbor adapter passes the
+    # budget as CLAWCODEX_DEADLINE_SEC, fire ONE reminder at
+    # CLAWCODEX_DEADLINE_WARN_FRAC (default 0.75) of it: stop exploring, write
+    # the best working solution to the required path NOW, then verify. Gated
+    # on the DeepSeek provider so no other model's loop is touched, and inert
+    # unless the env is set (interactive/other harnesses are unaffected).
+    _deadline_state: dict[str, Any] = {"fired": False, "sec": 0.0}
+    try:
+        from ..providers import unwrap_provider as _unwrap_provider
+
+        _prov = _unwrap_provider(params.provider) if params.provider else None
+        if getattr(_prov, "is_deepseek", False):
+            _raw = os.environ.get("CLAWCODEX_DEADLINE_SEC", "")
+            _deadline_state["sec"] = float(_raw) if _raw.strip() else 0.0
+            _frac = os.environ.get("CLAWCODEX_DEADLINE_WARN_FRAC", "").strip()
+            _deadline_state["frac"] = float(_frac) if _frac else 0.75
+            _deadline_state["start"] = time.monotonic()
+    except Exception:  # noqa: BLE001 — never break the loop over the nudge
+        _deadline_state = {"fired": False, "sec": 0.0}
+
     while True:
         messages = state.messages
+        # One-shot deadline reminder: appended to ``messages`` (which is the
+        # same list object as ``state.messages``), so it persists and pairs
+        # correctly on the following turns.
+        if (
+            not _deadline_state.get("fired")
+            and _deadline_state.get("sec", 0.0) > 0
+        ):
+            _elapsed = time.monotonic() - _deadline_state["start"]
+            if _elapsed >= _deadline_state["sec"] * _deadline_state.get("frac", 0.75):
+                _deadline_state["fired"] = True
+                _remaining = max(0, int(_deadline_state["sec"] - _elapsed))
+                messages.append(
+                    _create_user_message(
+                        f"Time check: about {_remaining // 60} min of your "
+                        "budget remain before this task is stopped. If you "
+                        "already have a working solution, write it to the "
+                        "required output path NOW and verify it — do not keep "
+                        "refining or exploring. If not, implement the simplest "
+                        "thing that could satisfy the task and save it "
+                        "immediately; a saved partial beats an unsaved perfect "
+                        "one. Prefer running a script over reasoning it out.",
+                        is_meta=True,
+                    )
+                )
         if _diag:
             logger.warning(
                 "[DIAG] query loop: turn=%d  messages=%d  transition=%s",

@@ -672,6 +672,16 @@ class Clawcodex(BaseInstalledAgent):
         # every other model, but scoping keeps the env honest.
         if (self._parsed_model_provider or "").lower() == "deepseek":
             env["CLAWCODEX_DEEPSEEK_CORE_TOOLS"] = "1"
+            # Give the loop the trial's wall-clock budget so it can fire the
+            # deepseek deadline wrap-up nudge (query.py). DeepSeek-flash has
+            # no time sense and over-refines compute/fit tasks past the point
+            # it already had a working artifact, then the timeout kills it
+            # with nothing saved. TB2.1's default agent budget is 900 s;
+            # harbor owns the real per-task timeout (not exposed on the
+            # agent), so 900 is the safe default here — set CLAWCODEX_DEADLINE_SEC
+            # in the host env to match a non-default run, or 0 to opt out.
+            if "CLAWCODEX_DEADLINE_SEC" not in env:
+                env["CLAWCODEX_DEADLINE_SEC"] = "900"
         # Config dir lives OUTSIDE /logs (token privacy in subscription
         # mode); run() copies sessions/transcripts back into /logs/agent
         # post-run so the host still gets them.
