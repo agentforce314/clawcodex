@@ -147,6 +147,44 @@ Takeaway: the cap is a **runaway backstop sized above real reasoning**, not
 a reasoning throttle; the fuse *retry* is the load-bearing win; sticky is
 too blunt for reasoning-heavy work and is opt-in only.
 
+## Levers investigated and rejected (why ~0.66 is the harness ceiling)
+
+After the runaway fix, per-trajectory analysis shows the residual failures
+are model-capability-bound, and the remaining harness levers don't address
+them:
+
+- **Verification / advisor.** clawcodex's advisor is a MODEL-INVOKED tool,
+  not a completion gate — a confidently-wrong model won't call it. The code
+  itself documents it as ~4x cost and net-negative on some of these tasks
+  (`utils/advisor.py`: "4.1x the work, for a worse outcome"; the
+  raman-fitting reviewer asserting a wrong peak). Would also worsen the
+  timeout bucket. Rejected.
+
+- **DeepSeek Responses API** (the blog's one scaffold hint). Probed live
+  2026-08-09: `api.deepseek.com/v1/responses` works — reasoning items,
+  function-calling with `call_id`, `store:true/false`, usage with
+  `reasoning_tokens` — BUT returns **no `encrypted_content`** even with
+  `store:false` + `include:["reasoning.encrypted_content"]`. So the
+  client-side encrypted-reasoning replay that gives OpenAI's o-series its
+  cross-turn reasoning persistence is not available; reasoning is ephemeral,
+  same as chat.completions. Server-side `previous_response_id` chaining is at
+  best equivalent to resending history (which the harness already does).
+  Net: the Responses path offers no multi-turn advantage for this model and
+  doesn't touch vision / speed / blind-spot failures. Not implemented.
+
+- **Residual failure modes are capability, not harness** (verified):
+  vision tasks (`gcode-to-text` 10 vision retries — gpt-5.6-luna can't read
+  rotated 3D text; flash isn't vision-capable), slow-reasoning timeouts
+  (`raman`/`largest-eigenval`/`dna-assembly` run the full 900 s at
+  90-145 tok/s — failing faster only yields wrong-answer-0), and
+  false-confidence wrong answers (`cancel-async-tasks` wrote its OWN passing
+  test; the hidden verifier wanted different semantics).
+
+**Bottom line:** matching opus-5 (0.81) with deepseek-v4-flash via clawcodex
+harness changes is not achievable; DeepSeek's claimed >0.8 relies on an
+unpublished, model-co-designed harness. The honest gain from harness work
+alone is ~+0.10 (0.554 → ~0.656).
+
 ## Measurement discipline
 
 - Same-code replicates swing hard on this bench (k=1 proves nothing);
