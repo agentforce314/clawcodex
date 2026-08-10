@@ -70,22 +70,33 @@ job so only the harness differs.
 
 ## Results (2026-08-09)
 
-### Broad measurement — 57 of 74 tasks on the tuned harness
+### Broad measurement — 64 of 74 tasks on the tuned harness
 
 Aggregated across all 40K-cap tuned runs (per-task average where a task was
-measured more than once; `scratchpad/aggregate_full.py`, globbing
-`flash-h2*` + `flash-c*`):
+measured more than once; `eval/harbor/aggregate_flash_runs.py`):
 
 | | baseline | tuned |
 |---|---|---|
-| mean reward (57 common tasks) | 0.579 | **0.711** |
-| delta | — | **+0.132** (+11 tasks up, −3 down) |
+| mean reward (64 common tasks) | 0.562 | **0.695** |
+| delta | — | **+0.133** (+13 tasks up, −4 down) |
 
-**Full-74 projection** (conservative — assumes tuned == baseline on the 17
-unmeasured tasks, which are compute/build heavyweights the changes do not
-target): **0.554 → ~0.656**, i.e. ~+0.10, closing ~40% of the gap to
-opus-5's 0.81. Short of DeepSeek's claimed >0.8 on their unpublished
-harness, but a substantial, verified gain from harness changes alone.
+**>0.8 is mathematically excluded.** Reaching 0.8 needs 59.2/74 passes. The
+64 measured tasks already fix the pass count at 44.5; even if all 10
+unmeasured tasks scored a perfect 1.0, the full-74 max is
+(64×0.695 + 10)/74 = **0.736 < 0.8**. Realistic full-74 (the 10 at their
+baseline mean 0.5) ≈ **0.669**. So the honest harness gain is
+**0.554 → ~0.67**, ~+0.11, closing ~40% of the gap to opus-5's 0.81 — and
+no outcome on the remainder can reach DeepSeek's claimed >0.8, which relies
+on their unpublished, model-co-designed harness.
+
+The 10 unmeasured tasks (caffe-cifar-10, regex-chess, mcmc-sampling-stan,
+install-windows-3.11, fix-ocaml-gc, make-mips-interpreter, make-doom-for-mips,
+train-fasttext, circuit-fibsqrt, path-tracing-reverse) have single-task
+runtimes (25-58 min) that exceed this machine's ~29-min background-task
+lifetime, so their orchestrator is killed before they verify — an
+environment limit, not the harness. Baseline mean of those 10 is 0.5 (5
+passes); none are reasoning-runaway tasks the changes target. Re-run on a
+host without the background-task cap to close the grid.
 
 Tasks fixed (baseline 0 → tuned ≥0.5), several the reasoning-runaway
 deaths: `polyglot-rust-c` (the canonical 131K-token death → 14 steps),
