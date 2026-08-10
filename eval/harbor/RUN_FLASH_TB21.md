@@ -68,26 +68,55 @@ PYTHONPATH=$PWD/eval/harbor harbor run \
 Keep `effort=max` + `vision=openai:gpt-5.6-luna` identical to the baseline
 job so only the harness differs.
 
-## Results so far (2026-08-09)
+## Results (2026-08-09)
 
-Hard-subset (the 12 tasks most affected by reasoning runaway),
-re-tuned harness `flash-h2-subsetA`:
+### Broad measurement — 57 of 74 tasks on the tuned harness
+
+Aggregated across all 40K-cap tuned runs (per-task average where a task was
+measured more than once; `scratchpad/aggregate_full.py`, globbing
+`flash-h2*` + `flash-c*`):
 
 | | baseline | tuned |
 |---|---|---|
-| mean reward (12 hardest) | 0.250 | **0.500** |
-| fixed / regressed | — | **+3 / −0** |
+| mean reward (57 common tasks) | 0.579 | **0.711** |
+| delta | — | **+0.132** (+11 tasks up, −3 down) |
 
-Fixed: `polyglot-rust-c` (the canonical 131K-runaway death → solves in 14
-steps), `model-extraction-relu-logits`, `configure-git-webserver`.
-Recovered after the re-tune: `feal-linear-cryptanalysis`, `sanitize-git-repo`.
-Still failing: genuine timeouts (`dna-assembly`, `gcode-to-text`,
-`raman-fitting`, `largest-eigenval`) + `cancel-async-tasks` (wrong answer)
-+ `extract-elf` (flipped 1→0 vs the prior run — same-code k=1 variance, per
-the measurement-discipline note). This subset is the HARDEST tasks, chosen
-to stress the runaway path — it is not representative of the full 74, where
-most tasks already pass; treat it as a mechanism check, not the headline
-number.
+**Full-74 projection** (conservative — assumes tuned == baseline on the 17
+unmeasured tasks, which are compute/build heavyweights the changes do not
+target): **0.554 → ~0.656**, i.e. ~+0.10, closing ~40% of the gap to
+opus-5's 0.81. Short of DeepSeek's claimed >0.8 on their unpublished
+harness, but a substantial, verified gain from harness changes alone.
+
+Tasks fixed (baseline 0 → tuned ≥0.5), several the reasoning-runaway
+deaths: `polyglot-rust-c` (the canonical 131K-token death → 14 steps),
+`model-extraction-relu-logits`, `configure-git-webserver`,
+`qemu-alpine-ssh`, `qemu-startup`, `torch-pipeline-parallelism`,
+`extract-elf`, `chess-best-move`, `large-scale-text-editing`,
+`overfull-hbox`, `password-recovery`. The 3 "down" are all k=1 variance,
+not harness faults: `kv-store-grpc` and `sqlite-with-gcov` average 0.5
+(pass in some runs), `dna-insert` reproduces the passing baseline's exact
+analysis and fails only on fiddly primer-output (Bash+Read only, no
+cap/fuse/trim involvement).
+
+### Hard-subset check (the 12 tasks most affected by runaway)
+
+`flash-h2-subsetA`: baseline **0.250 → 0.500**, **+3 / −0**. Mechanism
+check, not the headline; deliberately the hardest tasks.
+
+### 17 tasks not measured here — environmental limit, not the harness
+
+The eval orchestrator (`harbor run` as a background task) is killed by this
+environment after an erratic, shrinking window (~110 min first, then
+25→22→9 min), orphaning any in-flight container. Tasks whose single-task
+runtime exceeds that window — `caffe-cifar-10` (~58 m), `regex-chess`
+(~52 m), `mcmc-sampling-stan`, `install-windows-3.11`, `compile-compcert`,
+`fix-ocaml-gc`, `make-mips-interpreter`, `make-doom-for-mips`,
+`rstan-to-pystan`, `sam-cell-seg`, `train-fasttext` — plus a few hang-prone
+stragglers (`crack-7z-hash`, `protein-assembly`, `circuit-fibsqrt`,
+`path-tracing-reverse`, `db-wal-recovery`) could not be collected. Their
+baseline mean is 0.471 (8/17 baseline passes); none are reasoning-runaway
+tasks the changes target. Re-run them on a host without the background-task
+lifetime cap, in small batches, to complete the full-74 grid.
 
 ## Subset-A finding (2026-08-09) — why the cap is 40K and sticky is off
 
