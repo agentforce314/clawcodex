@@ -195,6 +195,19 @@ them:
   not harness-limited. Kept the directive (correct behavior, helps easier
   vision tasks) but it does not move these.
 
+- **Deadline wrap-up nudge / "hooks"** (implemented + measured). The query
+  loop fires one reminder at 0.75 of the trial budget (CLAWCODEX_DEADLINE_SEC,
+  set by the adapter) telling deepseek to save its best working solution and
+  stop refining — targeting the timeout bucket where the model over-refines
+  past a working artifact. Confirmed working end-to-end (fires, reaches the
+  model). Measured `flash-deadline` on raman-fitting / largest-eigenval /
+  dna-assembly: no conversion to passes — raman went timeout→completed-but-
+  WRONG (0.0), largest-eigenval still timed out. The residual timeout
+  failures are wrong SOLUTIONS (capability), not merely unsaved ones, so a
+  save-early nudge can't fix them. Kept (a correct, general feature that can
+  help time-budgeted tasks with a working-but-unsaved artifact) but it does
+  not move these.
+
 - **Residual failure modes are capability, not harness** (verified):
   vision (above), slow-reasoning timeouts (`raman`/`largest-eigenval`/
   `dna-assembly` run the full 900 s at 90-145 tok/s — failing faster only
