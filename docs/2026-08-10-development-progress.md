@@ -97,6 +97,7 @@
 | 2026-08-10 | `src/permissions/pre_trust.py`、`src/hooks/trust_gate.py`、`src/services/mcp/config.py`、`src/permissions/__init__.py` | 完成 `C2. Pre-trust gate`：统一 pre-trust 判定，未信任 workspace 不加载 project/local MCP runtime 配置 | `tests/test_pre_trust_gate.py`、`tests/test_mcp_pre_trust.py`、`tests/test_trust_gate.py`、`tests/test_mcp_config.py` 通过 |
 | 2026-08-10 | `tests/test_permission_profiles.py`、`tests/test_pre_trust_gate.py`、`tests/test_mcp_pre_trust.py` | 新增 C1/C2 单元测试与 MCP runtime gate 回归 | 定向测试通过 |
 | 2026-08-11 | `src/execution/boundary.py`、`src/execution/__init__.py`、`src/tool_system/context.py`、`tests/test_execution_boundary.py` | 完成 `C3. ExecutionBoundary`：新增 WorkspaceGuard/EnvPolicy/ProcessPolicy 接口，ToolContext 读写路径进入执行边界二次校验 | C3 定向回归、相邻 Permission/Parity 回归、`py_compile` 与 `git diff --check` 通过 |
+| 2026-08-11 | `tests/test_execution_boundary.py` | 补全 `C3. ExecutionBoundary` 单元测试模块：覆盖默认 workspace allow/deny、额外工作目录、默认 env/process policy、strict guard 替换与 ToolContext 读写路由 | `90 passed`、`py_compile` 与 `git diff --check` 通过 |
 
 ## 5. 测试与验收记录
 
@@ -233,9 +234,20 @@
 - 默认 `DefaultWorkspaceGuard` 保持现有 full-access / internal path 兼容行为；替换为严格 guard 时，即使当前 permission mode 允许 workspace escape，也可以在执行边界层阻断。
 - `EnvPolicy` 与 `ProcessPolicy` 先提供可替换 hook，不在本阶段实现 network/secret 规则，避免与 `C5. Network/secret policy` 混淆。
 
+单元测试模块覆盖：
+
+- 默认 `WorkspaceGuard` 的 workspace 内允许、workspace 外拒绝。
+- `bypassPermissions` 现有 workspace escape 兼容行为。
+- 可替换 strict guard 在 permission 允许 bypass 时仍可阻断 workspace escape。
+- `additional_working_directories` 经执行边界完成读写校验。
+- `ToolContext.ensure_allowed_path()` / `ensure_readable_path()` 的 write/read 路由。
+- 默认 `EnvPolicy` 返回隔离副本，不污染输入环境。
+- 默认 `ProcessPolicy` 拒绝空命令、允许非空命令。
+- 自定义 `EnvPolicy` / `ProcessPolicy` hook 可替换并生效。
+
 验证记录：
 
-- `tests/test_execution_boundary.py tests/test_workflow_permission_fixes.py tests/test_read_permission_parity.py tests/parity/test_e2e_file_read.py tests/parity/test_e2e_edit_flow.py`：`75 passed`。
+- `tests/test_execution_boundary.py tests/test_permission_profiles.py tests/test_pre_trust_gate.py tests/test_mcp_pre_trust.py tests/test_workflow_permission_fixes.py tests/test_read_permission_parity.py tests/parity/test_e2e_file_read.py tests/parity/test_e2e_edit_flow.py`：`90 passed`。
 - `src/execution/boundary.py src/execution/__init__.py src/tool_system/context.py`：`py_compile` 通过。
 - `git diff --check` 通过。
 
