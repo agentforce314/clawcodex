@@ -159,8 +159,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setVoiceProcessing(false)
     // sessionStats: zeros beat another session's numbers; the server
     // re-stamps truth on the clear/resume reply (session.stats event) or at
-    // the latest on the next end-of-turn result.
-    patchUiState({ bgTasks: new Set(), info: null, sessionStats: ZERO_SESSION_STATS, sid: null, usage: ZERO })
+    // the latest on the next end-of-turn result. pendingSuggestion: a recap
+    // ghost suggests the NEXT step of the conversation it came from — it
+    // never survives into a different session.
+    patchUiState({
+      bgTasks: new Set(),
+      info: null,
+      pendingSuggestion: null,
+      sessionStats: ZERO_SESSION_STATS,
+      sid: null,
+      usage: ZERO
+    })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -190,7 +199,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setLastUserMsg('')
       composerActions.setPasteSnips([])
       patchTurnState({ activity: [] })
-      patchUiState({ info, usage: usageFrom(info) })
+      // /clear and resume are local slashes (no turn start), so the recap
+      // ghost must expire here — it described the wiped conversation.
+      patchUiState({ info, pendingSuggestion: null, usage: usageFrom(info) })
     },
     [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt]
   )

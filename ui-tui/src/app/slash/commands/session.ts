@@ -633,6 +633,48 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[on|off|status]',
+    help: 'end-of-turn recap + tab-acceptable suggestion [on|off|status]',
+    name: 'recap',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'on', 'off'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /recap [on|off|status]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'recap' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r => {
+              ctx.transcript.sys(`recap: ${r.value || 'on'}`)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse & { note?: string }>('config.set', { key: 'recap', value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse & { note?: string }>(r => {
+            if (r.error) {
+              ctx.transcript.sys(`recap: ${r.error}`)
+
+              return
+            }
+
+            // `value` is the EFFECTIVE state (a project/local settings
+            // override can beat the global write); `note` says so.
+            ctx.transcript.sys(`recap: ${r.value || mode}${r.note ? ` (${r.note})` : ''}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     argumentHint: '[queue|steer|interrupt|status]',
     help: 'control busy enter mode [queue|steer|interrupt|status]',
     name: 'busy',

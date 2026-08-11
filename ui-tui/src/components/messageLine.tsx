@@ -102,6 +102,28 @@ export const MessageLine = memo(function MessageLine({
     return null
   }
 
+  // End-of-turn recap (turn.recap event): "✻ recap: <summary> (disable
+  // recaps in /recap)". The body is the model's goal→status→"Next: …" line;
+  // the composer ghost suggestion rides the same event but renders in the
+  // input, not here.
+  if (msg.kind === 'recap') {
+    return (
+      <Box marginTop={leadGap ? 1 : 0}>
+        <Text wrap="wrap">
+          <Text color={t.color.accent}>✻ </Text>
+          <Text bold>recap: </Text>
+          <Text color={t.color.muted} italic>
+            {msg.text}
+          </Text>
+          <Text color={t.color.muted} dimColor>
+            {' '}
+            (disable recaps in /recap)
+          </Text>
+        </Text>
+      </Box>
+    )
+  }
+
   if (msg.role === 'tool') {
     const maxChars = Math.max(24, cols - 14)
     const stripped = hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text

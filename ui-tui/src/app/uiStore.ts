@@ -27,6 +27,7 @@ const buildUiState = (): UiState => ({
   notice: null,
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,
+  pendingSuggestion: null,
   sections: {},
   sessionTitle: '',
   sessionStats: ZERO_SESSION_STATS,

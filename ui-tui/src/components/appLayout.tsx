@@ -348,7 +348,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty && !ui.busy ? PLACEHOLDER : ''}
+                  placeholder={composer.empty && !ui.busy ? (ui.pendingSuggestion ?? PLACEHOLDER) : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

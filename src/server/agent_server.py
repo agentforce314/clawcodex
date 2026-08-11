@@ -22,6 +22,8 @@ server → client (``messages_from_agent``)::
     {type:'control_request', request_id, request:{subtype:'can_use_tool', …}}
     {type:'control_response', response:{subtype, request_id, response}}  # to client pulls
     {type:'result', subtype:'success'|'error'|'cancelled', usage, num_turns, …}
+    {type:'system', subtype:'recap', session_id, recap, suggestion}
+                                             # post-turn recap line + tab-acceptable composer prefill
 
 client → server (``send_to_agent``)::
 
@@ -32,6 +34,8 @@ client → server (``send_to_agent``)::
     {type:'control_request', request_id, request:{subtype:'set_model', model, provider?}}
                                              # replies {ok, model, warning?} | {ok:false, error}
     {type:'control_request', request_id, request:{subtype:'get_settings'|'get_context_usage'}}
+    {type:'control_request', request_id, request:{subtype:'set_recap', value:'on'|'off'}}
+                                             # /recap toggle; replies {ok, value} | {ok:false, error}
     {type:'control_request', request_id, request:{subtype:'worktree_status'}}
                                              # {ok, active, name?, path?, branch?, git_ok?, dirty_files?, commits?}
     {type:'control_request', request_id, request:{subtype:'worktree_exit', action:'keep'|'remove'}}
@@ -235,6 +239,18 @@ class _AgentSession:
     _turns_since_memory: int = 0
     _memory_counter_hydrated: bool = False
     _memory_review_thread: threading.Thread | None = None
+    # End-of-turn recap + tab-acceptable suggestion (src/services/turn_recap):
+    # a post-turn small-model fork, one at a time, emitting one system/recap
+    # frame. Staleness is a TWO-key check at emit: ``_stats_turns`` equality
+    # AND ``_recap_serial`` equality. The odometer alone has an ABA hole —
+    # /clear zeroes it, /rewind recounts it DOWN, /resume re-seeds it, so a
+    # slow fork can watch the value leave and come back while the
+    # conversation underneath it was replaced. ``_recap_serial`` is
+    # monotonic (same idea as ``_goal_rev``): bumped on EVERY completed
+    # turn (btw/internal included) and on every conversation-identity
+    # change (/clear, /rewind, /resume), so ABA is unrepresentable.
+    _recap_thread: threading.Thread | None = None
+    _recap_serial: int = 0
     # /loop + Cron* + ScheduleWakeup engine (docs/en/scheduled-tasks port).
     # The worker's idle branch pops due tasks and runs their prompts as
     # internal turns; _build_runtime hands this to tool_context so the
@@ -668,7 +684,12 @@ class _AgentSession:
                 "available_output_styles": self._available_output_styles(),
                 # /logo — the persisted startup-logo palette (None = default).
                 "logo_color": _current_logo_color(),
+                # /recap — end-of-turn recap + composer suggestion toggle.
+                "recap": _recap_setting_enabled(),
             })
+            return
+        if subtype == "set_recap":
+            self._do_set_recap(request_id, inner.get("value"))
             return
         if subtype == "get_context_usage":
             self._reply(request_id, self._context_usage())
@@ -933,6 +954,8 @@ class _AgentSession:
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
+                # Conversation identity changed — kill any in-flight recap.
+                self._recap_serial += 1
                 # Fresh conversation, fresh review cadence (the donor's
                 # counters are per-agent-lifetime; a gateway reset builds a
                 # new agent). Hydration stays done — the counter simply
@@ -2661,6 +2684,45 @@ class _AgentSession:
             return
         self._reply(request_id, {"ok": True, "logo_color": name})
 
+    def _do_set_recap(self, request_id: object, value: object) -> None:
+        """Flip + persist the end-of-turn recap toggle (the TUI's /recap).
+
+        Delegates to :func:`src.config.set_recap_enabled` — the
+        ``set_effort`` write pattern: ``settings.recap_enabled`` in the
+        GLOBAL config (project/local overrides still win at merge) plus a
+        settings-cache invalidation so the very next post-turn check sees
+        it — no restart, no session rebuild.
+        """
+        mode = str(value or "").strip().lower()
+        if mode not in ("on", "off"):
+            self._reply(
+                request_id,
+                {"ok": False, "error": "usage: /recap [on|off|status]"},
+            )
+            return
+        try:
+            from src.config import set_recap_enabled
+
+            set_recap_enabled(mode == "on")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] set_recap failed")
+            self._reply(
+                request_id, {"ok": False, "error": f"failed to persist: {exc}"}
+            )
+            return
+        # Reply with the EFFECTIVE post-write state, not the request: the
+        # write is global, and a project/local settings override wins at
+        # merge — "/recap off" must not print "off" while the feature stays
+        # on. When they disagree, say why.
+        effective = "on" if _recap_setting_enabled() else "off"
+        payload: dict[str, Any] = {"ok": True, "value": effective}
+        if effective != mode:
+            payload["note"] = (
+                "global preference saved, but a project/local settings "
+                "override keeps it " + effective
+            )
+        self._reply(request_id, payload)
+
     def _rebuild_system_prompt(self) -> bool:
         """Rebuild the cached system prompt from the live tool context.
 
@@ -2815,6 +2877,9 @@ class _AgentSession:
                 if isinstance(saved_turns, int) and not isinstance(saved_turns, bool) and saved_turns >= 0
                 else _count_prompt_turns(conv.messages)
             )
+            # Conversation identity changed — kill any in-flight recap (the
+            # re-seeded odometer can coincide with the captured serial).
+            self._recap_serial += 1
             # ch03 round-4 GAP B — restore the accumulated cost counters
             # (guarded: the reader refuses a file whose session_id header
             # doesn't match). Gated single_session like every other
@@ -3024,6 +3089,8 @@ class _AgentSession:
             # them, so the recount can sit below the number of boundaries
             # rewind saw. Fine for an odometer; don't reuse is_prompt here.
             self._stats_turns = _count_prompt_turns(msgs)
+            # Conversation identity changed — kill any in-flight recap.
+            self._recap_serial += 1
             self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] rewind failed")
@@ -4275,6 +4342,110 @@ class _AgentSession:
             logger.debug("[agent-server] memory review hook failed",
                          exc_info=True)
 
+    def _maybe_spawn_recap(self, outcome: dict | None) -> None:
+        """Post-turn recap hook (worker thread) — CC's end-of-turn "✻ recap:"
+        line plus the tab-acceptable composer suggestion.
+
+        Fires only when the session actually returns to idle awaiting the
+        user: a completed REAL user turn (the caller runs this for neither
+        btw nor internal turns), subtype ``success`` with a non-empty
+        response, no active /goal loop (the agent keeps working), and an
+        empty inbox (a queued prompt makes the recap stale on arrival).
+        Spawns a daemon fork that builds its OWN provider (same reasoning as
+        the memory-review fork: provider objects carry per-request mutable
+        state and the next foreground turn may run concurrently), generates
+        via the small-fast-model side query, and emits ONE ``system/recap``
+        frame — dropped if the turn odometer moved or a turn is running by
+        the time it finishes. Never raises.
+        """
+        try:
+            if not outcome or outcome.get("subtype") != "success":
+                return
+            if not str(outcome.get("response_text") or "").strip():
+                return
+
+            from src.settings.settings import get_settings
+
+            if not bool(getattr(get_settings(), "recap_enabled", True)):
+                return
+            with self._lock:
+                if self._goal_mgr is not None and self._goal_mgr.is_active():
+                    return
+            if not self._inbox.empty():
+                return
+            prev = self._recap_thread
+            if prev is not None and prev.is_alive():
+                return  # one recap fork at a time
+            if self.provider is None or self.session is None:
+                return
+
+            messages = list(self.session.conversation.messages)
+            if not messages:
+                return
+            provider_name = self.provider_name
+            model = getattr(self.provider, "model", None) or self.config.model
+            serial = self._stats_turns
+            recap_serial = self._recap_serial
+
+            def _recap_target() -> None:
+                try:
+                    from src.config import get_provider_config
+                    from src.providers import (
+                        get_provider_class,
+                        resolve_api_key,
+                    )
+
+                    provider_cfg = get_provider_config(provider_name)
+                    fork_provider = get_provider_class(provider_name)(
+                        api_key=resolve_api_key(provider_name, provider_cfg),
+                        base_url=provider_cfg.get("base_url"),
+                        model=model or provider_cfg.get("default_model"),
+                    )
+                except Exception:  # noqa: BLE001 — no fork without its own client
+                    logger.debug(
+                        "[agent-server] recap provider resolution failed",
+                        exc_info=True,
+                    )
+                    return
+
+                from src.services.turn_recap import generate_turn_recap
+
+                result = asyncio.run(
+                    generate_turn_recap(messages, fork_provider)
+                )
+                if not result or not result.get("recap"):
+                    return
+                # Staleness gate: only the turn this recap describes may
+                # surface it. Two keys must BOTH be unmoved: the user-turn
+                # odometer (fails closed on a bare /clear with no follow-up
+                # turn) and the monotonic ``_recap_serial`` (closes the
+                # odometer's ABA hole — /clear zeroes it, /rewind recounts
+                # it down, /resume re-seeds it, so a slow fork could watch
+                # the count leave and come back over a replaced
+                # conversation). Plus: no in-flight turn, no queued prompt.
+                if self._stop.is_set() or not self._inbox.empty():
+                    return
+                with self._lock:
+                    if self._current_abort is not None:
+                        return
+                if self._stats_turns != serial or self._recap_serial != recap_serial:
+                    return
+                self._emit({
+                    "type": "system",
+                    "subtype": "recap",
+                    "session_id": self.session_id,
+                    "recap": str(result.get("recap") or ""),
+                    "suggestion": str(result.get("suggestion") or ""),
+                })
+
+            thread = threading.Thread(
+                target=_recap_target, name="bg-recap", daemon=True
+            )
+            self._recap_thread = thread
+            thread.start()
+        except Exception:  # noqa: BLE001 — recaps must never kill the worker
+            logger.debug("[agent-server] recap hook failed", exc_info=True)
+
     # ─── worker thread (runs query() turns) ────────────────────────────────
 
     def start(self) -> None:
@@ -4334,6 +4505,9 @@ class _AgentSession:
             # Self-improvement review — runs AFTER the response is delivered
             # so it never competes with the user's task for model attention.
             self._maybe_spawn_memory_review(outcome, pre_turn_len)
+            # End-of-turn recap + composer suggestion — same post-delivery
+            # slot, real user turns only (never btw/internal/goal turns).
+            self._maybe_spawn_recap(outcome)
             # A task that finished while the turn ran is delivered right after.
             self._deliver_task_notifications()
             # Reflect any Cron*/ScheduleWakeup change the turn made (deduped
@@ -4919,6 +5093,10 @@ class _AgentSession:
             _cost = max(0.0, get_total_cost_usd() - _cost_before)
         except Exception:  # noqa: BLE001 — cost is best-effort, never break the turn
             _cost = 0.0
+        # EVERY completed turn (btw/internal included) invalidates any
+        # in-flight recap fork — monotonic, so the odometer's ABA hole
+        # (/clear → 0 → back up; /rewind recount) can't resurrect one.
+        self._recap_serial += 1
         # One more completed user turn. Internal (notification) and btw
         # (ephemeral, rolled-back) turns don't move the odometer — same rule
         # as the deleted REPL, which only counted real prompt→response rounds.
@@ -6315,6 +6493,18 @@ def _current_logo_color() -> str | None:
         return value if is_logo_palette_name(value) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _recap_setting_enabled() -> bool:
+    """The live end-of-turn-recap toggle (the ``get_settings`` rider for
+    /recap status). Defaults on — matching CC, where recaps ship enabled
+    with an opt-out."""
+    try:
+        from src.settings.settings import get_settings
+
+        return bool(getattr(get_settings(), "recap_enabled", True))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _current_mode(tool_context: Any, default: str) -> str:

@@ -172,7 +172,7 @@ export interface Msg {
   // (legacy backends) fall back to the markdown ```diff path.
   diffData?: MsgDiffData
   info?: SessionInfo
-  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'intro' | 'panel' | 'recap' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string

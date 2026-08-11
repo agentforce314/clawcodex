@@ -864,6 +864,7 @@ export type GatewayEvent =
   | { payload: { mode: string }; session_id?: string; type: 'permission.mode' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
+  | { payload: { recap: string; suggestion: string }; session_id?: string; type: 'turn.recap' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }

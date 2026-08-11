@@ -548,3 +548,25 @@ def set_effort(value: Optional[str]) -> None:
     cfg["settings"] = section
     mgr.save_global(cfg)
     invalidate_settings_cache()
+
+
+def set_recap_enabled(enabled: bool) -> None:
+    """Persist the end-of-turn-recap toggle (``settings.recap_enabled``) and
+    invalidate the settings read-cache.
+
+    Same shape as :func:`set_effort` — a nested *settings* field
+    (``src/settings/types.py``), written to the global config's ``"settings"``
+    section and made visible to the very next ``get_settings()`` so the
+    agent-server's post-turn check flips mid-session without a restart.
+    """
+    from src.settings.settings import invalidate_settings_cache
+
+    mgr = _get_default_manager()
+    cfg = mgr.load_global()
+    section = cfg.get("settings")
+    if not isinstance(section, dict):
+        section = {}
+    section["recap_enabled"] = bool(enabled)
+    cfg["settings"] = section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()

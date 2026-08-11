@@ -190,6 +190,12 @@ export interface UiState {
   notice: Notice | null
   pasteCollapseLines: number
   pasteCollapseChars: number
+  /**
+   * Server-suggested next prompt from the end-of-turn recap. Rendered as the
+   * composer's ghost text while the input is empty and idle; plain Tab
+   * accepts it into the input. Cleared on accept and at every turn start.
+   */
+  pendingSuggestion: null | string
 
   sections: SectionVisibility
   sessionTitle: string

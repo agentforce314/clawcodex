@@ -1156,7 +1156,9 @@ class TurnController {
       this.clearNotice(yieldingNoticeKey)
     }
 
-    patchUiState({ busy: true })
+    // pendingSuggestion: a recap suggestion belongs to the moment between
+    // turns — starting any turn (accepted, edited, or unrelated) expires it.
+    patchUiState({ busy: true, pendingSuggestion: null })
     patchTurnState({
       activity: [],
       lastDeltaAt: Date.now(),

@@ -782,6 +782,10 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Show context-window usage', name: '/context' },
   { desc: 'Show the total cost and duration of the current session', name: '/cost' },
   { desc: 'Toggle Bash-output token compression (RTK-style)', hint: '[on|off|status]', name: '/eco' },
+  // Local-registry command (slash/commands/session.ts) — listed here so it
+  // reaches the completion menu; per the shadowing note above it carries no
+  // hint (the local argumentHint is authoritative).
+  { desc: 'Toggle the end-of-turn recap + suggested next prompt', name: '/recap' },
   { desc: 'Undo recent turns', hint: '[<turns>]', name: '/rewind' },
   { desc: 'Toggle extended thinking', hint: '[on|off|toggle]', name: '/thinking' },
   {
@@ -1061,6 +1065,15 @@ export class GatewayClient extends EventEmitter {
           return this.controlQuery('get_settings', {}).then(s => (s ?? {}) as T)
         }
 
+        if (String(p.key ?? '') === 'recap') {
+          // /recap status — served off the get_settings rider.
+          return this.controlQuery('get_settings', {}).then(s => {
+            const enabled = (s as { recap?: boolean } | null)?.recap !== false
+
+            return { value: enabled ? 'on' : 'off' } as T
+          })
+        }
+
         return Promise.resolve({} as T)
       }
 
@@ -1096,6 +1109,16 @@ export class GatewayClient extends EventEmitter {
             const ok = (r as any)?.ok === true
 
             return (ok ? { ok: true, value: String(value ?? '') } : { ok: false }) as T
+          })
+        }
+
+        if (key === 'recap') {
+          // Round-trip so /recap reports the EFFECTIVE post-write state (a
+          // project/local settings override can beat the global write).
+          return this.controlQuery('set_recap', { value }).then(r => {
+            const res = (r ?? {}) as { error?: string; note?: string; ok?: boolean; value?: string }
+
+            return { error: res.error, note: res.note, ok: res.ok !== false, value: res.value } as T
           })
         }
 
@@ -2363,6 +2386,15 @@ export class GatewayClient extends EventEmitter {
             payload: { text: String(msg.message ?? '') },
             session_id: this.sessionId,
             type: 'review.summary'
+          })
+        } else if (msg.subtype === 'recap') {
+          // Post-turn recap: the "✻ recap: …" transcript line plus the
+          // tab-acceptable composer suggestion (ghost text). The handler
+          // drops it when a new turn is already running.
+          this.publish({
+            payload: { recap: String(msg.recap ?? ''), suggestion: String(msg.suggestion ?? '') },
+            session_id: this.sessionId,
+            type: 'turn.recap'
           })
         } else if (msg.subtype === 'cron_status') {
           // Scheduled-task transitions (/loop wakeup fired, cron job fired,

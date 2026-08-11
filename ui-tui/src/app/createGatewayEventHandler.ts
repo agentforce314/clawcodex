@@ -912,6 +912,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'turn.recap': {
+        // End-of-turn recap: a persistent "✻ recap: …" transcript line plus
+        // the tab-acceptable composer ghost text. The recap describes the
+        // turn that JUST ended — if the user already launched another turn
+        // while it generated, it captions the wrong moment, so drop it
+        // whole (the server gates on its side too; this covers the race).
+        if (getUiState().busy) {
+          return
+        }
+
+        const recap = String(ev.payload?.recap ?? '').trim()
+        const suggestion = String(ev.payload?.suggestion ?? '').trim()
+
+        if (recap) {
+          appendMessage({ kind: 'recap', role: 'system', text: recap })
+        }
+
+        if (suggestion) {
+          patchUiState({ pendingSuggestion: suggestion })
+        }
+
+        return
+      }
+
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.

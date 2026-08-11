@@ -97,6 +97,20 @@ export const shouldAcceptPlaceholderSuggestion = (
 ): boolean =>
   key.tab && !key.shift && !state.completionsLen && !state.input && state.conversationEmpty && !state.busy
 
+/**
+ * Plain Tab accepts the end-of-turn recap suggestion showing as the
+ * composer's ghost text. Unlike the placeholder accept above this fires
+ * MID-conversation — that is the feature: the turn just ended and the server
+ * suggested the next prompt — but under the same visibility gates (idle,
+ * empty input, no completion menu open, unmodified Tab), so it can never
+ * shadow completion-accept or the Shift+Tab permission-mode cycle.
+ */
+export const shouldAcceptPendingSuggestion = (
+  key: { shift: boolean; tab: boolean },
+  state: { busy: boolean; completionsLen: number; input: string; suggestion: null | string }
+): boolean =>
+  key.tab && !key.shift && !state.completionsLen && !state.input && !state.busy && Boolean(state.suggestion)
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -694,6 +708,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
         cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
       }
+
+      return
+    }
+
+    if (
+      shouldAcceptPendingSuggestion(key, {
+        busy: live.busy,
+        completionsLen: cState.completions.length,
+        input: cState.input,
+        suggestion: live.pendingSuggestion
+      })
+    ) {
+      // Recap ghost accept: the suggestion becomes real editable input (the
+      // external value change snaps TextInput's cursor to the end) and stops
+      // being a ghost — Enter from here submits it like any typed prompt.
+      cActions.setInput(live.pendingSuggestion ?? '')
+      patchUiState({ pendingSuggestion: null })
 
       return
     }

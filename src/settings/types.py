@@ -216,6 +216,22 @@ class SettingsSchema:
     # (src/memory/write_approval.py). Donor default: off.
     memory_write_approval: bool = False
 
+    # End-of-turn recap + suggested next prompt (CC parity: the "✻ recap: …"
+    # transcript line and the tab-acceptable composer ghost text). One side
+    # query per completed REAL user turn; CC ships it on by default with an
+    # opt-out, mirrored here (/recap off persists this).
+    #
+    # Cost posture (deliberate, weighed against the memdir-prefetch OFF
+    # precedent): on Anthropic sessions the query pins small_fast_model; on
+    # other providers it runs on the SESSION model (the cross-provider
+    # small-model pairing is still deferred, see find_relevant_memories),
+    # bounded by an ~8K-char transcript budget, a 1200-token cap, and a
+    # low-reasoning-effort pin where the provider declares one. Kept
+    # default-on anyway because — unlike the silent prefetch — every recap
+    # line renders "(disable recaps in /recap)", so the feature advertises
+    # its own off-switch each time it costs anything.
+    recap_enabled: bool = True
+
     # Provider
     provider: str = "anthropic"
 
