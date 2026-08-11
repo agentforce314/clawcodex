@@ -185,7 +185,6 @@ export interface Msg {
   // (ctrl+o / /details expanded). Absent on resumed/legacy messages.
   toolsVerbose?: string[]
   todos?: TodoItem[]
-  todoIncomplete?: boolean
   todoCollapsedByDefault?: boolean
 }
 

@@ -67,7 +67,10 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
-  it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
+  it('keeps an incomplete list pinned in the HUD across the turn boundary', () => {
+    // CC parity: the checklist persists until the work is done (REPL.tsx:4934
+    // renders TaskListV2 while idle). Archiving it at every turn end was why
+    // the pinned panel vanished the moment a turn completed.
     const appended: Msg[] = []
 
     const todos = [
@@ -84,15 +87,12 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
 
-    const trail = appended.find(msg => msg.kind === 'trail' && msg.todos?.length)
     const finalText = appended.find(msg => msg.role === 'assistant' && msg.text === 'Started a todo list.')
 
     expect(finalText).toBeDefined()
-    expect(trail).toMatchObject({ kind: 'trail', role: 'system', todos, todoIncomplete: true })
-    // Todo archive must sit ABOVE the final assistant text so the panel
-    // doesn't visibly jump across the final answer at end-of-turn.
-    expect(appended.indexOf(trail!)).toBeLessThan(appended.indexOf(finalText!))
-    expect(getTurnState().todos).toEqual([])
+    // No transcript archive for an unfinished list — it stays live.
+    expect(appended.find(msg => msg.kind === 'trail' && msg.todos?.length)).toBeUndefined()
+    expect(getTurnState().todos).toEqual(todos)
   })
 
   it('archives completed todos into transcript flow at end of turn', () => {

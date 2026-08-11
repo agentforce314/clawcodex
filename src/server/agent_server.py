@@ -3001,6 +3001,11 @@ class _AgentSession:
             def is_prompt(m: Any) -> bool:
                 if getattr(m, "role", None) != "user":
                     return False
+                # Injected context (plan-mode / task-reminder attachments) is
+                # not a rewind boundary — without this, /rewind 1 lands on the
+                # most recent reminder instead of the user's actual message.
+                if getattr(m, "isMeta", False):
+                    return False
                 c = getattr(m, "content", None)
                 if isinstance(c, str):
                     return True
@@ -3019,10 +3024,8 @@ class _AgentSession:
             removed = len(msgs) - target
             del msgs[target:]
             # Rewound turns leave the odometer — recount from what's left.
-            # NOTE: `is_prompt` above counts isMeta text messages (rewind
-            # boundaries pre-date the odometer); _count_prompt_turns excludes
-            # them, so the recount can sit below the number of boundaries
-            # rewind saw. Fine for an odometer; don't reuse is_prompt here.
+            # `is_prompt` and `_count_prompt_turns` now apply the same isMeta
+            # exclusion, so the recount matches the boundaries rewind saw.
             self._stats_turns = _count_prompt_turns(msgs)
             self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
         except Exception as exc:  # noqa: BLE001
@@ -4871,7 +4874,7 @@ class _AgentSession:
                 # keeps the instructions in later turns' context and lets the
                 # cadence scan find prior attachments.
                 on_attachment=lambda m: self.session.conversation.add_message(
-                    m.role, m.content
+                    m.role, m.content, isMeta=getattr(m, "isMeta", False)
                 ),
             ))
         except AbortError:

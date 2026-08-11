@@ -12,6 +12,7 @@
 import { Box, Text } from '@clawcodex/ink'
 import { memo } from 'react'
 
+import { useTurnSelector } from '../app/turnStore.js'
 import type { Theme } from '../theme.js'
 
 interface ModeBadge {
@@ -41,6 +42,11 @@ export const ComposerFooter = memo(function ComposerFooter({
   t,
   voiceLabel = ''
 }: ComposerFooterProps) {
+  // Reads the store directly like BusyLine/LiveTodoPanel — the hint must
+  // track live todo state, and hooks must run before any early return.
+  const todoCount = useTurnSelector(state => state.todos.length)
+  const todoCollapsed = useTurnSelector(state => state.todoCollapsed)
+
   // CC suppressHint: nothing while the user is typing.
   if (!inputEmpty) {
     return null
@@ -51,17 +57,24 @@ export const ComposerFooter = memo(function ComposerFooter({
   // with ●/◉ while recording/transcribing and reads "voice off" otherwise.
   const voiceActive = /^[●◉]/.test(voiceLabel)
 
+  // The original's toggle segment (PromptInputFooterLeftSide
+  // getSpinnerHintParts): gated on tasks EXISTING, not on busy — only the
+  // esc segment is loading-gated (:522). That matters here because an
+  // incomplete list now stays pinned while idle, and idle is exactly when a
+  // user stares at the panel wanting to know how to hide it.
+  const todoHint = todoCount > 0 ? ` · ctrl+t to ${todoCollapsed ? 'show' : 'hide'} tasks` : ''
+
   // Left hint is independent of the badge (both render, like the original's
   // byline; the badge just lives on the right here).
   const left = sh ? (
     <Text color={t.color.bashBorder}>! for bash mode</Text>
   ) : busy ? (
     <Text color={t.color.muted} dim>
-      esc to interrupt
+      esc to interrupt{todoHint}
     </Text>
   ) : (
     <Text color={t.color.muted} dim>
-      ? for shortcuts
+      ? for shortcuts{todoHint}
     </Text>
   )
 

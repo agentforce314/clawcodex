@@ -64,6 +64,7 @@ function ShimmerVerb({ stalled, t, tick, verb }: { stalled: boolean; t: Theme; t
 export const BusyLine = memo(function BusyLine({ t, turnStartedAt }: BusyLineProps) {
   const ui = useStore($uiState)
   const todos = useTurnSelector(state => state.todos)
+  const todoCollapsed = useTurnSelector(state => state.todoCollapsed)
   const tools = useTurnSelector(state => state.tools)
   const streamedChars = useTurnSelector(state => state.streamedChars)
   const lastDeltaAt = useTurnSelector(state => state.lastDeltaAt)
@@ -136,7 +137,11 @@ export const BusyLine = memo(function BusyLine({ t, turnStartedAt }: BusyLinePro
       ? '⏸ paused'
       : `${delegation.paused ? '⏸ ' : ''}⛓ ${totals.activeCount > 0 ? `${totals.activeCount} running` : `${totals.descendantCount} spawned`}`
 
-  const nextTodo = todos.find(todo => todo.status === 'pending')
+  // The one-line "Next:" hint is the original's expandedView='none' render —
+  // it only shows while the full checklist is toggled OFF (ctrl+t). With the
+  // list attached right below through the └ connector, it would duplicate
+  // the first pending row.
+  const nextTodo = todoCollapsed ? todos.find(todo => todo.status === 'pending') : undefined
 
   return (
     <Box flexDirection="column" marginTop={1}>

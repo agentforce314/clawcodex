@@ -1,7 +1,6 @@
 import { Box, Text } from '@clawcodex/ink'
 import { memo, useState } from 'react'
 
-import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
@@ -14,20 +13,32 @@ const iconColor = (t: Theme, status: TodoItem['status']) =>
 // Cap the visible list like the original HUD; the summary row carries the rest.
 const MAX_VISIBLE_TODOS = 10
 
+// The original's MessageResponse lead — two spaces, └, two spaces
+// (MessageResponse.tsx:22). While busy, the whole list hangs off the busy
+// line through this connector: └ beside the first row, every later row
+// aligned under it by the flex-row split.
+const ATTACHED_LEAD = '  └  '
+
 export const TodoPanel = memo(function TodoPanel({
   collapsed,
   defaultCollapsed = false,
-  incomplete = false,
+  marginBottom = 0,
   onToggle,
   t,
-  todos
+  todos,
+  variant = 'standalone'
 }: {
   collapsed?: boolean
   defaultCollapsed?: boolean
-  incomplete?: boolean
+  marginBottom?: number
   onToggle?: () => void
   t: Theme
   todos: TodoItem[]
+  /** `standalone` (default): the original's isStandalone render — count
+   *  header + rows. Used idle and in the transcript archive. `attached`:
+   *  the busy-turn render (Spinner.tsx:275) — no header, rows hanging off
+   *  the busy line via the `  └  ` connector. */
+  variant?: 'attached' | 'standalone'
 }) {
   // Fallback local state for archived todos in transcript where there's no
   // external controller. Live TodoPanel passes collapsed+onToggle from the
@@ -55,7 +66,6 @@ export const TodoPanel = memo(function TodoPanel({
   const done = todos.filter(todo => todo.status === 'completed').length
   const inProgress = todos.filter(todo => todo.status === 'in_progress').length
   const open = todos.length - done - inProgress
-  const pending = countPendingTodos(todos)
 
   // Original standalone header: "N tasks (X done, Y in progress, Z open)".
   const headerCounts = [
@@ -72,8 +82,47 @@ export const TodoPanel = memo(function TodoPanel({
       ? ` … +${hidden.filter(todo => todo.status === 'in_progress').length} in progress, ${hidden.filter(todo => todo.status === 'pending').length} pending, ${hidden.filter(todo => todo.status === 'completed').length} completed`
       : ''
 
+  const rows = (
+    <>
+      {visible.map(todo => {
+        const isDone = todo.status === 'completed'
+        const isActive = todo.status === 'in_progress'
+        const isCancelled = todo.status === 'cancelled'
+
+        return (
+          <Text color={t.color.text} key={todo.id}>
+            <Text color={iconColor(t, todo.status)}>{todoGlyph(todo.status)} </Text>
+            <Text bold={isActive} dimColor={isDone || isCancelled} strikethrough={isDone || isCancelled}>
+              {todo.content}
+            </Text>
+          </Text>
+        )
+      })}
+      {hiddenSummary ? (
+        <Text color={t.color.muted} dim>
+          {hiddenSummary}
+        </Text>
+      ) : null}
+    </>
+  )
+
+  if (variant === 'attached') {
+    return (
+      <Box flexDirection="row" marginBottom={marginBottom}>
+        <Box flexShrink={0} width={ATTACHED_LEAD.length}>
+          <Text color={t.color.muted} dim>
+            {ATTACHED_LEAD}
+          </Text>
+        </Box>
+        <Box flexDirection="column" flexGrow={1}>
+          {rows}
+        </Box>
+      </Box>
+    )
+  }
+
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column" marginBottom={marginBottom}>
       <Box onClick={handleToggle}>
         <Text color={t.color.muted}>
           <Text color={t.color.accent}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>
@@ -81,36 +130,12 @@ export const TodoPanel = memo(function TodoPanel({
           <Text color={t.color.statusFg} dim>
             ({headerCounts})
           </Text>
-          {incomplete && pending > 0 && (
-            <Text color={t.color.muted} dim>
-              {' '}
-              · incomplete · {pending} still {pending === 1 ? 'pending' : 'pending/in_progress'}
-            </Text>
-          )}
         </Text>
       </Box>
 
       {!effectiveCollapsed && (
         <Box flexDirection="column" marginLeft={2}>
-          {visible.map(todo => {
-            const isDone = todo.status === 'completed'
-            const isActive = todo.status === 'in_progress'
-            const isCancelled = todo.status === 'cancelled'
-
-            return (
-              <Text color={t.color.text} key={todo.id}>
-                <Text color={iconColor(t, todo.status)}>{todoGlyph(todo.status)} </Text>
-                <Text bold={isActive} dimColor={isDone || isCancelled} strikethrough={isDone || isCancelled}>
-                  {todo.content}
-                </Text>
-              </Text>
-            )
-          })}
-          {hiddenSummary ? (
-            <Text color={t.color.muted} dim>
-              {hiddenSummary}
-            </Text>
-          ) : null}
+          {rows}
         </Box>
       )}
     </Box>

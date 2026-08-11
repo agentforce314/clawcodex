@@ -990,9 +990,74 @@ _ACTIONS_SECTION = (
     "measure twice, cut once."
 )
 
+# Module 5, the task-tool bullet — the one line in the system prompt that
+# tells the model to keep a checklist. Two variants, chosen per surface by
+# ``_task_tool_bullet``:
+#
+# INTERACTIVE (TUI / REPL): the reference's own wording
+# (getUsingYourToolsSection, typescript/src/constants/prompts.ts:264-270),
+# verbatim but for the tool name. The damped variant below was measured on
+# headless benchmark runs and its rationale — "a task list you are the only
+# reader of is overhead" — is FALSE interactively: the checklist renders as
+# the pinned HUD above the composer, and the user reads it. Damping it here
+# was the main reason interactive sessions almost never showed the panel.
+_TASK_TOOL_BULLET_INTERACTIVE = (
+    "- Break down and manage your work with the {name} tool. These tools "
+    "are helpful for planning your work and helping the user track your "
+    "progress. Mark each task as completed as soon as you are done with "
+    "the task. Do not batch up multiple tasks before marking them as "
+    "completed.\n"
+)
+
+# NON-INTERACTIVE (--print / SDK / eval harnesses): the damped wording, kept
+# exactly where it was measured. The port dropped the reference's skip
+# conditions, leaving an unconditional imperative; measured over 14 clawcodex
+# and 21 Claude Code trials on seven shared terminal-bench 2.1 tasks
+# (2026-07-26), steps per trial spent on task-tool bookkeeping: clawcodex
+# 0.21, Claude Code 0.00 — the reference never reaches for it on work this
+# size. Together with memory writes (0.43 vs 0.00) that is 27% of the
+# remaining step gap, spent on bookkeeping rather than the task.
+_TASK_TOOL_BULLET_NON_INTERACTIVE = (
+    "- Break down and manage multi-step work with the {name} tool. Skip "
+    "it when the work is a single straightforward task, or is trivial enough "
+    "that tracking it adds nothing — a task list you are the only reader of "
+    "is overhead, not progress.\n"
+)
+
+
+def _task_tool_bullet() -> str:
+    """The task-tool bullet for the current surface.
+
+    Two independent axes, resolved from the same process-global flags that
+    gate tool exposure so the prompt can never name a tool the session does
+    not have (previously headless sessions were told about ``TaskCreate``
+    while their toolkit only carried ``TodoWrite``):
+
+    * name — ``TaskCreate`` when TaskV2 is the active surface
+      (``is_todo_v2_enabled``: interactive, or ``CLAUDE_CODE_ENABLE_TASKS``),
+      else ``TodoWrite``. Mirrors the reference's pick-from-enabled-tools
+      (prompts.ts:264: ``[TASK_CREATE, TODO_WRITE].find(enabled)``).
+    * wording — imperative interactively, damped headless (see the two
+      constants above).
+    """
+    from src.bootstrap.state import get_is_non_interactive_session
+    from src.utils.task_flags import is_todo_v2_enabled
+
+    name = "TaskCreate" if is_todo_v2_enabled() else "TodoWrite"
+    template = (
+        _TASK_TOOL_BULLET_NON_INTERACTIVE
+        if get_is_non_interactive_session()
+        else _TASK_TOOL_BULLET_INTERACTIVE
+    )
+    # ``.replace`` like the section template below, and for the same reason:
+    # prose constants must not turn a future literal brace into a KeyError.
+    return template.replace("{name}", name)
+
+
 # Module 5: Tool usage guidelines
-# Mirrors TS getUsingYourToolsSection()
-_USING_TOOLS_SECTION = (
+# Mirrors TS getUsingYourToolsSection(). Holds a ``{task_tool_bullet}``
+# placeholder — ``_using_tools_section_text`` fills it per surface.
+_USING_TOOLS_SECTION_TEMPLATE = (
     "# Using your tools\n"
     "- Do NOT use the Bash to run commands when a relevant dedicated tool "
     "is provided. Using dedicated tools allows the user to better "
@@ -1037,17 +1102,7 @@ _USING_TOOLS_SECTION = (
     "  - Reserve Bash for system commands and terminal operations that "
     "require shell execution. If you are unsure and there is a relevant "
     "dedicated tool, default to using the dedicated tool.\n"
-    # The port dropped the reference's skip conditions, leaving an
-    # unconditional imperative. Measured over 14 clawcodex and 21 Claude Code
-    # trials on seven shared terminal-bench 2.1 tasks (2026-07-26), steps per
-    # trial spent on task-tool bookkeeping: clawcodex 0.21, Claude Code 0.00 —
-    # the reference never reaches for it on work this size. Together with
-    # memory writes (0.43 vs 0.00) that is 27% of the remaining step gap,
-    # spent on bookkeeping rather than the task.
-    "- Break down and manage multi-step work with the TaskCreate tool. Skip "
-    "it when the work is a single straightforward task, or is trivial enough "
-    "that tracking it adds nothing — a task list you are the only reader of "
-    "is overhead, not progress.\n"
+    "{task_tool_bullet}"
     # Two clauses were dropped in the port, and together they are what turns
     # a permission into a practice: the imperative to maximize, and the
     # dependency carve-out that tells the model when NOT to — without which
@@ -1167,8 +1222,16 @@ def _build_actions_section(use_cache: bool) -> SystemPromptSection | None:
 
 
 def _build_using_tools_section(use_cache: bool) -> SystemPromptSection | None:
-    """Module 5: Tool usage guidelines. Mirrors TS getUsingYourToolsSection()."""
-    return SystemPromptSection(id="using_tools", content=_USING_TOOLS_SECTION, cache_scope=CacheScope.GLOBAL, order=4)
+    """Module 5: Tool usage guidelines. Mirrors TS getUsingYourToolsSection().
+
+    Content varies only on process-lifetime flags (interactivity, the
+    TaskV2 env opt-in), so the GLOBAL cache scope stays coherent — the text
+    cannot change within a process.
+    """
+    # ``.replace`` not ``.format``: the section text is prose and a future
+    # edit adding a literal brace must not turn into a KeyError.
+    content = _USING_TOOLS_SECTION_TEMPLATE.replace("{task_tool_bullet}", _task_tool_bullet())
+    return SystemPromptSection(id="using_tools", content=content, cache_scope=CacheScope.GLOBAL, order=4)
 
 
 def _build_tone_style_section(use_cache: bool) -> SystemPromptSection | None:

@@ -58,7 +58,7 @@ describe('BusyLine', () => {
     expect(plain.trim()).toBe('')
   })
 
-  it('shows the in-progress todo activeForm as the verb and the pending todo as Next', () => {
+  it('shows the in-progress todo activeForm as the verb', () => {
     resetTurnState()
     patchTurnState({
       lastDeltaAt: Date.now(),
@@ -71,9 +71,27 @@ describe('BusyLine', () => {
     const plain = stripAnsi(busyRender(Date.now()))
 
     expect(plain).toContain('Extracting the loader…')
-    expect(plain).toContain('Next: Add unit tests')
+    // The full checklist hangs right below (LiveTodoPanel attached variant),
+    // so the one-line Next: hint would duplicate its first pending row.
+    expect(plain).not.toContain('Next:')
     // under 30s: no elapsed/token suffix
     expect(plain).not.toContain('tokens')
+  })
+
+  it('shows Next: only when the checklist is hidden (ctrl+t)', () => {
+    resetTurnState()
+    patchTurnState({
+      lastDeltaAt: Date.now(),
+      todoCollapsed: true,
+      todos: [
+        { activeForm: 'Extracting the loader', content: 'Extract loader', id: '1', status: 'in_progress' },
+        { content: 'Add unit tests', id: '2', status: 'pending' }
+      ]
+    })
+
+    const plain = stripAnsi(busyRender(Date.now()))
+
+    expect(plain).toContain('Next: Add unit tests')
   })
 
   it('adds the dim elapsed + ~token suffix only after 30s', () => {

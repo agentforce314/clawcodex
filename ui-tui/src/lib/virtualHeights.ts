@@ -108,11 +108,10 @@ export const estimatedMsgHeight = (
   }
 
   if (msg.kind === 'trail' && msg.todos?.length) {
-    if (msg.todoCollapsedByDefault) {
-      return 2
-    }
-
-    return Math.max(2, msg.todos.length + 2)
+    // Only DONE lists reach the transcript now (incomplete ones stay live in
+    // the HUD), and the archive always sets todoCollapsedByDefault — so an
+    // archived checklist estimates as its collapsed header row.
+    return 2
   }
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)

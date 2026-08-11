@@ -828,7 +828,7 @@ def run_headless(options: HeadlessOptions) -> int:
                             # on_message there is no SDK envelope to emit
                             # here, but keep the paths distinct anyway.
                             on_attachment=lambda m: session.conversation.add_message(
-                                m.role, m.content
+                                m.role, m.content, isMeta=getattr(m, "isMeta", False)
                             ),
                             # Critic C2: pass the OWNING controller so
                             # the provider's chat_stream_response listens

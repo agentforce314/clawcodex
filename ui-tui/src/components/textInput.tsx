@@ -1396,6 +1396,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') || // ctrl+o toggles expanded tool details
+  (key.ctrl && input === 't') || // ctrl+t toggles the task checklist
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

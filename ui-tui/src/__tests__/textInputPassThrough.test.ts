@@ -36,6 +36,12 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('b', key({ ctrl: true }))).toBe(true)
   })
 
+  it('passes ctrl+t through so the task-checklist toggle reaches the global handler', () => {
+    expect(shouldPassThroughToGlobalHandler('t', key({ ctrl: true }))).toBe(true)
+    // Plain "t" is typing, not the toggle.
+    expect(shouldPassThroughToGlobalHandler('t', key())).toBe(false)
+  })
+
   it('does not swallow ordinary typing keys', () => {
     expect(shouldPassThroughToGlobalHandler('h', key(), parseVoiceRecordKey('ctrl+o'))).toBe(false)
     expect(shouldPassThroughToGlobalHandler('o', key(), parseVoiceRecordKey('ctrl+o'))).toBe(false)

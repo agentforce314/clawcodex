@@ -65,14 +65,7 @@ export const MessageLine = memo(function MessageLine({
   const [systemOpen, setSystemOpen] = useState(false)
 
   if (msg.kind === 'trail' && msg.todos?.length) {
-    return (
-      <TodoPanel
-        defaultCollapsed={msg.todoCollapsedByDefault}
-        incomplete={msg.todoIncomplete}
-        t={t}
-        todos={msg.todos}
-      />
-    )
+    return <TodoPanel defaultCollapsed={msg.todoCollapsedByDefault} marginBottom={1} t={t} todos={msg.todos} />
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {

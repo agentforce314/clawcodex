@@ -51,14 +51,23 @@ export const archiveTodosAtTurnEnd = () => {
     return []
   }
 
-  const done = isTodoDone(state.todos)
+  // CC parity: an INCOMPLETE list is not archived — it stays live in the HUD
+  // across turns (the original's TaskListV2 renders from AppState.tasks in
+  // the idle REPL too, REPL.tsx:4934, until the work is finished). Archiving
+  // it here was the third reason the checklist "never seemed to be there":
+  // the moment a turn ended, the list left the pinned panel for a transcript
+  // block that scrolls away. startMessage()/reset() leave todos untouched,
+  // so the surviving list keeps updating on the next turn.
+  if (!isTodoDone(state.todos)) {
+    return []
+  }
 
   const msg: Msg = {
     kind: 'trail',
     role: 'system',
     text: '',
     todos: state.todos,
-    ...(done ? { todoCollapsedByDefault: true } : { todoIncomplete: true })
+    todoCollapsedByDefault: true
   }
 
   patchTurnState({ todoCollapsed: false, todos: [] })

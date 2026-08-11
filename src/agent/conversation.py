@@ -47,12 +47,20 @@ class Conversation:
         content: MessageContent,
         *,
         usage: dict[str, Any] | None = None,
+        isMeta: bool = False,
     ):
+        """``isMeta`` marks injected context (plan-mode / task-reminder
+        attachments), not a real prompt. Dropping it here was a real defect:
+        the persisted reminder came back ``isMeta=False``, so
+        ``_count_prompt_turns`` counted it as a user turn and ``/rewind``
+        treated it as a rewind boundary."""
         if len(self.messages) >= self.max_history:
             self.messages.pop(0)
 
         normalized_content = _normalize_message_content(content)
-        self.messages.append(create_message(role, normalized_content, usage=usage))
+        self.messages.append(
+            create_message(role, normalized_content, usage=usage, isMeta=isMeta)
+        )
 
     def add_user_message(self, content: MessageContent):
         # ``MessageContent = str | list[ContentBlock]``: ``add_message`` ->

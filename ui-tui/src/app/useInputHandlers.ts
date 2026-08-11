@@ -21,7 +21,7 @@ import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { patchTurnState } from './turnStore.js'
+import { getTurnState, patchTurnState, toggleTodoCollapsed } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
@@ -354,6 +354,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // through to the wheel / PageUp / Shift+arrow handlers below.
       const promptOverlay =
         overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.questions
+
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {
@@ -664,6 +665,20 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: false })
       actions.sys(`details: ${next}`)
+
+      return
+    }
+
+    // ctrl+t — the original's app:toggleTodos (defaultBindings.ts:43): show or
+    // hide the pinned task checklist.
+    if (key.ctrl && ch === 't') {
+      // Say something even with no list — a silent no-op reads as a dead key.
+      if (!getTurnState().todos.length) {
+        return actions.sys('tasks: none yet')
+      }
+
+      toggleTodoCollapsed()
+      actions.sys(`tasks: ${getTurnState().todoCollapsed ? 'hidden' : 'shown'}`)
 
       return
     }

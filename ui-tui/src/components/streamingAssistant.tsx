@@ -104,7 +104,27 @@ export const LiveTodoPanel = memo(function LiveTodoPanel() {
   const todos = useTurnSelector(state => state.todos)
   const collapsed = useTurnSelector(state => state.todoCollapsed)
 
-  return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
+  // Busy with the busy line right above (statusBar off is the only layout
+  // where it renders): hang the rows off it through the └ connector, the
+  // original's Spinner.tsx:275 mount. Hidden entirely when toggled off —
+  // the busy line's own "Next: …" row takes over, the original's
+  // expandedView='none' behavior.
+  if (ui.busy && ui.statusBar === 'off') {
+    if (collapsed) {
+      return null
+    }
+
+    return <TodoPanel t={ui.theme} todos={todos} variant="attached" />
+  }
+
+  // Idle (or busy under an opt-in status bar, which hides the busy line):
+  // the original's standalone render — count header + rows, collapsible.
+  // marginBottom keeps the last row off the composer border when the
+  // composer's own marginTop is 0 (statusBar='top'); the reference
+  // standalone carries its own margin too (TaskListV2.tsx:193).
+  return (
+    <TodoPanel collapsed={collapsed} marginBottom={1} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
+  )
 })
 
 interface StreamingAssistantProps {

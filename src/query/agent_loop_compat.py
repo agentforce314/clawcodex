@@ -653,6 +653,35 @@ async def run_query_as_agent_loop(
             logging.getLogger(__name__).debug("plan-mode attachment wiring failed",
                                               exc_info=True)
 
+    # Task-tool reminder (port of getTaskReminderAttachments,
+    # typescript/src/utils/attachments.ts:3714). Same real-user-turn gate and
+    # the same PERSISTED delivery as the plan block above — the throttle scans
+    # the transcript for the previous reminder, so it must survive into later
+    # turns' initial_messages.
+    if memory_recall_enabled:
+        try:
+            from src.context_system.plan_mode import wrap_in_system_reminder
+            from src.context_system.task_reminder import (
+                build_task_reminder_attachment,
+            )
+            from src.types.messages import create_user_message
+
+            reminder_texts = build_task_reminder_attachment(
+                messages_for_query,
+                tools=tool_registry.list_tools(),
+                tasks=getattr(tool_context, "tasks", None),
+            )
+            for text in reminder_texts:
+                reminder_msg = create_user_message(
+                    content=wrap_in_system_reminder(text), isMeta=True,
+                )
+                messages_for_query.append(reminder_msg)
+                if on_attachment is not None:
+                    on_attachment(reminder_msg)
+        except Exception:  # noqa: BLE001 — must never block a turn
+            logging.getLogger(__name__).debug("task-reminder wiring failed",
+                                              exc_info=True)
+
     params = QueryParams(
         messages=messages_for_query,
         system_prompt=system_prompt,

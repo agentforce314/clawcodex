@@ -35,20 +35,21 @@ describe('turnStore live progress helpers', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
-  it('archives incomplete todos with an incomplete flag so the hint renders', () => {
-    patchTurnState({
-      todos: [
-        { content: 'cook', id: 'cook', status: 'completed' },
-        { content: 'serve', id: 'serve', status: 'in_progress' },
-        { content: 'eat', id: 'eat', status: 'pending' }
-      ]
-    })
+  it('keeps an incomplete list live in the HUD instead of archiving it', () => {
+    // CC parity: the checklist persists across turns until the work is done
+    // (REPL.tsx:4934 renders TaskListV2 from AppState while idle). Archiving
+    // at every turn end was why the pinned panel vanished the moment a turn
+    // completed.
+    const todos = [
+      { content: 'cook', id: 'cook', status: 'completed' as const },
+      { content: 'serve', id: 'serve', status: 'in_progress' as const },
+      { content: 'eat', id: 'eat', status: 'pending' as const }
+    ]
 
-    const archived = archiveTodosAtTurnEnd()
-    expect(archived).toHaveLength(1)
-    expect(archived[0]!.todoIncomplete).toBe(true)
-    expect(archived[0]!.todos?.map(t => t.id)).toEqual(['cook', 'serve', 'eat'])
-    expect(getTurnState().todos).toEqual([])
+    patchTurnState({ todos })
+
+    expect(archiveTodosAtTurnEnd()).toEqual([])
+    expect(getTurnState().todos).toEqual(todos)
   })
 
   it('returns nothing when there are no todos at turn end', () => {

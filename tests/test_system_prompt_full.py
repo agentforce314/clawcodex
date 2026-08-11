@@ -13,7 +13,7 @@ from src.context_system.prompt_assembly import (
     _SYSTEM_SECTION,
     _DOING_TASKS_SECTION,
     _ACTIONS_SECTION,
-    _USING_TOOLS_SECTION,
+    _USING_TOOLS_SECTION_TEMPLATE,
     _TONE_STYLE_SECTION,
     _OUTPUT_EFFICIENCY_SECTION,
     _NON_INTERACTIVE_PROMPT,
@@ -353,24 +353,56 @@ class TestBuildFullSystemPrompt:
 
 
 class TestTaskToolGating:
+    """The task-tool bullet is per-surface (``_task_tool_bullet``).
+
+    Headless keeps the damped TB2.1-tuned wording — measured over 14
+    clawcodex and 21 Claude Code trials on seven shared terminal-bench 2.1
+    tasks (2026-07-26): task-tool steps per trial were 0.21 vs 0.00, 27% of
+    the remaining step gap spent on bookkeeping. Interactive restores the
+    reference's imperative (prompts.ts getUsingYourToolsSection): the damped
+    rationale — "a task list you are the only reader of" — is false there,
+    because the checklist renders as the pinned HUD the user watches.
+    """
+
     def setup_method(self):
         get_system_prompt_cache().invalidate_all()
 
-    def test_task_tool_carries_the_reference_skip_conditions(self):
-        """The port dropped them, leaving an unconditional imperative.
+    def teardown_method(self):
+        from src.bootstrap.state import set_is_interactive
 
-        Reference: "Skip using this tool when: There is only a single,
-        straightforward task; the task is trivial and tracking it provides no
-        organizational benefit."  clawcodex kept only "Break down and manage
-        your work with the TaskCreate tool."
+        set_is_interactive(False)
+        get_system_prompt_cache().invalidate_all()
 
-        Measured over 14 clawcodex and 21 Claude Code trials on seven shared
-        terminal-bench 2.1 tasks (2026-07-26): task-tool steps per trial were
-        0.21 for clawcodex and 0.00 for Claude Code — it never reaches for it
-        on work this size. With memory writes (0.43 vs 0.00) that is 27% of
-        the remaining step gap spent on bookkeeping.
-        """
+    def test_headless_keeps_the_damped_wording_and_its_own_tool_name(self):
         prompt = build_full_system_prompt(use_cache=False)
         assert "Break down and manage multi-step work" in prompt
-        assert "Skip it when" in prompt, "the skip condition is the whole fix"
+        assert "Skip it when" in prompt, "the skip condition is the measured fix"
         assert "trivial enough" in prompt
+        # Headless sessions expose TodoWrite, not TaskV2 — the bullet used to
+        # name TaskCreate, a tool those sessions do not have.
+        assert "TodoWrite tool" in prompt
+        assert "TaskCreate" not in prompt
+
+    def test_interactive_restores_the_reference_imperative(self):
+        from src.bootstrap.state import set_is_interactive
+
+        set_is_interactive(True)
+        prompt = build_full_system_prompt(use_cache=False)
+        assert "Break down and manage your work with the TaskCreate tool" in prompt
+        assert "helping the user track your progress" in prompt
+        assert "Mark each task as completed as soon as you are done" in prompt
+        assert "Skip it when" not in prompt
+
+    def test_env_opt_in_names_task_create_even_headless(self):
+        import os
+        from unittest import mock
+
+        # CLAUDE_CODE_ENABLE_TASKS flips the exposed toolset to TaskV2
+        # (task_flags.is_todo_v2_enabled) without making the session
+        # interactive — wording stays damped, the name follows the tool.
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENABLE_TASKS": "1"}):
+            prompt = build_full_system_prompt(use_cache=False)
+
+        assert "Break down and manage multi-step work" in prompt
+        assert "TaskCreate tool" in prompt
+        assert "TodoWrite" not in prompt
