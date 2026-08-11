@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 from .errors import ToolPermissionError
 from .task_manager import TaskManager
+from src.execution import default_execution_boundary
 from src.permissions.types import PermissionAskHandler, ToolPermissionContext
 from src.services.swarm.agent_name_registry import AgentNameRegistry
 from src.task_registry import RuntimeTaskRegistry
@@ -160,6 +161,7 @@ class ToolContext:
     output_style_dir: Path | None = None
     additional_working_directories: tuple[Path, ...] = ()
     allow_docs: bool = False
+    execution_boundary: Any = field(default_factory=default_execution_boundary)
 
     # C1 (components parity): request/reply protocol — the surface gets the
     # full PermissionAskRequest (tool_input → previews, suggestions →
@@ -344,6 +346,36 @@ class ToolContext:
             pass
         return tuple(roots)
 
+    def _permission_allows_workspace_escape(self) -> bool:
+        mode = self.permission_context.mode
+        return mode == "bypassPermissions" or (
+            mode == "plan"
+            and self.permission_context.is_bypass_permissions_mode_available
+        )
+
+    def _check_execution_workspace_boundary(
+        self,
+        path: Path,
+        *,
+        access: str,
+        allow_workspace_escape: bool = False,
+        roots: tuple[Path, ...] | None = None,
+    ) -> Path:
+        boundary = self.execution_boundary or default_execution_boundary()
+        allowed_roots = roots if roots is not None else self.allowed_roots()
+        decision = boundary.check_workspace_path(
+            path,
+            roots=allowed_roots,
+            access=access,
+            allow_workspace_escape=allow_workspace_escape,
+        )
+        if decision.allow:
+            return decision.path
+        roots_str = ", ".join(str(r) for r in allowed_roots)
+        raise ToolPermissionError(
+            f"{decision.reason}: {decision.path} (allowed: {roots_str})"
+        )
+
     def ensure_allowed_path(self, path: str | Path) -> Path:
         p = Path(path).expanduser() if isinstance(path, str) else path.expanduser()
         if not p.is_absolute():
@@ -357,15 +389,19 @@ class ToolContext:
         # or plan mode when the user started with bypass available,
         # short-circuits the working-directory allowlist so the tool can
         # operate outside ``workspace_root``.
-        mode = self.permission_context.mode
-        if mode == "bypassPermissions" or (
-            mode == "plan"
-            and self.permission_context.is_bypass_permissions_mode_available
-        ):
-            return p
+        if self._permission_allows_workspace_escape():
+            return self._check_execution_workspace_boundary(
+                p,
+                access="write",
+                allow_workspace_escape=True,
+            )
         roots = self.allowed_roots()
         if any(_is_within(p, root) for root in roots):
-            return p
+            return self._check_execution_workspace_boundary(
+                p,
+                access="write",
+                roots=roots,
+            )
         # The current session's plan files (~/.clawcodex/plans/{slug}*.md)
         # are writable even though they sit outside the working roots — TS's
         # checkEditableInternalPath exempts them BEFORE the working-dir gate
@@ -377,7 +413,14 @@ class ToolContext:
             from src.utils.plans import is_session_plan_file
 
             if is_session_plan_file(str(p)):
-                return p
+                return self._check_execution_workspace_boundary(
+                    p,
+                    access="write",
+                    allow_workspace_escape=True,
+                    roots=roots,
+                )
+        except ToolPermissionError:
+            raise
         except Exception:  # noqa: BLE001
             pass
         roots_str = ", ".join(str(r) for r in roots)
@@ -399,21 +442,30 @@ class ToolContext:
             p = (base / p).resolve()
         else:
             p = p.resolve()
-        mode = self.permission_context.mode
-        if mode == "bypassPermissions" or (
-            mode == "plan"
-            and self.permission_context.is_bypass_permissions_mode_available
-        ):
-            return p
+        if self._permission_allows_workspace_escape():
+            return self._check_execution_workspace_boundary(
+                p,
+                access="read",
+                allow_workspace_escape=True,
+            )
         roots = self.allowed_roots()
         if any(_is_within(p, root) for root in roots):
-            return p
+            return self._check_execution_workspace_boundary(
+                p,
+                access="read",
+                roots=roots,
+            )
         # Harness-internal readable paths (spilled tool results, scratchpad,
         # memory) are readable even though they sit outside the working roots.
         from src.permissions.filesystem import check_readable_internal_path
 
         if check_readable_internal_path(str(p), self):
-            return p
+            return self._check_execution_workspace_boundary(
+                p,
+                access="read",
+                allow_workspace_escape=True,
+                roots=roots,
+            )
         roots_str = ", ".join(str(r) for r in roots)
         raise ToolPermissionError(
             f"path is outside allowed working directories: {p} (allowed: {roots_str})"

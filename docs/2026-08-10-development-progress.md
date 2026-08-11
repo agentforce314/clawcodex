@@ -24,10 +24,10 @@
 | **Phase B 合计** | **进行中** | **68%** | B3/B4 主模块主体已完成；B1/B2 按最新优先级后置 |
 | C1. Permission profile | 完成 | 100% | 已引入 `parity` / `full-access` / `managed` profile 模型并接入权限启动解析 |
 | C2. Pre-trust gate | 完成 | 100% | 已统一 hook/MCP/project-config pre-trust 判定；未信任 workspace 不加载 project/local MCP runtime 配置 |
-| C3. ExecutionBoundary | 待开发 | 0% | 下一步主线 |
+| C3. ExecutionBoundary | 完成 | 100% | 已建立 ExecutionBoundary、WorkspaceGuard、EnvPolicy、ProcessPolicy 接口，并接入 ToolContext 路径二次校验 |
 | C4. SandboxBackend interface | 待开发 | 0% | 后续推进 |
 | C5. Network/secret policy | 待开发（后置） | 0% | 按最新优先级后置 |
-| **Phase C 合计** | **进行中** | **40%** | C1/C2 主体已完成，Exit Gate C 未达成 |
+| **Phase C 合计** | **进行中** | **60%** | C1/C2/C3 主体已完成，C4/C5 未完成，Exit Gate C 未达成 |
 
 ## 2. 输入文档读取记录
 
@@ -96,6 +96,7 @@
 | 2026-08-10 | `src/permissions/profiles.py`、`src/permissions/modes.py`、`src/permissions/__init__.py` | 完成 `C1. Permission profile`：引入 `parity` / `full-access` / `managed` profile 模型并接入启动解析 | `tests/test_permission_profiles.py`、`tests/test_permission_levels.py` 通过 |
 | 2026-08-10 | `src/permissions/pre_trust.py`、`src/hooks/trust_gate.py`、`src/services/mcp/config.py`、`src/permissions/__init__.py` | 完成 `C2. Pre-trust gate`：统一 pre-trust 判定，未信任 workspace 不加载 project/local MCP runtime 配置 | `tests/test_pre_trust_gate.py`、`tests/test_mcp_pre_trust.py`、`tests/test_trust_gate.py`、`tests/test_mcp_config.py` 通过 |
 | 2026-08-10 | `tests/test_permission_profiles.py`、`tests/test_pre_trust_gate.py`、`tests/test_mcp_pre_trust.py` | 新增 C1/C2 单元测试与 MCP runtime gate 回归 | 定向测试通过 |
+| 2026-08-11 | `src/execution/boundary.py`、`src/execution/__init__.py`、`src/tool_system/context.py`、`tests/test_execution_boundary.py` | 完成 `C3. ExecutionBoundary`：新增 WorkspaceGuard/EnvPolicy/ProcessPolicy 接口，ToolContext 读写路径进入执行边界二次校验 | C3 定向回归、相邻 Permission/Parity 回归、`py_compile` 与 `git diff --check` 通过 |
 
 ## 5. 测试与验收记录
 
@@ -222,7 +223,21 @@
 
 ### C3. ExecutionBoundary
 
-状态：待开发。
+状态：完成。
+
+已完成：
+
+- 新增 `src/execution/boundary.py` 与 `src/execution/__init__.py`，提供 `ExecutionBoundary` 聚合入口。
+- `ExecutionBoundary` 聚合 `WorkspaceGuard`、`EnvPolicy`、`ProcessPolicy`，先把执行边界抽象从权限解析层拆出来，为后续 C4/C5 接口化留出稳定接点。
+- `ToolContext.ensure_allowed_path()` 与 `ensure_readable_path()` 已通过 `execution_boundary.check_workspace_path(...)` 做读写路径二次校验。
+- 默认 `DefaultWorkspaceGuard` 保持现有 full-access / internal path 兼容行为；替换为严格 guard 时，即使当前 permission mode 允许 workspace escape，也可以在执行边界层阻断。
+- `EnvPolicy` 与 `ProcessPolicy` 先提供可替换 hook，不在本阶段实现 network/secret 规则，避免与 `C5. Network/secret policy` 混淆。
+
+验证记录：
+
+- `tests/test_execution_boundary.py tests/test_workflow_permission_fixes.py tests/test_read_permission_parity.py tests/parity/test_e2e_file_read.py tests/parity/test_e2e_edit_flow.py`：`75 passed`。
+- `src/execution/boundary.py src/execution/__init__.py src/tool_system/context.py`：`py_compile` 通过。
+- `git diff --check` 通过。
 
 ### C4. SandboxBackend interface
 
