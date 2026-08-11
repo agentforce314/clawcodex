@@ -1,10 +1,24 @@
+"""Query 继续状态与可变循环状态。
+
+终态定义位于 :mod:`src.query.terminal`；本模块保留旧导入出口以兼容现有
+调用方，但不再维护第二套 Terminal 枚举或映射。
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..types.messages import Message
 from ..tool_system.context import ToolContext
+from ..types.messages import Message
+from .terminal import (
+    EARLY_STOP_SUBTYPES,
+    PYTHON_ONLY_TERMINAL_REASONS,
+    Terminal,
+    TerminalHolder,
+    TerminalReason,
+    set_terminal,
+)
 
 
 ContinueReason = Literal[
@@ -19,127 +33,11 @@ ContinueReason = Literal[
 ]
 
 
-TerminalReason = Literal[
-    "blocking_limit",
-    "image_error",
-    "model_error",
-    "aborted_streaming",
-    "prompt_too_long",
-    "completed",
-    "stop_hook_prevented",
-    "aborted_tools",
-    "hook_stopped",
-    "max_turns",
-    "tool_failure_loop",
-    # PYTHON-ONLY (see PYTHON_ONLY_TERMINAL_REASONS below).
-    "empty_response",
-]
-
-#: Terminal reasons this port has that the TS reference does not.
-#:
-#: The parity test (tests/parity/test_query_state_parity.py) asserts the TS
-#: taxonomy is a SUBSET of ours rather than equal to it, and that every extra
-#: appears here. So an extension is allowed but must be declared — a reason
-#: that drifts in silently still fails, and one TS has that we dropped still
-#: fails.
-#:
-#: ``empty_response`` — an assistant turn with no tool calls, no text, and
-#: nothing in the outbox, after the continuation-nudge budget is spent. The
-#: nudge arm that detects it is itself Python-only (TS's continuation nudge
-#: gates on non-empty text, so it cannot see this case), which is why the
-#: terminal state for it has no TS counterpart either. Without it the run
-#: fell through to ``completed`` and every caller recorded a clean success
-#: with an empty answer.
-PYTHON_ONLY_TERMINAL_REASONS: frozenset[str] = frozenset({"empty_response"})
-
-
-# Terminal reasons where the AGENT LOOP ended the run rather than the model
-# finishing, mapped to the reference's result subtypes (QueryEngine.ts:891
-# ``error_max_turns``, :1142 ``error_during_execution``). Every one of these
-# used to be reported as ``subtype: "success", is_error: false`` by headless,
-# so a batch runner recorded a clean completion that merely scored zero.
-#
-# Lives here, beside the taxonomy it is keyed on, rather than in an
-# entrypoint: more than one surface has to agree on it (headless today, the
-# agent-server's turn outcome next), and importing an entrypoint for one dict
-# would invert the layering.
-#
-# Accounts for the WHOLE taxonomy above. Not mapped, deliberately:
-#   * ``completed``                     — the normal path;
-#   * ``aborted_streaming`` / ``aborted_tools`` / ``model_error`` — re-raised
-#     by agent_loop_compat, so they already reach exit 130 / 1 and the
-#     cancelled / error subtypes;
-#   * ``hook_stopped`` / ``stop_hook_prevented`` — a hook refusing to continue
-#     is the operator's own policy working as configured, not the harness
-#     cutting a run short. Neither can fire without an installed hook that
-#     emits those signals. Listed rather than omitted so the exclusion reads
-#     as a decision.
-#
-# ``blocking_limit`` and ``prompt_too_long`` are the worst of the set: their
-# explanation goes to ``last_api_error_text``, which agent_loop_compat only
-# surfaces as response_text for ``tool_failure_loop``, so those runs reported
-# success with an EMPTY result — a clean completion with no evidence at all.
-EARLY_STOP_SUBTYPES: dict[str, str] = {
-    "tool_failure_loop": "error_during_execution",
-    "empty_response": "error_during_execution",
-    "blocking_limit": "error_during_execution",
-    "prompt_too_long": "error_during_execution",
-    "image_error": "error_during_execution",
-    "max_turns": "error_max_turns",
-}
-
-
 @dataclass(frozen=True)
 class Transition:
     reason: ContinueReason
     attempt: int | None = None
     committed: int | None = None
-
-
-@dataclass(frozen=True)
-class Terminal:
-    reason: TerminalReason
-    error: Exception | None = None
-    turn_count: int | None = None
-
-
-class TerminalHolder:
-    """Mutable container an async generator appends its Terminal to
-    just before its bare ``return``. Callers read ``.value`` after
-    consuming the generator.
-
-    Required because Python's async generator protocol does not
-    expose the return value of a ``return`` statement, and Python
-    forbids ``return value`` inside ``async def`` generators
-    (SyntaxError on 3.10-3.14; PEP 828 still Draft).
-    """
-
-    __slots__ = ("value",)
-
-    def __init__(self) -> None:
-        self.value: Terminal | None = None
-
-
-def set_terminal(
-    holder: TerminalHolder,
-    flag: list[bool],
-    terminal: Terminal,
-) -> None:
-    """Set holder.value and mark the exit as natural.
-
-    Use at every ``return`` site inside the query loop's inner
-    generator. Call as the last action before ``return``.
-
-    The ``flag`` argument is a single-element list[bool] used as a
-    mutable container that the outer wrapper can inspect after
-    iteration to distinguish natural termination from
-    ``.aclose()`` / exception unwinds. Phase A introduces the helper
-    and the parameter; a future phase wires the outer wrapper that
-    reads the flag — until then ``flag`` is write-only and the
-    parameter is preserved for forward compatibility.
-    """
-    holder.value = terminal
-    flag[0] = True
 
 
 ToolUseContext = ToolContext
@@ -155,22 +53,23 @@ class QueryState:
     max_output_tokens_override: int | None = None
     stop_hook_active: bool | None = None
     turn_count: int = 1
-    # Promise from previous turn's Haiku summary, resolved during current streaming.
-    # Mirrors TS State.pendingToolUseSummary at query.ts:212. Currently unused in
-    # Python (tool-use summary is out-of-scope for ch5) but reserved so callers
-    # can plumb a future Haiku promise through state without a struct change.
+    # 上一轮异步生成的工具摘要；未来接线前保持状态槽稳定。
     pending_tool_use_summary: Any | None = None
-    # Count of consecutive continuation nudges within the current turn.
-    # Capped at MAX_CONTINUATION_NUDGES to prevent infinite nudge loops
-    # when the model keeps matching continuation signals without tool calls.
-    # Mirrors TS State.continuationNudgeCount at query.ts:218.
+    # 普通 continuation 与空响应 continuation 使用独立上限。
     continuation_nudge_count: int = 0
-    #: Separate budget for the EMPTY-turn nudge. Deliberately not shared with
-    #: ``continuation_nudge_count``: the two arms fire on different signals
-    #: (that one on "the model said it would act", this one on "the model said
-    #: nothing at all"), and sharing meant a few continuation nudges could
-    #: exhaust the budget before the first empty turn, so the empty turn was
-    #: never re-prompted and the run hard-failed without the one retry that
-    #: recovers it. Same cap.
     empty_turn_nudge_count: int = 0
     transition: Transition | None = None
+
+
+__all__ = [
+    "ContinueReason",
+    "EARLY_STOP_SUBTYPES",
+    "PYTHON_ONLY_TERMINAL_REASONS",
+    "QueryState",
+    "Terminal",
+    "TerminalHolder",
+    "TerminalReason",
+    "ToolUseContext",
+    "Transition",
+    "set_terminal",
+]

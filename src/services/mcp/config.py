@@ -619,8 +619,32 @@ def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[Valida
     # Lower-trust scopes merge in increasing-precedence order so closer-to-cwd
     # configs (local) override further-out ones (project / user).
     user_servers, user_errors = get_mcp_configs_by_scope("user")
-    project_servers, project_errors = get_mcp_configs_by_scope("project")
-    local_servers, local_errors = get_mcp_configs_by_scope("local")
+    from src.permissions.pre_trust import check_pre_trust_gate
+
+    project_gate = check_pre_trust_gate("mcp", source="project", cwd=_get_cwd())
+    local_gate = check_pre_trust_gate("mcp", source="local", cwd=_get_cwd())
+    if project_gate.allow:
+        project_servers, project_errors = get_mcp_configs_by_scope("project")
+    else:
+        project_servers, project_errors = {}, [
+            ValidationError(
+                path="mcpServers",
+                message=project_gate.reason,
+                severity="warning",
+                scope="project",
+            )
+        ]
+    if local_gate.allow:
+        local_servers, local_errors = get_mcp_configs_by_scope("local")
+    else:
+        local_servers, local_errors = {}, [
+            ValidationError(
+                path="mcpServers",
+                message=local_gate.reason,
+                severity="warning",
+                scope="local",
+            )
+        ]
 
     # C7: .mcp.json-derived servers (project/local scope) are untrusted
     # until approved — a checked-out repo must not launch arbitrary MCP

@@ -1,7 +1,8 @@
 from .config import FrozenQueryConfig, QueryConfig, build_query_config
 from .engine import QueryEngine, QueryEngineConfig
 from .query import QueryParams, StreamEvent, query
-from .transitions import QueryState, Terminal, Transition
+from .terminal import Terminal
+from .transitions import QueryState, Transition
 
 __all__ = [
     "QueryConfig",

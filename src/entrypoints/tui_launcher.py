@@ -15,6 +15,7 @@ Usage::
     clawcodex tui [--provider P] [--model M] [--permission-mode MODE]
                   [--dangerously-skip-permissions]
                   [--allow-dangerously-skip-permissions]
+                  [--max-turns N]
                   [--workspace DIR] [--worktree [NAME]] [--tui-dir DIR]
                   [--print-connect]
 
@@ -76,6 +77,10 @@ def run_tui_launcher(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
+    parser.add_argument(
+        "--max-turns", type=int, default=None, dest="max_turns",
+        help="Maximum agent tool turns for this launch",
+    )
     parser.add_argument(
         "-w", "--worktree",
         nargs="?", const=True, default=None, metavar="NAME",
@@ -164,6 +169,7 @@ def run_tui_launcher(argv: list[str]) -> int:
         provider=args.provider,
         model=args.model,
         effort=args.effort,
+        max_turns=args.max_turns,
         permission_mode=mode,
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
@@ -178,6 +184,7 @@ def launch_ink_tui(
     provider: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    max_turns: int | None = None,
     permission_mode: str = "default",
     is_bypass_available: bool = False,
     bypass_selectable: bool = False,
@@ -209,6 +216,7 @@ def launch_ink_tui(
         provider=provider,
         model=model,
         effort=effort,
+        max_turns=max_turns,
         permission_mode=permission_mode,
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
@@ -287,6 +295,8 @@ def _agent_server_cmd(args) -> list[str]:
         cmd += ["--model", args.model]
     if getattr(args, "effort", None):
         cmd += ["--effort", args.effort]
+    if getattr(args, "max_turns", None) is not None:
+        cmd += ["--max-turns", str(args.max_turns)]
     return cmd
 
 
@@ -347,6 +357,8 @@ def _print_connect(args) -> int:
         *(["--provider", args.provider] if args.provider else []),
         *(["--model", args.model] if args.model else []),
         *(["--effort", args.effort] if getattr(args, "effort", None) else []),
+        *(["--max-turns", str(args.max_turns)]
+          if getattr(args, "max_turns", None) is not None else []),
         "--workspace", workspace,
     ])
 

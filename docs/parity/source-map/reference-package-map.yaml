@@ -1,0 +1,22 @@
+schema_version: 1
+reference_target: claude-code-2.1.88
+clauderuntime_baseline: 241d704480c0e4aa1bfb97c607a5e2e13e871e46
+packages:
+  - id: PKG-QUERY-001
+    reference:
+      path: src/query.ts
+      evidence: CONFIRMED
+    clauderuntime:
+      paths:
+        - src/query/query.py
+        - src/query/model_call.py
+        - src/query/terminal.py
+        - src/query/budget.py
+        - src/query/transitions.py
+        - src/query/tool_round.py
+        - src/query/recovery.py
+    status: SEMANTIC_EQUIVALENT
+    notes:
+      - B3. Query refactor I 已提取模型调用、终态和预算职责。
+      - B4. Query refactor II 已提取工具轮和恢复判定职责。
+      - query.py 仍是唯一 canonical Query 控制流入口。

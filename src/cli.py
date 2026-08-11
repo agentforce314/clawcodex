@@ -236,6 +236,7 @@ def main():
         # --effort applies interactively too: forwarded to the agent-server
         # child, which seeds the session's /effort level from it.
         effort=args.effort,
+        max_turns=args.max_turns,
         permission_mode=args._resolved_permission_mode,
         is_bypass_available=args._resolved_is_bypass_available,
         bypass_selectable=args._resolved_bypass_selectable,
@@ -461,8 +462,8 @@ Examples:
     noninteractive.add_argument(
         '--max-turns',
         type=int,
-        default=50,
-        help='Maximum number of agent tool turns (default: 50)',
+        default=None,
+        help='Maximum number of agent tool turns (default: settings.max_turns, then 50)',
     )
     noninteractive.add_argument(
         '--model',

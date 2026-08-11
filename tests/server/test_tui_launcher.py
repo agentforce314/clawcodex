@@ -74,6 +74,18 @@ def test_agent_server_cmd_forwards_effort():
     assert "--effort" not in _agent_server_cmd(_NoEffort())
 
 
+def test_agent_server_cmd_forwards_max_turns():
+    class _Args:
+        permission_mode = "default"
+        provider = None
+        model = None
+        effort = None
+        max_turns = 7
+
+    cmd = _agent_server_cmd(_Args())
+    assert cmd[cmd.index("--max-turns") + 1] == "7"
+
+
 def test_agent_server_cmd_forwards_bypass_selectable():
     """``--allow-select-bypass`` is what makes `/permissions full` work.
 

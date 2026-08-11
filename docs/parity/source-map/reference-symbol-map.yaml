@@ -1,0 +1,60 @@
+schema_version: 1
+reference_target: claude-code-2.1.88
+symbols:
+  - id: SYM-QUERY-001
+    reference:
+      path: src/query.ts
+      symbol: query
+      evidence: CONFIRMED
+    clauderuntime:
+      path: src/query/query.py
+      symbol: query
+    status: SEMANTIC_EQUIVALENT
+    criticality: P0
+    runtime_paths: [RP-01, RP-02, RP-03, RP-04, RP-10, RP-11]
+  - id: SYM-QUERY-TERMINAL-001
+    reference:
+      path: src/query.ts
+      symbol: terminal reasons
+      evidence: CONFIRMED
+    clauderuntime:
+      path: src/query/terminal.py
+      symbol: TerminalReason
+    status: PARTIAL
+    criticality: P1
+    notes:
+      - Python 额外终态由 PYTHON_ONLY_TERMINAL_REASONS 显式登记。
+  - id: SYM-QUERY-MODEL-001
+    reference:
+      path: src/query.ts
+      symbol: model call boundary
+      evidence: CONFIRMED
+    clauderuntime:
+      path: src/query/model_call.py
+      symbol: invoke_provider
+    status: SEMANTIC_EQUIVALENT
+    criticality: P1
+    notes:
+      - 请求组装与 provider streaming/chat 调用均由 model_call.py 承担。
+  - id: SYM-QUERY-TOOL-ROUND-001
+    reference:
+      path: src/query.ts
+      symbol: tool round
+      evidence: CONFIRMED
+    clauderuntime:
+      path: src/query/tool_round.py
+      symbol: execute_tool_round
+    status: SEMANTIC_EQUIVALENT
+    criticality: P1
+    runtime_paths: [RP-02, RP-03, RP-04]
+  - id: SYM-QUERY-RECOVERY-001
+    reference:
+      path: src/query.ts
+      symbol: recovery predicates
+      evidence: CONFIRMED
+    clauderuntime:
+      path: src/query/recovery.py
+      symbol: is_withheld_error
+    status: SEMANTIC_EQUIVALENT
+    criticality: P1
+    runtime_paths: [RP-06, RP-11]

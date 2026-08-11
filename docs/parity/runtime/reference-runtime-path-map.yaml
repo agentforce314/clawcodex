@@ -1,0 +1,38 @@
+schema_version: 1
+reference_target: claude-code-2.1.88
+runtime_paths:
+  - id: RP-01
+    name: Plain Answer
+    status: PARTIAL
+    python_entry:
+      path: src/query/query.py
+      symbol: query
+    extracted_boundaries:
+      model_transport: src/query/model_call.py::invoke_provider
+      terminal: src/query/terminal.py::Terminal
+      budget: src/query/budget.py::BudgetGuard
+    invariants:
+      - query.py 保持唯一主循环。
+      - 职责提取不改变 model/tool/terminal 事件顺序。
+      - 每次运行只写入一个 durable terminal reason。
+    tests:
+      - tests/test_query_loop.py
+      - tests/test_query_terminal.py
+      - tests/parity/test_query_state_parity.py
+  - id: RP-02
+    name: File Read
+    status: PARTIAL
+    python_entry:
+      path: src/query/query.py
+      symbol: query
+    extracted_boundaries:
+      tool_round: src/query/tool_round.py::execute_tool_round
+      recovery: src/query/recovery.py::is_withheld_error
+    invariants:
+      - 工具消息按 orchestrator 原始顺序流式产出。
+      - AttachmentMessage 不进入下一轮 raw user tool results。
+      - 派生 ToolContext 必须重新附加 active provider。
+    tests:
+      - tests/test_query_loop.py
+      - tests/test_query_hook_stopped.py
+      - tests/test_ch07_concurrency_round4.py

@@ -1,0 +1,26 @@
+schema_version: 1
+reference_target: claude-code-2.1.88
+auxiliary_mechanisms:
+  - id: AUX-02
+    name: Tool Execution Loop
+    primary_component: Agent Loop
+    secondary_component: Tools
+    status: SEMANTIC_EQUIVALENT
+    python:
+      path: src/query/tool_round.py
+      symbol: execute_tool_round
+    tests:
+      - tests/test_query_loop.py
+      - tests/test_ch07_concurrency_round4.py
+  - id: AUX-05
+    name: Compaction Loop
+    primary_component: Agent Loop
+    secondary_component: State & Persistence
+    status: PARTIAL
+    python:
+      path: src/query/recovery.py
+      symbol: is_withheld_prompt_too_long
+    notes:
+      - 恢复判定已提取；完整 compaction lifecycle 仍由后续专项验证。
+    tests:
+      - tests/test_query_error_recovery.py

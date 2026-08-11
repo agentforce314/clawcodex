@@ -98,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-dangerously-skip-permissions", action="store_true",
                         dest="allow_dangerously_skip_permissions",
                         help="Make bypassPermissions available without starting in it.")
-    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS,
+    parser.add_argument("--max-turns", type=int, default=None,
                         dest="max_turns")
     parser.add_argument(
         "--exit-on-parent", action="store_true", dest="exit_on_parent",
@@ -191,6 +191,10 @@ def run_serve_subcommand(argv: list[str]) -> int:
     if not token:
         token = secrets.token_urlsafe(32)
 
+    from src.query.budget import resolve_max_turns
+    from src.settings import get_settings
+
+    budget_settings = get_settings()
     agent_config = AgentServerConfig(
         provider_name=args.provider,
         model=args.model,
@@ -199,7 +203,11 @@ def run_serve_subcommand(argv: list[str]) -> int:
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
-        max_turns=args.max_turns,
+        max_turns=resolve_max_turns(
+            args.max_turns, int(budget_settings.max_turns),
+            default=DEFAULT_MAX_TURNS,
+        ),
+        max_cost_usd=float(budget_settings.max_cost_usd or 0.0),
     )
 
     try:

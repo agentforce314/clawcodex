@@ -34,4 +34,11 @@ def should_skip_hook_due_to_trust(tool_use_context: Any) -> bool:
     let policy-source hooks through; the per-hook policy check happens at the
     caller, not here, because policy-source identification is per-``HookConfig``.
     """
-    return not getattr(tool_use_context, "workspace_trusted", False)
+    from src.permissions.pre_trust import check_pre_trust_gate
+
+    decision = check_pre_trust_gate(
+        "hook",
+        source="project",
+        workspace_trusted=getattr(tool_use_context, "workspace_trusted", False),
+    )
+    return not decision.allow

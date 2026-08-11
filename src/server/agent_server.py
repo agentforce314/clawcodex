@@ -132,6 +132,7 @@ class AgentServerConfig:
     # multi-tenant --http note in _build_runtime).
     bypass_selectable: bool = False
     max_turns: int = DEFAULT_MAX_TURNS
+    max_cost_usd: float = 0.0
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     permission_timeout_s: float = DEFAULT_PERMISSION_TIMEOUT_S
@@ -4843,6 +4844,7 @@ class _AgentSession:
                 tool_context=self.tool_context,
                 system_prompt=self.system_prompt,
                 max_turns=self.config.max_turns,
+                max_cost_usd=self.config.max_cost_usd,
                 on_text_chunk=on_text_chunk,
                 on_thinking_chunk=on_thinking_chunk,
                 on_message=on_message,

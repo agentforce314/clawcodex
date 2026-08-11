@@ -61,7 +61,7 @@ from src.query.agent_loop_compat import (
 )
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
-from src.query.transitions import EARLY_STOP_SUBTYPES
+from src.query.terminal import EARLY_STOP_SUBTYPES
 from src.utils.abort_controller import AbortController, AbortError
 
 
@@ -138,6 +138,23 @@ OUTPUT_FORMATS = ("text", "json", "stream-json")
 INPUT_FORMATS = ("text", "stream-json")
 
 
+def _resolve_headless_max_turns(explicit: int | None) -> int:
+    from src.query.budget import resolve_max_turns
+    from src.settings import get_settings
+
+    return resolve_max_turns(
+        explicit, int(get_settings().max_turns), default=50,
+    )
+
+
+def _resolve_headless_max_cost(explicit: float | None) -> float:
+    if explicit is not None:
+        return explicit
+    from src.settings import get_settings
+
+    return float(get_settings().max_cost_usd or 0.0)
+
+
 @dataclass
 class HeadlessOptions:
     """Options accepted by :func:`run_headless`.
@@ -161,7 +178,8 @@ class HeadlessOptions:
     # by ``resolve_thinking_effort`` (which also degrades xhigh to high on
     # models that reject it). Main-loop scope; subagents follow settings.
     effort: str | None = None
-    max_turns: int = 50
+    max_turns: int | None = None
+    max_cost_usd: float | None = None
     # ``skip_permissions`` is a backward-compat alias for the boolean form
     # of ``--dangerously-skip-permissions``. ``permission_mode`` and
     # ``is_bypass_permissions_mode_available`` were added in round 5 to
@@ -809,7 +827,8 @@ def run_headless(options: HeadlessOptions) -> int:
                             tool_registry=coordinator_main_loop_registry(tool_registry),
                             tool_context=tool_context,
                             system_prompt=effective_system_prompt,
-                            max_turns=options.max_turns,
+                            max_turns=_resolve_headless_max_turns(options.max_turns),
+                            max_cost_usd=_resolve_headless_max_cost(options.max_cost_usd),
                             fallback_model=options.fallback_model,
                             thinking_effort=options.effort,
                             # ch05 round-4 GAP A — the production pipeline:

@@ -41,7 +41,7 @@ from ..types.messages import (
 from ..utils.abort_controller import AbortController, AbortError, AbortSignal
 
 from .query import QueryParams, StreamEvent, query
-from .transitions import Terminal, TerminalHolder
+from .terminal import Terminal, TerminalHolder
 
 
 # Renderer types are now canonically in ``src.tool_system.renderers``
@@ -94,6 +94,7 @@ def run_query_as_agent_loop_sync(
     tool_registry: ToolRegistry,
     tool_context: ToolContext,
     max_turns: int = 20,
+    max_cost_usd: float | None = None,
     stream: bool = True,  # kept for signature compat; adapter always streams
     verbose: bool = False,  # kept for signature compat; ignored
     on_event: ToolEventHandler | None = None,
@@ -156,6 +157,7 @@ def run_query_as_agent_loop_sync(
         tool_context=tool_context,
         system_prompt=effective_system_prompt,
         max_turns=max_turns,
+        max_cost_usd=max_cost_usd,
         on_event=on_event,
         on_text_chunk=on_text_chunk,
         on_thinking_chunk=on_thinking_chunk,
@@ -464,6 +466,7 @@ async def run_query_as_agent_loop(
     tool_context: ToolContext,
     system_prompt: str | list[dict[str, Any]] = "You are a helpful assistant.",
     max_turns: int = 20,
+    max_cost_usd: float | None = None,
     on_event: ToolEventHandler | None = None,
     on_text_chunk: TextChunkHandler | None = None,
     on_thinking_chunk: TextChunkHandler | None = None,
@@ -662,6 +665,7 @@ async def run_query_as_agent_loop(
         provider=provider,
         abort_controller=abort_controller,
         max_turns=max_turns,
+        max_cost_usd=max_cost_usd,
         # ch04 round-4 GAP B — capacity-relief model switch after repeated
         # 529s (see QueryParams.fallback_model).
         fallback_model=fallback_model,

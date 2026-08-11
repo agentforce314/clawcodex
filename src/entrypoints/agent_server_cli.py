@@ -168,7 +168,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
-    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, dest="max_turns")
+    parser.add_argument("--max-turns", type=int, default=None, dest="max_turns")
     parser.add_argument(
         "--exit-on-parent", action="store_true", dest="exit_on_parent",
         help="Exit when stdin reaches EOF — used when a parent TUI spawns this "
@@ -264,6 +264,10 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         print("agent-server: --fallback-model must differ from --model",
               file=sys.stderr)
         return 2
+    from src.query.budget import resolve_max_turns
+    from src.settings import get_settings
+
+    budget_settings = get_settings()
     agent_config = AgentServerConfig(
         provider_name=args.provider,
         model=args.model,
@@ -272,7 +276,11 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         permission_mode=args.permission_mode,
         is_bypass_available=is_bypass_available,
         bypass_selectable=bypass_selectable,
-        max_turns=args.max_turns,
+        max_turns=resolve_max_turns(
+            args.max_turns, int(budget_settings.max_turns),
+            default=DEFAULT_MAX_TURNS,
+        ),
+        max_cost_usd=float(budget_settings.max_cost_usd or 0.0),
     )
 
     if args.stdio:

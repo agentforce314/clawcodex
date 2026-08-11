@@ -394,6 +394,7 @@ def resolve_interactive_permission_state(
     allow_dangerously_skip_permissions: bool,
     cwd: str | None = None,
     implicit_full_access: bool = True,
+    permission_profile: str | None = None,
 ) -> tuple[PermissionMode, bool, bool]:
     """Resolve ``(mode, is_bypass_available, bypass_selectable)`` for a launch.
 
@@ -420,7 +421,16 @@ def resolve_interactive_permission_state(
         launch unless locked down or elevated. Selecting Full Access sets the
         MODE only and never flips the engine flag, so a later ``/plan`` still asks.
     """
+    from .profiles import resolve_permission_profile
+
+    profile = resolve_permission_profile(
+        permission_profile, implicit_full_access=implicit_full_access,
+    )
+    implicit_full_access = profile.implicit_full_access
+
     disabled = is_bypass_permissions_mode_disabled()
+    if profile.name == "managed":
+        disabled = True
     elevated = is_elevated_without_sandbox()
 
     # `--allow-dangerously-skip-permissions` means, in its own words, "make

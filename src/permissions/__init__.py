@@ -30,6 +30,17 @@ from .modes import (
     permission_mode_title,
     to_external_permission_mode,
 )
+from .profiles import (
+    PERMISSION_PROFILES,
+    PermissionProfile,
+    PermissionProfileName,
+    permission_profile_from_string,
+    resolve_permission_profile,
+)
+from .pre_trust import (
+    PreTrustDecision,
+    check_pre_trust_gate,
+)
 from .rule_parser import (
     escape_rule_content,
     permission_rule_value_from_string,
@@ -109,6 +120,7 @@ __all__ = [
     "EXTERNAL_PERMISSION_MODES",
     "PERMISSION_MODES",
     "PERMISSION_RULE_SOURCES",
+    "PERMISSION_PROFILES",
     "PERSISTABLE_DESTINATIONS",
     "AdditionalWorkingDirectory",
     "AsyncAgentDecisionReason",
@@ -127,6 +139,9 @@ __all__ = [
     "PermissionDecisionReason",
     "PermissionDenyDecision",
     "PermissionMode",
+    "PermissionProfile",
+    "PermissionProfileName",
+    "PreTrustDecision",
     "PermissionPassthroughResult",
     "PermissionPromptToolDecisionReason",
     "PermissionResult",
@@ -155,6 +170,7 @@ __all__ = [
     "check_path_safety_for_auto_edit",
     "check_read_permission_for_path",
     "check_rule_based_permissions",
+    "check_pre_trust_gate",
     "check_write_permission_for_path",
     "create_permission_request_message",
     "create_read_rule_suggestion",
@@ -181,10 +197,12 @@ __all__ = [
     "permission_mode_short_title",
     "permission_mode_symbol",
     "permission_mode_title",
+    "permission_profile_from_string",
     "permission_rule_value_from_string",
     "permission_rule_value_to_string",
     "persist_permission_update",
     "persist_permission_updates",
+    "resolve_permission_profile",
     "settings_to_rules",
     "supports_persistence",
     "to_external_permission_mode",
