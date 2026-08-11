@@ -934,7 +934,11 @@ class TurnController {
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    const line = this.completeTool(toolId, fallbackName, error, '', duration, resultText, resultText)
+
+    // The diff itself replaces the ordinary result row, but ctrl+o must still
+    // expose the gateway's retained Args/Result blocks when they exist.
+    this.pushInlineDiffSegment(diffText, [this.lastVerboseLine || line])
     this.publishToolState()
   }
 

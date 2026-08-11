@@ -523,7 +523,7 @@ describe('createGatewayEventHandler', () => {
         kind: 'diff',
         role: 'assistant',
         text: block,
-        tools: [expect.stringMatching(/^Patch\("foo\.ts"\)(?: \([^)]+\))? ✓$/)]
+        tools: [expect.stringMatching(/^Patch\(foo\.ts\)(?: \([^)]+\))? ✓$/)]
       }
     ])
 

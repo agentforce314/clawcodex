@@ -179,7 +179,10 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
 }
 
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
-  const horizontalReserve = termuxMode ? 2 : 4
+  // The transcript owns three non-content columns outside the role gutter.
+  // Keeping this exact matters for user rows: a compound prompt must reduce
+  // the body width instead of being hidden by the 20-column floor.
+  const horizontalReserve = termuxMode ? 2 : 3
   const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
   if (termuxMode) {

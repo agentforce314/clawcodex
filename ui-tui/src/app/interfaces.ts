@@ -1,13 +1,13 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@clawcodex/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
+import type { QuestionAnswers } from '../components/questionPrompt.js'
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { SessionStats } from '../lib/sessionStats.js'
-import type { QuestionAnswers } from '../components/questionPrompt.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -57,8 +57,9 @@ export interface Notice {
 // validation + usage hint) both import it.
 export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'star', 'unicode'] as const
 export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
-// 'star' = Claude Code's breathing ✻ spinner; the default look.
-export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'star'
+// Keep the established TUI default; users can opt into Claude Code's
+// breathing `star` indicator explicitly via display.tui_status_indicator.
+export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
 
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void

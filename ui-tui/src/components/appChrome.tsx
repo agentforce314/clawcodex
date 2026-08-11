@@ -269,6 +269,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
@@ -284,7 +285,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cost: w >= 96
   }
 }
 
