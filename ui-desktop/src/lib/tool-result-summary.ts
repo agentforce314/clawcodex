@@ -51,7 +51,63 @@ function tryJson(value: string): unknown {
   }
 }
 
-const norm = (v: unknown): unknown => (typeof v === 'string' ? tryJson(v) : v)
+// TaskOutput is the one tool whose result is not JSON: it serializes to the
+// original Claude Code's `<tag>value</tag>` part list (tasks_v2.py
+// `_task_output_map_result_to_api`, ported from
+// typescript/src/tools/TaskOutputTool/TaskOutputTool.tsx). Left alone it hits
+// the plain-string path and the whole tag soup lands on the card, so decode it
+// back into the record shape the summarizer below already knows how to render.
+//
+// Anchored at the head, and only these two tags can appear there — a tool
+// result that merely *contains* markup (a fetched HTML page, an XML file read)
+// never matches, and a non-match falls through untouched.
+const TASK_OUTPUT_LEAD_TAG = /^<(?:retrieval_status|stuck_task_hint)>/
+// `output` is deliberately absent: it is in WRAPPER_KEYS, so skipField drops it
+// before any renderer sees it. Capturing it anyway would copy and trim up to
+// 200KB of log per call, unmemoized, in a render path — for a value that is
+// never displayed.
+const TASK_FIELDS = ['task_id', 'task_type', 'status', 'description', 'exit_code', 'error'] as const
+
+function tryTaggedTaskOutput(value: string): unknown {
+  const text = value.trim()
+
+  if (!TASK_OUTPUT_LEAD_TAG.test(text)) {
+    return tryJson(value)
+  }
+
+  const read = (tag: string): string | undefined =>
+    new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text)?.[1]
+
+  const task: Json = {}
+
+  for (const field of TASK_FIELDS) {
+    const raw = read(field)
+
+    if (raw !== undefined) {
+      task[field] = raw.trim()
+    }
+  }
+
+  // Key order is the render order (formatRecordSummary walks Object.keys), and
+  // the backend puts stuck_task_hint first for the same reason it leads the
+  // tag list — it is the one line the poll guard exists to surface. Building
+  // it after retrieval_status would quietly demote it.
+  const out: Json = {}
+  const hint = read('stuck_task_hint')
+
+  if (hint !== undefined) {
+    out.stuck_task_hint = hint.trim()
+  }
+
+  out.retrieval_status = read('retrieval_status') ?? ''
+
+  // No task fields at all is the `task: null` result (unknown / evicted id).
+  out.task = Object.keys(task).length > 0 ? task : null
+
+  return out
+}
+
+const norm = (v: unknown): unknown => (typeof v === 'string' ? tryTaggedTaskOutput(v) : v)
 
 const titleCase = (k: string) =>
   k

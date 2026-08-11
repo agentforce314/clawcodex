@@ -64,6 +64,73 @@ describe('formatToolResultSummary', () => {
     expect(summary).toContain('- Title: Build report')
     expect(summary).toContain('- Completed: true')
   })
+
+  // TaskOutput is the one tool whose result is not JSON — it serializes to the
+  // original's `<tag>value</tag>` part list. Before this was decoded, the whole
+  // tag soup (including the full captured log) landed on the card.
+  describe('TaskOutput tagged results', () => {
+    const BUILD_LOG = 'EXIT=1\n#7 [internal] load build context\n#9 ERROR: exit code: 127'
+
+    const tagged = [
+      '<retrieval_status>success</retrieval_status>',
+      '',
+      '<task_id>baa0sty3d</task_id>',
+      '',
+      '<task_type>bash_background</task_type>',
+      '',
+      '<status>completed</status>',
+      '',
+      '<description>Build the sandbox image with CA support</description>',
+      '',
+      '<exit_code>0</exit_code>',
+      '',
+      `<output>\n${BUILD_LOG}\n</output>`
+    ].join('\n')
+
+    it('renders the same key-value lines the pre-tagged JSON did', () => {
+      const summary = formatToolResultSummary(tagged)
+
+      expect(summary).toContain('- Retrieval Status: success')
+      expect(summary).toContain('Status: completed')
+      expect(summary).toContain('Description: Build the sandbox image with CA support')
+      expect(summary).not.toContain('<output>')
+      expect(summary).not.toContain('</retrieval_status>')
+    })
+
+    it('keeps the stuck-task hint on the first line', () => {
+      // The backend puts it first in both serializations for the same reason:
+      // it is the one line the poll guard exists to surface. Building the
+      // record with retrieval_status first quietly demoted it, because
+      // formatRecordSummary renders in key order.
+      const withHint = `<stuck_task_hint>[stuck-task guard] stop polling</stuck_task_hint>\n\n${tagged}`
+      const summary = formatToolResultSummary(withHint)
+
+      expect(summary.split('\n')[0]).toContain('Stuck Task Hint')
+    })
+
+    it('never renders the captured log on the card', () => {
+      const noisy = tagged.replace(BUILD_LOG, `${'a'.repeat(300)}\nSECRETLINE\n${'b'.repeat(300)}`)
+
+      expect(formatToolResultSummary(noisy)).not.toContain('SECRETLINE')
+    })
+
+    it('handles the task: null result', () => {
+      expect(formatToolResultSummary('<retrieval_status>success</retrieval_status>')).toContain(
+        '- Retrieval Status: success'
+      )
+    })
+
+    it('leaves markup that is not a TaskOutput result alone', () => {
+      // A fetched page or an XML file read must not be mistaken for tag parts.
+      const html = '<html><body><p>hello</p></body></html>'
+
+      expect(formatToolResultSummary(html)).toContain('hello')
+
+      const xml = '<retrieval_status_like>not ours</retrieval_status_like>'
+
+      expect(formatToolResultSummary(xml)).toContain('not ours')
+    })
+  })
 })
 
 describe('extractToolErrorMessage', () => {

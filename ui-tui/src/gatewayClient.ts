@@ -403,6 +403,246 @@ function pendingQuestionsSummary(result: string): string {
   return result
 }
 
+/** Bash-style result preview: the first few lines, then a `+N lines` hint.
+ *  Shared by the Bash tool and by TaskOutput's background-shell branch —
+ *  the original routes the latter through the very same renderer
+ *  (TaskOutputTool.tsx:384-410 hands `task.output` to BashToolResultMessage),
+ *  so the two must not drift. */
+function bashOutputSummary(result: string): string {
+  const trimmed = result.replace(/\s+$/, '')
+
+  if (!trimmed) {
+    return '(No output)'
+  }
+
+  const lines = trimmed.split('\n')
+
+  // CC parity: when exactly one line overflows, show it instead of a hint.
+  if (lines.length <= BASH_RESULT_MAX_LINES + 1) {
+    return trimmed
+  }
+
+  return [
+    ...lines.slice(0, BASH_RESULT_MAX_LINES),
+    `… +${lines.length - BASH_RESULT_MAX_LINES} lines (ctrl+o to expand)`
+  ].join('\n')
+}
+
+/** The tool's own name plus its back-compat aliases (tasks_v2.py
+ *  `aliases=("AgentOutputTool", "BashOutputTool")`). A model that calls an
+ *  alias reaches the same backend tool, so it must reach the same renderer —
+ *  in the original that is automatic, the renderer hanging off the resolved
+ *  tool object rather than off the wire name. */
+const TASK_OUTPUT_TOOL_NAMES = new Set(['AgentOutputTool', 'BashOutputTool', 'TaskOutput'])
+
+/** The two tags a TaskOutput result can open with (`stuck_task_hint` leads
+ *  when the poll guard fired). Used only when the tool name is unknown. */
+const TASK_OUTPUT_LEAD_TAG = /^<(?:retrieval_status|stuck_task_hint)>/
+
+/** A task object was serialized at all — as opposed to the `task: null`
+ *  result, which carries `<retrieval_status>` and nothing else. */
+const TASK_PRESENT_TAG = /<task_(?:id|type)>/
+
+/** Opening tag of the wrapper a result over the persistence threshold is
+ *  replaced with (tool_result_persistence.py PERSISTED_OUTPUT_TAG). Hyphen,
+ *  not underscore. */
+const PERSISTED_OUTPUT_TAG = '<persisted-output>'
+
+/** Read the `<output>` block.
+ *
+ *  The captured log is written as `<output>\n…\n</output>` so it starts on its
+ *  own line; those two newlines are delimiters, not content. Exactly one is
+ *  stripped at each end — any further blank line or indentation is the task's
+ *  own layout and must survive.
+ *
+ *  The unterminated case is real, not defensive padding. When a result clears
+ *  the persistence threshold, `maybe_persist_large_tool_result` replaces the
+ *  whole content with a `<persisted-output>` wrapper around a 2KB HEAD
+ *  preview, which lands mid-log with no closing tag. `extractTag` requires the
+ *  pair, so it returns null and the caller used to render "(No output)" for a
+ *  result that plainly contains log text — worse than the raw dump this change
+ *  removes. `_format_task_output` now keeps results under that threshold in
+ *  the normal case; the per-message aggregate budget can still trip it, so
+ *  take whatever follows the opening tag rather than claiming there was
+ *  nothing.
+ *
+ *  That "everything after the opening tag" is only safe because the serializer
+ *  emits `<output>` LAST — no metadata part can be swallowed. The two are
+ *  load-bearing on each other: reordering the part list without revisiting
+ *  this would start folding `<truncated>` / `<error>` into the log preview. */
+function readOutputTag(result: string): string | undefined {
+  const closed = extractTag(result, 'output')
+
+  if (closed !== null) {
+    return closed.replace(/^\n/, '').replace(/\n$/, '')
+  }
+
+  const open = result.indexOf('<output>')
+
+  if (open === -1) {
+    return undefined
+  }
+
+  // extractTag returns null for an EMPTY body as well as for a missing close,
+  // and only the latter is a truncated preview. Without this, `<output></output>`
+  // would take the fallback and render the literal string "</output>".
+  // Unreachable today — the serializer gates on `text.strip()` — but the guard
+  // costs one line and the failure mode is silent.
+  if (result.indexOf('</output>', open) !== -1) {
+    return ''
+  }
+
+  return (
+    result
+      .slice(open + '<output>'.length)
+      .replace(/^\n/, '')
+      // The wrapper closes itself after the cut, so drop its own trailing
+      // bytes rather than showing them as log. Both shapes
+      // build_large_tool_result_message emits: with and without the `...`
+      // has-more marker.
+      .replace(/\n?(?:\.\.\.\n)?<\/persisted-output>\s*$/, '')
+  )
+}
+
+/** The fields TaskOutput's transcript row renders, recovered from the
+ *  tool_result content. `hasTask` is false for the `task: null` result
+ *  (unknown/evicted id) — distinct from a task whose fields are simply
+ *  empty. */
+type TaskOutputView = {
+  description?: string
+  hasTask: boolean
+  output?: string
+  retrievalStatus?: string
+  status?: string
+  taskType?: string
+}
+
+/** Read a TaskOutput result out of the two serializations it can arrive in.
+ *
+ *  The tagged form is what the current backend sends (tasks_v2.py
+ *  `_task_output_map_result_to_api`). The `json.dumps` blob is what a backend
+ *  older than that fix sends, and the two ship separately — `resolveAgentCmd`
+ *  picks up whatever `clawcodex` is installed, which a TUI update does not
+ *  move. Parsing both means a skewed pair still renders instead of falling
+ *  back to the raw dump this change exists to remove. (It is NOT about
+ *  transcripts: `/resume` restores the conversation backend-side and replies
+ *  with counters only — it never replays tool results to the client, so no
+ *  stored result ever reaches this function.)
+ *
+ *  Anything else declines, and the caller shows the content as-is. Note that
+ *  the `<persisted-output>` wrapper is NOT such a case: its 2KB preview keeps
+ *  the head of the part list intact, so `<retrieval_status>` still matches and
+ *  this parses it — see `readOutputTag` for the half-cut `<output>` that
+ *  leaves behind.
+ *
+ *  Captured output that itself contains a literal `</output>` ends the tag
+ *  early and shortens the preview by that much. Same ambiguity the original's
+ *  own wire format carries; it costs a few preview lines, never correctness —
+ *  the untouched result still rides `result_raw` for ctrl+o. */
+function parseTaskOutput(result: string): TaskOutputView | undefined {
+  const retrievalStatus = extractTag(result, 'retrieval_status')
+
+  if (retrievalStatus !== null) {
+    const taskType = extractTag(result, 'task_type')
+
+    return {
+      description: extractTag(result, 'description') ?? undefined,
+      // Tag PRESENCE, not extracted content: extractTag returns null for an
+      // empty body too (`depth === 0 && content`, and '' is falsy), so a task
+      // serialized with an empty id would otherwise read as "no task".
+      hasTask: TASK_PRESENT_TAG.test(result),
+      output: readOutputTag(result),
+      retrievalStatus,
+      status: extractTag(result, 'status') ?? undefined,
+      taskType: taskType ?? undefined
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(result)
+
+    if (!parsed || typeof parsed !== 'object' || !('retrieval_status' in parsed)) {
+      return undefined
+    }
+
+    const task = parsed.task
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+
+    if (!task || typeof task !== 'object') {
+      return { hasTask: false, retrievalStatus: str(parsed.retrieval_status) }
+    }
+
+    return {
+      description: str(task.description),
+      hasTask: true,
+      output: str(task.output),
+      retrievalStatus: str(parsed.retrieval_status),
+      status: str(task.status),
+      taskType: str(task.task_type)
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/** Port of TaskOutputTool.tsx's renderToolResultMessage
+ *  (TaskOutputResultDisplay, lines 353-582) in its non-verbose form — the
+ *  full body stays reachable behind ctrl+o via result_raw, which is the
+ *  original's `verbose` branch.
+ *
+ *  Task-type names are the backend's (`bash_background`, `local_agent`,
+ *  `task_list`), not TS' (`local_bash`, `local_agent`, `remote_agent`); the
+ *  branches are matched by role, not by spelling. */
+function taskOutputSummary(result: string): string {
+  const view = parseTaskOutput(result)
+
+  if (!view) {
+    return result
+  }
+
+  if (!view.hasTask) {
+    return 'No task output available'
+  }
+
+  const output = view.output ?? ''
+
+  // Closes the bug class this change exists to fix, rather than one instance
+  // of it. `readOutputTag` recovers a preview cut INSIDE `<output>`; a cut
+  // BEFORE it (reachable when an oversized `<description>` eats the whole 2KB
+  // window) leaves no opening tag at all, and every branch below would then
+  // report a truncated wrapper as "the task produced nothing". Showing the
+  // wrapper is honest and actionable — it names the file holding the rest.
+  if (!output && result.includes(PERSISTED_OUTPUT_TAG)) {
+    return result
+  }
+
+  // Background shell → the Bash renderer, exactly as the original does.
+  if (view.taskType === 'bash_background') {
+    return bashOutputSummary(output)
+  }
+
+  // Subagent → never the body itself. The original prints only a pointer
+  // because the result is already in the model's context and re-printing a
+  // multi-paragraph answer under the tool row buries the transcript.
+  if (view.taskType === 'local_agent') {
+    if (view.retrievalStatus === 'success') {
+      return 'Read output (ctrl+o to expand)'
+    }
+
+    if (view.retrievalStatus === 'timeout' || view.retrievalStatus === 'not_ready' || view.status === 'running') {
+      return 'Task is still running…'
+    }
+
+    return 'Task not ready'
+  }
+
+  // Todos (`task_list`) and any future task type: identity line, then a
+  // bounded peek at whatever output it carries.
+  const head = `${view.description ?? ''} [${view.status ?? 'unknown'}]`.trim()
+
+  return output ? `${head}\n${output.slice(0, 500)}` : head
+}
+
 export function formatToolResult(
   name: string | undefined,
   result: string,
@@ -503,23 +743,21 @@ export function formatToolResult(
   }
 
   if (name === 'Bash') {
-    const trimmed = result.replace(/\s+$/, '')
+    return bashOutputSummary(result)
+  }
 
-    if (!trimmed) {
-      return '(No output)'
-    }
-
-    const lines = trimmed.split('\n')
-
-    // CC parity: when exactly one line overflows, show it instead of a hint.
-    if (lines.length <= BASH_RESULT_MAX_LINES + 1) {
-      return trimmed
-    }
-
-    return [
-      ...lines.slice(0, BASH_RESULT_MAX_LINES),
-      `… +${lines.length - BASH_RESULT_MAX_LINES} lines (ctrl+o to expand)`
-    ].join('\n')
+  // Without this the whole `{"retrieval_status":…,"task":{…}}` result was
+  // printed verbatim under the tool row — a wall of JSON with every newline
+  // of the captured log escaped to a literal `\n`, plus pid/started_at/
+  // finished_at bookkeeping. Both halves are fixed: the backend now emits the
+  // original's tagged format, and this renders it the way CC does.
+  //
+  // Shape-keyed as well as name-keyed, like the WebSearch branch above: a
+  // client that attached mid-turn never saw the tool_use block, so `name` is
+  // undefined and the name test alone would drop it straight back to a raw
+  // dump. Only TaskOutput opens with these two tags.
+  if (name ? TASK_OUTPUT_TOOL_NAMES.has(name) : TASK_OUTPUT_LEAD_TAG.test(result)) {
+    return taskOutputSummary(result)
   }
 
   return result

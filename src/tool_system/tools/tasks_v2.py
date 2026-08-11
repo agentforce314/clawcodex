@@ -832,6 +832,12 @@ def _runtime_task_to_output(
                 name="TaskOutput",
                 output={"retrieval_status": "success", "task": None},
             )
+        # The on-disk log path, so ``_format_task_output`` can name the file
+        # that still holds everything when it trims to the tail (TS reads the
+        # same thing from ``getTaskOutputPath``). Not part of the snapshot
+        # helper's contract, so read it off the task entry directly.
+        entry = context.background_bash_tasks.get(task_id)
+        output_path = entry.get("output_path") if isinstance(entry, dict) else None
         return ToolResult(
             name="TaskOutput",
             output={
@@ -844,6 +850,7 @@ def _runtime_task_to_output(
                     "command": snapshot["command"],
                     "description": snapshot["description"],
                     "output": snapshot["output"],
+                    "output_path": output_path,
                     "truncated": snapshot["truncated"],
                     "pid": snapshot["pid"],
                     "started_at": snapshot["started_at"],
@@ -869,6 +876,16 @@ def _runtime_task_to_output(
                     "description": runtime.description,
                     "agent_type": runtime.agent_type,
                     "output": text,
+                    # So an over-32K subagent answer gets a truncation header
+                    # that names a real file. TS passes getTaskOutputPath(id)
+                    # unconditionally; without this the header degraded to
+                    # "the task's output file", which the model cannot act on.
+                    "output_path": runtime.output_file,
+                    # TS' getTaskOutputData sets this for local_agent
+                    # (TaskOutputTool.tsx:104) and the mapper emits <error>.
+                    # Without it here that part was unreachable: a genuinely
+                    # failed subagent surfaced nothing but its status.
+                    "error": runtime.error,
                 },
             },
         )
@@ -888,6 +905,190 @@ def _runtime_task_to_output(
             },
         },
     )
+
+
+#: Port of TS ``TASK_MAX_OUTPUT_DEFAULT`` / ``TASK_MAX_OUTPUT_UPPER_LIMIT``
+#: (typescript/src/utils/task/outputFormatting.ts:4-5).
+_TASK_MAX_OUTPUT_DEFAULT = 32_000
+_TASK_MAX_OUTPUT_UPPER_LIMIT = 160_000
+
+
+def _max_task_output_length() -> int:
+    """Port of ``getMaxTaskOutputLength`` — ``TASK_MAX_OUTPUT_LENGTH``, bounded.
+
+    Mirrors ``validateBoundedIntEnvVar`` (typescript/src/utils/envValidation.ts:12):
+    unset / unparseable / non-positive falls back to the default, and anything
+    above the ceiling is clamped to it.
+    """
+    import os
+
+    raw = os.environ.get("TASK_MAX_OUTPUT_LENGTH")
+    if not raw:
+        return _TASK_MAX_OUTPUT_DEFAULT
+    try:
+        parsed = int(raw, 10)
+    except (TypeError, ValueError):
+        return _TASK_MAX_OUTPUT_DEFAULT
+    if parsed <= 0:
+        return _TASK_MAX_OUTPUT_DEFAULT
+    return min(parsed, _TASK_MAX_OUTPUT_UPPER_LIMIT)
+
+
+def _format_task_output(text: str, output_path: Any) -> str:
+    """Bound the captured output for the wire. Port of ``formatTaskOutput``
+    (typescript/src/utils/task/outputFormatting.ts:22-38).
+
+    Keeps the TAIL — for a build or a test run the failure is at the end — and
+    leads with a header naming the file that still holds everything, so the
+    model can ``Read`` the rest.
+
+    The ceiling stays TS' 160,000 rather than the 50K persistence threshold, so
+    a caller who raises ``TASK_MAX_OUTPUT_LENGTH`` past ~49.7K is back on the
+    wrapper path. That is deliberate: clamping to the persistence constant
+    would couple two unrelated modules, and the clients' defensive parse
+    (``readOutputTag``) is the right backstop for it.
+
+    This is NOT a redundant third bound on top of the ~200KB read window and
+    the 50K persistence threshold, which is how an earlier revision of this
+    change read it. It is the bound that keeps the whole tagged result *under*
+    the persistence threshold, and that is load-bearing: over that threshold
+    ``maybe_persist_large_tool_result`` replaces the entire content with a
+    ``<persisted-output>`` wrapper around a 2KB HEAD preview, which cuts the
+    part list mid-``<output>`` — no closing tag, no ``<truncated>``, no
+    ``<error>``. Both clients then fail to parse what is left. Measured before
+    this was ported: a 55KB docker-build log rendered as "(No output)".
+    """
+    limit = _max_task_output_length()
+    if len(text) <= limit:
+        return text
+    path = str(output_path) if output_path else "the task's output file"
+    header = f"[Truncated. Full output: {path}]\n\n"
+    available = limit - len(header)
+    if available <= 0:
+        # DEVIATION from TS, deliberate. The reference computes
+        # ``output.slice(-availableSpace)`` with no guard, and a non-positive
+        # ``availableSpace`` silently inverts: ``slice(-0)`` is ``slice(0)``
+        # and ``slice(59)`` counts from the FRONT, so the whole log comes back
+        # and the bound is gone. Reachable here with a small
+        # ``TASK_MAX_OUTPUT_LENGTH`` (measured: limit=1 returned 100,001
+        # chars), or a pathologically long path. Replicating that would defeat
+        # the one bound that keeps this result under the persistence threshold
+        # — the entire point of the port. When there is no room for a body,
+        # the pointer to the full file is the more useful half; keep it.
+        return header.rstrip()
+    return header + text[-available:]
+
+
+def _task_output_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
+    """Serialize a TaskOutput result the way TS ``TaskOutputTool`` does.
+
+    Port of ``mapToolResultToToolResultBlockParam``
+    (typescript/src/tools/TaskOutputTool/TaskOutputTool.tsx:283-308): a short
+    list of ``<tag>value</tag>`` parts joined by blank lines, with the task's
+    output in its own ``<output>`` block.
+
+    Without this the tool fell through to ``_default_map_result_to_api``,
+    which ``json.dumps``es the whole result dict. That put the captured
+    output on the wire as a JSON *string literal* — every newline escaped to
+    a literal ``\\n``, wrapped in one unbroken line alongside ``pid`` /
+    ``started_at`` / ``finished_at`` bookkeeping the model has no use for. A
+    build log read that way is near-unparseable for the model AND for the
+    human: the transcript renders the tool_result content, so the same blob
+    was what the TUI printed under the ``TaskOutput`` row.
+
+    Two deliberate additions over the TS part list:
+
+    * ``<stuck_task_hint>`` leads when ``_guard_repeated_polls`` set it. That
+      guard documents the top-level field as its primary channel precisely
+      because a >50KB result is persisted to disk and replaced by a 2KB HEAD
+      preview — a leading part survives that truncation, a trailing one does
+      not. Emitting it first preserves the guarantee under the new format.
+    * ``<truncated>`` when the ~200KB capture window clipped the output, so
+      "this is not the whole log" stays on the wire. TS has no analog: its only
+      truncation is ``formatTaskOutput``, which announces itself inline with a
+      ``[Truncated. Full output: …]`` header. We now emit that header too, so
+      the two signals are complementary — the header means "the wire copy is
+      the tail", the tag means "even the captured copy is short of the real
+      log".
+
+    ``<description>`` is likewise ours. TS omits it because its renderer holds
+    the live task object and reads the field straight off it; here the client
+    is a separate process whose only view of the result is this content, and
+    the ``task_list`` task type (a TaskCreate todo — TS serves those from
+    TaskGet, not TaskOutput) renders as "description [status]", which is
+    nothing at all without it.
+
+    Output truncation goes through ``_format_task_output`` — see there for why
+    porting TS' 32K cap is required rather than redundant.
+    """
+    if not isinstance(output, dict):
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": output if isinstance(output, str) else str(output),
+        }
+
+    def tag(name: str, value: Any) -> str:
+        return f"<{name}>{value}</{name}>"
+
+    parts: list[str] = []
+
+    def add(name: str, value: Any) -> None:
+        """Append a part, skipping None. TS is type-guaranteed on these
+        fields; a plain dict here is not, and ``<status>None</status>`` reads
+        to the model as a status literally named None."""
+        if value is not None:
+            parts.append(tag(name, value))
+
+    hint = output.get("stuck_task_hint")
+    if isinstance(hint, str) and hint.strip():
+        parts.append(tag("stuck_task_hint", hint))
+
+    add("retrieval_status", output.get("retrieval_status"))
+
+    task = output.get("task")
+    if isinstance(task, dict):
+        add("task_id", task.get("task_id"))
+        add("task_type", task.get("task_type"))
+        add("status", task.get("status"))
+
+        description = task.get("description")
+        if description:
+            add("description", description)
+
+        exit_code = task.get("exit_code")
+        if exit_code is not None:
+            add("exit_code", exit_code)
+
+        if task.get("truncated"):
+            add("truncated", "true")
+
+        error = task.get("error")
+        if error:
+            add("error", error)
+
+        # ``<output>`` LAST — deliberately after ``<error>``, where TS puts it
+        # first. It is the only unbounded part, so trailing it means a head
+        # truncation (the persistence wrapper's 2KB preview, which
+        # `_format_task_output` now makes rare but the per-message aggregate
+        # budget can still trigger) can only ever eat log lines, never the
+        # metadata that says what happened. In the previous revision
+        # ``<truncated>``/``<error>`` sat after ``<output>`` and were
+        # therefore unreachable: `truncated` is only ever set for a >200KB
+        # log, which is exactly the case that gets truncated away.
+        text = task.get("output")
+        if isinstance(text, str) and text.strip():
+            # ``rstrip`` not ``strip``, matching TS' ``trimEnd()``: leading
+            # indentation on the first output line is real content. The
+            # newlines around it are delimiters the clients strip back off.
+            body = _format_task_output(text.rstrip(), task.get("output_path"))
+            parts.append(f"<output>\n{body}\n</output>")
+
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": "\n\n".join(parts),
+    }
 
 
 TaskOutputTool: Tool = build_tool(
@@ -915,6 +1116,7 @@ TaskOutputTool: Tool = build_tool(
         "required": ["task_id"],
     },
     call=_task_output_call,
+    map_result_to_api=_task_output_map_result_to_api,
     prompt="""\
 Get the output of a running or completed background task.
 
