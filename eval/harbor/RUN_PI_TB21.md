@@ -42,9 +42,8 @@ pi runs 6 tools against clawcodex's much larger registry, and that difference
 is part of what the benchmark measures — don't describe the run as
 "same tools".
 
-`vision_analyze` has been exercised on the host but **not yet in a container**
-(the smoke tasks only reached `websearch`). Run one vision task before
-committing to a full sweep.
+Both tools have been exercised in a container: `websearch` on the first smoke
+run, `vision_analyze` on `code-from-image` (one call, task scored 1.0).
 
 ## Comparability caveats
 
@@ -156,6 +155,15 @@ thinking), **2/2 reward 1.0, 0 exceptions, 6m57s**:
 Tools exercised across the two trials: `bash` x14, `write` x3, `read` x1,
 `websearch` x1 — the extension loads and executes inside the container, not
 just on the host.
+
+A second run after the failure-detection changes (`set -eu`, `--no-approve`,
+post-run `stopReason` check) confirmed no regression and exercised the vision
+path — **2/2 reward 1.0, 0 exceptions, 4m48s**:
+
+| task | reward | input | cached | output | cost | tools |
+|---|---|---|---|---|---|---|
+| code-from-image | 1.0 | 12,164 | 11,648 (95.8%) | 785 | $0.00032 | `read`, **`vision_analyze`**, `bash`, `write` |
+| prove-plus-comm | 1.0 | 57,688 | 56,320 (97.6%) | 6,993 | $0.00231 | `read` x3, `bash` x5, `edit` x2 |
 
 ## Full run
 
