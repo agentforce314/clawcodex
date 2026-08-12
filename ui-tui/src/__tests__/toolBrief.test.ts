@@ -409,6 +409,19 @@ describe('estimatedMsgHeight matches the painted trail', () => {
         thinking: 'First line.\nSecond line.\nThird line.',
         tools: [buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines')]
       }
+    ],
+    [
+      // The reasoning body sits under a `└─ ` rail, so it wraps 3 narrower
+      // than the trail — this case is what pins that offset.
+      'reasoning long enough to wrap',
+      {
+        kind: 'trail',
+        role: 'system',
+        text: '',
+        thinking:
+          'The parser reads the header first, then walks each block until it hits a boundary, ' +
+          'and only then does it decide whether the trailing bytes belong to the previous frame.'
+      }
     ]
   ]
 
@@ -432,7 +445,12 @@ describe('estimatedMsgHeight matches the painted trail', () => {
       ['bare assistant prose', { role: 'assistant', text: 'ok' }],
       ['prose with reasoning', { role: 'assistant', text: 'ok', thinking: 'plan' }],
       ['prose with a tool brief', { role: 'assistant', text: 'ok', tools: [READ_LINE] }],
-      ['prose with both', { role: 'assistant', text: 'ok', thinking: 'plan', tools: [READ_LINE] }]
+      ['prose with both', { role: 'assistant', text: 'ok', thinking: 'plan', tools: [READ_LINE] }],
+      // No text means no `└─ Response` separator, but the details wrapper's
+      // margin is still paid — the two must not be conflated.
+      ['details with no prose', { role: 'assistant', text: '', tools: [READ_LINE] }],
+      // Details on a non-assistant row: no separator either, same margin.
+      ['a system row carrying details', { role: 'system', text: 'note', tools: [READ_LINE] }]
     ]
 
     for (const [name, msg] of proseCases) {
