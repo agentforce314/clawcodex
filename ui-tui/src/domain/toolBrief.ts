@@ -2,7 +2,8 @@ import { parseToolTrailResultLine, splitToolDuration, toolTrailLabel } from '../
 
 /**
  * The original Claude Code transcript does not list every tool call on its own
- * row. A run of calls collapses into a single dim summary line — the "brief":
+ * row. A run of calls collapses into a single muted summary line — the
+ * "brief":
  *
  *   Read 3 files, listed 1 directory, ran 1 shell command
  *
@@ -17,7 +18,7 @@ import { parseToolTrailResultLine, splitToolDuration, toolTrailLabel } from '../
  *     ("Reading 1 file…"); a settled one uses the past tense.
  *   - upstream only folds tools that describe themselves as a search/read
  *     shaped call (plus shell commands and MCP bridges). Everything else —
- *     edits, delegations, questions — keeps its own row, because its detail
+ *     edits, delegations, answers — keeps its own row, because its detail
  *     rows carry information a tally would destroy. See STANDALONE below.
  */
 export type BriefBucket = 'agent' | 'answer' | 'bash' | 'edit' | 'list' | 'other' | 'read' | 'search'
@@ -25,18 +26,27 @@ export type BriefBucket = 'agent' | 'answer' | 'bash' | 'edit' | 'list' | 'other
 export type BriefCounts = Record<BriefBucket, number>
 
 /**
- * Buckets that never fold into the brief — they render as their own
- * `⏺ Tool(args)` block even in the collapsed view:
+ * Only the read/search band and shell commands fold. Everything else renders
+ * as its own `⏺ Tool(args)` block even in the collapsed view — which is what
+ * upstream does, and the reason its collapsed message type is literally named
+ * `collapsed_read_search`. Captured from Claude Code 2.1.228: a lone `Bash`
+ * folds to "Ran 1 shell command", while a lone `WebSearch` keeps
+ * `⏺ Web Search("…")` + `⎿ Did 1 search in 2s`, and a lone `Agent` keeps
+ * `⏺ Agent(…)` + `⎿ Done (2 tool uses · 48.0k tokens · 11s)`.
  *
- *   edit   — the patch itself is the point (upstream renders `⏺ Update(f)`
- *            with the diff under it, and never tallies it away).
- *   agent  — the Delegate Task row anchors the inline subagent tree.
+ *   edit   — the patch itself is the point (upstream renders `⏺ Write(f)`
+ *            with the content under it, and never tallies it away).
+ *   agent  — the row anchors the inline subagent tree.
  *   answer — AskUserQuestion, clarify, advisor, vision_analyze, ExitPlanMode:
  *            the detail rows ARE the result (the user's own choices, the
- *            advisor's opinion, the plan). "Called 1 tool" would delete them
- *            from the transcript with no way to get them back.
+ *            advisor's opinion, the plan).
+ *   other  — WebSearch, WebFetch, Skill, MCP bridges: their `⎿` rows carry a
+ *            result no tally can stand in for.
+ *
+ * The point of the brief is the high-volume, low-information calls — reading,
+ * searching, listing, shelling out. Those are what bury a transcript.
  */
-const STANDALONE: ReadonlySet<BriefBucket> = new Set<BriefBucket>(['agent', 'answer', 'edit'])
+const STANDALONE: ReadonlySet<BriefBucket> = new Set<BriefBucket>(['agent', 'answer', 'edit', 'other'])
 
 export const isCollapsibleBucket = (bucket: BriefBucket): boolean => !STANDALONE.has(bucket)
 
@@ -128,10 +138,8 @@ export const classifyBriefTool = (call: string): BriefBucket => {
     return READ_COMMAND.test(args) ? 'read' : 'bash'
   }
 
-  // Everything else — WebSearch/WebFetch, Skill, MCP bridges, task tools — is
-  // "called N tools", upstream's catch-all clause. (Upstream names the MCP
-  // *server* in a clause of its own; a trail line doesn't carry one, so MCP
-  // calls read as generic tool calls rather than an invented label.)
+  // Everything else — WebSearch/WebFetch, Skill, MCP bridges, task tools.
+  // STANDALONE, so each keeps its own row and its own result.
   return 'other'
 }
 
@@ -177,13 +185,12 @@ export interface BriefClause {
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 
-// Clause order is upstream's: the read/search band first, then the catch-all,
-// with shell commands last. STANDALONE buckets never reach here.
+// Clause order is upstream's: the read/search band first, shell commands last.
+// STANDALONE buckets never reach here.
 const ORDER: { bucket: BriefBucket; live: string; noun: [string, string]; past: string }[] = [
   { bucket: 'search', live: 'searching for', noun: ['pattern', 'patterns'], past: 'searched for' },
   { bucket: 'read', live: 'reading', noun: ['file', 'files'], past: 'read' },
   { bucket: 'list', live: 'listing', noun: ['directory', 'directories'], past: 'listed' },
-  { bucket: 'other', live: 'calling', noun: ['tool', 'tools'], past: 'called' },
   { bucket: 'bash', live: 'running', noun: ['shell command', 'shell commands'], past: 'ran' }
 ]
 

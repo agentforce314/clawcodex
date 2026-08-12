@@ -22,7 +22,8 @@ import {
   briefRuns,
   briefText,
   classifyBriefTool,
-  emptyBriefCounts
+  emptyBriefCounts,
+  isCollapsibleBucket
 } from '../domain/toolBrief.js'
 import { transcriptTrailWidth } from '../lib/inputMetrics.js'
 import { buildToolTrailLine, stripAnsi } from '../lib/text.js'
@@ -60,9 +61,10 @@ describe('classifyBriefTool', () => {
     expect(classifyBriefTool('ExitPlanMode(plan)')).toBe('answer')
   })
 
-  it('falls back to the catch-all bucket', () => {
+  it('falls back to the catch-all bucket, which also stands alone', () => {
     expect(classifyBriefTool('WebSearch(rust release)')).toBe('other')
     expect(classifyBriefTool('Mcp Github List Prs(open)')).toBe('other')
+    expect(isCollapsibleBucket('other')).toBe(false)
   })
 
   it('ignores a legacy duration suffix on resumed trail lines', () => {
@@ -81,9 +83,9 @@ describe('briefText', () => {
     )
   })
 
-  it('orders clauses search → read → list → other → shell', () => {
-    expect(briefText(counts({ bash: 1, list: 1, other: 1, read: 1, search: 1 }))).toBe(
-      'Searched for 1 pattern, read 1 file, listed 1 directory, called 1 tool, ran 1 shell command'
+  it('orders clauses search → read → list → shell', () => {
+    expect(briefText(counts({ bash: 1, list: 1, read: 1, search: 1 }))).toBe(
+      'Searched for 1 pattern, read 1 file, listed 1 directory, ran 1 shell command'
     )
   })
 
@@ -100,6 +102,8 @@ describe('briefText', () => {
   it('is empty when nothing collapsible ran', () => {
     expect(briefText(counts({ edit: 3 }))).toBe('')
     expect(briefClauses(counts({ agent: 1 }))).toEqual([])
+    // WebSearch and friends keep their own row, so they never tally either.
+    expect(briefText(counts({ other: 2 }))).toBe('')
   })
 })
 
@@ -411,8 +415,6 @@ describe('estimatedMsgHeight matches the painted trail', () => {
       }
     ],
     [
-      // The reasoning body sits under a `└─ ` rail, so it wraps 3 narrower
-      // than the trail — this case is what pins that offset.
       'reasoning long enough to wrap',
       {
         kind: 'trail',
@@ -422,6 +424,15 @@ describe('estimatedMsgHeight matches the painted trail', () => {
           'The parser reads the header first, then walks each block until it hits a boundary, ' +
           'and only then does it decide whether the trailing bytes belong to the previous frame.'
       }
+    ],
+    [
+      // The reasoning body sits under a `  └─ ` rail — content column 5, not
+      // 3. One unbreakable token so Ink's word wrap and the estimator's
+      // character wrap coincide and the gutter is the only variable, sized to
+      // land between the two candidate widths at cols=100: it wraps at 91 and
+      // does not at 93. A body that merely "is long" cannot tell them apart.
+      'reasoning that wraps only at the rail column',
+      { kind: 'trail', role: 'system', text: '', thinking: 'x'.repeat(92) }
     ]
   ]
 
@@ -458,6 +469,30 @@ describe('estimatedMsgHeight matches the painted trail', () => {
         expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(proseRows(msg, 80))
       })
     }
+
+    // The structured-diff branch brings its own wrapper with ToolTrail as a
+    // direct child, so it must NOT be charged the details wrapper's margin.
+    // (Its absolute estimate is off for older reasons — it still counts
+    // msg.text for a markdown fallback the structured path never renders — so
+    // pin the delta rather than the number.)
+    it('does not charge the details margin to a structured diff', () => {
+      const diff: Msg = {
+        diffData: { filePath: 'a.py', hunks: [], kind: 'update' },
+        kind: 'diff',
+        role: 'assistant',
+        text: 'patch',
+        tools: [READ_LINE]
+      }
+
+      const withDetails = estimatedMsgHeight(diff, 80, { compact: false, details: true })
+      const withoutDetails = estimatedMsgHeight(diff, 80, { compact: false, details: false })
+
+      // Turning details on costs the one brief row, plus the 2 the estimator
+      // charges for a `Response` separator this branch never paints (older
+      // divergence, left alone). The point is that it is 3 and not 4 — the
+      // details wrapper's marginBottom belongs to prose rows only.
+      expect(withDetails - withoutDetails).toBe(3)
+    })
   })
 
   // Narrow widths are where wrapping bites; 100 is the everyday case.

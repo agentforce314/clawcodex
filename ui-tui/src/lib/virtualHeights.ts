@@ -92,6 +92,12 @@ interface TrailEntry {
 
 // Gutters a `⏺ …` block reserves: 2 columns for the bullet on the call row,
 // 5 for the `  ⎿  ` connector (and the matching pad on continuations) under it.
+// The reasoning body's `  └─ ` rail lands on the same column 5.
+//
+// Known residual: wrappedLines is character math while Ink word-wraps, so a
+// detail carrying one token longer than the content width (a deep file path)
+// can paint one row more than this counts. Post-mount measurement corrects it;
+// it is a ±1 on long paths, not a structural divergence.
 const CALL_GUTTER = 2
 const DETAIL_GUTTER = 5
 
@@ -235,20 +241,24 @@ export const estimatedMsgHeight = (
       const toolRows = hasVisibleTools ? trailRows(msg, trailWidth, toolsExpanded) : 0
 
       // The reasoning panel is its `∴ Thinking…` header row plus the body,
-      // which sits under a 3-column `└─ ` rail. The header used to be paid
+      // which sits under a `  └─ ` rail — content starts at column 5, so
+      // DETAIL_GUTTER is the right offset here too. The header used to be paid
       // for by the one-row text floor above; trail blocks no longer get that
       // floor, so charge it here where it is actually true.
       // (Known gap, pre-dating the brief: `/details thinking collapsed` closes
       // the body while this still counts it. The panel is expanded by default,
       // so the common path is exact.)
-      const thinkingRows = hasVisibleThinking ? 1 + wrappedLines(msg.thinking ?? '', trailWidth - 3) : 0
+      const thinkingRows = hasVisibleThinking ? 1 + wrappedLines(msg.thinking ?? '', trailWidth - DETAIL_GUTTER) : 0
 
       h += toolRows + thinkingRows
 
-      // A prose row wraps its details in a Box with marginBottom={1}. A trail
-      // block has no such wrapper — MessageLine hands ToolTrail straight
-      // through — so only prose pays this.
-      if (msg.kind !== 'trail') {
+      // A prose row wraps its details in a Box with marginBottom={1}. Trail
+      // blocks hand ToolTrail straight through, and the structured-diff branch
+      // brings its own wrapper with ToolTrail as a direct child — neither pays
+      // this. (The diff branch's estimate is off for older reasons too: it
+      // still counts msg.text for a markdown fallback the structured path
+      // never renders. Out of scope here; just don't add to it.)
+      if (msg.kind !== 'trail' && msg.kind !== 'diff') {
         h++
       }
 
