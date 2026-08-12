@@ -286,6 +286,20 @@ def build_effective_system_prompt(
             provider=provider,
             mcp_servers=mcp_servers,
             skills=skills,
+            # Headless sets ``options.is_non_interactive_session`` before the
+            # prompt is built; without forwarding it, the headless model never
+            # received the "# Non-Interactive Mode" section and behaved as if a
+            # human would reply (observed on terminal-bench: agents narrating
+            # "let me save this for future sessions" mid-trial). Interactive
+            # callers (TUI bridge, agent-server) leave the flag unset and are
+            # unchanged. Model-agnostic.
+            non_interactive=bool(
+                getattr(
+                    getattr(tool_context, "options", None),
+                    "is_non_interactive_session",
+                    False,
+                )
+            ),
         )
 
     # Preserve the workspace + git + CLAWCODEX.md context (CLAWCODEX.md is NOT
