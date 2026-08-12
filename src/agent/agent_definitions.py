@@ -24,7 +24,10 @@ class AgentDefinition:
     tools: list[str] | None = None  # None or ['*'] means all tools
     source: AgentSource = "built-in"
     base_dir: str = "built-in"
-    model: str | None = None  # None → inherit parent, 'inherit' → force inherit
+    # None → the provider's default subagent model (PROVIDER_INFO
+    # ``subagent_model``; inherits the parent when the provider declares
+    # none). 'inherit' → always the parent's model.
+    model: str | None = None
     permission_mode: PermissionMode | None = None
     max_turns: int | None = None
     background: bool = False
@@ -96,7 +99,8 @@ GENERAL_PURPOSE_AGENT = AgentDefinition(
     tools=["*"],
     source="built-in",
     base_dir="built-in",
-    # model intentionally omitted — uses default subagent model
+    # model intentionally omitted — uses the provider's default subagent
+    # model (the cheap fan-out tier; see PROVIDER_INFO subagent_model)
     get_system_prompt=_general_purpose_system_prompt,
 )
 
@@ -160,8 +164,10 @@ EXPLORE_AGENT = AgentDefinition(
     omit_clawcodex_md=True,
     # ch08 round-4 (critic M1) — Explore is the fast/cheap read-only agent;
     # TS exploreAgent.ts:77 runs it on Haiku. get_agent_model resolves this
-    # against the session provider and inherits on providers that don't
-    # serve haiku (e.g. DeepSeek), so it is cross-provider safe.
+    # per provider via the ``subagent_tier_models`` tables (anthropic →
+    # claude-haiku-4-5, deepseek → deepseek-v4-flash) and inherits on
+    # providers without a haiku-class mapping, so it is cross-provider
+    # safe.
     model="haiku",
     get_system_prompt=_explore_system_prompt,
 )

@@ -150,3 +150,51 @@ def test_schema_repair_prompt_quotes_error_and_schema():
     assert "do NOT" in s and "search" in s  # tells the model not to re-search
     # a None error (model skipped the tool) gets explanatory phrasing
     assert "did not call the StructuredOutput tool" in _schema_repair_prompt(schema, None)
+
+
+async def test_runner_model_slot_defaults_through_agent_definition(tmp_path):
+    """critic r4 MAJOR-1 — the runner's model slot resolves
+    spec.model > agent-def ``model:`` > 'inherit'. A bare 'inherit' pin
+    would override an opts.agentType agent's declared model (Explore's
+    haiku); a bare None would take the provider's cheap subagent default,
+    breaking the Workflow contract ("inherits the main-loop model")."""
+    from unittest.mock import patch
+
+    from src.agent.agent_definitions import EXPLORE_AGENT
+    from src.types.content_blocks import TextBlock
+    from src.types.messages import AssistantMessage
+
+    captured: list = []
+
+    async def _capture(params):
+        captured.append(params.model)
+        yield AssistantMessage(content=[TextBlock(text="ok")])
+
+    provider = _ScriptedProvider([_resp("unused")])
+    registry = build_default_registry(provider=provider)
+    ctx = ToolContext(workspace_root=tmp_path)
+
+    def _mk(resolver):
+        return LiveAgentRunner(
+            provider=provider,
+            tool_registry=registry,
+            parent_context=ctx,
+            base_tools=list(registry.list_tools()),
+            resolve_agent=resolver,
+            run_id="wf_mtest",
+            max_turns=2,
+        )
+
+    with patch("src.agent.run_agent.run_agent", _capture):
+        await _mk(lambda _t: GENERAL_PURPOSE_AGENT).run(
+            AgentSpec(prompt="p"), abort=create_abort_controller(), index="0",
+        )
+        await _mk(lambda _t: EXPLORE_AGENT).run(
+            AgentSpec(prompt="p"), abort=create_abort_controller(), index="1",
+        )
+        await _mk(lambda _t: GENERAL_PURPOSE_AGENT).run(
+            AgentSpec(prompt="p", model="opus"),
+            abort=create_abort_controller(), index="2",
+        )
+
+    assert captured == ["inherit", "haiku", "opus"]

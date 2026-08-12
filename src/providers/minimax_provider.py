@@ -31,6 +31,8 @@ class MinimaxProvider(BaseProvider):
     Uses the Anthropic SDK with Minimax-specific models.
     """
 
+    provider_id = "minimax"
+
     DEFAULT_BASE_URL = "https://api.minimax.io/anthropic"
 
     def __init__(

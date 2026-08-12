@@ -128,11 +128,16 @@ class TestAnthropicProvider(unittest.TestCase):
         )
 
     def test_get_available_models(self):
-        """Test getting available models."""
+        """Test getting available models (live-catalog ids; the retired
+        claude-sonnet-4-20250514 / claude-3-5-* generation was pruned —
+        listed-but-dead ids turn the subagent availability gate's degrade
+        path into a shipped 404)."""
         provider = AnthropicProvider(api_key="test_key")
         models = provider.get_available_models()
-        self.assertIn("claude-sonnet-4-20250514", models)
-        self.assertIn("claude-3-5-sonnet-20241022", models)
+        self.assertIn("claude-sonnet-5", models)
+        self.assertIn("claude-haiku-4-5", models)
+        self.assertNotIn("claude-sonnet-4-20250514", models)
+        self.assertNotIn("claude-3-5-haiku-20241022", models)
 
     @patch("src.providers.anthropic_provider.anthropic.Anthropic")
     def test_chat(self, mock_anthropic):

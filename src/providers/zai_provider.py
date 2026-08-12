@@ -49,6 +49,8 @@ def _canonical_glm_model(model: str) -> str:
 class ZaiProvider(OpenAICompatibleProvider):
     """Z.ai GLM Coding Plan provider using the OpenAI SDK against the Z.ai base URL."""
 
+    provider_id = "zai"
+
     DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
     DEFAULT_MODEL = "GLM-5.1"
 

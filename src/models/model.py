@@ -15,7 +15,7 @@ def resolve_model(name: str) -> str:
     """Resolve a model name/alias to its canonical form.
 
     Steps:
-    1. Resolve alias (e.g. "sonnet" → "claude-sonnet-4-20250514")
+    1. Resolve alias (e.g. "sonnet" → "claude-sonnet-5")
     2. Return canonical name
     """
     canonical = resolve_alias(name)

@@ -59,7 +59,7 @@ Evaluate this event and respond with a JSON decision."""
         messages = [{"role": "user", "content": user_prompt}]
         system_prompt = AGENT_HOOK_SYSTEM_PROMPT
 
-        effective_model = model or "claude-sonnet-4-20250514"
+        effective_model = model or "claude-sonnet-5"
 
         if hasattr(provider, "chat_async"):
             response = await provider.chat_async(

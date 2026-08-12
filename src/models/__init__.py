@@ -27,13 +27,16 @@ from .context import (
     get_context_window_for_model,
     get_model_max_output_tokens,
 )
-from .agent_routing import get_model_for_agent, AgentModelConfig
+# NOTE: the old ``agent_routing`` module (get_model_for_agent /
+# AgentModelConfig) was deleted 2026-08: it was a dead parallel path with
+# inherit-parent semantics that contradicted the shipped resolver
+# (src/agent/agent_model.get_agent_model), and nothing wrote the
+# ``agent_models`` config key it read.
 
 __all__ = [
     "BEDROCK_MODEL_MAP",
     "MODEL_ALIASES",
     "MODEL_CONFIGS",
-    "AgentModelConfig",
     "ModelConfig",
     "canonical_model_name",
     "deprecation_warning",
@@ -42,7 +45,6 @@ __all__ = [
     "get_context_window_for_model",
     "get_model_capabilities",
     "get_model_config",
-    "get_model_for_agent",
     "get_model_max_output_tokens",
     "is_model_allowed",
     "resolve_alias",

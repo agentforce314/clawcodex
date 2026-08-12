@@ -62,6 +62,7 @@ def _emit_terminal_agent_progress(
     description: Any,
     subagent_type: Any,
     status: str,
+    model: Any = None,
 ) -> None:
     """R5 round-5 (ch13) — emit a TERMINAL ``agent_progress`` so the TUI
     subagent HUD marks the subagent done instead of lingering "running"
@@ -80,6 +81,12 @@ def _emit_terminal_agent_progress(
                 "name": name,
                 "description": description,
                 "subagent_type": subagent_type,
+                # Carried on the terminal emit too: a subagent that dies
+                # BEFORE any message gets its first (and only) emit here,
+                # and the overlay would otherwise label it 'inherit' — in
+                # exactly the routed-to-a-bad-model case where the model
+                # matters most.
+                "model": model,
                 "activity": None,
                 "status": status,
             })
@@ -108,9 +115,15 @@ AGENT_INPUT_SCHEMA: dict[str, Any] = {
             "description": (
                 "Optional model override for this agent. Takes precedence over "
                 "the agent definition's model frontmatter. If omitted, uses the "
-                "agent definition's model, or inherits from the parent."
+                "agent definition's model, or the provider's default subagent "
+                "model (typically a fast, inexpensive tier). Pass \"inherit\" "
+                "to force the parent conversation's model, e.g. for hard "
+                "tasks that need its full capability."
             ),
-            "enum": ["sonnet", "opus", "haiku"],
+            # Tier aliases resolve per provider (see subagent_tier_models in
+            # src/providers/__init__.py); "fable" mirrors the CC harness enum
+            # and "inherit" is the TS AGENT_MODEL_OPTIONS escape hatch.
+            "enum": ["sonnet", "opus", "haiku", "fable", "inherit"],
         },
         "run_in_background": {
             "type": "boolean",
@@ -193,12 +206,22 @@ def make_agent_tool(
         subagent_type = tool_input.get("subagent_type")
         # Coordinator mode ignores the model param — the coordinator prompt
         # says "Do not set the model parameter. Workers need the default
-        # model"; this enforces it. Mirrors AgentTool.tsx:252. Function-local
-        # import: src.coordinator's package init imports worker_agent →
-        # agent_definitions (cycle at import time, safe at call time).
+        # model"; this enforces it. Mirrors AgentTool.tsx:252. "Default
+        # model" meant the SESSION model when that prompt was written, so
+        # this pins 'inherit' rather than None: None now resolves to the
+        # provider's cheap default subagent model, and coordinator workers —
+        # whose model param is discarded here, leaving them no way to opt
+        # out — do implementation work that should stay on the session
+        # model. Deliberately a BARE 'inherit' (unlike the workflow
+        # runner's spec.model-or-agent-def chain): it overrides agent-def
+        # tiers too, so even an Explore spawned inside a coordinator
+        # session runs on the session model — every coordinator delegate
+        # is a worker here. Function-local import: src.coordinator's
+        # package init imports worker_agent → agent_definitions (cycle at
+        # import time, safe at call time).
         from src.coordinator.mode import is_coordinator_mode
 
-        model = None if is_coordinator_mode() else tool_input.get("model")
+        model = "inherit" if is_coordinator_mode() else tool_input.get("model")
         run_in_background = bool(tool_input.get("run_in_background", False))
         # Chapter-10 / WI-6.1 — optional human-readable name. We
         # validate / register it AFTER agent_id is generated so the
@@ -366,6 +389,24 @@ def make_agent_tool(
             parent_system_prompt=fork_parent_system_prompt,
         )
 
+        # Auditability: the model may differ from the session's with NOTHING
+        # in the tool call naming one (agent-def tiers, the provider
+        # default-subagent-model path), so report the routing in the task
+        # registry and the tool result. Same inputs as run_agent's own
+        # resolution → same answer; run_agent stays the authority for what
+        # actually goes on the wire. Best-effort — never blocks a spawn.
+        resolved_model = None
+        try:
+            from src.agent.agent_model import get_agent_model
+
+            # quiet: this resolution is reporting-only; run_agent's own
+            # (authoritative) resolution emits any fallback warning once.
+            resolved_model = get_agent_model(
+                model, agent_def.model, provider, quiet=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("subagent model preview failed", exc_info=True)
+
         # Stream the subagent's live progress to the UI when the host wired a
         # hook (agent-server only). run_agent calls on_message per message, so
         # this covers both the sync and background paths. Purely additive — no
@@ -393,6 +434,7 @@ def make_agent_tool(
                         "name": agent_name,
                         "description": description,
                         "subagent_type": subagent_type,
+                        "model": resolved_model,
                         "activity": activity,
                         "tool_use_count": _tracker.tool_use_count,
                         "tokens": total_tokens_from_tracker(_tracker),
@@ -412,6 +454,7 @@ def make_agent_tool(
                 prompt=prompt,
                 agent_type=agent_def.agent_type,
                 agent_name=agent_name,
+                resolved_model=resolved_model,
             )
         else:
             return _run_sync_agent(
@@ -422,6 +465,7 @@ def make_agent_tool(
                 agent_type=agent_def.agent_type,
                 description=description,
                 agent_name=agent_name,
+                resolved_model=resolved_model,
             )
 
     def _run_sync_agent(
@@ -433,6 +477,7 @@ def make_agent_tool(
         agent_type: str,
         description: Any = None,
         agent_name: Any = None,
+        resolved_model: str | None = None,
     ) -> ToolResult:
         """Run an agent synchronously and return the result."""
         from ..protocol import ToolResult as TR
@@ -478,7 +523,8 @@ def make_agent_tool(
             # the existing error flow is unchanged.
             _emit_terminal_agent_progress(
                 run_params.parent_context, agent_id=agent_id, name=_hud_name,
-                description=_hud_desc, subagent_type=agent_type, status="failed",
+                description=_hud_desc, subagent_type=agent_type,
+                status="failed", model=resolved_model,
             )
             raise
 
@@ -487,7 +533,8 @@ def make_agent_tool(
         # lingering "running". The per-message emits carry status:"running".
         _emit_terminal_agent_progress(
             run_params.parent_context, agent_id=agent_id, name=_hud_name,
-            description=_hud_desc, subagent_type=agent_type, status="completed",
+            description=_hud_desc, subagent_type=agent_type,
+            status="completed", model=resolved_model,
         )
 
         return TR(
@@ -497,6 +544,10 @@ def make_agent_tool(
                 "prompt": prompt,
                 "agent_id": result.agent_id,
                 "agent_type": result.agent_type,
+                # The model the subagent ran on — may differ from the session
+                # model with nothing in the tool call naming one (agent-def
+                # tier / provider default-subagent-model), so surface it.
+                "model": resolved_model,
                 "content": result.content,
                 "total_duration_ms": result.total_duration_ms,
                 "total_tokens": result.total_tokens,
@@ -513,6 +564,7 @@ def make_agent_tool(
         prompt: str,
         agent_type: str,
         agent_name: str | None = None,
+        resolved_model: str | None = None,
     ) -> ToolResult:
         """Launch an agent in the background and return immediately.
 
@@ -587,6 +639,7 @@ def make_agent_tool(
             description=description,
             prompt=prompt,
             agent_type=agent_type,
+            model=resolved_model,
             abort_controller=_async_abort,
             registry=context.runtime_tasks,
         )
@@ -687,7 +740,7 @@ def make_agent_tool(
                     _emit_terminal_agent_progress(
                         context, agent_id=agent_id, name=agent_name,
                         description=description, subagent_type=agent_type,
-                        status=_final_status,
+                        status=_final_status, model=resolved_model,
                     )
                     # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
                     # ``<task-notification>`` envelope. Atomic check-and-
@@ -732,7 +785,7 @@ def make_agent_tool(
                     _emit_terminal_agent_progress(
                         context, agent_id=agent_id, name=agent_name,
                         description=description, subagent_type=agent_type,
-                        status="failed",
+                        status="failed", model=resolved_model,
                     )
                     logger.exception(
                         "Async agent %s (%s) failed",
@@ -765,6 +818,9 @@ def make_agent_tool(
                 "status": "async_launched",
                 "agent_id": agent_id,
                 "agent_type": agent_type,
+                # See the sync path — the routed model is reportable even
+                # when the tool call named none.
+                "model": resolved_model,
                 "description": description,
                 "prompt": prompt,
                 "task_output_key": agent_id,

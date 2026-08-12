@@ -196,7 +196,20 @@ class LiveAgentRunner:
                 available_tools=worker_tools,
                 tool_registry=agent_registry,
                 provider=self._provider,
-                model=spec.model,
+                # The Workflow tool's contract says an agent() call without
+                # opts.model "inherits the main-loop model", so default to
+                # 'inherit' rather than passing None through: None now
+                # resolves to the provider's cheap default subagent model,
+                # which both breaks that contract and hands flash-class
+                # models the deep-research WebSearch/WebFetch loop that
+                # tools/workflow.py documents as a ~30x token burner on
+                # exactly such models. The agent definition's own ``model:``
+                # sits BETWEEN those (critic r4): this value fills the
+                # tool-param slot, which outranks the agent-def slot in
+                # get_agent_model — a bare 'inherit' here would silently
+                # discard an opts.agentType agent's declared model (e.g.
+                # Explore's 'haiku').
+                model=spec.model or agent_definition.model or "inherit",
                 agent_id=agent_id,
                 abort_controller=abort,
                 max_turns=self._max_turns,

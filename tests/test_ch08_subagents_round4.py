@@ -22,8 +22,14 @@ class _FakeProvider:
         return list(self._available)
 
 
-_SONNET = "claude-sonnet-4-20250514"
-_HAIKU = "claude-3-5-haiku-20241022"
+# Current live ids (2026-08 refresh) — the retired 2025 ids these fixtures
+# used to pin were removed from the API, and the alias table now targets
+# these. ``_FakeProvider`` carries no ``provider_id``, so these tests
+# exercise the provider-table-less MECHANISM (global aliases + availability
+# gate); the per-provider table behavior is covered by
+# ``TestPerProviderSubagentDefaults`` below.
+_SONNET = "claude-sonnet-5"
+_HAIKU = "claude-haiku-4-5"
 
 
 class TestAgentModelResolution(unittest.TestCase):
@@ -31,6 +37,12 @@ class TestAgentModelResolution(unittest.TestCase):
         # Ensure no env override leaks between tests.
         self._env = dict(os.environ)
         os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        for var in (
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ):
+            os.environ.pop(var, None)
 
     def tearDown(self):
         os.environ.clear()
@@ -101,6 +113,303 @@ class TestAgentModelResolution(unittest.TestCase):
             pass
 
         self.assertEqual(get_agent_model(None, "haiku", _Nothing()), "")
+
+
+class TestPerProviderSubagentDefaults(unittest.TestCase):
+    """The per-provider subagent tables (PROVIDER_INFO ``subagent_model`` /
+    ``subagent_tier_models``) — the 2026-08 fix for subagents 404-ing on
+    retired first-party ids and DeepSeek fan-outs silently billing the
+    expensive session model."""
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        for var in (
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_BASE_URL",
+        ):
+            os.environ.pop(var, None)
+        # Hermetic: the resolver consults the user's real config.json for
+        # the ``providers.<id>.subagent_model`` knob — neutralize it.
+        self._cfg = patch("src.config.get_provider_config", return_value={})
+        self._cfg.start()
+
+    def tearDown(self):
+        self._cfg.stop()
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    @staticmethod
+    def _anthropic(model="claude-fable-5", **kwargs):
+        from src.providers.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider(api_key="test-key", model=model, **kwargs)
+
+    @staticmethod
+    def _deepseek(model="deepseek-v4-pro"):
+        from src.providers.deepseek_provider import DeepSeekProvider
+
+        return DeepSeekProvider(api_key="test-key", model=model)
+
+    def test_anthropic_unspecified_uses_default_subagent_model(self):
+        # Goal ask #1: on the anthropic provider the default subagent model
+        # is claude-haiku-4-5 (the cheapest current-gen tier), NOT an
+        # inherit of the (pricier) session model.
+        p = self._anthropic()
+        self.assertEqual(get_agent_model(None, None, p), "claude-haiku-4-5")
+
+    def test_anthropic_haiku_tier_resolves_to_live_haiku(self):
+        # The screenshot bug: Explore pins 'haiku', whose old alias target
+        # (claude-3-5-haiku-20241022) was retired and 404'd every spawn.
+        # The bare claude-haiku-4-5 resolves server-side (probed live).
+        p = self._anthropic()
+        self.assertEqual(
+            get_agent_model(None, "haiku", p), "claude-haiku-4-5",
+        )
+
+    def test_deepseek_unspecified_uses_flash(self):
+        # Goal ask #2: deepseek-v4-flash is the subagent default.
+        p = self._deepseek()
+        self.assertEqual(get_agent_model(None, None, p), "deepseek-v4-flash")
+
+    def test_deepseek_haiku_tier_uses_flash(self):
+        # Previously 'haiku' fell back to inherit → every Explore fan-out
+        # ran (and billed) the v4-pro session model.
+        p = self._deepseek()
+        self.assertEqual(get_agent_model(None, "haiku", p), "deepseek-v4-flash")
+
+    def test_deepseek_opus_tier_uses_pro(self):
+        p = self._deepseek(model="deepseek-v4-flash")
+        self.assertEqual(get_agent_model("opus", None, p), "deepseek-v4-pro")
+
+    def test_explicit_inherit_still_forces_session_model(self):
+        # The Plan/fork agents pin 'inherit' — the provider default must
+        # not override an explicit inherit.
+        self.assertEqual(
+            get_agent_model(None, "inherit", self._anthropic()),
+            "claude-fable-5",
+        )
+        self.assertEqual(
+            get_agent_model("inherit", None, self._deepseek()),
+            "deepseek-v4-pro",
+        )
+
+    def test_custom_anthropic_endpoint_inherits(self):
+        # TS checkIsClaudeNativeProvider: a proxy/self-hosted endpoint has
+        # no guaranteed first-party catalog — the table is off, and the
+        # haiku/sonnet aliases inherit rather than resolve to first-party
+        # ids the proxy may not serve.
+        p = self._anthropic(
+            model="my-proxy-model", base_url="https://proxy.example/v1",
+        )
+        self.assertEqual(get_agent_model(None, None, p), "my-proxy-model")
+        self.assertEqual(get_agent_model(None, "haiku", p), "my-proxy-model")
+        self.assertEqual(get_agent_model("sonnet", None, p), "my-proxy-model")
+
+    def _set_config_knob(self, value):
+        self._cfg.stop()
+        self._cfg = patch(
+            "src.config.get_provider_config",
+            return_value={"subagent_model": value},
+        )
+        self._cfg.start()
+
+    def test_config_subagent_model_knob_wins_and_is_trusted(self):
+        # providers.<id>.subagent_model (the opencode ``small_model`` knob)
+        # beats the registry default; a full id bypasses the availability
+        # gate (the user is naming a deployment).
+        self._set_config_knob("my-finetuned-small")
+        p = self._anthropic()
+        self.assertEqual(get_agent_model(None, None, p), "my-finetuned-small")
+
+    def test_config_knob_inherit_restores_session_model(self):
+        # critic B1 — 'inherit' is the natural "stop downgrading my
+        # subagents" spelling; it must resolve to the session model, never
+        # go on the wire as a literal model id.
+        self._set_config_knob("inherit")
+        p = self._anthropic()
+        self.assertEqual(get_agent_model(None, None, p), "claude-fable-5")
+
+    def test_config_knob_alias_resolves_through_tier_table(self):
+        # critic B1 — a bare tier alias in the knob resolves like any other
+        # user-specified alias instead of shipping the raw string.
+        self._set_config_knob("sonnet")
+        p = self._anthropic()
+        self.assertEqual(get_agent_model(None, None, p), "claude-sonnet-5")
+
+    def test_markdown_agent_without_model_gets_provider_default(self):
+        # critic M4 — a user-authored .md agent with no ``model:``
+        # frontmatter parses to model=None and takes the provider default.
+        from src.agent.parse_agent_markdown import parse_agent_from_markdown
+
+        agent = parse_agent_from_markdown(
+            "/tmp/my-agent.md",
+            {"name": "my-agent", "description": "d"},
+            "Body",
+            "user",
+            "/tmp",
+        )
+        self.assertIsNotNone(agent)
+        self.assertIsNone(agent.model)
+        self.assertEqual(
+            get_agent_model(None, agent.model, self._anthropic()),
+            "claude-haiku-4-5",
+        )
+
+    def test_coordinator_mode_pins_inherit_at_the_tool_layer(self):
+        # critic B2 — coordinator workers cannot pass a model param (the
+        # tool layer discards it), so that path pins 'inherit': workers do
+        # implementation work and must stay on the session model.
+        self.assertEqual(
+            get_agent_model("inherit", None, self._anthropic()),
+            "claude-fable-5",
+        )
+        import inspect
+
+        from src.tool_system.tools import agent as agent_tool_module
+
+        src_text = inspect.getsource(agent_tool_module)
+        self.assertIn(
+            'model = "inherit" if is_coordinator_mode()', src_text,
+            "coordinator path must pin 'inherit', not None — None now "
+            "resolves to the provider's cheap default subagent model",
+        )
+
+    def test_registry_subagent_targets_are_available(self):
+        # critic M5 — the availability gate silently degrades a stale
+        # registry row to inherit, so a typo in a future row would be an
+        # invisible no-op. Pin the invariant against the list the RUNTIME
+        # gate actually reads — the provider INSTANCE's
+        # get_available_models(), a separately-maintained literal from
+        # PROVIDER_INFO's available_models — and against the registry list
+        # too, so drift in either direction fails here rather than
+        # silently no-oping in production.
+        from src.providers import PROVIDER_INFO, get_provider_class
+
+        checked = 0
+        for provider_id, info in PROVIDER_INFO.items():
+            targets = []
+            default = info.get("subagent_model")
+            if default:
+                targets.append(("subagent_model", default))
+            for tier, model in (info.get("subagent_tier_models") or {}).items():
+                targets.append((f"tier:{tier}", model))
+            if not targets:
+                continue
+            checked += 1
+            registry_list = info.get("available_models") or []
+            instance = get_provider_class(provider_id)(
+                api_key="test-key", model=None,
+            )
+            runtime_list = instance.get_available_models()
+            for label, target in targets:
+                for name, available in (
+                    ("PROVIDER_INFO available_models", registry_list),
+                    ("get_available_models()", runtime_list),
+                ):
+                    self.assertIn(
+                        target, available,
+                        f"{provider_id} {label} names {target!r}, which its "
+                        f"{name} does not list — the runtime gate would "
+                        "silently ignore it",
+                    )
+        # Today: anthropic + deepseek. If this drops to zero the tables were
+        # deleted and this test should go with them.
+        self.assertGreaterEqual(checked, 2)
+
+    def test_tier_env_pin_beats_table(self):
+        os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "my-bedrock-haiku"
+        p = self._anthropic()
+        self.assertEqual(get_agent_model(None, "haiku", p), "my-bedrock-haiku")
+
+    def test_tier_env_pin_does_not_leak_to_other_providers(self):
+        # critic r4 — the ANTHROPIC_* env pins name Anthropic deployments;
+        # honoring one on a DeepSeek session would ship that id to
+        # api.deepseek.com on every Explore spawn (hard 400).
+        os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "my-bedrock-haiku"
+        d = self._deepseek()
+        self.assertEqual(get_agent_model(None, "haiku", d), "deepseek-v4-flash")
+
+    def test_known_alias_spellings_never_ship_raw(self):
+        # critic r3 — trust_literal must only trust ids NO alias table
+        # knows. 's4', 'claude-4-sonnet', 'claude-haiku' are alias
+        # spellings, not servable model ids: they resolve to their
+        # canonical target (and take the availability gate), never go on
+        # the wire verbatim.
+        p = self._anthropic()
+        self.assertEqual(
+            get_agent_model("claude-4-sonnet", None, p), "claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            get_agent_model("claude-haiku", None, p), "claude-haiku-4-5",
+        )
+        os.environ["CLAUDE_CODE_SUBAGENT_MODEL"] = "s4"
+        try:
+            resolved = get_agent_model(None, None, p)
+        finally:
+            os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+        self.assertEqual(resolved, "claude-sonnet-4-6")
+
+    def test_alias_of_retired_model_degrades_to_inherit(self):
+        # The legacy pins ('claude-3.5-haiku', 'h35') canonicalize to ids
+        # the live catalog no longer serves; post-prune the availability
+        # gate degrades them to inherit instead of shipping a 404.
+        p = self._anthropic()
+        self.assertEqual(
+            get_agent_model("claude-3.5-haiku", None, p), "claude-fable-5",
+        )
+        self.assertEqual(get_agent_model("h35", None, p), "claude-fable-5")
+
+    def test_alias_unservable_on_provider_inherits(self):
+        # A known alias whose canonical target the session provider does
+        # not serve degrades to inherit (never the raw spelling, never a
+        # foreign id that would 400 louder).
+        d = self._deepseek()
+        self.assertEqual(
+            get_agent_model("claude-haiku", None, d), "deepseek-v4-pro",
+        )
+
+    def test_same_tier_alias_still_keeps_parent_exact_model(self):
+        # M2 precedes the table: a sonnet-tier session asked for 'sonnet'
+        # keeps its exact (possibly older) model — no surprise upgrade to
+        # the table's claude-sonnet-5.
+        p = self._anthropic(model="claude-sonnet-4-6")
+        self.assertEqual(get_agent_model("sonnet", None, p), "claude-sonnet-4-6")
+
+    def test_stale_table_row_degrades_to_inherit(self):
+        # If a registry row ever names a model the provider's catalog does
+        # not list, degrade to inherit instead of shipping a 404.
+        p = self._anthropic()
+        with patch.object(
+            type(p), "get_available_models", return_value=["claude-fable-5"],
+        ):
+            self.assertEqual(get_agent_model(None, None, p), "claude-fable-5")
+            self.assertEqual(get_agent_model(None, "haiku", p), "claude-fable-5")
+
+    def test_general_purpose_and_explore_defs_route_as_designed(self):
+        # End-to-end over the built-in defs: general-purpose (no model) →
+        # provider default; Explore (haiku) → provider haiku tier.
+        from src.agent.agent_definitions import EXPLORE_AGENT, GENERAL_PURPOSE_AGENT
+
+        a = self._anthropic()
+        d = self._deepseek()
+        self.assertEqual(
+            get_agent_model(None, GENERAL_PURPOSE_AGENT.model, a),
+            "claude-haiku-4-5",
+        )
+        self.assertEqual(
+            get_agent_model(None, EXPLORE_AGENT.model, a),
+            "claude-haiku-4-5",
+        )
+        self.assertEqual(
+            get_agent_model(None, GENERAL_PURPOSE_AGENT.model, d),
+            "deepseek-v4-flash",
+        )
+        self.assertEqual(
+            get_agent_model(None, EXPLORE_AGENT.model, d), "deepseek-v4-flash",
+        )
 
 
 class TestModelResolutionIsConcurrencySafe(unittest.TestCase):

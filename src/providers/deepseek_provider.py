@@ -22,6 +22,8 @@ from .openai_compatible import OpenAICompatibleProvider
 class DeepSeekProvider(OpenAICompatibleProvider):
     """DeepSeek provider using the OpenAI SDK against the DeepSeek base URL."""
 
+    provider_id = "deepseek"
+
     DEFAULT_BASE_URL = "https://api.deepseek.com"
 
     #: Marks this provider as DeepSeek so the query layer relocates the

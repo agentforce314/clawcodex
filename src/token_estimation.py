@@ -352,7 +352,7 @@ async def count_messages_tokens_with_api(
             default_headers=get_anthropic_custom_headers() or None
         )
         response = await client.beta.messages.count_tokens(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-5",
             messages=messages,
             tools=tools if tools else [],
         )

@@ -6,7 +6,9 @@ import os
 from dataclasses import dataclass, field
 
 
-FAST_MODE_MODEL = "claude-3-5-haiku-20241022"
+# The current-generation haiku (the 3.5 id it used to pin was retired from
+# the live API and 404s). Overridable via CLAUDE_FAST_MODE_MODEL below.
+FAST_MODE_MODEL = "claude-haiku-4-5"
 
 
 @dataclass

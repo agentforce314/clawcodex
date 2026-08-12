@@ -18,26 +18,32 @@ from src.models.model import resolve_model, display_name, canonical_model_name, 
 from src.models.validation import validate_model_name, is_model_allowed, _matches_pattern
 from src.models.bedrock import BEDROCK_MODEL_MAP, to_bedrock_model_id, from_bedrock_model_id
 from src.models.context import get_context_window_for_model, get_model_max_output_tokens
-from src.models.agent_routing import get_model_for_agent
 
 
 class TestAliases:
     def test_resolve_known_alias(self):
-        assert resolve_alias("sonnet") == "claude-sonnet-4-20250514"
-        assert resolve_alias("opus") == "claude-opus-4-20250514"
-        assert resolve_alias("haiku") == "claude-3-5-haiku-20241022"
+        # The bare family aliases track the CURRENT live model of each
+        # family (2026-08 refresh; the old 2025 targets were retired from
+        # the API and 404).
+        assert resolve_alias("sonnet") == "claude-sonnet-5"
+        assert resolve_alias("opus") == "claude-opus-5"
+        assert resolve_alias("haiku") == "claude-haiku-4-5"
+        assert resolve_alias("fable") == "claude-fable-5"
 
     def test_resolve_case_insensitive(self):
-        assert resolve_alias("Sonnet") == "claude-sonnet-4-20250514"
-        assert resolve_alias("OPUS") == "claude-opus-4-20250514"
+        assert resolve_alias("Sonnet") == "claude-sonnet-5"
+        assert resolve_alias("OPUS") == "claude-opus-5"
 
     def test_resolve_unknown_returns_input(self):
         assert resolve_alias("gpt-4o") == "gpt-4o"
         assert resolve_alias("unknown-model") == "unknown-model"
 
     def test_shortcut_aliases(self):
-        assert resolve_alias("s4") == "claude-sonnet-4-20250514"
-        assert resolve_alias("o4") == "claude-opus-4-20250514"
+        # s4/o4 track the newest LIVE 4.x snapshots, same as their long
+        # forms claude-4-sonnet/claude-4-opus (the dated 2025-05-14
+        # targets were retired from the API).
+        assert resolve_alias("s4") == "claude-sonnet-4-6"
+        assert resolve_alias("o4") == "claude-opus-4-8"
 
 
 class TestModelConfigs:
@@ -143,7 +149,7 @@ class TestCapabilities:
 
 class TestModelResolution:
     def test_resolve_alias(self):
-        assert resolve_model("sonnet") == "claude-sonnet-4-20250514"
+        assert resolve_model("sonnet") == "claude-sonnet-5"
 
     def test_resolve_canonical(self):
         assert resolve_model("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
@@ -157,7 +163,7 @@ class TestModelResolution:
         assert len(name) > 0
 
     def test_canonical_model_name(self):
-        assert canonical_model_name("sonnet") == "claude-sonnet-4-20250514"
+        assert canonical_model_name("sonnet") == "claude-sonnet-5"
 
     def test_deprecation_warning_deprecated(self):
         warning = deprecation_warning("claude-3-5-sonnet-20240620")
@@ -234,23 +240,10 @@ class TestContextWindow:
         assert get_model_max_output_tokens("unknown") == 8_192
 
 
-class TestAgentRouting:
-    def test_inherit_parent(self):
-        model = get_model_for_agent("general-purpose", parent_model="claude-sonnet-4-20250514")
-        assert model == "claude-sonnet-4-20250514"
-
-    def test_config_override(self):
-        config = {"agent_models": {"general-purpose": "claude-opus-4-20250514"}}
-        model = get_model_for_agent(
-            "general-purpose",
-            parent_model="claude-sonnet-4-20250514",
-            config=config,
-        )
-        assert model == "claude-opus-4-20250514"
-
-    def test_no_config(self):
-        model = get_model_for_agent("explore", parent_model="my-model")
-        assert model == "my-model"
+# TestAgentRouting was deleted with src/models/agent_routing.py (2026-08):
+# it pinned inherit-parent semantics for unspecified-model agents, which now
+# contradicts the shipped resolver (see tests/test_ch08_subagents_round4.py
+# TestPerProviderSubagentDefaults for the live contract).
 
 
 class TestOneMillionContextSuffix:

@@ -388,7 +388,11 @@ def test_coordinator_suppresses_model_param(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The coordinator's model param is discarded (``AgentTool.tsx:252``) —
-    workers need the default model for substantive tasks."""
+    and replaced with 'inherit', not None: workers do implementation work
+    and must stay on the SESSION model. None would resolve to the
+    provider's cheap default subagent model (PROVIDER_INFO subagent_model),
+    and workers have no way to opt out since this very suppression eats
+    their model param."""
     from src.tool_system.defaults import build_default_registry
     from src.tool_system.protocol import ToolCall
     from src.tool_system.context import ToolContext
@@ -424,7 +428,7 @@ def test_coordinator_suppresses_model_param(
         while not seen_models and _time.time() < deadline:
             _time.sleep(0.02)
     assert seen_models, "async worker never invoked run_agent"
-    assert seen_models[0] is None
+    assert seen_models[0] == "inherit"
 
 
 def test_model_param_honored_when_mode_off(

@@ -44,7 +44,7 @@ def auto_title_from_message(text: str) -> str:
 async def generate_llm_title(
     messages: list[dict[str, Any]],
     *,
-    model: str = "claude-3-5-haiku-20241022",
+    model: str = "claude-haiku-4-5",
 ) -> str | None:
     """Generate a 5-10 word title using a side LLM query.
 

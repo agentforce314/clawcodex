@@ -244,6 +244,8 @@ def _default_max_tokens(model: str | None) -> int:
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider."""
 
+    provider_id = "anthropic"
+
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None
     ):
@@ -1048,32 +1050,25 @@ class AnthropicProvider(BaseProvider):
         Returns:
             List of model names
         """
+        # Mirrors the live /v1/models catalog (2026-08-12) plus the bare
+        # ``claude-haiku-4-5`` (server-side alias, probed). Retired ids are
+        # deliberately absent — a listed-but-dead id turns the subagent
+        # availability gate's "degrade to inherit" into a shipped 404.
+        # Keep in sync with PROVIDER_INFO["anthropic"]["available_models"].
         return [
             # Frontier (above Opus tier)
             "claude-fable-5",
-            # Claude 5 series (Opus tier; sonnet-5 not registered yet —
-            # it needs the same model-table entry opus-5 got)
+            # Claude 5 series
             "claude-opus-5",
-            # Claude 4 series
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-sonnet-4-5-20250929",
-            "claude-sonnet-4-0",
-            "claude-sonnet-4-20250514",
+            "claude-sonnet-5",
+            # Claude 4.x series (still served)
             "claude-opus-4-8",
+            "claude-opus-4-7",
             "claude-opus-4-6",
-            "claude-opus-4-5",
             "claude-opus-4-5-20251101",
-            "claude-opus-4-1",
-            "claude-opus-4-1-20250805",
-            "claude-opus-4-0",
-            "claude-opus-4-20250514",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5-20250929",
+            # Haiku
             "claude-haiku-4-5",
             "claude-haiku-4-5-20251001",
-            # Legacy
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
         ]

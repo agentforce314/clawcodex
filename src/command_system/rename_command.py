@@ -93,7 +93,7 @@ async def _generate_session_name(messages: Any) -> str | None:
             default_headers=get_anthropic_custom_headers() or None
         )
         result = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=100,
             system=_NAME_PROMPT,
             messages=[{"role": "user", "content": text[:4000]}],

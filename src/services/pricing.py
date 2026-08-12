@@ -47,6 +47,16 @@ _TIER_10_50 = {
     "cache_creation": 12.50 / 1_000_000,
     "cache_read": 1.00 / 1_000_000,
 }
+# Sonnet 5 launched at 2/10 and Anthropic made that pricing permanent (the
+# scheduled 2026-09 move to the 3/15 sonnet tier was cancelled), so it gets
+# its own tier rather than joining the 4.x sonnets. Cache rates follow the
+# standard first-party ratios (write 1.25x input, read 0.1x input).
+_TIER_2_10 = {
+    "input": 2.0 / 1_000_000,
+    "output": 10.0 / 1_000_000,
+    "cache_creation": 2.50 / 1_000_000,
+    "cache_read": 0.20 / 1_000_000,
+}
 _TIER_HAIKU_45 = {
     "input": 1.0 / 1_000_000,
     "output": 5.0 / 1_000_000,
@@ -231,7 +241,9 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-haiku-4-5": _TIER_HAIKU_45,
     "claude-3-5-haiku-20241022": _TIER_HAIKU_45,
     "claude-3-haiku-20240307": _TIER_HAIKU_3,
-    # Sonnet family — all on the standard 3/15 tier
+    # Sonnet family — Sonnet 5 on its permanent 2/10 launch tier, the 4.x
+    # and 3.x sonnets on the standard 3/15 tier
+    "claude-sonnet-5": _TIER_2_10,
     "claude-sonnet-4-6": _TIER_3_15,
     "claude-sonnet-4-5": _TIER_3_15,
     "claude-sonnet-4-20250514": _TIER_3_15,
@@ -297,6 +309,7 @@ _FAMILY_PREFIXES: list[tuple[str, dict[str, float]]] = [
     ("claude-haiku-4", _TIER_HAIKU_45),
     ("claude-3-5-haiku", _TIER_HAIKU_45),
     ("claude-3-haiku", _TIER_HAIKU_3),
+    ("claude-sonnet-5", _TIER_2_10),
     ("claude-opus-5", _TIER_5_25),
     ("claude-opus-4-8", _TIER_5_25),
     ("claude-opus-4-7", _TIER_5_25),

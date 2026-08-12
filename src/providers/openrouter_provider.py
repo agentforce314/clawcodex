@@ -20,6 +20,8 @@ from .openai_compatible import OpenAICompatibleProvider
 class OpenRouterProvider(OpenAICompatibleProvider):
     """OpenRouter provider using the OpenAI SDK against the OpenRouter base URL."""
 
+    provider_id = "openrouter"
+
     DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
     def __init__(

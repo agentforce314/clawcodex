@@ -34,7 +34,7 @@ def _resolve_recall_model(provider: Any) -> str | None:
     TS pins the selector to a small default (``getDefaultSonnetModel``) so a
     turn on an expensive session model doesn't pay full price for the recall
     call. The multi-provider port wires the ``small_fast_model`` setting —
-    BUT its shipped default is an Anthropic id (``claude-3-5-haiku-…``,
+    BUT its shipped default is an Anthropic id (``claude-haiku-4-5``,
     settings/constants.py), which is only valid on the first-party Anthropic
     endpoint. Passing it to a DeepSeek/OpenAI/Minimax session would 400 and
     (since recall swallows errors) silently kill recall every turn (critic

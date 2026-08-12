@@ -2475,6 +2475,11 @@ export class GatewayClient extends EventEmitter {
           const payload: any = {
             depth: msg.depth ?? 0,
             goal: msg.description || msg.name || 'subagent',
+            // The model the subagent actually runs on. Without this the
+            // agents overlay falls back to 'inherit' — which the
+            // per-provider default-subagent-model change makes actively
+            // wrong (spawns default to e.g. claude-haiku-4-5 now).
+            model: msg.model,
             subagent_id: aid,
             subagent_type: msg.subagent_type
           }

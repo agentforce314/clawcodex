@@ -96,10 +96,9 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # Every 4.x id still matches the earlier ``claude-opus-4`` base first,
     # so their 200K/legacy resolution is unchanged, but two other strings
     # now land here: an unregistered future ``claude-opus-<n>``, AND the
-    # literal ``claude-opus`` — a live MODEL_ALIASES key (aliases.py:15)
-    # that resolves to claude-opus-4-20250514, so ``display_name()`` on the
-    # UNRESOLVED alias now reads "Claude Opus 5". Callers that canonicalize
-    # first (the normal path) are unaffected; test_model_system pins both.
+    # literal ``claude-opus`` — a live MODEL_ALIASES key that (since the
+    # 2026-08 alias refresh) also RESOLVES to claude-opus-5, so the
+    # resolved and unresolved spellings agree on "Claude Opus 5".
     # This inverts the "under-estimate is the safe direction" note above
     # for unknown opus ids, and over-estimating is the worse failure —
     # auto-compact never fires and the request eventually exceeds the real
@@ -121,6 +120,57 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         cost_output_per_mtok=25.0,
         cost_cache_create_per_mtok=6.25,
         cost_cache_read_per_mtok=0.50,
+    ),
+    # Claude Sonnet 5 — the current Sonnet tier (the ``sonnet`` alias and
+    # subagent tier target; see ``subagent_tier_models`` in
+    # src/providers/__init__.py). 128K true output cap probed live
+    # 2026-08-12 (``max_tokens: 2000000 > 128000`` from the API's own
+    # 400); the 1M context window is NOT probed — the window probe kept
+    # rate-limiting — and comes from the launch docs plus the Claude-5
+    # family convention (opus-5 / fable-5 / opus-4-8 all ship 1M). $2/$10
+    # per MTok — Sonnet 5's launch pricing was made permanent, so it does
+    # NOT inherit the 4.x sonnet 3/15 tier. Same 32_000 first-attempt wire
+    # ``max_tokens`` convention as the other 1M rows above.
+    #
+    # Placement is load-bearing the same way ``claude-opus-5``'s is: this
+    # row's prefix base is the family-wide ``claude-sonnet``, so it must
+    # sit AFTER ``claude-sonnet-4-20250514`` (the table's first row) —
+    # unknown 4.x sonnet ids (claude-sonnet-4-5-*, -4-6 …) keep resolving
+    # to that conservative 200K row first, and only unregistered future
+    # ``claude-sonnet-<n>`` ids land here.
+    "claude-sonnet-5": ModelConfig(
+        model_id="claude-sonnet-5",
+        display_name="Claude Sonnet 5",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        supports_thinking=True,
+        cost_input_per_mtok=2.0,
+        cost_output_per_mtok=10.0,
+        cost_cache_create_per_mtok=2.50,
+        cost_cache_read_per_mtok=0.20,
+    ),
+    # Claude Haiku 4.5 — the anthropic DEFAULT SUBAGENT model and its
+    # ``haiku`` tier target (Explore runs on it, mirroring TS
+    # exploreAgent.ts; cheapest current-gen tier at 1/5 per MTok). The
+    # live catalog LISTS only this dated id, but the bare
+    # ``claude-haiku-4-5`` — the spelling the alias table and subagent
+    # tables use — resolves server-side to it (probed live 2026-08-12).
+    # Window and cap probed the same day: 200K window (``prompt is too
+    # long: … > 200000``) and a 64_000 true output cap (``max_tokens: …
+    # > 64000``), so the 32_000 first-attempt convention leaves the 64K
+    # truncation-escalation exactly at the model's real ceiling. Prefix
+    # base ``claude-haiku-4-5`` also catches the bare spelling and future
+    # dated snapshots.
+    "claude-haiku-4-5-20251001": ModelConfig(
+        model_id="claude-haiku-4-5-20251001",
+        display_name="Claude Haiku 4.5",
+        context_window=200_000,
+        max_output_tokens=32_000,
+        supports_thinking=True,
+        cost_input_per_mtok=1.0,
+        cost_output_per_mtok=5.0,
+        cost_cache_create_per_mtok=1.25,
+        cost_cache_read_per_mtok=0.10,
     ),
 
     # Claude 3.7 series

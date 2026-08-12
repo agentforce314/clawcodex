@@ -185,6 +185,8 @@ def _sanitize_schema_for_gemini(schema: Any) -> Any:
 class GeminiProvider(BaseProvider):
     """Native Gemini provider via the google-genai SDK."""
 
+    provider_id = "gemini"
+
     DEFAULT_MODEL = "gemini-2.5-pro"
 
     def __init__(

@@ -573,6 +573,7 @@ def build_provider_class(provider_id: str) -> type[_SpecOpenAICompatibleProvider
         (_SpecOpenAICompatibleProvider,),
         {
             "SPEC": spec,
+            "provider_id": provider_id,
             "DEFAULT_BASE_URL": spec.default_base_url,
             "DEFAULT_MODEL": spec.default_model,
             "supported_reasoning_efforts": spec.reasoning_efforts,

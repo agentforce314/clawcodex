@@ -361,11 +361,13 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
 
     # ch08 round-4 WI-1 — per-subagent model resolution (TS getAgentModel,
     # runAgent.ts:340). Resolve the model from the tool param / agent-def /
-    # env, then apply it to a per-subagent provider CLONE. NEVER mutate the
-    # shared session provider: ch07 made Agent concurrency-safe, so N
-    # parallel subagents share params.provider — mutating provider.model
-    # would race across them. copy.copy shares the HTTP client (thread-safe,
-    # per-request model) and gives this subagent its own .model.
+    # env / the provider's default subagent model (PROVIDER_INFO
+    # ``subagent_model``), then apply it to a per-subagent provider CLONE.
+    # NEVER mutate the shared session provider: ch07 made Agent
+    # concurrency-safe, so N parallel subagents share params.provider —
+    # mutating provider.model would race across them. copy.copy shares the
+    # HTTP client (thread-safe, per-request model) and gives this subagent
+    # its own .model.
     turn_provider = params.provider
     try:
         from .agent_model import get_agent_model
@@ -378,6 +380,16 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         ):
             turn_provider = copy.copy(params.provider)
             turn_provider.model = resolved_model
+            # Debug trace of the routing — nothing in the app configures a
+            # level that shows INFO, so don't pretend otherwise. The
+            # USER-facing surfaces are the Agent tool's result/registry
+            # "model" field and the agent-progress emits (tools/agent.py
+            # resolves the same inputs for reporting).
+            logger.debug(
+                "subagent %s runs on model %s (session model %s)",
+                agent_def.agent_type, resolved_model,
+                getattr(params.provider, "model", None),
+            )
     except Exception:  # noqa: BLE001 — model resolution never blocks a spawn
         logger.debug("subagent model resolution failed; using session model",
                      exc_info=True)

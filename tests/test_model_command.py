@@ -39,8 +39,11 @@ from src.command_system.types import (
 )
 from src.models.model import canonical_model_name, display_name
 
-_SONNET = "claude-sonnet-4-20250514"
-_OPUS = "claude-opus-4-20250514"
+# Current live ids (2026-08 alias refresh): ``canonical_model_name("opus")``
+# must equal _OPUS for the alias-resolution tests, and the bare aliases now
+# track the Claude 5 family.
+_SONNET = "claude-sonnet-5"
+_OPUS = "claude-opus-5"
 
 
 # --------------------------------------------------------------------------- #

@@ -8,7 +8,27 @@ from .base import BaseProvider, ChatMessage, ChatResponse
 
 
 # Provider metadata for login/UI
-class ProviderInfo(TypedDict):
+class _ProviderInfoOptional(TypedDict, total=False):
+    # Subagent model defaults, read by ``src.agent.agent_model``. Optional:
+    # providers without them keep the reference behavior (subagents inherit
+    # the session model; unknown tier aliases fall back to inherit).
+    #
+    # ``subagent_tier_models`` — resolution targets for the bare
+    # ``opus`` / ``sonnet`` / ``haiku`` tier aliases an agent definition may
+    # pin (the built-in Explore agent pins ``haiku``, TS exploreAgent.ts).
+    # Port of the TS reference's per-provider getDefault*Model() family.
+    #
+    # ``subagent_model`` — what a spawned agent runs on when neither the
+    # Agent tool call nor the agent definition names a model. Deliberate
+    # divergence from both references (they inherit the session model
+    # here), by explicit user directive: fan-out subagents default to the
+    # provider's cheap tier. Overridable per provider via the
+    # ``providers.<id>.subagent_model`` config knob (incl. ``"inherit"``).
+    subagent_model: str
+    subagent_tier_models: dict[str, str]
+
+
+class ProviderInfo(_ProviderInfoOptional):
     label: str
     default_base_url: str
     default_model: str
@@ -20,34 +40,48 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "label": "Anthropic Claude",
         "default_base_url": "https://api.anthropic.com",
         "default_model": "claude-sonnet-4-6",
+        # Subagent defaults, verified against the live /v1/models catalog
+        # 2026-08-12 — the retired ids the old alias table pointed at
+        # (claude-3-5-haiku-20241022, claude-sonnet-4-20250514) 404 there,
+        # which is exactly the failure these fields exist to prevent.
+        # Haiku 4.5 is the designated default: cheapest current-gen tier
+        # (1/5 per MTok vs sonnet-5's 2/10). The catalog LISTS only the
+        # dated ``claude-haiku-4-5-20251001``, but the bare id resolves
+        # server-side to it (probed live: the API's max_tokens 400 names
+        # the dated id), matching the undated style of the other targets.
+        "subagent_model": "claude-haiku-4-5",
+        "subagent_tier_models": {
+            "fable": "claude-fable-5",
+            "opus": "claude-opus-5",
+            "sonnet": "claude-sonnet-5",
+            "haiku": "claude-haiku-4-5",
+        },
+        # Mirrors the live /v1/models catalog (2026-08-12) plus the bare
+        # ``claude-haiku-4-5``, which the API resolves server-side (probed).
+        # Retired ids (claude-sonnet-4-20250514, claude-3-5-haiku-20241022,
+        # every 3.x/4.0/4.1 id) are deliberately ABSENT: this list feeds
+        # both the /model picker and the subagent availability gate, and a
+        # listed-but-dead id turns the gate's "degrade to inherit" into a
+        # shipped 404. Free-text model entry still accepts any id. Keep in
+        # sync with AnthropicProvider.get_available_models (the invariant
+        # test in tests/test_ch08_subagents_round4.py pins the subagent
+        # targets against BOTH lists).
         "available_models": [
             # Frontier (above Opus tier)
             "claude-fable-5",
-            # Claude 5 series (Opus tier; sonnet-5 not registered yet —
-            # it needs the same model-table entry opus-5 got)
+            # Claude 5 series
             "claude-opus-5",
-            # Claude 4 series
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-sonnet-4-5-20250929",
-            "claude-sonnet-4-0",
-            "claude-sonnet-4-20250514",
+            "claude-sonnet-5",
+            # Claude 4.x series (still served)
             "claude-opus-4-8",
+            "claude-opus-4-7",
             "claude-opus-4-6",
-            "claude-opus-4-5",
             "claude-opus-4-5-20251101",
-            "claude-opus-4-1",
-            "claude-opus-4-1-20250805",
-            "claude-opus-4-0",
-            "claude-opus-4-20250514",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-5-20250929",
+            # Haiku
             "claude-haiku-4-5",
             "claude-haiku-4-5-20251001",
-            # Legacy
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
         ],
     },
     "openai": {
@@ -117,6 +151,16 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "label": "DeepSeek",
         "default_base_url": "https://api.deepseek.com",
         "default_model": "deepseek-v4-pro",
+        # Subagent defaults: v4-flash is DeepSeek's fast/cheap line, the
+        # equivalent of the sonnet/haiku work tiers; v4-pro (the session
+        # default above) stays the opus-tier target. Catalog verified live
+        # 2026-08-12 (GET /models returns exactly v4-pro and v4-flash).
+        "subagent_model": "deepseek-v4-flash",
+        "subagent_tier_models": {
+            "opus": "deepseek-v4-pro",
+            "sonnet": "deepseek-v4-flash",
+            "haiku": "deepseek-v4-flash",
+        },
         "available_models": [
             # V4 series (current)
             "deepseek-v4-pro",

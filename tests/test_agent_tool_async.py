@@ -106,3 +106,60 @@ def test_async_agent_launch_marks_failed_output(tmp_path: Path) -> None:
         final_status = _wait_for_task_status(context, task_id)
         assert final_status == "failed"
         assert "boom" in _task_output_text(context, task_id)
+
+
+class _ModelReportingProvider:
+    """Minimal provider for the resolved-model reporting assertions."""
+
+    model = "session-model-x"
+
+    def get_available_models(self):
+        return ["session-model-x"]
+
+
+def test_async_launch_reports_resolved_model(tmp_path: Path) -> None:
+    """critic r4 MINOR-3 — the routed model is surfaced in the tool result
+    and the task registry even when the tool call names none (here: no
+    provider_id → inherit → the session model)."""
+    registry = build_default_registry(provider=_ModelReportingProvider())
+    context = ToolContext(workspace_root=tmp_path)
+
+    async def _fake_run_agent(_params):
+        yield AssistantMessage(content=[TextBlock(text="ok")])
+
+    with patch("src.tool_system.tools.agent.run_agent", _fake_run_agent):
+        result = registry.dispatch(
+            ToolCall(
+                name="Agent",
+                input={
+                    "description": "model reporting",
+                    "prompt": "p",
+                    "run_in_background": True,
+                },
+            ),
+            context,
+        )
+        assert result.output.get("model") == "session-model-x"
+        task_id = str(result.output["agent_id"])
+        state = context.runtime_tasks.get(task_id)
+        assert getattr(state, "model", None) == "session-model-x"
+        _wait_for_task_status(context, task_id)
+
+
+def test_sync_run_reports_resolved_model(tmp_path: Path) -> None:
+    registry = build_default_registry(provider=_ModelReportingProvider())
+    context = ToolContext(workspace_root=tmp_path)
+
+    async def _fake_run_agent(_params):
+        yield AssistantMessage(content=[TextBlock(text="sync ok")])
+
+    with patch("src.tool_system.tools.agent.run_agent", _fake_run_agent):
+        result = registry.dispatch(
+            ToolCall(
+                name="Agent",
+                input={"description": "model reporting", "prompt": "p"},
+            ),
+            context,
+        )
+        assert result.output.get("status") == "completed"
+        assert result.output.get("model") == "session-model-x"

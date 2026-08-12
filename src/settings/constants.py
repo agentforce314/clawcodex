@@ -10,8 +10,11 @@ from .types import (
 )
 
 DEFAULT_SETTINGS = SettingsSchema(
-    model="claude-sonnet-4-20250514",
-    small_fast_model="claude-3-5-haiku-20241022",
+    # Aligned with PROVIDER_INFO["anthropic"]["default_model"] — the ids
+    # these used to pin (claude-sonnet-4-20250514 / claude-3-5-haiku-20241022)
+    # were retired from the live API and 404 (verified 2026-08-12).
+    model="claude-sonnet-4-6",
+    small_fast_model="claude-haiku-4-5",
     provider="anthropic",
     permission_mode="default",
     permissions=[],

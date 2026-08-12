@@ -54,6 +54,14 @@ TextChunkCallback: TypeAlias = Callable[[str], None]
 class BaseProvider(ABC):
     """Base class for LLM providers."""
 
+    #: Canonical provider id ("anthropic", "deepseek", …) — the key this
+    #: provider's row carries in ``src.providers.PROVIDER_INFO``. Set on every
+    #: concrete provider class (registry-generated classes get it from
+    #: ``build_provider_class``). Empty string means "unregistered": lookups
+    #: keyed on it (per-provider subagent model defaults, for one) must treat
+    #: that as a miss, never as a valid key.
+    provider_id: str = ""
+
     #: Whether this provider talks to DeepSeek's API. Overridden to ``True``
     #: in :class:`~src.providers.deepseek_provider.DeepSeekProvider`. Gates
     #: DeepSeek-only token-efficiency behaviour (prompt-prefix-cache

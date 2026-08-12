@@ -860,13 +860,19 @@ describe('GatewayClient NDJSON adapter', () => {
   it('maps agent_progress to subagent.start + subagent.progress', async () => {
     proc.line({
       activity: 'reading src/', agent_id: 'a1', description: 'explore the repo',
-      name: 'Explore', status: 'running', subagent_type: 'Explore',
-      tokens: 120, tool_use_count: 2, type: 'agent_progress'
+      model: 'claude-haiku-4-5', name: 'Explore', status: 'running',
+      subagent_type: 'Explore', tokens: 120, tool_use_count: 2,
+      type: 'agent_progress'
     })
     await vi.waitFor(() => expect(last('subagent.start')).toBeTruthy())
     expect(last('subagent.start').payload.subagent_id).toBe('a1')
+    // The routed model must survive the bridge — the agents overlay falls
+    // back to 'inherit' without it, which the per-provider subagent
+    // defaults make actively wrong.
+    expect(last('subagent.start').payload.model).toBe('claude-haiku-4-5')
     await vi.waitFor(() => expect(last('subagent.progress')).toBeTruthy())
     expect(last('subagent.progress').payload.text).toBe('reading src/')
+    expect(last('subagent.progress').payload.model).toBe('claude-haiku-4-5')
   })
 
   it('emits subagent.start only once, then progress + complete', async () => {
