@@ -128,6 +128,7 @@ jobs:
               tests/test_harbor_adapter_fusion.py \
               tests/test_harbor_adapter_advisor.py \
               tests/test_harbor_adapter_vision.py \
+              tests/test_harbor_adapter_pi.py \
               -v
 
   event_file:

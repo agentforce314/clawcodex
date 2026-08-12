@@ -192,6 +192,35 @@ Notes:
   snapshot carrying opus-5.
 - Its effort ladder is low|medium|high|xhigh|max as of 0.24.0.
 
+## Compare against pi (the harness DeepSeek documents)
+
+`pi_agent.py` runs [pi](https://pi.dev) — the harness DeepSeek points at for
+its V4 models — through this same harness. pi is installed from npm inside
+each container; the adapter also uploads `pi_assets/tb-tools.ts`, which adds
+`vision_analyze` and `websearch` to pi's four built-in tools (read, bash,
+edit, write). That closes the two capability gaps that would otherwise make
+some tasks impossible — it does **not** equalise the surfaces, since pi runs
+6 tools against clawcodex's much larger registry.
+
+```bash
+PYTHONPATH=$PWD/eval/harbor harbor run \
+  --dataset terminal-bench/terminal-bench-2-1 \
+  --agent pi_agent:Pi \
+  --model deepseek/deepseek-v4-flash \
+  --jobs-dir eval/harbor/jobs \
+  --job-name pi-tb21-full \
+  --ak thinking=max \
+  -n 4
+```
+
+`--ak thinking=max` lines pi up with a clawcodex run at `--ak effort=max`:
+both land on DeepSeek `reasoning_effort: "max"`. Needs `DEEPSEEK_API_KEY`
+plus `OPENAI_API_KEY` (vision) and `TAVILY_API_KEY` (search).
+
+See `RUN_PI_TB21.md` for the probed wire facts — in particular that published
+pi 0.84.1 sends `max_completion_tokens`, which DeepSeek silently ignores, so
+stock pi runs with no output cap.
+
 ## Evaluate ALL terminal-bench 2.0 tasks
 
 ```bash
