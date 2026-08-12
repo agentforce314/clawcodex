@@ -267,25 +267,29 @@ function Chevron({
 
 /**
  * The collapsed tool row — the original's brief line. A run of tool calls
- * reads as one dim sentence ("Read 3 files, listed 1 directory") with the
+ * reads as one quiet sentence ("Read 3 files, listed 1 directory") with the
  * tallies bold, under a 2-column gutter so it lines up with the `⏺ ` bullets
- * the expanded view (ctrl+o) puts back.
+ * the expanded view (ctrl+o) puts back. A blinking bullet fills the gutter
+ * while the run is still executing (the original animates a dot there).
  *
- * Two gutter states: a blinking bullet while the run is still executing (the
- * original animates a dot there), and — a deliberate departure from upstream,
- * which shows nothing — a red bullet when a call in the run failed, so a
- * failure is never silently tallied away as a plain count.
+ * The quiet comes from `muted`, NOT from `dim`: bold and faint share SGR
+ * close code 22, so wrapping bold tallies in a dim parent rewrites each
+ * tally's `\e[22m` into the parent's `\e[2m` — which re-opens faint without
+ * ever clearing bold, and every column after the first tally paints bold.
+ * (The ink fork's own Text props encode this as `dim?: never` alongside
+ * `bold`; nesting the two in separate elements evades the type, not the
+ * terminal.) Keep them apart.
  */
 function BriefLine({
   blinkOn,
   counts,
-  error,
+  gap,
   live,
   t
 }: {
   blinkOn: boolean
   counts: BriefCounts
-  error: boolean
+  gap: boolean
   live: boolean
   t: Theme
 }) {
@@ -295,20 +299,12 @@ function BriefLine({
     return null
   }
 
-  const gutter = live ? (
-    <Text dimColor>{blinkOn ? '⏺ ' : '  '}</Text>
-  ) : error ? (
-    <Text color={t.color.error}>⏺ </Text>
-  ) : (
-    <Text>{'  '}</Text>
-  )
-
   return (
-    <Box>
+    <Box marginTop={gap ? 1 : 0}>
       <NoSelect flexShrink={0} fromLeftEdge width={2}>
-        {gutter}
+        {live ? <Text color={t.color.muted}>{blinkOn ? '⏺ ' : '  '}</Text> : <Text>{'  '}</Text>}
       </NoSelect>
-      <Text color={t.color.muted} dim={!live} wrap="wrap-trim">
+      <Text color={t.color.muted} wrap="wrap-trim">
         {clauses.map((clause, index) => (
           <Text key={clause.key}>
             {index > 0 ? ', ' : ''}
@@ -846,10 +842,15 @@ export const ToolTrail = memo(function ToolTrail({
   const meta: DetailRow[] = []
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
 
-  // Verbose swap keys on the GLOBAL details mode (ctrl+o / /details) — the
-  // tools *section* mode defaults to 'expanded' merely to make the flat
-  // trail visible, and must not force verbose output.
-  const toolsExpanded = detailsMode === 'expanded'
+  // "Show every call, with whatever raw output the gateway kept" — the
+  // opposite of the collapsed brief. Driven by ctrl+o (the global details
+  // mode) or by an EXPLICIT `/details tools expanded` pin. Reading the raw
+  // `sections` override, not the resolved mode, matters: the tools section
+  // defaults to 'expanded' just to keep the trail visible, and treating that
+  // default as a pin would disable the brief for everyone.
+  // useMainApp derives the height estimator's flag the same way — one signal
+  // for both, or the estimate drifts from the paint.
+  const toolsExpanded = detailsMode === 'expanded' || sections?.tools === 'expanded'
 
   for (const [i, compactLine] of trail.entries()) {
     // Expanded details render the verbose sibling (full Args/Result blocks)
@@ -1184,22 +1185,27 @@ export const ToolTrail = memo(function ToolTrail({
 
   // Collapsed (default) view: consecutive collapsible calls fold into one
   // brief line, standalone calls keep their block, and order is preserved.
-  // Expanded (ctrl+o) view: every call keeps its block, blank-line separated.
+  // Expanded (ctrl+o) view: every call keeps its block. Either way a blank
+  // line separates consecutive blocks, as upstream renders them.
   const toolsFlat =
     hasTools && visible.tools !== 'hidden' ? (
       <Box flexDirection="column">
         {toolsExpanded
           ? groups.map((group, index) => renderGroup(group, index > 0))
-          : briefRuns(groups, group => group.label).map((run, index) =>
+          : briefRuns(
+              groups,
+              group => group.label,
+              group => Boolean(group.error)
+            ).map((run, index) =>
               run.kind === 'flat' ? (
                 <Box flexDirection="column" key={`run-${index}`}>
-                  {run.items.map(group => renderGroup(group, false))}
+                  {run.items.map((group, item) => renderGroup(group, index > 0 || item > 0))}
                 </Box>
               ) : (
                 <BriefLine
                   blinkOn={blinkOn}
                   counts={countBriefTools(run.items.map(group => group.label))}
-                  error={run.items.some(group => group.error)}
+                  gap={index > 0}
                   key={`run-${index}`}
                   live={run.items.some(group => group.live)}
                   t={t}

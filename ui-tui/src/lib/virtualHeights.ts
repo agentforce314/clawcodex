@@ -2,7 +2,8 @@ import { TERMUX_TUI_MODE } from '../config/env.js'
 import { briefCallOfTrailLine, briefRuns, briefText, countBriefTools } from '../domain/toolBrief.js'
 import type { Msg } from '../types.js'
 
-import { transcriptBodyWidth } from './inputMetrics.js'
+import { transcriptBodyWidth, transcriptTrailWidth } from './inputMetrics.js'
+import { parseToolTrailResultLine } from './text.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -78,35 +79,74 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
 }
 
 /**
+ * One entry per trail line that actually paints a `⏺ Tool(args)` block, with
+ * the rows it costs. Lines that produce no group — gateway meta notes, which
+ * ToolTrail routes to the (hidden-by-default) activity panel — drop out here,
+ * so both layouts below count blocks, never raw lines.
+ */
+interface TrailEntry {
+  call: string
+  error: boolean
+  rows: number
+}
+
+const trailEntries = (msg: Msg, toolsExpanded: boolean): TrailEntry[] => {
+  const entries: TrailEntry[] = []
+
+  for (const [i, line] of (msg.tools ?? []).entries()) {
+    const rendered = (toolsExpanded && msg.toolsVerbose?.[i]) || line
+    const parsed = parseToolTrailResultLine(rendered)
+
+    if (parsed) {
+      entries.push({
+        call: parsed.call,
+        error: parsed.mark === '✗',
+        // The `⏺` call row, then one row per line of the `⎿` detail.
+        rows: 1 + (parsed.detail ? parsed.detail.split('\n').length : 0)
+      })
+    } else if (line.startsWith('drafting ')) {
+      // Call row + the static "drafting..." detail row.
+      entries.push({ call: briefCallOfTrailLine(line), error: false, rows: 2 })
+    }
+  }
+
+  return entries
+}
+
+/**
  * Rows a message's tool trail paints, matching ToolTrail's two layouts:
  *
  *   expanded (ctrl+o) — every call keeps its `⏺ …` + `⎿ …` block, verbose
- *     sibling when one exists, and a blank line between consecutive blocks.
+ *     sibling when one exists.
  *   collapsed (default) — consecutive collapsible calls fold to one brief
- *     line; standalone calls (edits, delegations, questions) keep their block.
+ *     line; standalone calls (edits, delegations, questions) and failures
+ *     keep their block.
  *
- * Both walk the same briefRuns() split the renderer uses, so the estimate and
- * the paint can't disagree about where a run begins.
+ * Both walk the same briefRuns() split the renderer uses, and both add the
+ * blank line it opens between consecutive blocks.
  */
-const trailRows = (msg: Msg, bodyWidth: number, toolsExpanded: boolean) => {
-  const lines = msg.tools ?? []
+const trailRows = (msg: Msg, trailWidth: number, toolsExpanded: boolean) => {
+  const entries = trailEntries(msg, toolsExpanded)
 
   if (toolsExpanded) {
-    const rows = lines.reduce((sum, line, i) => sum + (msg.toolsVerbose?.[i] || line).split('\n').length, 0)
-
-    // Blank line between consecutive blocks.
-    return rows + Math.max(0, lines.length - 1)
+    return entries.reduce((sum, entry) => sum + entry.rows, 0) + Math.max(0, entries.length - 1)
   }
 
-  return briefRuns(lines, briefCallOfTrailLine).reduce((sum, run) => {
+  return briefRuns(
+    entries,
+    entry => entry.call,
+    entry => entry.error
+  ).reduce((sum, run, index) => {
+    const gap = index > 0 ? 1 : 0
+
     if (run.kind === 'flat') {
-      return sum + run.items.reduce((rows, line) => rows + line.split('\n').length, 0)
+      return sum + gap + run.items.reduce((rows, entry) => rows + entry.rows, 0)
     }
 
-    // The brief renders under a 2-column gutter, so it wraps 2 narrower.
-    const text = briefText(countBriefTools(run.items.map(briefCallOfTrailLine)))
+    // The brief sits under a 2-column gutter, so it wraps 2 narrower.
+    const text = briefText(countBriefTools(run.items.map(entry => entry.call)))
 
-    return sum + (text ? wrappedLines(text, bodyWidth - 2) : 0)
+    return sum + gap + (text ? wrappedLines(text, trailWidth - 2) : 0)
   }, 0)
 }
 
@@ -150,7 +190,10 @@ export const estimatedMsgHeight = (
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
   const text = msg.text
-  let h = wrappedLines(text || ' ', bodyWidth)
+  // A `trail` block paints no text row at all (MessageLine hands it straight
+  // to ToolTrail), so it must not be charged the one-row floor every prose
+  // block gets — that alone doubled the estimate for a one-row brief.
+  let h = msg.kind === 'trail' ? 0 : wrappedLines(text || ' ', bodyWidth)
 
   if (!compact && msg.role === 'assistant') {
     // Paragraph gaps add up to 6 extra rows of breathing room. Slice
@@ -170,7 +213,7 @@ export const estimatedMsgHeight = (
       // Tool entries can carry multi-line details (Bash 3-line summaries,
       // 10-line error caps) — count rendered rows, not entries, or off-screen
       // estimates under-count and the scrollbar/topSpacer math jumps.
-      const toolRows = hasVisibleTools ? trailRows(msg, bodyWidth, toolsExpanded) : 0
+      const toolRows = hasVisibleTools ? trailRows(msg, transcriptTrailWidth(cols, TERMUX_TUI_MODE), toolsExpanded) : 0
 
       h += toolRows + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 

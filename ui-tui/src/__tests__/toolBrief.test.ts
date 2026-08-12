@@ -24,7 +24,9 @@ import {
   emptyBriefCounts
 } from '../domain/toolBrief.js'
 import { buildToolTrailLine, stripAnsi } from '../lib/text.js'
+import { estimatedMsgHeight } from '../lib/virtualHeights.js'
 import { DEFAULT_THEME } from '../theme.js'
+import type { Msg } from '../types.js'
 
 // ── classification ──────────────────────────────────────────────────────────
 
@@ -45,11 +47,15 @@ describe('classifyBriefTool', () => {
     expect(classifyBriefTool('Bash(catalog --build)')).toBe('bash')
   })
 
-  it('keeps edits, delegations and questions out of the tally', () => {
+  it('keeps edits, delegations and answer-bearing tools out of the tally', () => {
     expect(classifyBriefTool('Edit(a.py)')).toBe('edit')
     expect(classifyBriefTool('Write(b.py)')).toBe('edit')
     expect(classifyBriefTool('Delegate Task(audit)')).toBe('agent')
-    expect(classifyBriefTool('AskUserQuestion(pick one)')).toBe('ask')
+    expect(classifyBriefTool('AskUserQuestion(pick one)')).toBe('answer')
+    // Labels, not wire names: toolTrailLabel() title-cases and de-snakes.
+    expect(classifyBriefTool('Advisor(is this sound?)')).toBe('answer')
+    expect(classifyBriefTool('Vision Analyze(shot.png)')).toBe('answer')
+    expect(classifyBriefTool('ExitPlanMode(plan)')).toBe('answer')
   })
 
   it('falls back to the catch-all bucket', () => {
@@ -120,6 +126,13 @@ describe('briefRuns', () => {
 
     expect(runs.map(r => r.kind)).toEqual(['flat', 'flat'])
   })
+
+  it('breaks a failing call out so its message survives the fold', () => {
+    const runs = briefRuns(['Read(a)', 'Bash(boom)', 'Read(c)'], id, item => item === 'Bash(boom)')
+
+    expect(runs.map(r => r.kind)).toEqual(['brief', 'flat', 'brief'])
+    expect(runs[1]!.items).toEqual(['Bash(boom)'])
+  })
 })
 
 describe('briefCallOfTrailLine', () => {
@@ -134,6 +147,22 @@ describe('briefCallOfTrailLine', () => {
 
 // ── render ──────────────────────────────────────────────────────────────────
 
+// Ink brackets every frame in a synchronized-update pair (BSU … ESU). Into a
+// PassThrough — which is not a TTY, so nothing gets overwritten — it flushes
+// the same frame more than once and they concatenate, which turns any row
+// count into 2n-1. Keep the last frame that painted something.
+const BSU = '[?2026h'
+const ESU = '[?2026l'
+
+const lastFrame = (output: string): string => {
+  const frames = output
+    .split(BSU)
+    .map(chunk => chunk.split(ESU)[0] ?? '')
+    .filter(frame => stripAnsi(frame).trim() !== '')
+
+  return frames.at(-1) ?? ''
+}
+
 const renderToString = (element: React.ReactElement): string => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
@@ -142,15 +171,22 @@ const renderToString = (element: React.ReactElement): string => {
 
   Object.assign(stdout, { columns: 100, isTTY: false, rows: 40 })
   Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
   stdout.on('data', (chunk: Buffer) => {
     output += chunk.toString()
   })
 
-  const instance = renderSync(element, { stderr: stderr as never, stdin: stdin as never, stdout: stdout as never })
+  const instance = renderSync(element, {
+    patchConsole: false,
+    stderr: stderr as never,
+    stdin: stdin as never,
+    stdout: stdout as never
+  })
 
   instance.unmount()
+  instance.cleanup()
 
-  return output
+  return lastFrame(output)
 }
 
 describe('ToolTrail brief render', () => {
@@ -227,4 +263,120 @@ describe('ToolTrail brief render', () => {
 
     expect(row).toMatch(/^ {2}Read 2 files/)
   })
+
+  it('breaks a failed call out of the brief so its error stays readable', () => {
+    const withError = [
+      trail[0]!,
+      buildToolTrailLine('Bash', 'cat missing.txt', true, 'Error: No such file or directory'),
+      trail[3]!
+    ]
+
+    const out = stripAnsi(
+      renderToString(React.createElement(ToolTrail, { detailsMode: 'collapsed', t: DEFAULT_THEME, trail: withError }))
+    )
+
+    expect(out).toContain('Bash(cat missing.txt)')
+    expect(out).toContain('Error: No such file or directory')
+    // The successes around it still fold.
+    expect(out).toContain('Read 1 file')
+    expect(out).toContain('Ran 1 shell command')
+  })
+
+  // Bold and faint share SGR close code 22, so a `dim` wrapper rewrites each
+  // bold tally's reset into `\e[2m` — faint re-opened, bold never cleared —
+  // and every column after the first tally paints bold. stripAnsi cannot see
+  // this, so assert on the bytes.
+  it('closes each bold tally without leaving the rest of the line bold', () => {
+    const out = renderToString(React.createElement(ToolTrail, { detailsMode: 'collapsed', t: DEFAULT_THEME, trail }))
+    const BOLD = '\u001b[1m'
+    const RESET_INTENSITY = '\u001b[22m'
+    const FAINT = '\u001b[2m'
+
+    expect(out).toContain(`${BOLD}2${RESET_INTENSITY}`)
+    // No faint is opened anywhere, so no tally's reset can be rewritten into
+    // one — bold cannot survive past the tally that opened it.
+    expect(out).not.toContain(FAINT)
+  })
+})
+
+// ── estimate vs paint ───────────────────────────────────────────────────────
+
+// The virtualized transcript positions rows from estimatedMsgHeight before
+// Yoga has measured anything, so an estimate that disagrees with the paint
+// shows up as scrollbar drift and blank gaps. Assert the two agree on real
+// trails rather than trusting the two implementations to stay in step.
+describe('estimatedMsgHeight matches the painted trail', () => {
+  const paintedRows = (msg: Msg, detailsMode: 'collapsed' | 'expanded') => {
+    const rows = stripAnsi(
+      renderToString(
+        React.createElement(ToolTrail, {
+          detailsMode,
+          t: DEFAULT_THEME,
+          trail: msg.tools ?? [],
+          verboseTrail: msg.toolsVerbose ?? []
+        })
+      )
+    ).split('\n')
+
+    while (rows.length && rows[rows.length - 1]!.trim() === '') {
+      rows.pop()
+    }
+
+    return rows.length
+  }
+
+  const trailMsg = (tools: string[], toolsVerbose?: string[]): Msg => ({
+    kind: 'trail',
+    role: 'system',
+    text: '',
+    tools,
+    ...(toolsVerbose ? { toolsVerbose } : {})
+  })
+
+  const cases: [string, Msg][] = [
+    ['a plain run', trailMsg([buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines')])],
+    [
+      'a mixed run',
+      trailMsg([
+        buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines'),
+        buildToolTrailLine('Bash', 'ls src', false, 'a.py\nb.py'),
+        buildToolTrailLine('Bash', 'echo hi', false, 'hi')
+      ])
+    ],
+    [
+      'a run split by a standalone edit',
+      trailMsg([
+        buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines'),
+        buildToolTrailLine('Edit', 'b.py', false, 'Updated b.py'),
+        buildToolTrailLine('Bash', 'echo hi', false, 'hi')
+      ])
+    ],
+    [
+      'a run split by a failure',
+      trailMsg([
+        buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines'),
+        buildToolTrailLine('Bash', 'cat nope', true, 'Error: No such file'),
+        buildToolTrailLine('Bash', 'echo hi', false, 'hi')
+      ])
+    ],
+    [
+      'a call with no result row',
+      trailMsg([
+        buildToolTrailLine('Bash', 'true', false, ''),
+        buildToolTrailLine('Read', 'a.py', false, 'Read 1 line')
+      ])
+    ]
+  ]
+
+  for (const [name, msg] of cases) {
+    it(`agrees on ${name} (collapsed)`, () => {
+      expect(estimatedMsgHeight(msg, 100, { compact: false, details: true })).toBe(paintedRows(msg, 'collapsed'))
+    })
+
+    it(`agrees on ${name} (expanded)`, () => {
+      expect(estimatedMsgHeight(msg, 100, { compact: false, details: true, toolsExpanded: true })).toBe(
+        paintedRows(msg, 'expanded')
+      )
+    })
+  }
 })

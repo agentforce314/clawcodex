@@ -10,6 +10,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import type { QuestionAnswers } from '../components/questionPrompt.js'
 import { STARTUP_RESUME_ID, TRANSCRIPT_COLOR } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
@@ -26,7 +27,6 @@ import type {
   SessionCloseResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
-import type { QuestionAnswers } from '../components/questionPrompt.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
@@ -353,7 +353,10 @@ export function useMainApp(gw: GatewayClient) {
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
   const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
-  const toolsDetailsExpanded = ui.detailsMode === 'expanded'
+  // Mirrors ToolTrail's `toolsExpanded` exactly (ctrl+o, or an explicit
+  // `/details tools expanded` pin) — it picks the flat per-call rows over the
+  // collapsed brief, so the estimate and the paint must derive it the same way.
+  const toolsDetailsExpanded = ui.detailsMode === 'expanded' || ui.sections?.tools === 'expanded'
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`

@@ -191,6 +191,15 @@ export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: s
   return Math.max(20, available)
 }
 
+/** Width a tool trail renders at. Unlike prose rows, a `kind: 'trail'` block
+ *  has no role gutter — MessageLine hands ToolTrail the whole transcript
+ *  interior — so it is `transcriptBodyWidth` WITHOUT the 3-column gutter. */
+export function transcriptTrailWidth(totalCols: number, termuxMode = false) {
+  const horizontalReserve = termuxMode ? 2 : 4
+
+  return Math.max(1, totalCols - horizontalReserve)
+}
+
 /** Scrollbar gutter beside the transcript: `marginLeft={1}` + `width={1}` on
  *  the `TranscriptScrollbar` wrapper in appLayout. Always reserved — the
  *  scrollbar renders a `width={1}` spacer even when it has nothing to show. */

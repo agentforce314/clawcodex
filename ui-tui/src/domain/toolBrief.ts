@@ -20,7 +20,7 @@ import { parseToolTrailResultLine, splitToolDuration, toolTrailLabel } from '../
  *     edits, delegations, questions — keeps its own row, because its detail
  *     rows carry information a tally would destroy. See STANDALONE below.
  */
-export type BriefBucket = 'agent' | 'ask' | 'bash' | 'edit' | 'list' | 'other' | 'read' | 'search'
+export type BriefBucket = 'agent' | 'answer' | 'bash' | 'edit' | 'list' | 'other' | 'read' | 'search'
 
 export type BriefCounts = Record<BriefBucket, number>
 
@@ -31,16 +31,18 @@ export type BriefCounts = Record<BriefBucket, number>
  *   edit   — the patch itself is the point (upstream renders `⏺ Update(f)`
  *            with the diff under it, and never tallies it away).
  *   agent  — the Delegate Task row anchors the inline subagent tree.
- *   ask    — AskUserQuestion / clarify carry the ANSWERS in their detail
- *            rows; "called 1 tool" would delete them from the transcript.
+ *   answer — AskUserQuestion, clarify, advisor, vision_analyze, ExitPlanMode:
+ *            the detail rows ARE the result (the user's own choices, the
+ *            advisor's opinion, the plan). "Called 1 tool" would delete them
+ *            from the transcript with no way to get them back.
  */
-const STANDALONE: ReadonlySet<BriefBucket> = new Set<BriefBucket>(['agent', 'ask', 'edit'])
+const STANDALONE: ReadonlySet<BriefBucket> = new Set<BriefBucket>(['agent', 'answer', 'edit'])
 
 export const isCollapsibleBucket = (bucket: BriefBucket): boolean => !STANDALONE.has(bucket)
 
 export const emptyBriefCounts = (): BriefCounts => ({
   agent: 0,
-  ask: 0,
+  answer: 0,
   bash: 0,
   edit: 0,
   list: 0,
@@ -49,13 +51,13 @@ export const emptyBriefCounts = (): BriefCounts => ({
   search: 0
 })
 
-const READ_TOOLS = new Set(['NotebookRead', 'Read'])
+// Labels, not wire names: the trail carries what toolTrailLabel() produced, so
+// `vision_analyze` arrives as `Vision Analyze`.
+const READ_TOOLS = new Set(['Read'])
 const SEARCH_TOOLS = new Set(['Glob', 'Grep'])
-// `Update` is the label an Edit carries once the gateway resolved it to a
-// patch; Write / NotebookEdit land here too.
-const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit', 'Update', 'Write'])
+const EDIT_TOOLS = new Set(['Edit', 'NotebookEdit', 'Write'])
 const AGENT_TOOLS = new Set(['Agent', 'Delegate Task', 'Task'])
-const ASK_TOOLS = new Set(['AskUserQuestion', 'Clarify'])
+const ANSWER_TOOLS = new Set(['Advisor', 'AskUserQuestion', 'Clarify', 'ExitPlanMode', 'Vision Analyze'])
 
 /** `Read(src/a.py)` → `Read`. Legacy trail lines may still carry a `(1.2s)`
  *  duration suffix, so strip that before splitting on the arg paren. */
@@ -78,6 +80,13 @@ export const briefToolArgs = (call: string): string => {
 // "listed 1 directory" and `grep`/`rg` as "searched for 1 pattern", so a
 // transcript full of shell-driven exploration still reads as exploration.
 // Anything else is a shell command.
+//
+// Deliberately a prefix match on the bare command, so anything wrapped —
+// `sudo ls`, `FOO=1 ls`, `cd x && ls`, a pipeline that greps midway — falls
+// through to "shell command". Under-claiming reads fine; a `cat > file.py`
+// heredoc counted as a read would not. The args this matches against are the
+// compactPreview head, but every pattern is anchored, so truncation can never
+// change a verdict.
 const LIST_COMMAND = /^\s*(?:\$\s*)?(?:ls|tree)(?:\s|$)/
 const SEARCH_COMMAND = /^\s*(?:\$\s*)?(?:ag|ack|grep|egrep|fgrep|rg)(?:\s|$)/
 const READ_COMMAND = /^\s*(?:\$\s*)?(?:bat|cat|head|less|tail)(?:\s|$)/
@@ -101,8 +110,8 @@ export const classifyBriefTool = (call: string): BriefBucket => {
     return 'agent'
   }
 
-  if (ASK_TOOLS.has(name)) {
-    return 'ask'
+  if (ANSWER_TOOLS.has(name)) {
+    return 'answer'
   }
 
   if (name === 'Bash') {
@@ -156,8 +165,6 @@ export const countBriefTools = (calls: readonly string[]): BriefCounts => {
 
   return counts
 }
-
-export const briefTotal = (counts: BriefCounts): number => Object.values(counts).reduce((sum, n: number) => sum + n, 0)
 
 export interface BriefClause {
   /** The tally — rendered bold, between `verb` and `noun`. */
@@ -221,17 +228,28 @@ export const briefText = (counts: BriefCounts, live = false): string => {
  * collapsible calls becomes one `brief` run, and each standalone call keeps
  * its own `flat` run. Preserves order, so a Read → Delegate Task → Bash trail
  * reads brief / delegate row / brief rather than reordering the turn.
+ *
+ * `standalone` forces an item out of the brief regardless of its bucket. The
+ * renderer passes failures through it: upstream tallies a failed call away
+ * like any other (a `cat` of a missing file still reads "Read 1 file"), but
+ * the error message lives only in that call's `⎿` row, so folding it would
+ * make the one thing worth reading unreachable without ctrl+o.
  */
 export interface BriefRun<T> {
   items: T[]
   kind: 'brief' | 'flat'
 }
 
-export const briefRuns = <T>(items: readonly T[], callOf: (item: T) => string): BriefRun<T>[] => {
+export const briefRuns = <T>(
+  items: readonly T[],
+  callOf: (item: T) => string,
+  standalone?: (item: T) => boolean
+): BriefRun<T>[] => {
   const runs: BriefRun<T>[] = []
 
   for (const item of items) {
-    const kind = isCollapsibleBucket(classifyBriefTool(callOf(item))) ? 'brief' : 'flat'
+    const collapsible = !standalone?.(item) && isCollapsibleBucket(classifyBriefTool(callOf(item)))
+    const kind = collapsible ? 'brief' : 'flat'
     const last = runs.at(-1)
 
     // Standalone rows never merge with each other — each keeps its own block.
