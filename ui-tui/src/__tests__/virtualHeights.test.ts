@@ -43,8 +43,12 @@ describe('virtual height estimates', () => {
   it('accounts for the response separator when assistant details are visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'plan' }
 
+    // Measured against the real paint (see toolBrief.test.ts's parity suite):
+    // `∴ Thinking…` header, the reasoning body, the details wrapper's
+    // marginBottom, the `└─ Response` row, and its marginBottom — 5 rows above
+    // the bare `⏺ ok`. The header and the wrapper margin used to be missing.
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
-      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 3
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 5
     )
   })
 

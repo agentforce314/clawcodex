@@ -90,10 +90,20 @@ interface TrailEntry {
   rows: number
 }
 
-const trailEntries = (msg: Msg, toolsExpanded: boolean): TrailEntry[] => {
+// Gutters a `⏺ …` block reserves: 2 columns for the bullet on the call row,
+// 5 for the `  ⎿  ` connector (and the matching pad on continuations) under it.
+const CALL_GUTTER = 2
+const DETAIL_GUTTER = 5
+
+const trailEntries = (msg: Msg, trailWidth: number, toolsExpanded: boolean): TrailEntry[] => {
   const entries: TrailEntry[] = []
 
+  const detailRows = (detail: string) =>
+    detail ? detail.split('\n').reduce((sum, row) => sum + wrappedLines(row, trailWidth - DETAIL_GUTTER), 0) : 0
+
   for (const [i, line] of (msg.tools ?? []).entries()) {
+    // Read both the call and the drafting marker off the SAME line the
+    // renderer will draw — the verbose sibling when one is being shown.
     const rendered = (toolsExpanded && msg.toolsVerbose?.[i]) || line
     const parsed = parseToolTrailResultLine(rendered)
 
@@ -101,13 +111,20 @@ const trailEntries = (msg: Msg, toolsExpanded: boolean): TrailEntry[] => {
       entries.push({
         call: parsed.call,
         error: parsed.mark === '✗',
-        // The `⏺` call row, then one row per line of the `⎿` detail.
-        rows: 1 + (parsed.detail ? parsed.detail.split('\n').length : 0)
+        // The `⏺` call row, then the `⎿` detail — both of which wrap: an Edit
+        // detail carries a full path and is capped in lines, never columns.
+        rows: wrappedLines(parsed.call, trailWidth - CALL_GUTTER) + detailRows(parsed.detail)
       })
-    } else if (line.startsWith('drafting ')) {
+    } else if (rendered.startsWith('drafting ')) {
       // Call row + the static "drafting..." detail row.
-      entries.push({ call: briefCallOfTrailLine(line), error: false, rows: 2 })
+      entries.push({ call: briefCallOfTrailLine(rendered), error: false, rows: 2 })
     }
+
+    // Anything else is a gateway meta note. ToolTrail routes those to the
+    // activity panel (hidden by default), so they paint no row here. The one
+    // transient it does fold onto the previous group, "analyzing tool
+    // output…", is filtered by isTransientTrailLine before a line ever
+    // reaches msg.tools, so it cannot appear in a settled trail.
   }
 
   return entries
@@ -126,7 +143,7 @@ const trailEntries = (msg: Msg, toolsExpanded: boolean): TrailEntry[] => {
  * blank line it opens between consecutive blocks.
  */
 const trailRows = (msg: Msg, trailWidth: number, toolsExpanded: boolean) => {
-  const entries = trailEntries(msg, toolsExpanded)
+  const entries = trailEntries(msg, trailWidth, toolsExpanded)
 
   if (toolsExpanded) {
     return entries.reduce((sum, entry) => sum + entry.rows, 0) + Math.max(0, entries.length - 1)
@@ -210,13 +227,32 @@ export const estimatedMsgHeight = (
     const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
 
     if (hasVisibleDetails) {
+      const trailWidth = transcriptTrailWidth(cols, TERMUX_TUI_MODE)
+
       // Tool entries can carry multi-line details (Bash 3-line summaries,
       // 10-line error caps) — count rendered rows, not entries, or off-screen
       // estimates under-count and the scrollbar/topSpacer math jumps.
-      const toolRows = hasVisibleTools ? trailRows(msg, transcriptTrailWidth(cols, TERMUX_TUI_MODE), toolsExpanded) : 0
+      const toolRows = hasVisibleTools ? trailRows(msg, trailWidth, toolsExpanded) : 0
 
-      h += toolRows + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+      // The reasoning panel is its `∴ Thinking…` header row plus the body,
+      // which sits under a 3-column `└─ ` rail. The header used to be paid
+      // for by the one-row text floor above; trail blocks no longer get that
+      // floor, so charge it here where it is actually true.
+      // (Known gap, pre-dating the brief: `/details thinking collapsed` closes
+      // the body while this still counts it. The panel is expanded by default,
+      // so the common path is exact.)
+      const thinkingRows = hasVisibleThinking ? 1 + wrappedLines(msg.thinking ?? '', trailWidth - 3) : 0
 
+      h += toolRows + thinkingRows
+
+      // A prose row wraps its details in a Box with marginBottom={1}. A trail
+      // block has no such wrapper — MessageLine hands ToolTrail straight
+      // through — so only prose pays this.
+      if (msg.kind !== 'trail') {
+        h++
+      }
+
+      // "Response" separator row + its own marginBottom.
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {
         h += 2
       }

@@ -1199,7 +1199,12 @@ export const ToolTrail = memo(function ToolTrail({
             ).map((run, index) =>
               run.kind === 'flat' ? (
                 <Box flexDirection="column" key={`run-${index}`}>
-                  {run.items.map((group, item) => renderGroup(group, index > 0 || item > 0))}
+                  {/* One gap per RUN, matching how the height estimator counts
+                      them. briefRuns never merges two standalone calls, so a
+                      flat run holds exactly one item today — keeping the gap
+                      keyed on the run means the two stay in step even if that
+                      ever changes. */}
+                  {run.items.map(group => renderGroup(group, index > 0))}
                 </Box>
               ) : (
                 <BriefLine

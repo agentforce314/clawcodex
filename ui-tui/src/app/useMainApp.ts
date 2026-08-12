@@ -340,23 +340,27 @@ export function useMainApp(gw: GatewayClient) {
     [cols, historyItems, messageId]
   )
 
-  const detailsLayoutKey = useMemo(() => {
-    const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
-    const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
-
-    // The global expanded toggle (ctrl+o) swaps which tool variant renders,
-    // so it must bucket the height cache too — section modes alone default
-    // to 'expanded' and would serve stale collapsed heights across toggles.
-    return `${thinking}:${tools}:${ui.detailsMode === 'expanded' ? 'x' : '-'}`
-  }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
-
-  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
-  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
-  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
   // Mirrors ToolTrail's `toolsExpanded` exactly (ctrl+o, or an explicit
   // `/details tools expanded` pin) — it picks the flat per-call rows over the
   // collapsed brief, so the estimate and the paint must derive it the same way.
   const toolsDetailsExpanded = ui.detailsMode === 'expanded' || ui.sections?.tools === 'expanded'
+
+  const detailsLayoutKey = useMemo(() => {
+    const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
+    const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
+
+    // The expanded toggle swaps which tool variant renders (flat per-call rows
+    // vs the collapsed brief), so it must bucket the height cache too. Keyed on
+    // `toolsDetailsExpanded` itself, not on `detailsMode` a second time: a
+    // `/details tools expanded` pin flips the layout without moving the global
+    // mode, and the resolved section mode already reads 'expanded' by default —
+    // so re-deriving it here would hand the pinned layout the brief's heights.
+    return `${thinking}:${tools}:${toolsDetailsExpanded ? 'x' : '-'}`
+  }, [toolsDetailsExpanded, ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
+
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`

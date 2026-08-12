@@ -13,6 +13,7 @@ vi.hoisted(() => {
   delete process.env.NO_COLOR
 })
 
+import { MessageLine } from '../components/messageLine.js'
 import { ToolTrail } from '../components/thinking.js'
 import {
   briefCallOfTrailLine,
@@ -23,6 +24,7 @@ import {
   classifyBriefTool,
   emptyBriefCounts
 } from '../domain/toolBrief.js'
+import { transcriptTrailWidth } from '../lib/inputMetrics.js'
 import { buildToolTrailLine, stripAnsi } from '../lib/text.js'
 import { estimatedMsgHeight } from '../lib/virtualHeights.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -163,13 +165,13 @@ const lastFrame = (output: string): string => {
   return frames.at(-1) ?? ''
 }
 
-const renderToString = (element: React.ReactElement): string => {
+const renderToString = (element: React.ReactElement, columns = 100): string => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
   let output = ''
 
-  Object.assign(stdout, { columns: 100, isTTY: false, rows: 40 })
+  Object.assign(stdout, { columns, isTTY: false, rows: 40 })
   Object.assign(stdin, { isTTY: false })
   Object.assign(stderr, { isTTY: false })
   stdout.on('data', (chunk: Buffer) => {
@@ -305,16 +307,24 @@ describe('ToolTrail brief render', () => {
 // Yoga has measured anything, so an estimate that disagrees with the paint
 // shows up as scrollbar drift and blank gaps. Assert the two agree on real
 // trails rather than trusting the two implementations to stay in step.
+const READ_LINE = buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines')
+
 describe('estimatedMsgHeight matches the painted trail', () => {
-  const paintedRows = (msg: Msg, detailsMode: 'collapsed' | 'expanded') => {
+  // A `kind: 'trail'` block gets the transcript interior with no role gutter,
+  // which is narrower than the terminal. Render at that same width — pulled
+  // from the helper the estimator uses — or the comparison is against a paint
+  // the app never produces, and every wrapping case reads backwards.
+  const paintedRows = (msg: Msg, detailsMode: 'collapsed' | 'expanded', cols: number) => {
     const rows = stripAnsi(
       renderToString(
         React.createElement(ToolTrail, {
           detailsMode,
+          reasoning: msg.thinking ?? '',
           t: DEFAULT_THEME,
           trail: msg.tools ?? [],
           verboseTrail: msg.toolsVerbose ?? []
-        })
+        }),
+        transcriptTrailWidth(cols)
       )
     ).split('\n')
 
@@ -365,18 +375,87 @@ describe('estimatedMsgHeight matches the painted trail', () => {
         buildToolTrailLine('Bash', 'true', false, ''),
         buildToolTrailLine('Read', 'a.py', false, 'Read 1 line')
       ])
+    ],
+    [
+      // Edit details carry a full path and are capped in LINES, never columns,
+      // so this is the ordinary case on a normal-width terminal, not a corner.
+      'a detail long enough to wrap',
+      trailMsg([
+        buildToolTrailLine(
+          'Edit',
+          'src/components/transcript/toolTrail.tsx',
+          false,
+          'Updated src/components/transcript/toolTrail.tsx with 3 additions and 1 removal'
+        )
+      ])
+    ],
+    [
+      'a brief long enough to wrap',
+      trailMsg([
+        buildToolTrailLine('Grep', 'TODO', false, 'Found 2 lines'),
+        buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines'),
+        buildToolTrailLine('Bash', 'ls src', false, 'a.py'),
+        buildToolTrailLine('WebSearch', 'rust', false, 'Did 1 search'),
+        buildToolTrailLine('Bash', 'echo hi', false, 'hi')
+      ])
+    ],
+    ['a reasoning trail', { kind: 'trail', role: 'system', text: '', thinking: 'I should check the parser first.' }],
+    [
+      'reasoning plus tools',
+      {
+        kind: 'trail',
+        role: 'system',
+        text: '',
+        thinking: 'First line.\nSecond line.\nThird line.',
+        tools: [buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines')]
+      }
     ]
   ]
 
-  for (const [name, msg] of cases) {
-    it(`agrees on ${name} (collapsed)`, () => {
-      expect(estimatedMsgHeight(msg, 100, { compact: false, details: true })).toBe(paintedRows(msg, 'collapsed'))
-    })
+  // Prose rows carry the trail through MessageLine, which adds chrome the
+  // estimator has to model too: the details wrapper's margin, the `└─
+  // Response` separator, and the reasoning panel's own header row.
+  describe('through MessageLine', () => {
+    const proseRows = (msg: Msg, cols: number) => {
+      const rows = stripAnsi(
+        renderToString(React.createElement(MessageLine, { cols, msg, t: DEFAULT_THEME }), cols)
+      ).split('\n')
 
-    it(`agrees on ${name} (expanded)`, () => {
-      expect(estimatedMsgHeight(msg, 100, { compact: false, details: true, toolsExpanded: true })).toBe(
-        paintedRows(msg, 'expanded')
-      )
-    })
+      while (rows.length && rows[rows.length - 1]!.trim() === '') {
+        rows.pop()
+      }
+
+      return rows.length
+    }
+
+    const proseCases: [string, Msg][] = [
+      ['bare assistant prose', { role: 'assistant', text: 'ok' }],
+      ['prose with reasoning', { role: 'assistant', text: 'ok', thinking: 'plan' }],
+      ['prose with a tool brief', { role: 'assistant', text: 'ok', tools: [READ_LINE] }],
+      ['prose with both', { role: 'assistant', text: 'ok', thinking: 'plan', tools: [READ_LINE] }]
+    ]
+
+    for (const [name, msg] of proseCases) {
+      it(`agrees on ${name}`, () => {
+        expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(proseRows(msg, 80))
+      })
+    }
+  })
+
+  // Narrow widths are where wrapping bites; 100 is the everyday case.
+  for (const cols of [60, 100]) {
+    for (const [name, msg] of cases) {
+      it(`agrees on ${name} (collapsed, cols=${cols})`, () => {
+        expect(estimatedMsgHeight(msg, cols, { compact: false, details: true })).toBe(
+          paintedRows(msg, 'collapsed', cols)
+        )
+      })
+
+      it(`agrees on ${name} (expanded, cols=${cols})`, () => {
+        expect(estimatedMsgHeight(msg, cols, { compact: false, details: true, toolsExpanded: true })).toBe(
+          paintedRows(msg, 'expanded', cols)
+        )
+      })
+    }
   }
 })
