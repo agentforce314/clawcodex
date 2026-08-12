@@ -270,6 +270,22 @@ describe('ToolTrail brief render', () => {
     expect(row).toMatch(/^ {2}Read 2 files/)
   })
 
+  // WebSearch and friends are NOT part of the read/search band upstream folds:
+  // captured from Claude Code 2.1.228, a lone Web Search keeps its row and its
+  // `⎿ Did 1 search in 2s`. A tally would delete the only interesting part.
+  it('keeps a catch-all tool standalone with its result', () => {
+    const withSearch = [trail[0]!, buildToolTrailLine('WebSearch', 'rust 1.90', false, 'Did 1 search in 2s')]
+
+    const out = stripAnsi(
+      renderToString(React.createElement(ToolTrail, { detailsMode: 'collapsed', t: DEFAULT_THEME, trail: withSearch }))
+    )
+
+    expect(out).toContain('WebSearch(rust 1.90)')
+    expect(out).toContain('Did 1 search in 2s')
+    expect(out).toContain('Read 1 file')
+    expect(out).not.toContain('called 1 tool')
+  })
+
   it('breaks a failed call out of the brief so its error stays readable', () => {
     const withError = [
       trail[0]!,
@@ -394,13 +410,15 @@ describe('estimatedMsgHeight matches the painted trail', () => {
       ])
     ],
     [
-      'a brief long enough to wrap',
+      // Four clauses with multi-digit tallies is the widest a brief can get
+      // now that `other` stands alone: ~84 columns, so it wraps at cols=60 and
+      // fits at cols=100. The cols=60 arm is the one exercising brief wrap.
+      'a brief long enough to wrap at 60 columns',
       trailMsg([
-        buildToolTrailLine('Grep', 'TODO', false, 'Found 2 lines'),
-        buildToolTrailLine('Read', 'a.py', false, 'Read 8 lines'),
-        buildToolTrailLine('Bash', 'ls src', false, 'a.py'),
-        buildToolTrailLine('WebSearch', 'rust', false, 'Did 1 search'),
-        buildToolTrailLine('Bash', 'echo hi', false, 'hi')
+        ...Array.from({ length: 12 }, (_, i) => buildToolTrailLine('Grep', `p${i}`, false, 'Found 2 lines')),
+        ...Array.from({ length: 13 }, (_, i) => buildToolTrailLine('Read', `f${i}.py`, false, 'Read 8 lines')),
+        ...Array.from({ length: 24 }, (_, i) => buildToolTrailLine('Bash', `ls d${i}`, false, 'a.py')),
+        ...Array.from({ length: 18 }, (_, i) => buildToolTrailLine('Bash', `echo ${i}`, false, 'hi'))
       ])
     ],
     ['a reasoning trail', { kind: 'trail', role: 'system', text: '', thinking: 'I should check the parser first.' }],
