@@ -13,6 +13,33 @@ export const PLACEHOLDERS = [
 export const PLACEHOLDER = pick(PLACEHOLDERS)
 
 /**
+ * What the composer's ghost slot shows while idle. The recap suggestion wins
+ * whenever one is armed — that is the whole feature: it appears MID-
+ * conversation, right after a turn ends. The static `Try "…"` hint stays
+ * fresh-conversation-only (its historical behavior). Busy always blanks the
+ * slot, and TextInput itself hides any placeholder once the input has text,
+ * so input-emptiness is NOT this function's concern.
+ *
+ * Regression note: the first ship gated BOTH on `composer.empty`, which is
+ * conversation-emptiness (useMainApp: `!historyItems.some(m => m.kind !==
+ * 'intro')`), not input-emptiness — so the suggestion ghost could never
+ * render in the only state where a suggestion exists. Tab-accept still
+ * worked (it checks the real input), which is exactly why the miss was
+ * invisible to the state-level tests.
+ */
+export const composerPlaceholder = (state: {
+  busy: boolean
+  conversationEmpty: boolean
+  pendingSuggestion: null | string
+}): string => {
+  if (state.busy) {
+    return ''
+  }
+
+  return state.pendingSuggestion ?? (state.conversationEmpty ? PLACEHOLDER : '')
+}
+
+/**
  * The tab-acceptable query inside a composer placeholder: `Try "explain this
  * codebase"` suggests the query `explain this codebase`; a placeholder with no
  * quoted span ('Ask me anything…') suggests nothing. An open-ended stub

@@ -8,7 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE, TRANSCRIPT_COLOR } from '../config/env.js'
-import { PLACEHOLDER } from '../content/placeholders.js'
+import { composerPlaceholder } from '../content/placeholders.js'
 import { prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
@@ -348,7 +348,13 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty && !ui.busy ? (ui.pendingSuggestion ?? PLACEHOLDER) : ''}
+                  placeholder={composerPlaceholder({
+                    busy: ui.busy,
+                    // NB: composer.empty is CONVERSATION-emptiness (fresh
+                    // transcript), not input-emptiness — see composerPlaceholder.
+                    conversationEmpty: composer.empty,
+                    pendingSuggestion: ui.pendingSuggestion
+                  })}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

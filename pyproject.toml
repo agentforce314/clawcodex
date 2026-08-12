@@ -107,6 +107,10 @@ dev = [
     # Ch16 Phase 0: coverage reporting for the ≥90% line-coverage DoD on
     # the new ``src/bridge/`` modules.
     "pytest-cov>=5.0",
+    # Terminal emulator for screen-level TUI e2e tests
+    # (tests/test_tui_recap_ghost_e2e.py — skips where node/dist are absent).
+    # Kept in lockstep with requirements.dev.txt.
+    "pyte>=0.8.2",
 ]
 
 [project.scripts]

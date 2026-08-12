@@ -9,6 +9,7 @@ import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { shouldAcceptPendingSuggestion } from '../app/useInputHandlers.js'
+import { composerPlaceholder, PLACEHOLDER } from '../content/placeholders.js'
 import type { Msg } from '../types.js'
 
 // Fake child process for the GatewayClient NDJSON translation test — same
@@ -128,6 +129,28 @@ describe('turn.recap event handling', () => {
     turnController.startMessage()
     expect(getUiState().pendingSuggestion).toBeNull()
     expect(getUiState().busy).toBe(true)
+  })
+})
+
+describe('composerPlaceholder — what the ghost slot shows', () => {
+  it('shows the armed suggestion MID-conversation (the shipped regression: conversationEmpty gated it off exactly where suggestions exist)', () => {
+    expect(
+      composerPlaceholder({ busy: false, conversationEmpty: false, pendingSuggestion: 'fix all four issues and re-run' })
+    ).toBe('fix all four issues and re-run')
+  })
+
+  it('suggestion wins over the fresh-conversation hint too', () => {
+    expect(composerPlaceholder({ busy: false, conversationEmpty: true, pendingSuggestion: 'do it' })).toBe('do it')
+  })
+
+  it('keeps the static hint fresh-conversation-only', () => {
+    expect(composerPlaceholder({ busy: false, conversationEmpty: true, pendingSuggestion: null })).toBe(PLACEHOLDER)
+    expect(composerPlaceholder({ busy: false, conversationEmpty: false, pendingSuggestion: null })).toBe('')
+  })
+
+  it('busy blanks the slot regardless', () => {
+    expect(composerPlaceholder({ busy: true, conversationEmpty: false, pendingSuggestion: 'x' })).toBe('')
+    expect(composerPlaceholder({ busy: true, conversationEmpty: true, pendingSuggestion: null })).toBe('')
   })
 })
 
