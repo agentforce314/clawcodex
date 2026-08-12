@@ -169,24 +169,33 @@ describe('formatToolResult', () => {
 // ── virtualHeights: multi-line tool entries count rendered rows ──────────────
 
 describe('estimatedMsgHeight with multi-line tool details', () => {
-  it('counts one row per rendered detail line, not per entry', () => {
-    const base = {
-      kind: 'trail' as const,
-      role: 'system' as const,
-      text: '',
-      tools: [buildToolTrailLine('Bash', 'ls', false, 'a\nb\nc')]
-    }
+  const base = {
+    kind: 'trail' as const,
+    role: 'system' as const,
+    text: '',
+    tools: [buildToolTrailLine('Bash', 'seq 3', false, 'a\nb\nc')]
+  }
 
-    const single = {
-      ...base,
-      tools: [buildToolTrailLine('Bash', 'ls', false, 'a')]
-    }
+  const single = {
+    ...base,
+    tools: [buildToolTrailLine('Bash', 'seq 1', false, 'a')]
+  }
 
-    const opts = { compact: false, details: true, leadGap: false }
-    const tall = estimatedMsgHeight(base, 80, opts)
-    const short = estimatedMsgHeight(single, 80, opts)
+  const opts = { compact: false, details: true, leadGap: false }
+
+  it('counts one row per rendered detail line, not per entry, when expanded', () => {
+    const expanded = { ...opts, toolsExpanded: true }
+    const tall = estimatedMsgHeight(base, 80, expanded)
+    const short = estimatedMsgHeight(single, 80, expanded)
 
     expect(tall - short).toBe(2) // two extra detail rows
+  })
+
+  it('collapses to the one-row brief regardless of detail length', () => {
+    // The brief renders the tally alone, so a 3-line result costs no more
+    // rows than a 1-line one — the estimate has to agree or the scrollbar
+    // and topSpacer math drift against the paint.
+    expect(estimatedMsgHeight(base, 80, opts)).toBe(estimatedMsgHeight(single, 80, opts))
   })
 })
 

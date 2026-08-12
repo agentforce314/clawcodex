@@ -233,20 +233,22 @@ describe('expanded rendering', () => {
   const trail = ['Bash(seq 6) :: 1\n2\n3\n… +3 lines (ctrl+o to expand) ✓']
   const verboseTrail = ['Bash(seq 6) (0.2s) :: Result:\n1\n2\n3\n4\n5\n6 ✓']
 
-  it('collapsed shows the summary; expanded swaps in the full result', () => {
+  it('collapsed folds the call into the brief; expanded swaps in the full result', () => {
     const collapsed = stripAnsi(
       renderToString(
         React.createElement(ToolTrail, { detailsMode: 'collapsed', t: DEFAULT_THEME, trail, verboseTrail })
       )
     )
 
-    expect(collapsed).toContain('+3 lines (ctrl+o to expand)')
-    expect(collapsed).not.toContain('4') // verbose-only content stays hidden
+    // Collapsed is the brief line: the tally only — no call row, no result
+    // summary, and none of the verbose-only content.
+    expect(collapsed).toContain('Ran 1 shell command')
+    expect(collapsed).not.toContain('Bash(seq 6)')
+    expect(collapsed).not.toContain('+3 lines (ctrl+o to expand)')
+    expect(collapsed).not.toContain('4')
 
     const expanded = stripAnsi(
-      renderToString(
-        React.createElement(ToolTrail, { detailsMode: 'expanded', t: DEFAULT_THEME, trail, verboseTrail })
-      )
+      renderToString(React.createElement(ToolTrail, { detailsMode: 'expanded', t: DEFAULT_THEME, trail, verboseTrail }))
     )
 
     expect(expanded).toContain('Result:')

@@ -1,4 +1,5 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
+import { briefCallOfTrailLine, briefRuns, briefText, countBriefTools } from '../domain/toolBrief.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
@@ -76,6 +77,39 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   return n
 }
 
+/**
+ * Rows a message's tool trail paints, matching ToolTrail's two layouts:
+ *
+ *   expanded (ctrl+o) — every call keeps its `⏺ …` + `⎿ …` block, verbose
+ *     sibling when one exists, and a blank line between consecutive blocks.
+ *   collapsed (default) — consecutive collapsible calls fold to one brief
+ *     line; standalone calls (edits, delegations, questions) keep their block.
+ *
+ * Both walk the same briefRuns() split the renderer uses, so the estimate and
+ * the paint can't disagree about where a run begins.
+ */
+const trailRows = (msg: Msg, bodyWidth: number, toolsExpanded: boolean) => {
+  const lines = msg.tools ?? []
+
+  if (toolsExpanded) {
+    const rows = lines.reduce((sum, line, i) => sum + (msg.toolsVerbose?.[i] || line).split('\n').length, 0)
+
+    // Blank line between consecutive blocks.
+    return rows + Math.max(0, lines.length - 1)
+  }
+
+  return briefRuns(lines, briefCallOfTrailLine).reduce((sum, run) => {
+    if (run.kind === 'flat') {
+      return sum + run.items.reduce((rows, line) => rows + line.split('\n').length, 0)
+    }
+
+    // The brief renders under a 2-column gutter, so it wraps 2 narrower.
+    const text = briefText(countBriefTools(run.items.map(briefCallOfTrailLine)))
+
+    return sum + (text ? wrappedLines(text, bodyWidth - 2) : 0)
+  }, 0)
+}
+
 export const estimatedMsgHeight = (
   msg: Msg,
   cols: number,
@@ -136,14 +170,7 @@ export const estimatedMsgHeight = (
       // Tool entries can carry multi-line details (Bash 3-line summaries,
       // 10-line error caps) — count rendered rows, not entries, or off-screen
       // estimates under-count and the scrollbar/topSpacer math jumps.
-      const toolRows = hasVisibleTools
-        ? (msg.tools ?? []).reduce((sum, line, i) => {
-            // Expanded details render the verbose sibling when present.
-            const rendered = toolsExpanded && msg.toolsVerbose?.[i] ? msg.toolsVerbose[i]! : line
-
-            return sum + rendered.split('\n').length
-          }, 0)
-        : 0
+      const toolRows = hasVisibleTools ? trailRows(msg, bodyWidth, toolsExpanded) : 0
 
       h += toolRows + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 

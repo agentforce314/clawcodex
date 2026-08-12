@@ -4,6 +4,7 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
+import { briefClauses, type BriefCounts, briefRuns, countBriefTools } from '../domain/toolBrief.js'
 import {
   buildSubagentTree,
   fmtTokens,
@@ -259,6 +260,62 @@ function Chevron({
             {suffix}
           </Text>
         ) : null}
+      </Text>
+    </Box>
+  )
+}
+
+/**
+ * The collapsed tool row — the original's brief line. A run of tool calls
+ * reads as one dim sentence ("Read 3 files, listed 1 directory") with the
+ * tallies bold, under a 2-column gutter so it lines up with the `⏺ ` bullets
+ * the expanded view (ctrl+o) puts back.
+ *
+ * Two gutter states: a blinking bullet while the run is still executing (the
+ * original animates a dot there), and — a deliberate departure from upstream,
+ * which shows nothing — a red bullet when a call in the run failed, so a
+ * failure is never silently tallied away as a plain count.
+ */
+function BriefLine({
+  blinkOn,
+  counts,
+  error,
+  live,
+  t
+}: {
+  blinkOn: boolean
+  counts: BriefCounts
+  error: boolean
+  live: boolean
+  t: Theme
+}) {
+  const clauses = briefClauses(counts, live)
+
+  if (!clauses.length) {
+    return null
+  }
+
+  const gutter = live ? (
+    <Text dimColor>{blinkOn ? '⏺ ' : '  '}</Text>
+  ) : error ? (
+    <Text color={t.color.error}>⏺ </Text>
+  ) : (
+    <Text>{'  '}</Text>
+  )
+
+  return (
+    <Box>
+      <NoSelect flexShrink={0} fromLeftEdge width={2}>
+        {gutter}
+      </NoSelect>
+      <Text color={t.color.muted} dim={!live} wrap="wrap-trim">
+        {clauses.map((clause, index) => (
+          <Text key={clause.key}>
+            {index > 0 ? ', ' : ''}
+            {clause.verb} <Text bold>{clause.count}</Text> {clause.noun}
+          </Text>
+        ))}
+        {live ? '…' : ''}
       </Text>
     </Box>
   )
@@ -1060,63 +1117,95 @@ export const ToolTrail = memo(function ToolTrail({
   // alternates glyph/space (original useBlink is 600ms — same read).
   const blinkOn = Math.floor(now / 500) % 2 === 0
 
+  // One full `⏺ Tool(args)` + `⎿ result` block. This is every row in the
+  // expanded (ctrl+o) view, and the shape STANDALONE tools — edits,
+  // delegations, questions — keep even while collapsed. `gap` opens the blank
+  // line upstream leaves between consecutive blocks.
+  const renderGroup = (group: Group, gap: boolean) => {
+    const isDelegateGroup = group.label.startsWith('Delegate Task')
+    const bulletColor = group.error ? t.color.error : t.color.ok
+
+    return (
+      <Box flexDirection="column" key={group.key} marginTop={gap ? 1 : 0}>
+        <Text color={group.color}>
+          {group.live ? (
+            // Running: dim blinking ⏺ — the off-frame renders two
+            // spaces matching the glyph+space width so the row never
+            // reflows mid-blink.
+            <Text dimColor>{blinkOn ? '⏺ ' : '  '}</Text>
+          ) : (
+            <Text color={bulletColor}>⏺ </Text>
+          )}
+          {toolLabel(group)}
+          {isDelegateGroup ? (
+            <Text color={t.color.statusFg} dim>
+              {'  (/agents to monitor)'}
+            </Text>
+          ) : null}
+        </Text>
+        {group.details.map(detail => {
+          // Multi-line details (Bash 3-line summaries, error caps):
+          // first row carries the ⎿ connector, continuations align
+          // under the content column.
+          if (typeof detail.content === 'string' && detail.content.includes('\n')) {
+            return detail.content.split('\n').map((row, rowIdx) => (
+              <Text color={detail.color} dimColor={detail.dimColor} key={`${detail.key}-${rowIdx}`}>
+                {rowIdx === 0 ? (
+                  <>
+                    {'  '}
+                    {/* String literal, not JSX text: the two trailing spaces are load-bearing
+                        (the original's ⎿ gutter is 3 columns) and a formatter collapses
+                        bare JSX whitespace. */}
+                    <Text color={t.color.muted}>{'⎿  '}</Text>
+                  </>
+                ) : (
+                  '     '
+                )}
+                {row || ' '}
+              </Text>
+            ))
+          }
+
+          return (
+            <Text color={detail.color} dimColor={detail.dimColor} key={detail.key}>
+              {'  '}
+              {/* String literal, not JSX text: the two trailing spaces are load-bearing
+                        (the original's ⎿ gutter is 3 columns) and a formatter collapses
+                        bare JSX whitespace. */}
+              <Text color={t.color.muted}>{'⎿  '}</Text>
+              {detail.content}
+            </Text>
+          )
+        })}
+        {inlineDelegateKey === group.key ? renderSubagentList([]) : null}
+      </Box>
+    )
+  }
+
+  // Collapsed (default) view: consecutive collapsible calls fold into one
+  // brief line, standalone calls keep their block, and order is preserved.
+  // Expanded (ctrl+o) view: every call keeps its block, blank-line separated.
   const toolsFlat =
     hasTools && visible.tools !== 'hidden' ? (
       <Box flexDirection="column">
-        {groups.map(group => {
-          const isDelegateGroup = group.label.startsWith('Delegate Task')
-          const bulletColor = group.error ? t.color.error : t.color.ok
-
-          return (
-            <Box flexDirection="column" key={group.key}>
-              <Text color={group.color}>
-                {group.live ? (
-                  // Running: dim blinking ⏺ — the off-frame renders two
-                  // spaces matching the glyph+space width so the row never
-                  // reflows mid-blink.
-                  <Text dimColor>{blinkOn ? '⏺ ' : '  '}</Text>
-                ) : (
-                  <Text color={bulletColor}>⏺ </Text>
-                )}
-                {toolLabel(group)}
-                {isDelegateGroup ? (
-                  <Text color={t.color.statusFg} dim>
-                    {'  (/agents to monitor)'}
-                  </Text>
-                ) : null}
-              </Text>
-              {group.details.map(detail => {
-                // Multi-line details (Bash 3-line summaries, error caps):
-                // first row carries the ⎿ connector, continuations align
-                // under the content column.
-                if (typeof detail.content === 'string' && detail.content.includes('\n')) {
-                  return detail.content.split('\n').map((row, rowIdx) => (
-                    <Text color={detail.color} dimColor={detail.dimColor} key={`${detail.key}-${rowIdx}`}>
-                      {rowIdx === 0 ? (
-                        <>
-                          {'  '}
-                          <Text color={t.color.muted}>⎿  </Text>
-                        </>
-                      ) : (
-                        '     '
-                      )}
-                      {row || ' '}
-                    </Text>
-                  ))
-                }
-
-                return (
-                  <Text color={detail.color} dimColor={detail.dimColor} key={detail.key}>
-                    {'  '}
-                    <Text color={t.color.muted}>⎿  </Text>
-                    {detail.content}
-                  </Text>
-                )
-              })}
-              {inlineDelegateKey === group.key ? renderSubagentList([]) : null}
-            </Box>
-          )
-        })}
+        {toolsExpanded
+          ? groups.map((group, index) => renderGroup(group, index > 0))
+          : briefRuns(groups, group => group.label).map((run, index) =>
+              run.kind === 'flat' ? (
+                <Box flexDirection="column" key={`run-${index}`}>
+                  {run.items.map(group => renderGroup(group, false))}
+                </Box>
+              ) : (
+                <BriefLine
+                  blinkOn={blinkOn}
+                  counts={countBriefTools(run.items.map(group => group.label))}
+                  error={run.items.some(group => group.error)}
+                  key={`run-${index}`}
+                  live={run.items.some(group => group.live)}
+                  t={t}
+                />
+              )
+            )}
       </Box>
     ) : null
 
