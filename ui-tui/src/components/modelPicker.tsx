@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import type { EffortOptionsResponse, ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -15,9 +15,24 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-type Stage = 'provider' | 'key' | 'model' | 'disconnect'
+type Stage = 'provider' | 'key' | 'model' | 'effort' | 'disconnect'
 
-export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
+/**
+ * Offered above the model's real levels on step 3: clears the session
+ * override so the provider picks. Kept out of the backend's `levels` because
+ * "let the provider decide" is only meaningful alongside a real level.
+ */
+const AUTO_EFFORT = 'auto'
+
+export function ModelPicker({
+  allowEffortStep = true,
+  allowPersistGlobal = true,
+  gw,
+  onCancel,
+  onSelect,
+  sessionId,
+  t
+}: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -29,6 +44,13 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
   const [keyError, setKeyError] = useState('')
+  // Step 3. `effortLevels` is auto + whatever the chosen model accepts;
+  // `pendingModel` is the step-2 choice held while step 3 runs, so the
+  // switch is applied once, with both halves, rather than twice.
+  const [effortLevels, setEffortLevels] = useState<string[]>([])
+  const [effortIdx, setEffortIdx] = useState(0)
+  const [effortLoading, setEffortLoading] = useState(false)
+  const [pendingModel, setPendingModel] = useState('')
   // Type-to-filter query, scoped per stage (cleared on stage change).
   const [filter, setFilter] = useState('')
 
@@ -121,12 +143,34 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     }
   }, [models.length, modelIdx])
 
+  const buildModelValue = (slug: string, model: string) =>
+    `${model} --provider ${slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
+
+  // One exit point for the whole flow, so the switch is dispatched exactly
+  // once whether step 3 ran, was skipped, or failed to load.
+  const apply = (value: string, effort?: string) => {
+    onSelect(value, effort && effort !== AUTO_EFFORT ? effort : undefined)
+  }
+
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
       setFilter('')
       setProviderIdx(stage === 'provider' ? 0 : providerIdx)
       setModelIdx(0)
+
+      return
+    }
+
+    // Step 3 goes back one step, to the model list it came from — not all
+    // the way out to the providers.
+    if (stage === 'effort') {
+      setStage('model')
+      setEffortLevels([])
+      setEffortIdx(0)
+      setEffortLoading(false)
+      setPendingModel('')
+      setFilter('')
 
       return
     }
@@ -147,7 +191,9 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
   // On the list stages we capture printable keys (including 'q') into the
   // filter, so the shared overlay q/Esc handler must yield to our own handler.
-  const listStage = stage === 'provider' || stage === 'model'
+  // Step 3 joins the list stages so the shared q/Esc handler yields to ours
+  // (it has no filter of its own, but it does own Enter/Esc/arrows).
+  const listStage = stage === 'provider' || stage === 'model' || stage === 'effort'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
@@ -286,9 +332,13 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return
     }
 
-    const count = stage === 'provider' ? filteredProviderRows.length : models.length
-    const sel = stage === 'provider' ? providerIdx : modelIdx
-    const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
+    if (stage === 'effort' && effortLoading) {
+      return
+    }
+
+    const count = stage === 'provider' ? filteredProviderRows.length : stage === 'effort' ? effortLevels.length : models.length
+    const sel = stage === 'provider' ? providerIdx : stage === 'effort' ? effortIdx : modelIdx
+    const setSel = stage === 'provider' ? setProviderIdx : stage === 'effort' ? setEffortIdx : setModelIdx
 
     if (key.upArrow && sel > 0) {
       setSel(v => v - 1)
@@ -328,16 +378,70 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         return
       }
 
-      const model = models[modelIdx]
+      if (stage === 'effort') {
+        const level = effortLevels[effortIdx]
 
-      if (provider && model) {
-        onSelect(
-          `${model} --provider ${provider.slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
-        )
-      } else {
-        setStage('provider')
+        // `auto` is the picker's own row, not a level to send — it means
+        // "clear the override", which is exactly what /effort auto does.
+        apply(pendingModel, level)
+
+        return
       }
 
+      const model = models[modelIdx]
+
+      if (!provider || !model) {
+        setStage('provider')
+
+        return
+      }
+
+      const value = buildModelValue(provider.slug, model)
+
+      if (!allowEffortStep) {
+        apply(value)
+
+        return
+      }
+
+      // Step 3 is offered only where it can be applied: a model that takes no
+      // effort parameter gets the two-step flow it had before, rather than a
+      // list whose every row is a no-op.
+      setPendingModel(value)
+      setEffortLoading(true)
+      setFilter('')
+      setStage('effort')
+      gw.request<EffortOptionsResponse>('model.effort_options', { model, provider: provider.slug })
+        .then(raw => {
+          const r = asRpcResult<EffortOptionsResponse>(raw)
+          const levels = r?.supported ? (r.levels ?? []) : []
+
+          if (!levels.length) {
+            apply(value)
+
+            return
+          }
+
+          const rows = [AUTO_EFFORT, ...levels]
+          setEffortLevels(rows)
+          // Land on the session's live level so Enter-through is a no-op
+          // rather than a silent reset to auto.
+          setEffortIdx(Math.max(0, rows.indexOf(r?.current || AUTO_EFFORT)))
+          setEffortLoading(false)
+        })
+        .catch(() => {
+          // The model is already chosen; a failed capability lookup must not
+          // strand the user on a blank step. Apply what we have.
+          apply(value)
+        })
+
+      return
+    }
+
+    // Step 3 has no filter, and its model value (with the persist flag baked
+    // in) was built on the way in — so a ^g toggle here would silently do
+    // nothing. Everything below this line belongs to the two list stages.
+    if (stage === 'effort') {
       return
     }
 
@@ -509,6 +613,68 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     )
   }
 
+  // ── Effort selection stage (step 3) ──────────────────────────────────
+  if (stage === 'effort') {
+    if (effortLoading) {
+      return <Text color={t.color.muted}>loading effort levels…</Text>
+    }
+
+    const { items, offset } = windowItems(effortLevels, effortIdx, VISIBLE)
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent} wrap="truncate-end">
+          Select effort (step 3/3)
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {pendingModel.split(' ')[0] || '(model)'} · Esc back
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          Levels this model accepts · Enter to switch
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset > 0 ? ` ↑ ${offset} more` : ' '}
+        </Text>
+
+        {Array.from({ length: Math.min(VISIBLE, Math.max(effortLevels.length, 1)) }, (_, i) => {
+          const row = items[i]
+          const idx = offset + i
+
+          if (!row) {
+            return (
+              <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
+                {' '}
+              </Text>
+            )
+          }
+
+          return (
+            <Text
+              bold={effortIdx === idx}
+              color={effortIdx === idx ? t.color.accent : t.color.muted}
+              inverse={effortIdx === idx}
+              key={`effort-${row}`}
+              wrap="truncate-end"
+            >
+              {effortIdx === idx ? '▸ ' : '  '}
+              {idx + 1}. {row}
+              {row === AUTO_EFFORT ? ' · provider default' : ''}
+            </Text>
+          )
+        })}
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset + VISIBLE < effortLevels.length ? ` ↓ ${effortLevels.length - offset - VISIBLE} more` : ' '}
+        </Text>
+
+        <OverlayHint t={t}>↑/↓ select · Enter switch · Esc back · q close</OverlayHint>
+      </Box>
+    )
+  }
+
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
     const rows = filteredProviderRows.map(({ provider: p, name }) => {
@@ -527,11 +693,11 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent} wrap="truncate-end">
-          Select provider (step 1/2)
+          Select provider (step 1/3)
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Full model IDs on the next step · Enter to continue
+          Then a model, then its effort level · Enter to continue
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -597,7 +763,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        Select model (step 2/2)
+        Select model (step 2/3)
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
@@ -661,10 +827,18 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 }
 
 interface ModelPickerProps {
+  /**
+   * Whether to offer step 3. False for callers that capture the selection as
+   * a draft instead of switching the live session — they have nowhere to put
+   * an effort level, and offering a choice they would discard is worse than
+   * not offering it.
+   */
+  allowEffortStep?: boolean
   allowPersistGlobal?: boolean
   gw: GatewayClient
   onCancel: () => void
-  onSelect: (value: string) => void
+  /** `effort` is the step-3 choice, omitted for `auto` and for models with no ladder. */
+  onSelect: (value: string, effort?: string) => void
   sessionId: string | null
   t: Theme
 }

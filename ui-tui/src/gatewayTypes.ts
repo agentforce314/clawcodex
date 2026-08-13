@@ -263,6 +263,13 @@ export interface ConfigSetResponse {
   ok?: boolean
   /** permission_mode only: whether the choice was written to settings.json. */
   persisted?: boolean
+  /**
+   * model only: the provider the session ended up on. A cross-provider
+   * selection moves it, so the stats line's provider half has to follow the
+   * model's — absent from older backends, which is why callers keep the
+   * previous label rather than blanking it.
+   */
+  provider?: string
   value?: string
   warning?: string
 }
@@ -576,6 +583,19 @@ export interface ModelOptionsResponse {
   model?: string
   provider?: string
   providers?: ModelOptionProvider[]
+}
+
+/**
+ * The effort ladder one model actually accepts — the picker's step 3.
+ * `supported: false` means the model takes no effort parameter at all, and
+ * the picker skips the step rather than offering a list that cannot apply.
+ * `levels` excludes `auto`; the picker prepends it.
+ */
+export interface EffortOptionsResponse {
+  /** The session's live level, '' when unset (i.e. auto). */
+  current?: string
+  levels?: string[]
+  supported?: boolean
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────

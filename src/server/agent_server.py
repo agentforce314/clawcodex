@@ -548,6 +548,9 @@ class _AgentSession:
         if subtype == "list_model_providers":
             self._do_list_model_providers(request_id)
             return
+        if subtype == "effort_options":
+            self._do_effort_options(request_id, inner.get("provider"), inner.get("model"))
+            return
         if subtype == "save_provider_key":
             self._do_save_provider_key(
                 request_id, inner.get("slug"), inner.get("api_key")
@@ -1553,7 +1556,18 @@ class _AgentSession:
         # persists (model, model_provider) to user settings — /model survives
         # restarts.
         _dispatch_app_state(self, main_loop_model=model)
-        response: dict = {"ok": True, "model": getattr(self.provider, "model", model)}
+        # Echo the provider alongside the model. This path cannot CHANGE the
+        # provider (a cross-provider id is refused above), but the client
+        # displays provider and model as one line and only ever learns the
+        # provider from a reply — so a reply that omits it leaves the label
+        # stuck on whatever ``init`` said, which is wrong the moment a
+        # cross-provider switch lands via set_provider + a retry through here.
+        # The fusion and set_provider paths already echo it; this was the gap.
+        response: dict = {
+            "ok": True,
+            "model": getattr(self.provider, "model", model),
+            "provider": self.provider_name,
+        }
         known = self._available_models()
         if known and model not in known:
             response["warning"] = (
@@ -1677,6 +1691,39 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_effort_options(
+        self, request_id: object, provider: object, model: object
+    ) -> None:
+        """The /model picker's step 3: the effort levels the model just picked
+        in step 2 will actually accept.
+
+        Queried per selection rather than ridden along on
+        ``list_model_providers`` — the ladder is a property of the MODEL, and
+        some providers enumerate hundreds of them, so answering for all of
+        them upfront would bloat every picker open to serve one row.
+
+        ``current`` lets the picker preselect the session's live level.
+        Defaults fall back to the session's own provider so a caller that
+        omits ``provider`` still gets a sensible answer.
+        """
+        try:
+            from src.providers.effort_options import effort_options
+
+            slug = provider if isinstance(provider, str) and provider else self.provider_name
+            name = model if isinstance(model, str) and model else getattr(self.provider, "model", "")
+            options = effort_options(slug, name)
+        except Exception as exc:  # noqa: BLE001 — never break the control channel
+            logger.exception("[agent-server] effort_options failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
+        self._reply(request_id, {
+            "ok": True,
+            "current": self._effort or "",
+            "model": name,
+            "provider": slug,
+            **options,
+        })
 
     def _do_list_model_providers(self, request_id: object) -> None:
         """Every provider ClawCodex knows about — the /model picker's step 1.

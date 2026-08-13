@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { infoAfterModelSwitch } from '../../../domain/modelSwitch.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
@@ -111,7 +112,7 @@ export const sessionCommands: SlashCommand[] = [
 
               patchUiState(state => ({
                 ...state,
-                info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+                info: infoAfterModelSwitch(state.info, r.value!, r.provider)
               }))
             })
           )

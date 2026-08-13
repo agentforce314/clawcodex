@@ -186,6 +186,47 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('repoints the provider label when /model crosses providers', async () => {
+    patchUiState({
+      info: { cwd: '/w/app', model: 'claude-opus-5', profile_name: 'anthropic', skills: {}, tools: {} } as never,
+      sid: 'sid-abc'
+    })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ provider: 'openai', value: 'gpt-5.6-luna' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model gpt-5.6-luna --provider openai')).toBe(true)
+    await vi.waitFor(() => {
+      // Both halves move, or the line reads `anthropic · gpt-5.6-luna`.
+      expect(getUiState().info?.model).toBe('gpt-5.6-luna')
+      expect(getUiState().info?.profile_name).toBe('openai')
+    })
+  })
+
+  it('leaves the provider label alone for a same-provider /model switch', async () => {
+    patchUiState({
+      info: { cwd: '/w/app', model: 'claude-opus-5', profile_name: 'anthropic', skills: {}, tools: {} } as never,
+      sid: 'sid-abc'
+    })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'claude-sonnet-5' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model claude-sonnet-5')).toBe(true)
+    await vi.waitFor(() => {
+      expect(getUiState().info?.model).toBe('claude-sonnet-5')
+    })
+    expect(getUiState().info?.profile_name).toBe('anthropic')
+  })
+
   it('honors TUI picker session scope without adding --global', async () => {
     patchUiState({ sid: 'sid-abc' })
 

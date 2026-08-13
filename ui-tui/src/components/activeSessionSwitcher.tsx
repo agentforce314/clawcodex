@@ -661,6 +661,9 @@ export function ActiveSessionSwitcher({
   if (pickingModel) {
     return (
       <ModelPicker
+        // A draft for a not-yet-started session: the model is carried in the
+        // prompt's --model arg, and there is no session to set an effort on.
+        allowEffortStep={false}
         allowPersistGlobal={false}
         gw={gw}
         onCancel={() => setPickingModel(false)}

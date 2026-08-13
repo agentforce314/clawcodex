@@ -383,7 +383,53 @@ describe('GatewayClient NDJSON adapter', () => {
   it('falls back to the requested model when an older backend acks without echoing it', async () => {
     const p = gw.request('config.set', { key: 'model', value: 'x-model' })
     await replyToControl('set_model', { ok: true })
+    // No `provider` key at all: an absent provider means "unchanged", and
+    // synthesizing one here would let a caller overwrite a correct label.
     await expect(p).resolves.toEqual({ value: 'x-model' })
+  })
+
+  it('passes the provider the backend echoes through to the caller', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'deepseek-v4-pro' })
+    await replyToControl('set_model', { model: 'deepseek-v4-pro', ok: true, provider: 'deepseek' })
+    await expect(p).resolves.toEqual({ provider: 'deepseek', value: 'deepseek-v4-pro' })
+  })
+
+  // ── step 3: the effort ladder for the model being selected ───────────────
+
+  it('reports the effort ladder for the model the picker asks about', async () => {
+    const p = gw.request('model.effort_options', { model: 'claude-opus-5', provider: 'anthropic' })
+    await replyToControl('effort_options', {
+      current: 'xhigh',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      ok: true,
+      supported: true
+    })
+
+    await expect(p).resolves.toEqual({
+      current: 'xhigh',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supported: true
+    })
+
+    const req = seen.find(f => f.request?.subtype === 'effort_options')!.request
+    expect(req.model).toBe('claude-opus-5')
+    expect(req.provider).toBe('anthropic')
+  })
+
+  it('treats an errored effort lookup as "no ladder" rather than failing the switch', async () => {
+    // The model is already chosen by the time this runs, so a refusal must
+    // degrade to the two-step flow, not reject and strand the picker.
+    const p = gw.request('model.effort_options', { model: 'm', provider: 'p' })
+    await replyToControl('effort_options', { error: 'boom', ok: false })
+
+    await expect(p).resolves.toEqual({ levels: [], supported: false })
+  })
+
+  it('drops non-string levels from a malformed reply', async () => {
+    const p = gw.request('model.effort_options', { model: 'm', provider: 'p' })
+    await replyToControl('effort_options', { levels: ['low', 3, null, 'max'], ok: true, supported: true })
+
+    await expect(p).resolves.toMatchObject({ levels: ['low', 'max'] })
   })
 
   it('rejects with the backend error when the model switch is refused', async () => {
@@ -429,14 +475,30 @@ describe('GatewayClient NDJSON adapter', () => {
       provider_mismatch: true
     })
     await reply('set_provider', { model: 'gpt-5.4', ok: true, provider: 'openai' })
+    // No `provider` in the retry's reply — an older backend. The switch still
+    // has to report where the session landed, or the caller leaves the stats
+    // line reading `anthropic · gpt-5.4`.
     await reply('set_model', { model: 'gpt-5.4', ok: true })
 
-    await expect(p).resolves.toEqual({ value: 'gpt-5.4' })
+    await expect(p).resolves.toEqual({ provider: 'openai', value: 'gpt-5.4' })
 
     const switched = seen.find(f => f.request?.subtype === 'set_provider')!.request
     expect(switched.provider).toBe('openai')
     // Two set_model frames: the probe that got refused, then the retry.
     expect(seen.filter(f => f.request?.subtype === 'set_model')).toHaveLength(2)
+  })
+
+  it('prefers the provider the retry itself reports over the requested one', async () => {
+    const reply = makeReplier()
+    const p = gw.request('config.set', { key: 'model', value: 'gpt-5.4 --provider openai' })
+
+    await reply('set_model', { ok: false, provider: 'anthropic', provider_mismatch: true })
+    await reply('set_provider', { model: 'gpt-5.4', ok: true, provider: 'openai' })
+    // The backend canonicalizes the slug it was sent; its answer wins so the
+    // label matches what the session is actually on.
+    await reply('set_model', { model: 'gpt-5.4', ok: true, provider: 'openai-compat' })
+
+    await expect(p).resolves.toEqual({ provider: 'openai-compat', value: 'gpt-5.4' })
   })
 
   it('surfaces a failed provider switch instead of the model error', async () => {

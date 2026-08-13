@@ -1215,6 +1215,26 @@ export class GatewayClient extends EventEmitter {
           })
         })
 
+      case 'model.effort_options':
+        return this.controlQuery('effort_options', {
+          model: String(p.model ?? ''),
+          provider: String(p.provider ?? '')
+        }).then((r: any) => {
+          // A backend too old to know the control answers null, and an
+          // errored one answers {ok:false}. Neither is worth failing the
+          // switch over — the model is already chosen by this point, so fall
+          // back to "no ladder" and let the picker apply what it has.
+          if (r == null || r.ok === false) {
+            return { levels: [], supported: false } as T
+          }
+
+          return {
+            current: typeof r.current === 'string' ? r.current : '',
+            levels: Array.isArray(r.levels) ? r.levels.filter((l: unknown) => typeof l === 'string') : [],
+            supported: r.supported === true
+          } as T
+        })
+
       case 'model.save_key':
         return this.controlQuery('save_provider_key', {
           api_key: String(p.api_key ?? ''),
@@ -1591,7 +1611,7 @@ export class GatewayClient extends EventEmitter {
   // response: model switch" reports), so this must round-trip the control
   // rather than fire-and-forget. Scope flags are dropped: the backend persists
   // every switch (agent_server set_model → app-state on_change).
-  private setModel(raw: string): Promise<{ value: string; warning?: string }> {
+  private setModel(raw: string): Promise<{ provider?: string; value: string; warning?: string }> {
     const tokens = raw.trim().split(/\s+/).filter(Boolean)
     const modelParts: string[] = []
     let provider: string | undefined
@@ -1627,7 +1647,7 @@ export class GatewayClient extends EventEmitter {
     model: string,
     provider: string | undefined,
     allowSwitch = true
-  ): Promise<{ value: string; warning?: string }> {
+  ): Promise<{ provider?: string; value: string; warning?: string }> {
     return this.controlQuery('set_model', { model, ...(provider ? { provider } : {}) }).then((r: any) => {
       if (r == null) {
         // Tagged: a silent backend may still have APPLIED the model, so the
@@ -1657,45 +1677,55 @@ export class GatewayClient extends EventEmitter {
             // happened" while the session quietly sits on a different
             // provider AND a different model. Roll back to where we came
             // from (the mismatch reply names it) and say what actually stuck.
-            return this.applyModel(model, provider, false).catch((e: unknown) => {
-              const why = e instanceof Error ? e.message : String(e)
-              const previous = typeof r.provider === 'string' ? r.provider : ''
+            return this.applyModel(model, provider, false)
+              // The retry lands on the NEW provider, so its reply names it.
+              // Fall back to the one we just switched to for older backends
+              // that echo no provider: set_provider returning ok is proof of
+              // where the session now is, and this is the path that MOVES it.
+              .then(res => ({ ...res, provider: res.provider ?? provider }))
+              .catch((e: unknown) => {
+                const why = e instanceof Error ? e.message : String(e)
+                const previous = typeof r.provider === 'string' ? r.provider : ''
 
-              // A silent backend is NOT a known failure — it may have applied
-              // the model. Rolling back would then throw away a switch that
-              // worked, so report the uncertainty instead of acting on it.
-              if ((e as { indeterminate?: boolean })?.indeterminate) {
-                throw new Error(
-                  `switched to '${provider}' but the model selection got no response — ` +
-                    `the session may be on '${provider}'`
-                )
-              }
+                // A silent backend is NOT a known failure — it may have applied
+                // the model. Rolling back would then throw away a switch that
+                // worked, so report the uncertainty instead of acting on it.
+                if ((e as { indeterminate?: boolean })?.indeterminate) {
+                  throw new Error(
+                    `switched to '${provider}' but the model selection got no response — ` +
+                      `the session may be on '${provider}'`
+                  )
+                }
 
-              if (!previous) {
-                throw new Error(`switched to '${provider}' but could not select '${model}': ${why}`)
-              }
+                if (!previous) {
+                  throw new Error(`switched to '${provider}' but could not select '${model}': ${why}`)
+                }
 
-              return this.controlQuery('set_provider', { provider: previous }).then((back: any) => {
-                throw new Error(
-                  back != null && back.ok !== false
-                    ? // set_provider resets the model to that provider's
-                      // configured default and persists it, so the provider is
-                      // restored but the previously-selected model is not.
-                      `could not select '${model}' on '${provider}': ${why} — rolled back to ` +
-                        `'${previous}' (its default model)`
-                    : `could not select '${model}': ${why} — session is now on '${provider}'`
-                )
+                return this.controlQuery('set_provider', { provider: previous }).then((back: any) => {
+                  throw new Error(
+                    back != null && back.ok !== false
+                      ? // set_provider resets the model to that provider's
+                        // configured default and persists it, so the provider is
+                        // restored but the previously-selected model is not.
+                        `could not select '${model}' on '${provider}': ${why} — rolled back to ` +
+                          `'${previous}' (its default model)`
+                      : `could not select '${model}': ${why} — session is now on '${provider}'`
+                  )
+                })
               })
-            })
           })
         }
 
         throw new Error(typeof r.error === 'string' && r.error ? r.error : 'model switch failed')
       }
 
-      // Older backends ack {ok:true} without echoing the model.
+      // Older backends ack {ok:true} without echoing the model — or, for
+      // `provider`, without echoing it at all. Omit the key in that case so
+      // callers can tell "unchanged/unknown" (keep the current label) from a
+      // real move, rather than blanking a provider that is still correct.
       return {
         value: typeof r.model === 'string' && r.model ? r.model : model,
+        ...(typeof r.provider === 'string' && r.provider ? { provider: r.provider } : {}),
         ...(typeof r.warning === 'string' && r.warning ? { warning: r.warning } : {})
       }
     })

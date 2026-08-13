@@ -33,9 +33,11 @@ class _StubSession:
     picker contract instead of the WebSocket harness.
     """
 
-    def __init__(self, provider_name: str = "anthropic", models=None, fusion=None):
+    def __init__(self, provider_name: str = "anthropic", models=None, fusion=None, effort=None):
         self.provider_name = provider_name
         self.provider = SimpleNamespace(model="claude-opus-5")
+        # The session's live /effort level; step 3 preselects it.
+        self._effort = effort
         self._models = list(models or [])
         self._fusion = fusion
         self.replies: list[tuple[object, dict]] = []
@@ -565,6 +567,52 @@ class TestDisconnectProviderControl:
         assert "project config" in sess.last["error"]
 
 
+# ── step 3: effort options ───────────────────────────────────────────────────
+
+
+class TestEffortOptions:
+    """The ``effort_options`` control behind the picker's third step."""
+
+    def test_reports_the_levels_for_the_model_being_selected(self):
+        """Keyed off the ARGUMENTS, not the session — step 3 runs before the
+        switch is applied, so answering for the live model would describe the
+        model the user is leaving."""
+        sess = _StubSession("anthropic")
+        _AgentSession._do_effort_options(sess, "r1", "anthropic", "claude-sonnet-4-6")
+
+        assert sess.last["ok"] is True
+        assert sess.last["supported"] is True
+        # sonnet-4-6 400s on xhigh; opus-5 (the session's live model) does not.
+        assert "xhigh" not in sess.last["levels"]
+
+    def test_reports_an_unsupported_model_as_such(self):
+        sess = _StubSession("anthropic")
+        _AgentSession._do_effort_options(sess, "r1", "anthropic", "claude-haiku-4-5-20251001")
+
+        assert sess.last["supported"] is False
+        assert sess.last["levels"] == []
+
+    def test_echoes_the_live_effort_so_the_picker_can_preselect(self):
+        sess = _StubSession("anthropic", effort="xhigh")
+        _AgentSession._do_effort_options(sess, "r1", "anthropic", "claude-opus-5")
+
+        assert sess.last["current"] == "xhigh"
+
+    def test_an_unset_effort_is_reported_as_empty_not_null(self):
+        sess = _StubSession("anthropic")
+        _AgentSession._do_effort_options(sess, "r1", "anthropic", "claude-opus-5")
+
+        assert sess.last["current"] == ""
+
+    def test_falls_back_to_the_session_when_arguments_are_missing(self):
+        sess = _StubSession("anthropic")
+        _AgentSession._do_effort_options(sess, "r1", None, None)
+
+        assert sess.last["provider"] == "anthropic"
+        assert sess.last["model"] == "claude-opus-5"
+        assert sess.last["supported"] is True
+
+
 # ── the cross-provider signal ────────────────────────────────────────────────
 
 
@@ -581,6 +629,18 @@ class TestCrossProviderSignal:
         assert reply["provider"] == "anthropic"
         # The human-readable half stays intact.
         assert "openai" in reply["error"]
+
+    def test_a_successful_switch_echoes_the_provider(self):
+        """The client renders provider and model as one phrase and only ever
+        learns the provider from a reply. Omitting it here left the label stuck
+        on whatever ``init`` said, so a cross-provider selection displayed the
+        new model beside the old provider (``anthropic · gpt-5.6-luna``). The
+        fusion and set_provider paths already echoed it; this one did not."""
+        sess = _StubSession("anthropic")
+        _AgentSession._do_set_model(sess, "r1", "claude-sonnet-5", "anthropic")
+
+        assert sess.last["ok"] is True
+        assert sess.last["provider"] == "anthropic"
 
     def test_an_alias_spelling_is_not_a_cross_provider_switch(self):
         """A session launched as ``--provider glm`` keeps that spelling while

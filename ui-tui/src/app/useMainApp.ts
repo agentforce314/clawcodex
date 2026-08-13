@@ -16,6 +16,7 @@ import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice } from '../domain/messages.js'
+import { infoAfterModelSwitch, modelPickerCommands } from '../domain/modelSwitch.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -1143,9 +1144,12 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
-  const onModelSelect = useCallback((value: string) => {
+  const onModelSelect = useCallback((value: string, effort?: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
+
+    for (const command of modelPickerCommands(value, effort)) {
+      slashRef.current(command)
+    }
   }, [])
 
   const onLogoSelect = useCallback((value: string) => {
@@ -1204,10 +1208,10 @@ export function useMainApp(gw: GatewayClient) {
         maybeWarn,
         modelArg,
         newLiveSession: session.newLiveSession,
-        onModelSwitched: value =>
+        onModelSwitched: (value, result) =>
           patchUiState(state => ({
             ...state,
-            info: state.info ? { ...state.info, model: value } : { model: value, skills: {}, tools: {} }
+            info: infoAfterModelSwitch(state.info, value, result.provider)
           })),
         prompt,
         rpc,
