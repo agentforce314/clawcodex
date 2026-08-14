@@ -16,6 +16,7 @@ import type {
   ContextUsageResult,
   DirectoryListing,
   GatewayEvent,
+  EffortOptionsResult,
   ModelOptionsResult,
   ProjectsTreeResult,
   SessionResumeResult,
@@ -27,6 +28,7 @@ import {
   $commands,
   $connection,
   $contextUsage,
+  $effort,
   $detailsNodeId,
   $models,
   $notice,
@@ -258,6 +260,9 @@ function adoptSession(result: SessionResumeResult): void {
 
   void refreshProjects()
   void refreshUsage()
+  // The effort ladder is a property of the model this session ended up on,
+  // which is only known now — before a session there is nothing to ask.
+  void refreshEffort()
 }
 
 export async function interrupt(): Promise<void> {
@@ -414,6 +419,7 @@ async function runSlashCommand(input: string): Promise<boolean> {
 
     // Model / permission commands change session state the chrome reads.
     void refreshModels()
+    void refreshEffort()
 
     return true
   } catch (error) {
@@ -533,6 +539,58 @@ export async function refreshModels(): Promise<void> {
   }
 }
 
+/**
+ * Re-read the effort ladder for whatever model the session is on.
+ *
+ * Called after every model switch, not once at boot: the ladder belongs to the
+ * model, so a model with no effort parameter must take the chip away rather
+ * than leave the previous model's levels on screen.
+ */
+export async function refreshEffort(): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) {
+    // Nothing to ask and nowhere to apply a choice — say so rather than
+    // offering a control that would silently do nothing.
+    $effort.set({ supported: false })
+
+    return
+  }
+
+  try {
+    $effort.set(
+      await gateway().request<EffortOptionsResult>('effort.options', { session_id: sessionId }),
+    )
+  } catch {
+    // Losing the ladder hides the chip; it does not disturb the session.
+    $effort.set({ supported: false })
+  }
+}
+
+export async function setEffort(effort: string): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  // Optimistic: the menu should mark the new level immediately, and the
+  // refresh below replaces this with whatever the session really took.
+  $effort.set({ ...$effort.get(), current: effort })
+
+  try {
+    const result = await gateway().request<{ error?: string; ok?: boolean; value?: string }>(
+      'config.set',
+      { key: 'effort', session_id: sessionId, value: effort },
+    )
+
+    if (result.ok === false) notice(result.error ?? 'Could not change effort', 'error')
+    else notice(`Effort: ${result.value ?? effort}`)
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+
+  await refreshEffort()
+}
+
 export async function setModel(model: string, provider?: string): Promise<void> {
   const sessionId = $sessionId.get()
 
@@ -558,6 +616,8 @@ export async function setModel(model: string, provider?: string): Promise<void> 
   }
 
   await refreshModels()
+  // The ladder belongs to the model, so a switch can add, change or remove it.
+  await refreshEffort()
 }
 
 export async function refreshCommands(): Promise<void> {

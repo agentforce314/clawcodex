@@ -12,6 +12,7 @@ import type { ConnectionState } from '../gateway/client.ts'
 import type {
   CommandEntry,
   ContextUsageResult,
+  EffortOptionsResult,
   ModelOptionsResult,
   ProjectNode,
 } from '../gateway/protocol.ts'
@@ -61,6 +62,8 @@ export const $projectsLoading = atom<boolean>(false)
 export const $workspace = atom<string>('')
 
 export const $models = atom<ModelOptionsResult>({})
+/** Effort ladder for the running model; `supported: false` hides the chip. */
+export const $effort = atom<EffortOptionsResult>({ supported: false })
 export const $commands = atom<CommandEntry[]>([])
 export const $contextUsage = atom<ContextUsageResult | null>(null)
 

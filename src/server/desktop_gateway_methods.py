@@ -652,6 +652,7 @@ class GatewayConnection:
             "question.respond": self.question_respond,
             "permission.cycle": self.permission_cycle,
             "model.options": self.model_options,
+            "effort.options": self.effort_options,
             "config.get": self.config_get,
             "config.set": self.config_set_rpc,
             "commands.catalog": self.commands_catalog,
@@ -913,6 +914,37 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def effort_options(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The effort levels the given (or running) model will actually accept.
+
+        Queried per model rather than ridden along on ``model.options``: the
+        ladder is a property of the MODEL and some providers enumerate hundreds
+        of them, so answering for all of them upfront would bloat every picker
+        open to serve one row.
+
+        ``supported`` False means the model takes no effort parameter at all —
+        the client is expected to show no control rather than a list it cannot
+        apply. With no live session there is nothing to ask, and saying
+        ``supported: false`` is the honest answer: a level chosen now has
+        nowhere to go.
+        """
+        session = self._first_session(params)
+        if session is None:
+            return {"supported": False, "levels": [], "current": ""}
+        result = await session.control_query(
+            "effort_options",
+            {"provider": _clean(params.get("provider")), "model": _clean(params.get("model"))},
+        )
+        if not isinstance(result, dict) or result.get("ok") is False:
+            return {"supported": False, "levels": [], "current": ""}
+        return {
+            "current": result.get("current") or "",
+            "levels": result.get("levels") or [],
+            "model": result.get("model") or "",
+            "provider": result.get("provider") or "",
+            "supported": result.get("supported") is True,
+        }
 
     async def model_options(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._first_session(params)

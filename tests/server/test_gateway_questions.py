@@ -288,3 +288,73 @@ def test_answering_with_nothing_pending_is_reported_not_replied_to() -> None:
 
     assert asyncio.run(session.respond_question("submit", {"q": "a"})) == {"resolved": False}
     assert agent.replies == []
+
+
+# ── effort options ────────────────────────────────────────────────────────────
+#
+# The ladder is a property of the MODEL: `supported: false` means the model
+# takes no effort parameter, and the client is expected to show no control
+# rather than a list it cannot apply. Every failure path therefore has to
+# report "unsupported", never an empty-but-supported ladder.
+
+
+class _Queryable:
+    """A session stub that answers one control query with a canned reply."""
+
+    def __init__(self, reply: Any) -> None:
+        self.reply = reply
+        self.asked: tuple[str, dict[str, Any]] | None = None
+
+    async def control_query(self, subtype: str, params: dict[str, Any]) -> Any:
+        self.asked = (subtype, params)
+        return self.reply
+
+
+def _effort(reply: Any, *, live: bool = True) -> dict[str, Any]:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    session = _Queryable(reply) if live else None
+    connection._first_session = lambda params: session  # type: ignore[method-assign]
+    return asyncio.run(GatewayConnection.effort_options(connection, {}))
+
+
+def test_effort_reports_unsupported_with_no_live_session() -> None:
+    # Nothing to ask and nowhere to apply a level; claiming a ladder would
+    # offer a control that silently does nothing.
+    assert _effort(None, live=False) == {"supported": False, "levels": [], "current": ""}
+
+
+def test_effort_passes_through_the_model_ladder() -> None:
+    result = _effort(
+        {
+            "ok": True,
+            "supported": True,
+            "levels": ["low", "high"],
+            "current": "high",
+            "model": "m",
+            "provider": "p",
+        }
+    )
+
+    assert result == {
+        "current": "high",
+        "levels": ["low", "high"],
+        "model": "m",
+        "provider": "p",
+        "supported": True,
+    }
+
+
+def test_effort_reports_unsupported_when_the_model_takes_no_parameter() -> None:
+    assert _effort({"ok": True, "supported": False, "levels": []})["supported"] is False
+
+
+def test_effort_reports_unsupported_when_the_control_fails() -> None:
+    # A picker built on an error reply would list nothing and still render.
+    assert _effort({"ok": False, "error": "boom"})["supported"] is False
+    assert _effort(None)["supported"] is False
+
+
+def test_effort_never_claims_support_on_a_truthy_non_true_flag() -> None:
+    assert _effort({"ok": True, "supported": "yes", "levels": ["low"]})["supported"] is False

@@ -9,10 +9,15 @@ import {
   type KeyboardEvent,
 } from 'react'
 
-import type { ContextUsageResult, ModelOptionsResult } from '../gateway/protocol.ts'
+import type {
+  ContextUsageResult,
+  EffortOptionsResult,
+  ModelOptionsResult,
+} from '../gateway/protocol.ts'
 import { $commands, $notice } from '../state/store.ts'
 import { ArrowUpIcon, StopIcon } from '../ui/icons.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
+import { EffortSelect } from './EffortSelect.tsx'
 import { ModelSelect } from './ModelSelect.tsx'
 import { PermissionSelect, type ApprovalMode } from './PermissionSelect.tsx'
 import css from './InputBar.module.css'
@@ -20,10 +25,12 @@ import css from './InputBar.module.css'
 export interface InputBarProps {
   approvalMode?: ApprovalMode
   draft: string
+  effort: EffortOptionsResult
   hero?: boolean
   models: ModelOptionsResult
   onApprovalModeChange: (mode: ApprovalMode) => void
   onDraftChange: (text: string) => void
+  onEffortChange: (effort: string) => void
   onModelChange: (model: string, provider?: string) => void
   onStop: () => void
   onSubmit: (text: string) => void
@@ -46,10 +53,12 @@ const MAX_SUGGESTIONS = 40
 export function InputBar({
   approvalMode,
   draft,
+  effort,
   hero = false,
   models,
   onApprovalModeChange,
   onDraftChange,
+  onEffortChange,
   onModelChange,
   onStop,
   onSubmit,
@@ -219,6 +228,7 @@ export function InputBar({
               sessionModel={sessionModel}
               sessionProvider={sessionProvider}
             />
+            <EffortSelect onChange={onEffortChange} options={effort} />
           </div>
           <div className={css.trailing}>
             <ContextMeter usage={usage} />

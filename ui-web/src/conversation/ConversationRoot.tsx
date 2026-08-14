@@ -10,6 +10,7 @@ import {
   respondApproval,
   respondQuestion,
   setApprovalMode,
+  setEffort,
   setModel,
   submitPrompt,
 } from '../state/actions.ts'
@@ -18,6 +19,7 @@ import {
   $connection,
   $contextUsage,
   $conversationTab,
+  $effort,
   $models,
   $pendingApprovalMode,
   $queue,
@@ -61,6 +63,7 @@ export function ConversationRoot() {
   const sessionTitle = useStore($sessionTitle)
   const workspace = useStore($workspace)
   const models = useStore($models)
+  const effort = useStore($effort)
   const usage = useStore($contextUsage)
   const queue = useStore($queue)
   const connection = useStore($connection)
@@ -146,12 +149,16 @@ export function ConversationRoot() {
       // for the session that does not exist yet.
       approvalMode={transcript.info.approval_mode ?? pendingApproval ?? undefined}
       draft={draft}
+      effort={effort}
       hero={hero}
       models={models}
       onApprovalModeChange={mode => {
         void setApprovalMode(mode)
       }}
       onDraftChange={setDraft}
+      onEffortChange={level => {
+        void setEffort(level)
+      }}
       onModelChange={(model, provider) => {
         void setModel(model, provider)
       }}

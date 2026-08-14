@@ -215,6 +215,21 @@ export interface ModelOptionsResult {
   providers?: ModelOption[]
 }
 
+/**
+ * `effort.options` — the ladder the *model* accepts, asked per model rather
+ * than carried on `model.options` (some providers list hundreds).
+ *
+ * `supported: false` means the model takes no effort parameter at all, and the
+ * client is expected to show no control rather than a list it cannot apply.
+ */
+export interface EffortOptionsResult {
+  current?: string
+  levels?: string[]
+  model?: string
+  provider?: string
+  supported?: boolean
+}
+
 export interface SessionRow {
   cwd?: string | null
   id: string
