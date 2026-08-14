@@ -17,7 +17,6 @@
 }
 
 .bootMark {
-  color: var(--cc-alias-label-primary);
   animation: cc-boot-pulse 1.6s var(--cc-ease-in-out) infinite;
 }
 

@@ -126,7 +126,10 @@ def web_routes(dist: Path | None = None) -> list[Route | Mount]:
     ``build_app`` in :mod:`src.server.desktop_serve`.
     """
     root = dist if dist is not None else web_dist_dir()
-    if root is None:
+    # An explicit ``dist=`` bypasses web_dist_dir's own existence check, so
+    # confirm it before enumerating — a missing directory must mean "no
+    # routes", not a FileNotFoundError out of route construction.
+    if root is None or not root.is_dir():
         return []
 
     assets = root / "assets"
@@ -135,15 +138,24 @@ def web_routes(dist: Path | None = None) -> list[Route | Mount]:
         # `html=False`: a miss under /assets is a genuine 404, not the shell.
         routes.append(Mount("/assets", app=StaticFiles(directory=str(assets)), name="web-assets"))
 
-    for name in ("favicon.svg", "manifest.webmanifest"):
-        path = root / name
-        if not path.is_file():
+    # Every root-level file the build emitted — icons, the manifest, whatever a
+    # future build adds. Enumerated rather than named: a hardcoded list is a
+    # list that goes stale, and it did (renaming favicon.svg to the real PNG
+    # icon set silently 404'd every one of them).
+    #
+    # Enumerated rather than mounted as a directory, too: one explicit route
+    # per file cannot shadow /api/*, cannot serve a traversal path, and cannot
+    # start serving something merely because it appeared in the folder after
+    # boot.
+    for path in sorted(root.iterdir()):
+        # index.html belongs to the `/` route, which injects the session token.
+        if not path.is_file() or path.name == "index.html":
             continue
         routes.append(
             Route(
-                f"/{name}",
+                f"/{path.name}",
                 _file_route(path),
-                name=f"web-{name.replace('.', '-')}",
+                name=f"web-{path.name.replace('.', '-')}",
             )
         )
     return routes

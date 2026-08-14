@@ -4,12 +4,12 @@ import { useMemo, useState } from 'react'
 import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
 import { createSession, resumeSession } from '../state/actions.ts'
 import { toggleSidebar } from '../state/layout.ts'
+import { BrandMark } from '../ui/BrandMark.tsx'
 import { $connection, $projects, $sessionId, $storedSessionId, $workspace } from '../state/store.ts'
 import { $themePreference, cycleTheme } from '../state/theme.ts'
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  ClawMarkIcon,
   GitBranchIcon,
   MonitorIcon,
   MoonIcon,
@@ -155,7 +155,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
             title="New session"
             type="button"
           >
-            <ClawMarkIcon size={22} />
+            <BrandMark size={22} />
             <span className={css.brandLabel}>ClawCodex</span>
           </button>
         )}

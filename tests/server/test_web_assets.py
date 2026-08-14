@@ -43,7 +43,7 @@ def bundle(tmp_path: Path) -> Path:
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text(INDEX_HTML, encoding="utf-8")
     (dist / "assets" / "index-abc123.js").write_text("console.log(1)\n", encoding="utf-8")
-    (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (dist / "favicon-32.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (dist / "manifest.webmanifest").write_text('{"name":"ClawCodex"}', encoding="utf-8")
     return dist
 
@@ -115,9 +115,26 @@ def test_index_without_bundle_is_none(tmp_path: Path) -> None:
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
-def test_routes_cover_assets_and_icons(bundle: Path) -> None:
+def test_routes_cover_assets_and_every_root_file(bundle: Path) -> None:
+    """Enumerated, not named: a hardcoded icon list goes stale the first time
+    the brand assets are renamed — and silently 404s all of them."""
     paths = {getattr(route, "path", None) for route in web_routes(bundle)}
-    assert paths == {"/assets", "/favicon.svg", "/manifest.webmanifest"}
+    assert paths == {"/assets", "/favicon-32.png", "/manifest.webmanifest"}
+
+
+def test_new_root_files_are_served_without_a_code_change(bundle: Path) -> None:
+    (bundle / "apple-touch-icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (bundle / "robots.txt").write_text("User-agent: *", encoding="utf-8")
+
+    paths = {getattr(route, "path", None) for route in web_routes(bundle)}
+    assert {"/apple-touch-icon.png", "/robots.txt"} <= paths
+
+
+def test_index_is_not_served_as_a_static_file(bundle: Path) -> None:
+    """`/` owns index.html because it injects the session token; a static copy
+    beside it would serve the page without one."""
+    paths = {getattr(route, "path", None) for route in web_routes(bundle)}
+    assert "/index.html" not in paths
 
 
 def test_no_routes_without_bundle(tmp_path: Path) -> None:
@@ -143,7 +160,7 @@ def test_app_serves_bundle_when_present(bundle: Path, tmp_path: Path,
     assert asset.status_code == 200
     assert asset.text.strip() == "console.log(1)"
 
-    assert client.get("/favicon.svg").status_code == 200
+    assert client.get("/favicon-32.png").status_code == 200
     assert client.get("/manifest.webmanifest").status_code == 200
 
 

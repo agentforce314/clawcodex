@@ -46,10 +46,6 @@
   font-weight: 500;
 }
 
-.mark {
-  color: var(--cc-alias-label-primary);
-}
-
 .workspaceRow {
   display: flex;
   align-items: center;

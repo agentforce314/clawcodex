@@ -129,6 +129,19 @@ looks for `ui-web/dist` in a source checkout, then for a packaged
 `src/server/web_dist`, and tells you how to build one when it finds neither.
 `clawcodex web --build` runs the npm build for you (Node required).
 
+## Brand assets
+
+`public/favicon-32.png`, `public/favicon-192.png`, `public/apple-touch-icon.png`
+and `src/assets/logo.png` are the official mark from
+[clawcodex.app](https://www.clawcodex.app) — re-fetch them from
+`/assets/` there if the mark changes. They are raster on purpose: the mark is
+pixel art, so it has to land on exact pixel boundaries, and it carries its own
+palette (`#aa2c00` shell, `#fe7500` highlights) rather than inheriting the
+surrounding ink — which is why `BrandMark` is an `<img>` and not an inline SVG.
+
+The server serves every root-level file in `dist/`, so adding another icon
+needs no backend change.
+
 ## Notice
 
 The visual design and several structural ideas are adapted from the

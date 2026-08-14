@@ -10,7 +10,7 @@ import { $detailsWidth, closeDetails, openDetails, toggleSidebar } from './state
 import { $bootError, $bootPhase, $workspace } from './state/store.ts'
 import { installTheme } from './state/theme.ts'
 import { Button } from './ui/primitives/Button.tsx'
-import { ClawMarkIcon } from './ui/icons.tsx'
+import { BrandMark } from './ui/BrandMark.tsx'
 import css from './App.module.css'
 
 function BootScreen({ error }: { error: string }) {
@@ -19,7 +19,7 @@ function BootScreen({ error }: { error: string }) {
   return (
     <div className={css.boot}>
       <div className={css.bootCard}>
-        <ClawMarkIcon className={css.bootMark} size={40} />
+        <BrandMark className={css.bootMark} size={40} />
         <div className={css.bootTitle}>
           {failed ? 'Cannot reach the ClawCodex backend' : 'Connecting to ClawCodex…'}
         </div>

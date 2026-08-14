@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
-import { ClawMarkIcon, FolderIcon } from '../ui/icons.tsx'
+import { BrandMark } from '../ui/BrandMark.tsx'
+import { FolderIcon } from '../ui/icons.tsx'
 import css from './HeroShell.module.css'
 
 export interface HeroShellProps {
@@ -30,7 +31,7 @@ export function HeroShell({ composer, onSuggestion, workspace }: HeroShellProps)
     <div className={css.stack}>
       <div className={css.glow} />
       <div className={css.headline}>
-        <ClawMarkIcon className={css.mark} size={30} />
+        <BrandMark size={30} />
         ClawCodex
       </div>
       {workspace !== undefined && workspace !== '' && (
