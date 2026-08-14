@@ -430,6 +430,36 @@ export function clearApproval(state: TranscriptState): TranscriptState {
   return next
 }
 
+/**
+ * Trim the transcript back to just before the last user prompt, and hand back
+ * the prompt that was removed.
+ *
+ * The mirror of the agent's `rewind` control, which drops whole prompt-turns:
+ * the client has to cut at the same boundary or the two disagree about what
+ * the conversation contains. A turn starts at a user message and runs to the
+ * end, so everything from that node onward goes — the assistant's reply, its
+ * reasoning, and every tool row it produced.
+ *
+ * Returns `null` when there is no prompt to rewind to, which is the honest
+ * answer for a transcript holding only a replayed session or a notice.
+ */
+export function rewindLastTurn(
+  state: TranscriptState,
+): { prompt: string; state: TranscriptState } | null {
+  for (let index = state.nodes.length - 1; index >= 0; index -= 1) {
+    const node = state.nodes[index]
+
+    if (node?.kind !== 'user') continue
+
+    return {
+      prompt: node.text,
+      state: { ...state, nodes: state.nodes.slice(0, index) },
+    }
+  }
+
+  return null
+}
+
 /** Clear the pending question after the user answered or declined it. */
 export function clearQuestion(state: TranscriptState): TranscriptState {
   if (state.question === undefined) return state

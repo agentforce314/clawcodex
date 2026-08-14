@@ -58,6 +58,7 @@ import {
   emptyTranscript,
   hydrateStoredMessages,
   markTurnStarted,
+  rewindLastTurn,
 } from './transcript.ts'
 
 let client: GatewayClient | null = null
@@ -264,6 +265,49 @@ function adoptSession(result: SessionResumeResult): void {
   // The effort ladder is a property of the model this session ended up on,
   // which is only known now — before a session there is nothing to ask.
   void refreshEffort()
+}
+
+/**
+ * Re-run the last prompt: rewind the turn on the agent, drop it here, resubmit.
+ *
+ * `Edit` puts the prompt back in the composer but leaves the old turn in the
+ * conversation, so sending it again APPENDS a second attempt the model then
+ * reads as a follow-up. Retry replaces the turn instead, which is what asking
+ * for a different answer to the same question actually means.
+ *
+ * The agent refuses to rewind during an active turn (it mutates the
+ * conversation the worker is reading), so nothing is trimmed locally until the
+ * backend confirms — otherwise a refused rewind would leave the client showing
+ * a conversation the agent still has.
+ */
+export async function retryLastTurn(): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  const rewound = rewindLastTurn($transcript.get())
+
+  if (rewound === null) return
+
+  try {
+    const result = await gateway().request<{ error?: string; ok?: boolean; removed?: number }>(
+      'session.rewind',
+      { session_id: sessionId, turns: 1 },
+    )
+
+    if (result.ok === false) {
+      notice(result.error === undefined || result.error === '' ? 'Could not retry' : result.error, 'error')
+
+      return
+    }
+  } catch (error) {
+    notice(errorText(error), 'error')
+
+    return
+  }
+
+  $transcript.set(rewound.state)
+  await submitPrompt(rewound.prompt)
 }
 
 export async function interrupt(): Promise<void> {

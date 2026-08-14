@@ -9,6 +9,7 @@ import {
   renameSession,
   respondApproval,
   respondQuestion,
+  retryLastTurn,
   setApprovalMode,
   setEffort,
   setModel,
@@ -324,6 +325,9 @@ export function ConversationRoot() {
                 <ChatView
                   nodes={transcript.nodes}
                   onEditPrompt={setDraft}
+                  onRetry={() => {
+                    void retryLastTurn()
+                  }}
                   running={transcript.running}
                   turnStartedAt={transcript.turnStartedAt}
                   workspace={workspace}

@@ -39,13 +39,27 @@ function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: str
   )
 }
 
-function AssistantMessageImpl({ node }: { node: AssistantNode }) {
+function AssistantMessageImpl({
+  node,
+  onRetry,
+}: {
+  node: AssistantNode
+  onRetry?: () => void
+}) {
   return (
     <div className={css.assistantRow}>
       <Markdown className={css.assistant} streaming={!node.sealed} text={node.text} />
       {node.sealed && (
         <div className={css.actions}>
           <CopyButton className={css.action} text={node.text} />
+          {/* Only the newest reply gets this. Re-running an earlier turn would
+              discard every turn after it, which is a different and much more
+              destructive action than "give me another answer". */}
+          {onRetry !== undefined && (
+            <button className={css.action} onClick={onRetry} title="Re-run this prompt" type="button">
+              Retry
+            </button>
+          )}
         </div>
       )}
     </div>

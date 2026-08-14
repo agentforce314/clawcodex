@@ -9,6 +9,7 @@ import {
   hydrateStoredMessages,
   markTurnStarted,
   resetNodeIds,
+  rewindLastTurn,
   type AssistantNode,
   type ReasoningNode,
   type ToolNode,
@@ -325,5 +326,69 @@ describe('rehydration', () => {
     ])
 
     expect(nodes[0]).toMatchObject({ error: 'Error: denied', name: 'write_file', state: 'error' })
+  })
+})
+
+describe('rewindLastTurn', () => {
+  const turn = (prompt: string, reply: string): GatewayEvent[] => [
+    event('message.start'),
+    event('message.delta', { text: reply }),
+    event('message.complete'),
+  ]
+
+  function conversation(): TranscriptState {
+    let state = appendUserMessage(emptyTranscript(), 'first question')
+    state = fold(turn('first question', 'first answer'), state)
+    state = appendUserMessage(state, 'second question')
+
+    return fold(turn('second question', 'second answer'), state)
+  }
+
+  it('cuts back to just before the last prompt and hands it back', () => {
+    // The agent's `rewind` drops whole prompt-turns; cutting anywhere else
+    // would leave the two sides disagreeing about the conversation.
+    const result = rewindLastTurn(conversation())
+
+    expect(result?.prompt).toBe('second question')
+    expect(result?.state.nodes.map(n => n.kind)).toEqual(['user', 'assistant'])
+  })
+
+  it('takes the whole turn with it — reasoning and tool rows included', () => {
+    let state = appendUserMessage(emptyTranscript(), 'do a thing')
+    state = fold(
+      [
+        event('reasoning.delta', { text: 'thinking' }),
+        event('tool.start', { name: 'terminal', tool_id: 't1' }),
+        event('tool.complete', { tool_id: 't1' }),
+        event('message.delta', { text: 'done' }),
+        event('message.complete'),
+      ],
+      state,
+    )
+
+    expect(rewindLastTurn(state)?.state.nodes).toEqual([])
+  })
+
+  it('leaves the state it was given untouched', () => {
+    // Nothing is trimmed locally until the backend confirms the rewind.
+    const before = conversation()
+    const count = before.nodes.length
+
+    rewindLastTurn(before)
+
+    expect(before.nodes).toHaveLength(count)
+  })
+
+  it('keeps everything else on the state', () => {
+    const before = { ...conversation(), running: false, usage: { input: 5, output: 7 } }
+
+    expect(rewindLastTurn(before)?.state.usage).toEqual({ input: 5, output: 7 })
+  })
+
+  it('returns null when there is no prompt to rewind to', () => {
+    // A transcript of nothing but notices has no turn to re-run, and saying so
+    // is better than trimming something arbitrary.
+    expect(rewindLastTurn(emptyTranscript())).toBeNull()
+    expect(rewindLastTurn(fold([event('error', { message: 'boom' })]))).toBeNull()
   })
 })

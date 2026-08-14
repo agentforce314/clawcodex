@@ -471,3 +471,46 @@ def test_cache_does_not_swallow_a_real_listing_failure(tmp_path, monkeypatch) ->
 
     with pytest.raises(PermissionError):
         mod._workspace_files_cached(str(tmp_path))
+
+
+# ── rewind (retry) ────────────────────────────────────────────────────────────
+
+
+def _rewind(reply: Any, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    session = _Queryable(reply)
+    connection._session = lambda p: session  # type: ignore[method-assign]
+    result = asyncio.run(GatewayConnection.session_rewind(connection, params or {}))
+    return {**result, "_asked": session.asked}
+
+
+def test_rewind_defaults_to_one_turn() -> None:
+    result = _rewind({"ok": True, "removed": 4, "count": 2})
+
+    assert result["_asked"] == ("rewind", {"turns": 1})
+    assert result["removed"] == 4
+    assert result["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [({"turns": 3}, 3), ({"turns": 0}, 1), ({"turns": -2}, 1), ({"turns": "x"}, 1), ({}, 1)],
+)
+def test_rewind_clamps_the_turn_count(given: dict[str, Any], expected: int) -> None:
+    assert _rewind({"ok": True}, given)["_asked"][1] == {"turns": expected}
+
+
+def test_rewind_passes_the_refusal_through() -> None:
+    # The agent refuses mid-turn because it mutates the conversation the worker
+    # is reading. A retry that silently did nothing would look like the model
+    # ignoring the click.
+    result = _rewind({"ok": False, "error": "cannot rewind during an active turn"})
+
+    assert result["ok"] is False
+    assert result["error"] == "cannot rewind during an active turn"
+
+
+def test_rewind_reports_a_session_that_did_not_answer() -> None:
+    assert _rewind(None)["ok"] is False

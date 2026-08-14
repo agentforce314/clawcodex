@@ -9,6 +9,7 @@ import css from './ChatView.module.css'
 export interface ChatViewProps {
   nodes: TranscriptNode[]
   onEditPrompt?: (text: string) => void
+  onRetry?: () => void
   running: boolean
   turnStartedAt?: number
   workspace?: string
@@ -53,6 +54,7 @@ function formatClock(seconds: number): string {
 export function ChatView({
   nodes,
   onEditPrompt,
+  onRetry,
   running,
   turnStartedAt,
   workspace,
@@ -66,10 +68,18 @@ export function ChatView({
   return (
     <div className={css.root}>
       <div className={css.column}>
-        {nodes.map(node => (
+        {nodes.map((node, index) => (
           <div className={css.item} key={node.id}>
             {node.kind === 'user' && <UserMessage node={node} onEdit={onEditPrompt} />}
-            {node.kind === 'assistant' && <AssistantMessage node={node} />}
+            {node.kind === 'assistant' && (
+              <AssistantMessage
+                node={node}
+                // The newest reply only, and never mid-turn: the agent refuses
+                // to rewind while a turn is running, so offering it would be
+                // offering something that cannot happen.
+                onRetry={!running && index === nodes.length - 1 ? onRetry : undefined}
+              />
+            )}
             {node.kind === 'reasoning' && <ReasoningRow node={node} />}
             {node.kind === 'tool' && <ToolRow node={node} workspace={workspace} />}
             {node.kind === 'notice' && <NoticeMessage node={node} />}
