@@ -1,13 +1,12 @@
 import type { ReactNode } from 'react'
 
 import { BrandMark } from '../ui/BrandMark.tsx'
-import { FolderIcon } from '../ui/icons.tsx'
+import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import css from './HeroShell.module.css'
 
 export interface HeroShellProps {
   composer: ReactNode
   onSuggestion?: (text: string) => void
-  workspace?: string
 }
 
 /** Openers that show what the agent is for without pretending to know the repo. */
@@ -18,15 +17,8 @@ const SUGGESTIONS = [
   'Review my uncommitted changes',
 ]
 
-/** The last two path segments — enough to identify a checkout, short enough to fit. */
-function shortWorkspace(path: string): string {
-  const segments = path.split(/[/\\]/).filter(Boolean)
-
-  return segments.length <= 2 ? path : segments.slice(-2).join('/')
-}
-
 /** The empty state: the mark, the workspace you are about to work in, the composer. */
-export function HeroShell({ composer, onSuggestion, workspace }: HeroShellProps) {
+export function HeroShell({ composer, onSuggestion }: HeroShellProps) {
   return (
     <div className={css.stack}>
       <div className={css.glow} />
@@ -34,14 +26,9 @@ export function HeroShell({ composer, onSuggestion, workspace }: HeroShellProps)
         <BrandMark size={30} />
         ClawCodex
       </div>
-      {workspace !== undefined && workspace !== '' && (
-        <div className={css.workspaceRow}>
-          <span className={css.workspace} title={workspace}>
-            <FolderIcon className={css.folder} size={14} />
-            <span className={css.workspaceLabel}>{shortWorkspace(workspace)}</span>
-          </span>
-        </div>
-      )}
+      <div className={css.workspaceRow}>
+        <WorkspaceChip variant="hero" />
+      </div>
       {composer}
       {onSuggestion !== undefined && (
         <div className={css.suggestions}>

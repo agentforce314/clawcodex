@@ -1,6 +1,6 @@
 /* The empty-state hero: mark + headline, workspace chip, then the shared input
-   card. Only the stack geometry and the chip live here — the input itself is
-   the same InputBar the docked composer renders. */
+   card. Only the stack geometry lives here — the input is the same InputBar
+   the docked composer renders, and the chip is the workspace control. */
 
 .stack {
   position: relative;
@@ -51,33 +51,6 @@
   align-items: center;
   min-width: 0;
   padding-left: calc(var(--cc-composer-side-clearance) + 8px);
-}
-
-.workspace {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: min(100%, 420px);
-  min-height: 28px;
-  padding: 0 8px;
-  border: none;
-  border-radius: 16px;
-  background: transparent;
-  color: var(--cc-alias-label-primary);
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 500;
-}
-
-.folder {
-  flex: none;
-  color: var(--cc-alias-label-primary);
-}
-
-.workspaceLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .suggestions {

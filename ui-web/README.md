@@ -42,6 +42,7 @@ src/
   sidebar/       project/worktree/session tree
   conversation/  chat flow, message + tool + reasoning rows, composer, approvals
   trajectory/    the run as a metered ledger: timeline, rows, inspector, totals
+  workspace/     directory picker: which folder a session runs in
   details/       right-hand column: session facts, files touched, tool runs
   ui/            primitives (buttons, cards, code/diff/terminal blocks) + markdown
   styles/        design tokens, typography, scrollbars, shiki wiring

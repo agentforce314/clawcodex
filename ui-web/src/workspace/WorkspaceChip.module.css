@@ -1,0 +1,77 @@
+/* Anchor for the picker popover. `position: relative` on the wrapper rather
+   than on either trigger, so both variants position the popover identically. */
+.root {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* Hero variant: the pill under the headline. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 420px);
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chip:hover,
+.chip[aria-expanded='true'] {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+/* Header variant: the path crumb beside the session title. */
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 420px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.crumb:hover,
+.crumb[aria-expanded='true'] {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+}
+
+.icon {
+  flex: none;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+}
+
+/* Popover seat. Hero opens downward (it sits mid-column with room below);
+   the header crumb also opens downward, directly under the chrome. */
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+}

@@ -14,6 +14,7 @@ import type {
   CommandEntry,
   CommandsCatalogResult,
   ContextUsageResult,
+  DirectoryListing,
   GatewayEvent,
   ModelOptionsResult,
   ProjectsTreeResult,
@@ -423,6 +424,34 @@ export async function setApprovalMode(mode: 'manual' | 'smart' | 'off'): Promise
   } catch (error) {
     notice(errorText(error), 'error')
   }
+}
+
+/* ── workspace ───────────────────────────────────────────────────────────── */
+
+/**
+ * List one directory level for the workspace picker.
+ *
+ * Errors propagate: an unreadable directory must reach the picker as a message,
+ * not as an empty folder the user would read as "nothing here".
+ */
+export async function listDirectory(path?: string): Promise<DirectoryListing> {
+  return gateway().request<DirectoryListing>(
+    'fs.list_directory',
+    path === undefined ? {} : { path },
+  )
+}
+
+/**
+ * Point the next session at `path`.
+ *
+ * A live session's working directory is fixed at spawn, so choosing a new
+ * folder while one is running starts a new session there rather than silently
+ * leaving the choice to take effect at some unclear later point.
+ */
+export async function chooseWorkspace(path: string): Promise<void> {
+  $workspace.set(path)
+
+  if ($sessionId.get() !== null) await createSession({ cwd: path })
 }
 
 /* ── model + catalogs ────────────────────────────────────────────────────── */

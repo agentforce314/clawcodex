@@ -28,6 +28,7 @@ import {
 } from '../state/store.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
 import { TrajectoryStatsBar } from '../trajectory/TrajectoryStatsBar.tsx'
+import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
 import { $detailsWidth, closeDetails, openDetails } from '../state/layout.ts'
 import { ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
@@ -194,9 +195,7 @@ export function ConversationRoot() {
             {workspace !== '' && (
               <>
                 <span className={css.crumbSep}>/</span>
-                <span className={css.crumb} title={workspace}>
-                  {workspace}
-                </span>
+                <WorkspaceChip variant="crumb" />
               </>
             )}
           </div>
@@ -285,7 +284,6 @@ export function ConversationRoot() {
           <HeroShell
             composer={composer}
             onSuggestion={commands.length === 0 ? undefined : setDraft}
-            workspace={workspace}
           />
         ) : (
           <>

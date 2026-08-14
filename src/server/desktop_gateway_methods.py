@@ -557,6 +557,7 @@ class GatewayConnection:
             "commands.catalog": self.commands_catalog,
             "complete.slash": self.complete_slash,
             "complete.path": self.complete_empty,
+            "fs.list_directory": self.fs_list_directory,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -866,6 +867,21 @@ class GatewayConnection:
 
     async def complete_empty(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"items": []}
+
+    async def fs_list_directory(self, params: dict[str, Any]) -> dict[str, Any]:
+        """One directory level for the workspace picker.
+
+        Runs off the event loop: ``scandir`` on a cold or network-mounted
+        directory blocks, and this socket also carries the turn's stream.
+        """
+        import asyncio as _asyncio
+
+        from src.server.desktop_fs import list_directory
+
+        path = params.get("path")
+        return await _asyncio.to_thread(
+            list_directory, str(path) if path else None
+        )
 
     async def slash_exec(self, params: dict[str, Any]) -> dict[str, Any]:
         from src.server.desktop_slash import dispatch_slash

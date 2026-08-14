@@ -1,0 +1,238 @@
+/* Directory browser, shown as a popover anchored to whatever opened it.
+   Sized so a typical home directory needs no scrolling to scan, and capped so
+   it never becomes the tallest thing on screen. */
+.root {
+  position: absolute;
+  z-index: 200;
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(440px, 70vh);
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--cc-alias-border-l1);
+}
+
+.title {
+  flex: 1;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Breadcrumb: every ancestor is a jump target, so it scrolls sideways rather
+   than truncating — a deep path must stay fully reachable. */
+.crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--cc-alias-border-l1);
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.crumb {
+  flex: none;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.crumb:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.crumbCurrent {
+  color: var(--cc-alias-label-primary);
+  font-weight: 500;
+}
+
+.crumbSep {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+}
+
+.filter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--cc-alias-border-l1);
+  color: var(--cc-alias-label-caption);
+}
+
+.filterInput {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+}
+
+.filterInput::placeholder {
+  color: var(--cc-alias-label-caption);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover,
+.row[data-active='true'] {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.rowIcon {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+}
+
+.rowName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dimmed rather than filtered out: a dotfile directory is a real destination
+   (`~/.config`), just not one to lead with. */
+.rowHidden .rowName {
+  color: var(--cc-alias-label-tertiary);
+}
+
+.rowChevron {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+}
+
+.status {
+  padding: 20px 12px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  text-align: center;
+}
+
+.error {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--cc-alias-border-l1);
+}
+
+.currentPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-family: var(--cc-font-family-code);
+  font-size: 11px;
+  /* Truncate from the LEFT: the tail of a path identifies the folder, the head
+     is shared boilerplate. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  unicode-bidi: plaintext;
+  white-space: nowrap;
+}
+
+.toggleHidden {
+  flex: none;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.toggleHidden:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+}
+
+.toggleHidden[aria-pressed='true'] {
+  color: var(--cc-alias-label-secondary);
+}

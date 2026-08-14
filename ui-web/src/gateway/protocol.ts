@@ -286,5 +286,32 @@ export interface ContextUsageResult {
   total_tokens?: number
 }
 
+/** One row in the workspace picker: a listing child or a breadcrumb ancestor. */
+export interface DirectoryEntry {
+  /** Hidden by the server platform's convention; the client decides to show it. */
+  hidden: boolean
+  /** Base name for the row; a root crumb carries its full path. */
+  name: string
+  /**
+   * Absolute path, always from the server. Clients never join path segments
+   * themselves — that is how a Windows path ends up built with the wrong
+   * separator by a client that has never seen one.
+   */
+  path: string
+}
+
+/** `fs.list_directory` — one directory level plus its ancestry. */
+export interface DirectoryListing {
+  /** Root→target ancestor chain, inclusive; every crumb is a jump target. */
+  crumbs: DirectoryEntry[]
+  /** Direct child directories, name-sorted. */
+  entries: DirectoryEntry[]
+  /** The server account's home directory. */
+  home: string
+  path: string
+  /** True when the listing was cut at the server's bound. */
+  truncated: boolean
+}
+
 /** Approval answers the gateway understands (`approval.respond`). */
 export type ApprovalChoice = 'allow' | 'deny' | 'session' | 'always'
