@@ -238,3 +238,31 @@ export const LayersIcon = (p: IconProps) => (
     <path d="m3 13 9 5 9-5" />
   </Svg>
 )
+
+/* Permission-mode shields. One outline, three interiors: a check for "nothing
+   happens without you", a pencil for "writes inside the workspace", an
+   exclamation for "no checks at all". The shape stays constant so the
+   interior is what the eye reads. */
+
+const SHIELD = 'M12 2.2 20 5.2v5.1c0 6.4-4.6 9.4-8 10.7-3.4-1.3-8-4.3-8-10.7V5.2Z'
+
+export const ShieldCheckIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d={SHIELD} />
+    <path d="m8.6 11.4 2.3 2.3 4.5-4.6" />
+  </Svg>
+)
+
+export const ShieldPenIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d={SHIELD} />
+    <path d="M14.8 8.4 9.6 13.6l-1.4 2.6 2.6-1.4 5.2-5.2a1.2 1.2 0 0 0-1.2-1.2Z" />
+  </Svg>
+)
+
+export const ShieldAlertIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d={SHIELD} />
+    <path d="M12 7.6v4.6M12 15.4h.01" />
+  </Svg>
+)

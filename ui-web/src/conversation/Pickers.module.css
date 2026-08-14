@@ -1,0 +1,139 @@
+/* The composer's two chip triggers. One sheet because they sit side by side
+   and any divergence between them reads as a mistake. */
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border: none;
+  border-radius: 24px;
+  outline: none;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.trigger:hover:not(:disabled),
+.trigger[aria-expanded='true'] {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.trigger:disabled {
+  color: var(--cc-alias-label-dimmed);
+  cursor: default;
+}
+
+/* Full access is the one mode worth colouring in the resting state: the chip
+   is the only persistent reminder that nothing will be asked. */
+.triggerDanger {
+  color: var(--cc-alias-state-warn-label);
+}
+
+.triggerDanger:hover:not(:disabled),
+.triggerDanger[aria-expanded='true'] {
+  background: var(--cc-alias-state-warn-tertiary);
+  color: var(--cc-alias-state-warn-label);
+}
+
+.triggerIcon {
+  flex: none;
+  display: inline-flex;
+}
+
+.triggerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  /* inline-flex, not inline: an inline seat reserves baseline descent under
+     the svg and floats the glyph off-centre in the 28px chip. */
+  flex: none;
+  display: inline-flex;
+  color: var(--cc-alias-label-caption);
+  transition: transform 120ms ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/* Narrow composer: the chips drop their labels so the row keeps fitting. The
+   container is the composer row, queried anonymously — CSS modules hash
+   container-name per module, so a name declared there could never match here. */
+@container (max-width: 520px) {
+  .trigger .triggerLabel {
+    display: none;
+  }
+}
+
+/* ── risk confirmation ───────────────────────────────────────────────────── */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--cc-alias-bg-mask-1);
+}
+
+.dialog {
+  box-sizing: border-box;
+  width: min(420px, 100%);
+  padding: 18px;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 14px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+}
+
+.dialogHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--cc-alias-state-warn-label);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.dialogBody {
+  margin: 10px 0 14px;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.acknowledge {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.acknowledge input {
+  margin: 2px 0 0;
+  accent-color: var(--cc-alias-state-warn-primary);
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

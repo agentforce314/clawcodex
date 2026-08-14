@@ -18,6 +18,7 @@ import {
   $contextUsage,
   $conversationTab,
   $models,
+  $pendingApprovalMode,
   $queue,
   $sessionId,
   $sessionLoading,
@@ -63,6 +64,7 @@ export function ConversationRoot() {
   const connection = useStore($connection)
   const commands = useStore($commands)
   const detailsWidth = useStore($detailsWidth)
+  const pendingApproval = useStore($pendingApprovalMode)
   const loading = useStore($sessionLoading)
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
@@ -138,7 +140,9 @@ export function ConversationRoot() {
 
   const composer = (
     <InputBar
-      approvalMode={transcript.info.approval_mode}
+      // The session's mode when there is one, otherwise the choice being held
+      // for the session that does not exist yet.
+      approvalMode={transcript.info.approval_mode ?? pendingApproval ?? undefined}
       draft={draft}
       hero={hero}
       models={models}

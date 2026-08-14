@@ -1,0 +1,158 @@
+/* Anchored dropdown. Exists because a native <select> renders its popup
+   through the OS, which cannot see the app's theme at all — a dark UI gets a
+   light system list with a system-blue selection, and no CSS reaches it. */
+.root {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.list {
+  position: absolute;
+  z-index: 100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 218px;
+  max-width: 360px;
+  /* Stops short of the viewport edge; taller content scrolls inside. */
+  max-height: min(420px, calc(100vh - 24px));
+  padding: 4px;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  /* Elevated surface, so the thumb takes the l2 pair. Declared on the card
+     because the elevation belongs to the surface; it inherits down to
+     whichever descendant actually scrolls. */
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+/* Default: below the anchor. */
+.sideBottom {
+  top: calc(100% + 4px);
+}
+
+/* Above it — what the composer needs, sitting at the bottom of the window. */
+.sideTop {
+  bottom: calc(100% + 4px);
+}
+
+.alignStart {
+  left: 0;
+}
+
+.alignEnd {
+  right: 0;
+}
+
+.viewport {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.item:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.itemIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.itemBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.itemLabel {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Second line for a row that needs it (what a permission mode actually
+   allows). Sized down and dimmed so the label still leads. */
+.itemHint {
+  display: block;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Selection is a trailing check, not a fill: a filled row competes with the
+   hover state, and on a long list the eye loses which one is "current". */
+.check {
+  flex: none;
+  color: var(--cc-alias-label-primary);
+}
+
+.danger {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.danger .itemIcon {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.danger:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+}
+
+.separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--cc-alias-border-l2);
+}
+
+.label {
+  padding: 6px 10px 2px;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.empty {
+  padding: 12px 10px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  text-align: center;
+}

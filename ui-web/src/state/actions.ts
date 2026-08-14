@@ -30,6 +30,7 @@ import {
   $detailsNodeId,
   $models,
   $notice,
+  $pendingApprovalMode,
   $projects,
   $projectsLoading,
   $queue,
@@ -197,6 +198,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
     const result = await gateway().request<SessionResumeResult>('session.create', params)
 
     adoptSession(result)
+    await applyPendingApprovalMode()
   } catch (error) {
     notice(`Could not start a session: ${errorText(error)}`, 'error')
   }
@@ -285,6 +287,21 @@ export async function renameSession(title: string): Promise<void> {
   } catch (error) {
     notice(errorText(error), 'error')
   }
+}
+
+/**
+ * Push a pre-session approval-mode choice onto the session that just started.
+ *
+ * `session.create` takes provider/model/effort but not a permission mode, so
+ * this is a second call rather than a spawn parameter — which also keeps the
+ * backend's create contract unchanged.
+ */
+async function applyPendingApprovalMode(): Promise<void> {
+  const pending = $pendingApprovalMode.get()
+
+  if (pending === null) return
+
+  await setApprovalMode(pending)
 }
 
 /* ── prompting ───────────────────────────────────────────────────────────── */
@@ -410,10 +427,18 @@ export async function respondApproval(choice: ApprovalChoice): Promise<void> {
   }
 }
 
-export async function setApprovalMode(mode: 'manual' | 'smart' | 'off'): Promise<void> {
+export async function setApprovalMode(mode: 'manual' | 'off' | 'smart'): Promise<void> {
   const sessionId = $sessionId.get()
 
-  if (sessionId === null) return
+  // No session to configure yet: hold the choice so the control is not a
+  // switch that does nothing, and apply it when the session appears.
+  if (sessionId === null) {
+    $pendingApprovalMode.set(mode)
+
+    return
+  }
+
+  $pendingApprovalMode.set(null)
 
   try {
     await gateway().request('config.set', {

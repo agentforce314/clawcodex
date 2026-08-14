@@ -64,6 +64,16 @@ export const $models = atom<ModelOptionsResult>({})
 export const $commands = atom<CommandEntry[]>([])
 export const $contextUsage = atom<ContextUsageResult | null>(null)
 
+/**
+ * Approval mode chosen before any session existed.
+ *
+ * The mode is a property of a live session, so a choice made on the empty
+ * state has nowhere to go yet. Rather than let the control silently do
+ * nothing, the choice is held here and applied to the session the moment one
+ * is created.
+ */
+export const $pendingApprovalMode = atom<'manual' | 'off' | 'smart' | null>(null)
+
 /** Prompts typed while a turn was running, submitted in order when it ends. */
 export const $queue = atom<string[]>([])
 
