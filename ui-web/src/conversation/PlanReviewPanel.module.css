@@ -1,0 +1,66 @@
+/* Composer takeover for the plan-mode exit. Same footprint as the permission
+   ask and the question composer; a taller body, because the thing being
+   decided is a document rather than a line. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px calc(var(--cc-composer-side-clearance) + 16px) 12px;
+}
+
+.card {
+  width: 100%;
+  max-width: var(--cc-chat-content-width);
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 20px;
+  background: var(--cc-specific-input-major);
+  box-shadow: var(--cc-shadow-lv2);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* A plan is the one takeover whose content is meant to be read in full, so it
+   gets more room than the others before it starts scrolling. */
+.body {
+  box-sizing: border-box;
+  max-height: calc(var(--cc-composer-text-max-height) + 80px);
+  padding: 4px 16px;
+  overflow-y: auto;
+}
+
+.plan {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.settling {
+  padding: 16px 0;
+  color: var(--cc-alias-label-caption);
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 12px;
+}
+
+/* Pushes the two approve buttons right, away from "Keep planning" — the
+   destructive-ish choice should not sit under the cursor that just declined. */
+.spacer {
+  flex: 1;
+}

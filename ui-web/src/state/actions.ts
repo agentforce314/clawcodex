@@ -50,6 +50,7 @@ import {
   emptyTrajectory,
   recordPrompt,
 } from './trajectory.ts'
+import { updatesFor } from '../conversation/PlanReviewPanel.tsx'
 import {
   appendUserMessage,
   applyEvent,
@@ -522,6 +523,52 @@ export async function respondQuestion(
 
   try {
     await gateway().request('question.respond', { action, answers, session_id: sessionId })
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+}
+
+/** The session's plan text, for the plan-review takeover. */
+export async function fetchPlan(): Promise<string> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return ''
+
+  try {
+    const result = await gateway().request<{ plan?: string }>('plan.get', {
+      session_id: sessionId,
+    })
+
+    return result.plan ?? ''
+  } catch {
+    // The panel shows its empty state; the decision is still available.
+    return ''
+  }
+}
+
+/**
+ * Approve the plan-mode exit, choosing what happens to the permission mode.
+ *
+ * The mode rides as an explicit `setMode` update rather than one of the ask's
+ * suggestions, because ExitPlanMode's ask carries none — the dialog is
+ * expected to compose it (`_exit_plan_mode_call`: "The dialog path already
+ * applied its setMode via chosen_updates BEFORE this runs").
+ */
+export async function respondPlan(
+  approval: 'auto' | 'manual' | 'reject',
+): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  $transcript.set(clearApproval($transcript.get()))
+
+  try {
+    await gateway().request('approval.respond', {
+      choice: approval === 'reject' ? 'deny' : 'allow',
+      session_id: sessionId,
+      ...(approval === 'reject' ? {} : { updates: updatesFor(approval) }),
+    })
   } catch (error) {
     notice(errorText(error), 'error')
   }

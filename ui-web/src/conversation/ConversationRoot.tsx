@@ -8,6 +8,8 @@ import {
   interrupt,
   renameSession,
   respondApproval,
+  fetchPlan,
+  respondPlan,
   respondQuestion,
   retryLastTurn,
   setApprovalMode,
@@ -41,6 +43,7 @@ import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
 import { HeroShell } from './HeroShell.tsx'
 import { InputBar } from './InputBar.tsx'
+import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
 import { QueueDock } from './QueueDock.tsx'
 import css from './ConversationRoot.module.css'
@@ -76,6 +79,8 @@ export function ConversationRoot() {
   const stats = useMemo(() => trajectoryStats(trajectory), [trajectory])
 
   const [draft, setDraft] = useState('')
+  // null while in flight, so the panel can say "loading" rather than "no plan".
+  const [plan, setPlan] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
   const scroller = useRef<HTMLDivElement | null>(null)
   const seat = useRef<HTMLDivElement | null>(null)
@@ -144,6 +149,28 @@ export function ConversationRoot() {
     [workspace],
   )
 
+  // ExitPlanMode's ask carries no plan — the plan is a session FILE — so it is
+  // fetched when that ask arrives, and cleared when it goes.
+  const planAsk = transcript.approval?.tool_name === 'ExitPlanMode'
+
+  useEffect(() => {
+    if (!planAsk) {
+      setPlan(null)
+
+      return
+    }
+
+    let live = true
+
+    void fetchPlan().then(text => {
+      if (live) setPlan(text)
+    })
+
+    return () => {
+      live = false
+    }
+  }, [planAsk])
+
   const composer = (
     <InputBar
       // The session's mode when there is one, otherwise the choice being held
@@ -183,7 +210,17 @@ export function ConversationRoot() {
    * once the tool is allowed or denied.
    */
   const seatPanel =
-    transcript.approval !== undefined ? (
+    planAsk ? (
+      <PlanReviewPanel
+        onApprove={approval => {
+          void respondPlan(approval)
+        }}
+        onReject={() => {
+          void respondPlan('reject')
+        }}
+        plan={plan}
+      />
+    ) : transcript.approval !== undefined ? (
       <ApprovalPanel
         onRespond={choice => {
           void respondApproval(choice)

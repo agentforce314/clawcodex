@@ -731,3 +731,92 @@ def test_vision_flag_follows_the_model() -> None:
     # An absent model is not evidence of anything.
     assert _vision_ok("") is True
     assert _vision_ok(None) is True
+
+
+# ── plan review ───────────────────────────────────────────────────────────────
+#
+# ExitPlanMode is a V2 tool: the plan lives in the session plan FILE, not the
+# tool input, so the ask carries nothing to show and the client fetches it.
+
+
+def _plan_get(reply: Any) -> dict[str, Any]:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    connection._session = lambda p: _Queryable(reply)  # type: ignore[method-assign]
+    return asyncio.run(GatewayConnection.plan_get(connection, {}))
+
+
+def test_plan_get_returns_the_plan_text() -> None:
+    result = _plan_get(
+        {"ok": True, "plan": "## Steps\n1. do it", "mode": "plan", "plan_file_path": "/p.md"}
+    )
+
+    assert result == {"mode": "plan", "path": "/p.md", "plan": "## Steps\n1. do it"}
+
+
+def test_plan_get_reports_an_absent_plan_as_empty_not_missing() -> None:
+    # get_plan returns None when the file does not exist; the panel renders its
+    # own "no plan" state rather than being handed a null.
+    assert _plan_get({"ok": True, "plan": None})["plan"] == ""
+
+
+@pytest.mark.parametrize("reply", [None, {"ok": False, "error": "boom"}, "nonsense"])
+def test_plan_get_degrades_to_empty_rather_than_raising(reply: Any) -> None:
+    # A failed fetch must still leave the approval answerable.
+    assert _plan_get(reply)["plan"] == ""
+
+
+def test_approval_respond_forwards_explicit_updates() -> None:
+    # ExitPlanMode's ask carries no suggestions, so the plan dialog composes
+    # its own setMode; without this it could not be sent at all.
+    session, agent, _ = _session()
+    asyncio.run(
+        session._route_ask(
+            {"request_id": "ask-1", "request": {"subtype": "can_use_tool", "input": {}}}
+        )
+    )
+
+    updates = [{"type": "setMode", "destination": "session", "mode": "acceptEdits"}]
+    asyncio.run(session.respond_approval("allow", updates=updates))
+
+    assert agent.replies[0]["response"]["chosen_updates"] == updates
+
+
+def test_explicit_updates_beat_the_suggestion_list() -> None:
+    session, agent, _ = _session()
+    asyncio.run(
+        session._route_ask(
+            {
+                "request_id": "ask-1",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "input": {},
+                    "suggestions": [{"type": "addRules", "destination": "session"}],
+                },
+            }
+        )
+    )
+
+    updates = [{"type": "setMode", "destination": "session", "mode": "default"}]
+    asyncio.run(session.respond_approval("session", updates=updates))
+
+    assert agent.replies[0]["response"]["chosen_updates"] == updates
+
+
+def test_a_plain_approval_still_uses_its_suggestions() -> None:
+    # The explicit path must not disturb the ordinary allow-for-session flow.
+    session, agent, _ = _session()
+    suggestion = {"type": "addRules", "destination": "session"}
+    asyncio.run(
+        session._route_ask(
+            {
+                "request_id": "ask-1",
+                "request": {"subtype": "can_use_tool", "input": {}, "suggestions": [suggestion]},
+            }
+        )
+    )
+
+    asyncio.run(session.respond_approval("session"))
+
+    assert agent.replies[0]["response"]["chosen_updates"] == [suggestion]

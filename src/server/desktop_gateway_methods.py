@@ -520,7 +520,9 @@ class DesktopSession:
              "request": {"subtype": subtype, **params}}
         )
 
-    async def respond_approval(self, choice: str) -> dict[str, Any]:
+    async def respond_approval(
+        self, choice: str, *, updates: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         rid = self._last_ask_id
         request = self._pending_asks.pop(rid, None) if rid else None
         self._last_ask_id = None
@@ -535,7 +537,13 @@ class DesktopSession:
             "behavior": "allow",
             "updatedInput": request.get("input") or {},
         }
-        if choice in ("session", "always"):
+        if updates:
+            # Explicit updates come from a dialog that composed them itself —
+            # the plan review's "auto-accept edits" is a setMode the ask
+            # carries no suggestion for, so it cannot be picked from the list
+            # below.
+            reply["chosen_updates"] = updates
+        elif choice in ("session", "always"):
             wanted = "session" if choice == "session" else "always"
             chosen = [
                 s for s in (request.get("suggestions") or [])
@@ -840,6 +848,7 @@ class GatewayConnection:
             "fs.list_directory": self.fs_list_directory,
             "fs.search_files": self.fs_search_files,
             "image.attach": self.image_attach,
+            "plan.get": self.plan_get,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -1115,7 +1124,11 @@ class GatewayConnection:
         return {"ok": True}
 
     async def approval_respond(self, params: dict[str, Any]) -> dict[str, Any]:
-        return await self._session(params).respond_approval(str(params.get("choice") or "deny"))
+        raw = params.get("updates")
+        updates = [u for u in raw if isinstance(u, dict)] if isinstance(raw, list) else None
+        return await self._session(params).respond_approval(
+            str(params.get("choice") or "deny"), updates=updates
+        )
 
     async def question_respond(self, params: dict[str, Any]) -> dict[str, Any]:
         raw = params.get("answers")
@@ -1127,6 +1140,27 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def plan_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The session's current plan text.
+
+        ExitPlanMode is a V2 tool: the plan lives in the session plan FILE, not
+        in the tool input, so an ``approval.request`` for it carries no plan to
+        show. The client fetches it when that ask arrives.
+
+        Fetched rather than folded into the ask because the ask is routed from
+        the pump, and a control query issued there would wait on a response
+        that same pump has to deliver.
+        """
+        result = await self._session(params).control_query("plan", {})
+        if not isinstance(result, dict) or result.get("ok") is False:
+            return {"plan": "", "mode": ""}
+        plan = result.get("plan")
+        return {
+            "mode": str(result.get("mode") or ""),
+            "path": str(result.get("plan_file_path") or ""),
+            "plan": plan if isinstance(plan, str) else "",
+        }
 
     async def image_attach(self, params: dict[str, Any]) -> dict[str, Any]:
         """Attach a pasted or dropped image to the next prompt.
