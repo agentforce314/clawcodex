@@ -69,14 +69,12 @@ def test_dist_env_override_wins(bundle: Path, monkeypatch: pytest.MonkeyPatch) -
     assert web_dist_dir() == bundle
 
 
-def test_missing_bundle_resolves_to_none(tmp_path: Path,
-                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    """A directory without index.html is not a bundle — and with the env var
-    pointing there, neither checkout nor package fallback may be consulted."""
+def test_dist_env_override_is_authoritative(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """Naming a directory that holds no bundle means "no bundle" — falling back
+    to the checkout would serve a different build than the one asked for, and
+    the app would load looking correct."""
     monkeypatch.setenv(DIST_ENV, str(tmp_path / "nowhere"))
-    monkeypatch.setattr(
-        "src.server.web_assets._candidates", lambda: [tmp_path / "nowhere"]
-    )
     assert web_dist_dir() is None
 
 

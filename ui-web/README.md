@@ -67,7 +67,9 @@ clawcodex serve --host 127.0.0.1 --port 8317 --token dev
 npm run dev            # http://127.0.0.1:5175/?token=dev  (proxies /api to 8317)
 ```
 
-`CLAWCODEX_WEB_DIST=/path/to/dist` points the server at a bundle elsewhere.
+`CLAWCODEX_WEB_DIST=/path/to/dist` points the server at a bundle elsewhere; it
+is authoritative, so a path with no bundle in it means "no bundle" rather than
+a silent fall back to the checkout's.
 `CLAWCODEX_WEB_SOURCEMAP=1` builds with sourcemaps (off by default: they more
 than double the bundle, and only a developer with devtools open fetches them).
 

@@ -66,16 +66,22 @@ def js_string(value: str) -> str:
 
 
 def _candidates() -> list[Path]:
-    """Every place a built bundle can live, most specific first."""
+    """Every place a built bundle can live, most specific first.
+
+    ``$CLAWCODEX_WEB_DIST`` is authoritative rather than merely first: someone
+    who names a directory is telling us which bundle to serve, and quietly
+    serving a different one when theirs is missing would be the hardest kind
+    of bug to see — the app loads, from the wrong build.
+    """
     override = os.environ.get(DIST_ENV)
-    paths: list[Path] = []
     if override:
-        paths.append(Path(override))
-    # Source checkout: <repo>/ui-web/dist (this file is <repo>/src/server/…).
-    paths.append(Path(__file__).resolve().parents[2] / "ui-web" / "dist")
-    # Installed wheel: the bundle is packaged beside this module.
-    paths.append(Path(__file__).resolve().parent / "web_dist")
-    return paths
+        return [Path(override)]
+    return [
+        # Source checkout: <repo>/ui-web/dist (this file is <repo>/src/server/…).
+        Path(__file__).resolve().parents[2] / "ui-web" / "dist",
+        # Installed wheel: the bundle is packaged beside this module.
+        Path(__file__).resolve().parent / "web_dist",
+    ]
 
 
 def web_dist_dir() -> Path | None:
