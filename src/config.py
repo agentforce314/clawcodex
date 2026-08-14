@@ -20,13 +20,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from src.utils.clawcodex_dirs import get_user_config_dir
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-GLOBAL_CONFIG_DIR = Path.home() / ".clawcodex"
+# One definition of the user config root, shared with everything else that
+# resolves it. This used to be a bare ``Path.home() / ".clawcodex"``, which
+# meant ``$CLAWCODEX_CONFIG_DIR`` moved sessions, memories, skills and projects
+# but NOT config.json or history.jsonl — so an isolated profile silently read
+# and wrote the real user's credentials.
+#
+# Evaluated at import, exactly as before, so a process that does not set the
+# variable resolves to ~/.clawcodex as it always did. Tests that re-point these
+# by monkeypatching the module attribute are unaffected.
+GLOBAL_CONFIG_DIR = get_user_config_dir()
 GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
 HISTORY_FILE = GLOBAL_CONFIG_DIR / "history.jsonl"
 
