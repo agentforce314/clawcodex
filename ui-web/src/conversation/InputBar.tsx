@@ -14,10 +14,16 @@ import type {
   EffortOptionsResult,
   ModelOptionsResult,
 } from '../gateway/protocol.ts'
-import { searchFiles } from '../state/actions.ts'
+import { attachImage, searchFiles } from '../state/actions.ts'
 import { $commands, $notice } from '../state/store.ts'
-import { ArrowUpIcon, StopIcon } from '../ui/icons.tsx'
+import { ArrowUpIcon, PlusIcon, StopIcon, XIcon } from '../ui/icons.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
+import {
+  insertPlaceholder,
+  liveAttachments,
+  removePlaceholder,
+  type Attachment,
+} from './attachments.ts'
 import { applyMention, mentionAt, type MentionToken } from './mentions.ts'
 import { EffortSelect } from './EffortSelect.tsx'
 import { ModelSelect } from './ModelSelect.tsx'
@@ -29,6 +35,8 @@ export interface InputBarProps {
   draft: string
   effort: EffortOptionsResult
   hero?: boolean
+  /** False when the session's model would 400 on an image. */
+  vision?: boolean
   models: ModelOptionsResult
   onApprovalModeChange: (mode: ApprovalMode) => void
   onDraftChange: (text: string) => void
@@ -68,6 +76,7 @@ export function InputBar({
   sessionModel,
   sessionProvider,
   usage,
+  vision = true,
 }: InputBarProps) {
   const commands = useStore($commands)
   const notice = useStore($notice)
@@ -145,6 +154,55 @@ export function InputBar({
       textarea.current?.focus()
     },
     [onDraftChange],
+  )
+
+  // Every image the session has accepted this composer session. What actually
+  // SENDS is whatever the draft still claims — see attachments.ts.
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const picker = useRef<HTMLInputElement | null>(null)
+
+  const shown = useMemo(() => liveAttachments(draft, attachments), [attachments, draft])
+
+  // Object URLs outlive the component unless revoked, and a long session can
+  // paste a lot of screenshots.
+  useEffect(
+    () => () => {
+      for (const item of attachments) URL.revokeObjectURL(item.url)
+    },
+    [attachments],
+  )
+
+  const attach = useCallback(
+    async (file: File | Blob, name: string) => {
+      const id = await attachImage(file, name)
+
+      if (id === null) return
+
+      const element = textarea.current
+      const caret = element === null ? draft.length : element.selectionStart
+      const next = insertPlaceholder(draft, caret, id)
+
+      setAttachments(current => [...current, { id, name, url: URL.createObjectURL(file) }])
+      onDraftChange(next.text)
+
+      requestAnimationFrame(() => {
+        const live = textarea.current
+
+        if (live === null) return
+
+        live.focus()
+        live.setSelectionRange(next.caret, next.caret)
+      })
+    },
+    [draft, onDraftChange],
+  )
+
+  const dropAttachment = useCallback(
+    (id: number) => {
+      onDraftChange(removePlaceholder(draft, id))
+      textarea.current?.focus()
+    },
+    [draft, onDraftChange],
   )
 
   const acceptFile = useCallback(
@@ -324,10 +382,67 @@ export function InputBar({
             ))}
           </div>
         )}
+        {shown.length > 0 && (
+          <div className={css.attachments}>
+            {shown.map(item => (
+              <div className={css.thumb} key={item.id}>
+                <img alt={item.name} src={item.url} />
+                <button
+                  aria-label={`Remove ${item.name}`}
+                  className={css.thumbRemove}
+                  onClick={() => {
+                    dropAttachment(item.id)
+                  }}
+                  title="Remove this image"
+                  type="button"
+                >
+                  <XIcon size={10} />
+                </button>
+                <span className={css.thumbTag}>#{item.id}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className={css.scroll}>
           <textarea
             aria-label="Message ClawCodex"
             className={css.input}
+            onDragOver={event => {
+              if (vision && event.dataTransfer.types.includes('Files')) event.preventDefault()
+            }}
+            onDrop={event => {
+              if (!vision) return
+
+              const file = [...event.dataTransfer.files].find(item =>
+                item.type.startsWith('image/'),
+              )
+
+              if (file === undefined) return
+
+              event.preventDefault()
+              void attach(file, file.name)
+            }}
+            onPaste={event => {
+              // A model that cannot read images must not swallow the paste —
+              // letting it through as text is better than attaching something
+              // the turn will 400 on.
+              if (!vision) return
+
+              // Only take over when an image is actually on the clipboard; a
+              // normal text paste must keep working.
+              const item = [...event.clipboardData.items].find(entry =>
+                entry.type.startsWith('image/'),
+              )
+
+              if (item === undefined) return
+
+              const file = item.getAsFile()
+
+              if (file === null) return
+
+              event.preventDefault()
+              void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
+            }}
             onChange={event => {
               onDraftChange(event.target.value)
               syncMention(event.target)
@@ -348,6 +463,35 @@ export function InputBar({
         </div>
         <div className={css.row}>
           <div className={css.modes}>
+            {vision && (
+              <>
+            <input
+              accept="image/*"
+              className={css.hiddenPicker}
+              onChange={event => {
+                const file = event.target.files?.[0]
+
+                if (file !== undefined) void attach(file, file.name)
+                // Clear it, or picking the same file twice is inert.
+                event.target.value = ''
+              }}
+              ref={picker}
+              tabIndex={-1}
+              type="file"
+            />
+            <button
+              aria-label="Attach an image"
+              className={css.attachButton}
+              onClick={() => {
+                picker.current?.click()
+              }}
+              title="Attach an image"
+              type="button"
+            >
+              <PlusIcon size={14} />
+            </button>
+              </>
+            )}
             <PermissionSelect
               onChange={onApprovalModeChange}
               value={approvalMode ?? 'manual'}

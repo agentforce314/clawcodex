@@ -599,3 +599,135 @@ def test_auto_title_survives_a_saved_file_it_cannot_stamp(tmp_path) -> None:
 
     assert title == "Run the tests"
     assert ("session.title", {"title": title}) in events
+
+
+# ── image attach ──────────────────────────────────────────────────────────────
+#
+# The agent's attach_image control reads a path off the machine it runs on,
+# which a browser cannot produce. The gateway lands the bytes in a temp file so
+# the agent side stays exactly as the TUI uses it.
+
+
+def _attach(
+    reply: Any, params: dict[str, Any], model: str = "claude-sonnet-4-6"
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    seen: list[dict[str, Any]] = []
+
+    class _Session:
+        init_info = {"model": model}
+
+        async def control_query(self, subtype: str, args: dict[str, Any]) -> Any:
+            # Record what the control actually saw, contents included: the file
+            # is gone by the time the caller could look.
+            path = args.get("path")
+            body = b""
+            if isinstance(path, str) and os.path.exists(path):
+                with open(path, "rb") as fh:
+                    body = fh.read()
+            seen.append({"subtype": subtype, **args, "_body": body, "_existed": bool(body)})
+            return reply
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    connection._session = lambda p: _Session()  # type: ignore[method-assign]
+    return asyncio.run(GatewayConnection.image_attach(connection, params)), seen
+
+
+ONE_PIXEL_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+OK_REPLY = {"attached": True, "id": 1, "name": "shot.png"}
+
+
+def test_attach_writes_the_bytes_where_the_control_can_read_them() -> None:
+    result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64, "name": "shot.png"})
+
+    assert result == {"attached": True, "id": 1, "name": "shot.png"}
+    assert seen[0]["_existed"] is True
+    assert seen[0]["_body"].startswith(b"\x89PNG")
+
+
+def test_attach_asks_for_the_placeholder_contract() -> None:
+    # placeholder=True is what makes the [Image #N] chip authoritative, so
+    # deleting it in the composer un-attaches the image.
+    _result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64})
+
+    assert seen[0]["placeholder"] is True
+
+
+def test_attach_accepts_the_data_url_a_browser_paste_produces() -> None:
+    result, seen = _attach(OK_REPLY, {"data": f"data:image/png;base64,{ONE_PIXEL_B64}"})
+
+    assert result["attached"] is True
+    assert seen[0]["_body"].startswith(b"\x89PNG")
+
+
+def test_attach_removes_the_temp_file_afterwards() -> None:
+    _result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64})
+
+    # The control reads the file into memory, so the copy on disk is dead the
+    # moment it returns.
+    assert not os.path.exists(seen[0]["path"])
+
+
+def test_attach_removes_the_temp_file_even_when_the_control_refuses() -> None:
+    _result, seen = _attach({"error": "too many images"}, {"data": ONE_PIXEL_B64})
+
+    assert not os.path.exists(seen[0]["path"])
+
+
+@pytest.mark.parametrize(
+    "params", [{}, {"data": ""}, {"data": 5}, {"data": "not base64!!"}, {"data": "===="}]
+)
+def test_attach_rejects_data_it_cannot_decode(params: dict[str, Any]) -> None:
+    result, seen = _attach(OK_REPLY, params)
+
+    assert "error" in result
+    assert result.get("attached") is not True
+    # Nothing reached the session, so nothing was queued for the next prompt.
+    assert seen == []
+
+
+def test_attach_reports_a_refusal_rather_than_claiming_success() -> None:
+    result, _seen = _attach({"error": "too many images"}, {"data": ONE_PIXEL_B64})
+
+    assert result.get("attached") is not True
+    assert "too many images" in result["error"]
+
+
+def test_attach_reports_a_session_that_did_not_answer() -> None:
+    result, _seen = _attach(None, {"data": ONE_PIXEL_B64})
+
+    assert result.get("attached") is not True
+
+
+def test_attach_refuses_a_model_that_cannot_read_images() -> None:
+    # deepseek-v4-pro answers a request carrying an image with a hard 400 that
+    # kills the turn ("Failed to deserialize the JSON body"). Naming the model
+    # is far more use than passing that through.
+    result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64}, model="deepseek-v4-pro")
+
+    assert result.get("attached") is not True
+    assert "deepseek-v4-pro" in result["error"]
+    assert "cannot read images" in result["error"]
+    # Nothing was queued, so the next prompt is unaffected.
+    assert seen == []
+
+
+def test_attach_allows_a_model_the_table_has_never_heard_of() -> None:
+    # supports_vision' own rule: an unknown id is assumed capable, because a
+    # real API error beats a wrong refusal.
+    result, _seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64}, model="some-new-model-9000")
+
+    assert result["attached"] is True
+
+
+def test_vision_flag_follows_the_model() -> None:
+    from src.server.desktop_gateway_methods import _vision_ok
+
+    assert _vision_ok("deepseek-v4-pro") is False
+    assert _vision_ok("some-new-model-9000") is True
+    # An absent model is not evidence of anything.
+    assert _vision_ok("") is True
+    assert _vision_ok(None) is True

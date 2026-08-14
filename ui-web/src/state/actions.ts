@@ -602,6 +602,59 @@ export async function searchFiles(query: string, limit = 12): Promise<string[]> 
   }
 }
 
+/**
+ * Send an image to the session; the reply's id becomes its `[Image #N]` chip.
+ *
+ * Returns null on any failure, having already said why — the composer has
+ * nothing useful to do with the error beyond not inserting a chip for an image
+ * that is not there.
+ */
+export async function attachImage(file: Blob, name: string): Promise<number | null> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) {
+    notice('Start a session before attaching an image.', 'error')
+
+    return null
+  }
+
+  try {
+    const data = await blobToBase64(file)
+    const result = await gateway().request<{ attached?: boolean; error?: string; id?: number }>(
+      'image.attach',
+      { data, name, session_id: sessionId },
+    )
+
+    if (result.attached !== true || typeof result.id !== 'number') {
+      notice(result.error ?? 'Could not attach that image', 'error')
+
+      return null
+    }
+
+    return result.id
+  } catch (error) {
+    notice(errorText(error), 'error')
+
+    return null
+  }
+}
+
+/** Blob to bare base64 (FileReader hands back a data: URL). */
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onerror = () => {
+      reject(new Error('could not read the image'))
+    }
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      resolve(result.slice(result.indexOf(',') + 1))
+    }
+    reader.readAsDataURL(blob)
+  })
+}
+
 /* ── model + catalogs ────────────────────────────────────────────────────── */
 
 export async function refreshModels(): Promise<void> {

@@ -171,6 +171,7 @@ export function ConversationRoot() {
       sessionModel={transcript.info.model}
       sessionProvider={transcript.info.provider}
       usage={usage}
+      vision={transcript.info.vision}
     />
   )
 

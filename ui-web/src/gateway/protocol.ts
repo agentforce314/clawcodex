@@ -28,6 +28,8 @@ export interface SessionInfoPayload {
   model?: string
   provider?: string
   reasoning_effort?: string
+  /** Whether the session's model accepts image input; false hides the attach control. */
+  vision?: boolean
   running?: boolean
   stored_session_id?: string
 }

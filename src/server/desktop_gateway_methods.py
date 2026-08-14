@@ -78,6 +78,24 @@ def permission_mode_for(approval_mode: Any) -> str | None:
     return _PERMISSION_MODE_FOR.get(approval_mode.strip().lower())
 
 
+def _vision_ok(model: Any) -> bool:
+    """Whether ``model`` accepts image input, for the composer's attach path.
+
+    Unknown ids stay permissive, which is `supports_vision`'s own rule: a model
+    absent from the table is assumed capable, because a real API error beats a
+    wrong refusal. Only an exact table hit of False takes the control away.
+    """
+    if not isinstance(model, str) or not model:
+        return True
+    try:
+        from src.models.capabilities import supports_vision
+
+        return supports_vision(model)
+    except Exception:  # noqa: BLE001 — a capability lookup must not break init
+        logger.debug("vision capability lookup failed for %r", model, exc_info=True)
+        return True
+
+
 def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     """system/init frame → the ``session.info`` payload the renderer reads."""
     payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
@@ -90,6 +108,9 @@ def _init_session_info(init: dict[str, Any]) -> dict[str, Any]:
     model = init.get("model")
     if model:
         payload["model"] = model
+        # The composer hides its attach control when this is False, so a
+        # screenshot is never pasted into a model that would 400 on it.
+        payload["vision"] = _vision_ok(model)
     # The renderer's picker only prefers the session's selection when BOTH
     # model and provider are set (currentPickerSelection); omitting provider
     # made the picker fall back to the catalog while the composer chip kept
@@ -186,6 +207,9 @@ class DesktopSession:
             model = settings.get("fusion") or settings.get("model")
             if model:
                 payload["model"] = str(model)
+                # Republished on every model switch, so the attach control
+                # comes and goes with the model that would have to read it.
+                payload["vision"] = _vision_ok(str(model))
             if settings.get("provider"):
                 payload["provider"] = str(settings["provider"])
             if settings.get("permission_mode"):
@@ -815,6 +839,7 @@ class GatewayConnection:
             "complete.path": self.complete_empty,
             "fs.list_directory": self.fs_list_directory,
             "fs.search_files": self.fs_search_files,
+            "image.attach": self.image_attach,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -1102,6 +1127,76 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def image_attach(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Attach a pasted or dropped image to the next prompt.
+
+        The agent's ``attach_image`` control reads a path off the machine it
+        runs on, which a browser cannot produce. So the bytes come over the
+        socket and land in a temp file the control then reads — the agent side
+        stays exactly as the TUI uses it.
+
+        ``placeholder: True`` is deliberate. It tells the agent this client
+        renders an ``[Image #N]`` chip in the prompt text, which makes the chip
+        authoritative: an image whose chip is gone at submit is dropped. That
+        is how deleting the text un-attaches the image, and it is the same
+        contract the TUI composer relies on.
+        """
+        import base64
+        import os
+        import tempfile
+
+        raw = params.get("data")
+        if not isinstance(raw, str) or not raw:
+            return {"error": "no image data"}
+
+        # Accept a data: URL as well as bare base64 — that is what a browser
+        # paste hands you, and stripping it here beats making every caller.
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+
+        try:
+            blob = base64.b64decode(raw, validate=True)
+        except Exception:  # noqa: BLE001
+            return {"error": "image data was not valid base64"}
+
+        if not blob:
+            return {"error": "image data was empty"}
+
+        session = self._session(params)
+        model = str((session.init_info or {}).get("model") or "")
+        if not _vision_ok(model):
+            # Sending it anyway is a hard 400 from the provider that kills the
+            # turn; saying which model cannot read it is far more use than
+            # "Failed to deserialize the JSON body".
+            return {"error": f"{model} cannot read images — switch to a vision model first."}
+
+        name = str(params.get("name") or "pasted-image.png")
+        suffix = os.path.splitext(name)[1] or ".png"
+        handle, path = tempfile.mkstemp(prefix="clawcodex-paste-", suffix=suffix)
+        try:
+            with os.fdopen(handle, "wb") as fh:
+                fh.write(blob)
+            result = await session.control_query(
+                "attach_image", {"path": path, "placeholder": True}
+            )
+        finally:
+            # The control reads the file into memory, so the copy on disk is
+            # dead the moment it returns — including when it failed.
+            try:
+                os.unlink(path)
+            except OSError:
+                logger.debug("image.attach: could not remove %s", path)
+
+        if not isinstance(result, dict):
+            return {"error": "no response from the session"}
+        if result.get("attached") is not True:
+            return {"error": str(result.get("error") or "the session refused the image")}
+        return {
+            "attached": True,
+            "id": result.get("id"),
+            "name": result.get("name") or name,
+        }
 
     async def fs_search_files(self, params: dict[str, Any]) -> dict[str, Any]:
         """Workspace files matching ``query``, for the composer's @ mentions.
