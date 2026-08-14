@@ -13,12 +13,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { GatewayClient } from '../gateway/client.ts'
 import {
   createSession,
+  setModel,
   dequeue,
   setGatewayClient,
   start,
   submitPrompt,
 } from './actions.ts'
-import { $queue, $sessionId, $transcript } from './store.ts'
+import { $queue, $sessionId, $sessionLoading, $transcript } from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
 
 /** Answers every RPC from a canned table and lets tests push events. */
@@ -264,5 +265,51 @@ describe('createSession', () => {
 
     expect($sessionId.get()).toBe('S2')
     expect($transcript.get().nodes).toEqual([])
+  })
+
+  it('spawns on the model picked before there was a session', async () => {
+    // The bug this covers: `setModel` with no session stores the choice and
+    // says it "rides the next session.create", but nothing carried it — so
+    // picking a deepseek model spawned the session on the config default
+    // provider (anthropic), which then 400s on the first turn.
+    const gateway = await connect()
+
+    await setModel('deepseek-v4-flash', 'deepseek')
+    await createSession({ cwd: '/repo' })
+    await settle()
+
+    const create = gateway.sent.find(frame => frame.method === 'session.create')
+
+    expect(create?.params).toMatchObject({
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      provider: 'deepseek',
+    })
+  })
+
+  it('lets an explicit option win over the picked model', async () => {
+    // A caller naming a model means it.
+    const gateway = await connect()
+
+    await setModel('deepseek-v4-flash', 'deepseek')
+    await createSession({ model: 'gpt-5.6-luna', provider: 'openai' })
+    await settle()
+
+    const create = gateway.sent.find(frame => frame.method === 'session.create')
+
+    expect(create?.params).toMatchObject({ model: 'gpt-5.6-luna', provider: 'openai' })
+  })
+
+  it('clears the loading flag when the create fails', async () => {
+    // Otherwise a failed create leaves "Loading session…" over an empty
+    // transcript with no way back to the composer.
+    const gateway = await connect()
+
+    $sessionLoading.set(true)
+    gateway.failing.add('session.create')
+    await createSession()
+    await settle()
+
+    expect($sessionLoading.get()).toBe(false)
   })
 })

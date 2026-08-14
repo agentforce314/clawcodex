@@ -210,8 +210,15 @@ export interface ModelOption {
   auth_type?: string
   is_current?: boolean
   models?: string[]
+  /** Display name — "DeepSeek", "Anthropic Claude", "Moonshot / Kimi". */
   name: string
   label?: string
+  /**
+   * The id the backend answers to — "deepseek", not "DeepSeek". Sending the
+   * display name back gets "Unknown provider: DeepSeek", so the menu shows
+   * `name` and sends `slug`.
+   */
+  slug?: string
 }
 
 export interface ModelOptionsResult {

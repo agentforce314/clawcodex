@@ -11,6 +11,14 @@ const CATALOG: ModelOptionsResult = {
   ],
 }
 
+/** The real shape: a display name beside the id the backend answers to. */
+const SLUGGED: ModelOptionsResult = {
+  providers: [
+    { models: ['deepseek-v4-flash'], name: 'DeepSeek', slug: 'deepseek' },
+    { models: ['claude-sonnet-4-6'], name: 'Anthropic Claude', slug: 'anthropic' },
+  ],
+}
+
 describe('buildModelMenu', () => {
   it('groups models under their provider', () => {
     const { items } = buildModelMenu(CATALOG)
@@ -82,5 +90,31 @@ describe('selectedModelId', () => {
   it('marks nothing when the model is unknown or absent', () => {
     expect(selectedModelId(choices, 'gpt-9', 'openai')).toBeUndefined()
     expect(selectedModelId(choices, '', '')).toBeUndefined()
+  })
+})
+
+describe('provider identity', () => {
+  it('sends the slug, not the display name', () => {
+    // "Unknown provider: DeepSeek" — the backend answers to "deepseek".
+    const { choices } = buildModelMenu(SLUGGED)
+
+    expect([...choices.values()]).toEqual([
+      { model: 'deepseek-v4-flash', provider: 'deepseek' },
+      { model: 'claude-sonnet-4-6', provider: 'anthropic' },
+    ])
+  })
+
+  it('still shows the display name as the heading', () => {
+    const { items } = buildModelMenu(SLUGGED)
+    const headings = items.filter(entry => 'text' in entry).map(entry => (entry as { text: string }).text)
+
+    expect(headings).toEqual(['DeepSeek', 'Anthropic Claude'])
+  })
+
+  it('falls back to the name when a row carries no slug', () => {
+    // Which is the shape every existing fixture uses.
+    const { choices } = buildModelMenu(CATALOG)
+
+    expect([...choices.values()][0]).toEqual({ model: 'deepseek-v4-pro', provider: 'deepseek' })
   })
 })

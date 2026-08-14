@@ -36,7 +36,10 @@ export function buildModelMenu(models: ModelOptionsResult): {
 
     for (const model of list) {
       const id = `m${choices.size}`
-      choices.set(id, { model, provider: provider.name })
+      // The SLUG, not the display name: the backend answers to "deepseek" and
+      // rejects "DeepSeek" outright. Falls back to the name for a catalog row
+      // that carries no slug, which is what the shape was before.
+      choices.set(id, { model, provider: provider.slug ?? provider.name })
       items.push({ id, label: model })
     }
   }

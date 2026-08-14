@@ -217,9 +217,19 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES }
 
+  // A model chosen before there was a session lives in $models, because
+  // `setModel` has nowhere else to put it. Reading it here is what makes that
+  // choice ride the create — without this the picker on the welcome screen
+  // changed the chip and nothing else, and the session spawned on the config
+  // default provider instead. Explicit options still win: a caller naming a
+  // model means it.
+  const selected = $models.get()
+  const provider = options.provider ?? selected.provider
+  const model = options.model ?? selected.model
+
   if (options.cwd !== undefined && options.cwd !== '') params.cwd = options.cwd
-  if (options.provider !== undefined && options.provider !== '') params.provider = options.provider
-  if (options.model !== undefined && options.model !== '') params.model = options.model
+  if (provider !== undefined && provider !== '') params.provider = provider
+  if (model !== undefined && model !== '') params.model = model
   if (options.effort !== undefined && options.effort !== '') params.reasoning_effort = options.effort
 
   try {
@@ -229,6 +239,12 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
     await applyPendingApprovalMode()
   } catch (error) {
     notice(`Could not start a session: ${errorText(error)}`, 'error')
+  } finally {
+    // A create that fails must not leave a "Loading session…" spinner over an
+    // empty transcript: the composer is still usable, and the hero is the
+    // honest place to land. Resume owns this flag too, so clearing it here
+    // covers a create that interleaves with one.
+    $sessionLoading.set(false)
   }
 }
 
