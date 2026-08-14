@@ -15,6 +15,7 @@ import type {
   ModelOptionsResult,
   ProjectNode,
 } from '../gateway/protocol.ts'
+import { emptyTrajectory, type TrajectoryState } from './trajectory.ts'
 import { emptyTranscript, type TranscriptState } from './transcript.ts'
 
 /** Where the shell is in its startup sequence. */
@@ -40,6 +41,20 @@ export const $transcript = atom<TranscriptState>(emptyTranscript())
  * empty state over a conversation that is about to appear.
  */
 export const $sessionLoading = atom<boolean>(false)
+
+/**
+ * The same events as `$transcript`, kept at full resolution and timed.
+ *
+ * Only the live session has one: the stored transcript a resume returns has no
+ * per-request timing, and inventing it would be worse than the empty state the
+ * trajectory shows instead.
+ */
+export const $trajectory = atom<TrajectoryState>(emptyTrajectory())
+
+/** Which view the conversation column is showing. */
+export type ConversationTab = 'chat' | 'trajectory'
+
+export const $conversationTab = atom<ConversationTab>('chat')
 
 export const $projects = atom<ProjectNode[]>([])
 export const $projectsLoading = atom<boolean>(false)

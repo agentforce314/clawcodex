@@ -36,9 +36,15 @@ import {
   $sessionLoading,
   $sessionTitle,
   $storedSessionId,
+  $trajectory,
   $transcript,
   $workspace,
 } from './store.ts'
+import {
+  applyTrajectoryEvent,
+  emptyTrajectory,
+  recordPrompt,
+} from './trajectory.ts'
 import {
   appendUserMessage,
   applyEvent,
@@ -154,6 +160,7 @@ function handleEvent(event: GatewayEvent): void {
   if (event.session_id !== undefined && event.session_id !== active) return
 
   $transcript.set(applyEvent($transcript.get(), event))
+  $trajectory.set(applyTrajectoryEvent($trajectory.get(), event))
 
   if (event.type === 'message.complete') {
     void refreshUsage()
@@ -172,6 +179,7 @@ export interface SessionSpawnOptions {
 
 export async function createSession(options: SessionSpawnOptions = {}): Promise<void> {
   $transcript.set(emptyTranscript())
+  $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
   $sessionTitle.set('')
   $sessionId.set(null)
@@ -195,6 +203,9 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
   $transcript.set(emptyTranscript())
+  // A replayed transcript carries no timings, so the ledger starts empty and
+  // records only what this window observes from here on.
+  $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
   $sessionLoading.set(true)
 
@@ -254,6 +265,7 @@ export async function clearSession(): Promise<void> {
   try {
     await gateway().request('session.clear', { session_id: sessionId })
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
+    $trajectory.set(emptyTrajectory())
     notice('Conversation cleared.')
   } catch (error) {
     notice(errorText(error), 'error')
@@ -315,6 +327,7 @@ async function send(text: string): Promise<void> {
   if (sessionId === null) return
 
   $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text)))
+  $trajectory.set(recordPrompt($trajectory.get(), text))
   notice('')
 
   try {

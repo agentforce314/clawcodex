@@ -1,0 +1,201 @@
+/* Inspector for one ledger record. Sits inside the trajectory pane rather than
+   the shell's details column: it is bound to the row selected here, and closing
+   the tab should take it with it. */
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  min-width: 0;
+  border-left: 1px solid var(--cc-alias-border-l2);
+  background: var(--cc-alias-bg-base);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.kind {
+  color: var(--cc-alias-label-primary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+}
+
+.position {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cc-alias-label-caption);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.tabs {
+  display: flex;
+  flex: none;
+  gap: 14px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.tab {
+  position: relative;
+  padding: 6px 0 5px;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  color: var(--cc-alias-state-business-primary);
+}
+
+.tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cc-alias-state-business-primary);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+}
+
+.section + .section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--cc-alias-border-l1);
+}
+
+.sectionTitle {
+  margin-bottom: 6px;
+  color: var(--cc-alias-label-caption);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.facts dt {
+  color: var(--cc-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+/* An indented row is a component of the one above it (Reasoning under Tokens). */
+.facts dt[data-nested] {
+  padding-left: 10px;
+  color: var(--cc-alias-label-caption);
+}
+
+.facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A reading that could not be taken reads as prose, never as a zero. */
+.facts dd[data-absent] {
+  color: var(--cc-alias-label-caption);
+  font-style: italic;
+}
+
+.prose {
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.thinking {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.raw {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--cc-alias-border-l1);
+  border-radius: 8px;
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-markdown-code-block-small);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  padding: 24px 10px;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  text-align: center;
+}
+
+.disclosure {
+  margin-top: 10px;
+}
+
+.disclosureSummary {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.disclosureSummary::marker {
+  color: var(--cc-alias-label-caption);
+}

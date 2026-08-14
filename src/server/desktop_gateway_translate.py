@@ -21,16 +21,33 @@ from typing import Any
 
 
 def usage_payload(usage: dict[str, Any] | None) -> dict[str, int] | None:
+    """Backend token counters → the renderer's usage shape.
+
+    The first four keys are the contract the desktop renderer merges into its
+    session stats; the rest are additive and carry what that shape flattens
+    away — the reasoning/content split and the cache counters, which are the
+    difference between "20k input tokens" and "20k input tokens, 87% served
+    from cache". Readers that only know the original four are unaffected.
+    """
     if not isinstance(usage, dict):
         return None
     input_tokens = int(usage.get("input_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)
-    return {
+    payload = {
         "calls": 1,
         "input": input_tokens,
         "output": output_tokens,
         "total": input_tokens + output_tokens,
     }
+    for source, key in (
+        ("reasoning_tokens", "reasoning"),
+        ("cache_read_input_tokens", "cache_read"),
+        ("cache_creation_input_tokens", "cache_write"),
+    ):
+        value = usage.get(source)
+        if value:
+            payload[key] = int(value)
+    return payload
 
 
 # ── content-block helpers ────────────────────────────────────────────────────
@@ -365,6 +382,14 @@ def translate_sdk_envelope(
     events: list[tuple[str, Any]] = []
 
     if kind == "assistant":
+        # One assistant envelope is one completed model request — a STEP. It
+        # is emitted before the tool rows it opens, so a reader can close the
+        # step's books (tokens, model, why it stopped) and then watch the
+        # tools it asked for. ``result`` only ever reports the whole turn.
+        step = step_complete_payload(frame)
+        if step is not None:
+            events.append(("step.complete", step))
+
         for block in _iter_blocks(content):
             if block.get("type") != "tool_use":
                 continue
@@ -407,6 +432,29 @@ def translate_sdk_envelope(
             payload["result"] = render_tool_result(name, text, display)
         events.append(("tool.complete", payload))
     return events
+
+
+def step_complete_payload(frame: dict[str, Any]) -> dict[str, Any] | None:
+    """Assistant envelope → the per-step facts, or None when it carries none.
+
+    ``usage`` is the only field worth an event on its own; ``model`` and
+    ``stop_reason`` ride along because a step that switched models (a fallback)
+    or stopped early (``max_tokens``) is exactly the step a reader is looking
+    for, and neither is recoverable from the turn's totals.
+    """
+    usage = usage_payload(frame.get("usage"))
+    model = frame.get("model")
+    stop_reason = frame.get("stop_reason")
+    if usage is None and not model and not stop_reason:
+        return None
+    payload: dict[str, Any] = {}
+    if usage is not None:
+        payload["usage"] = usage
+    if model:
+        payload["model"] = str(model)
+    if stop_reason:
+        payload["stop_reason"] = str(stop_reason)
+    return payload
 
 
 def translate_result(frame: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -492,6 +540,7 @@ __all__ = [
     "render_tool_args",
     "render_tool_name",
     "render_tool_result",
+    "step_complete_payload",
     "summarize_tool_result",
     "tool_context",
     "translate_frame",

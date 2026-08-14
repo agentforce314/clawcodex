@@ -20,11 +20,13 @@ from src.server.desktop_gateway_translate import (
     inline_diff_from_display,
     render_tool_name,
     render_tool_result,
+    step_complete_payload,
     summarize_tool_result,
     tool_context,
     translate_frame,
     translate_sdk_envelope,
     translate_stream_event,
+    usage_payload,
 )
 
 
@@ -277,3 +279,66 @@ def test_stream_deltas_map_to_message_and_reasoning() -> None:
         "event": {"type": "content_block_delta",
                   "delta": {"type": "thinking_delta", "thinking": "hmm"}},
     }) == [("reasoning.delta", {"text": "hmm"})]
+
+
+# ── per-step facts (trajectory) ───────────────────────────────────────────────
+# `result` reports a whole turn; an agentic turn is many model requests. These
+# carry the per-request facts a trajectory needs to tell a ten-step turn from a
+# one-step one — without them the difference is invisible.
+
+
+def test_usage_payload_keeps_the_reasoning_and_cache_split() -> None:
+    payload = usage_payload({
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "reasoning_tokens": 7,
+        "cache_read_input_tokens": 80,
+        "cache_creation_input_tokens": 5,
+    })
+    assert payload == {
+        "calls": 1, "input": 100, "output": 20, "total": 120,
+        "reasoning": 7, "cache_read": 80, "cache_write": 5,
+    }
+
+
+def test_usage_payload_omits_absent_counters() -> None:
+    """The four original keys are the desktop's contract and are always
+    present; the rest appear only when the provider reported them."""
+    assert usage_payload({"input_tokens": 3, "output_tokens": 1}) == {
+        "calls": 1, "input": 3, "output": 1, "total": 4,
+    }
+
+
+def test_assistant_envelope_emits_step_complete_before_its_tools() -> None:
+    events = translate_frame({
+        "type": "assistant",
+        "model": "deepseek-v4-pro",
+        "stop_reason": "tool_calls",
+        "usage": {"input_tokens": 6348, "output_tokens": 247, "reasoning_tokens": 63},
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+        ]},
+    }, {})
+
+    # Order matters: the step's books close, then the tools it asked for open.
+    assert [type_ for type_, _ in events] == ["step.complete", "tool.start"]
+    assert events[0][1] == {
+        "usage": {"calls": 1, "input": 6348, "output": 247, "total": 6595, "reasoning": 63},
+        "model": "deepseek-v4-pro",
+        "stop_reason": "tool_calls",
+    }
+
+
+def test_assistant_envelope_without_step_facts_is_unchanged() -> None:
+    """A backend that reports no usage emits exactly what it always did."""
+    assert translate_frame({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+    }, {}) == []
+
+
+def test_step_complete_payload_carries_whichever_facts_exist() -> None:
+    assert step_complete_payload({"stop_reason": "max_tokens"}) == {"stop_reason": "max_tokens"}
+    assert step_complete_payload({"model": "m"}) == {"model": "m"}
+    assert step_complete_payload({}) is None
+    assert step_complete_payload({"usage": None, "model": "", "stop_reason": ""}) is None

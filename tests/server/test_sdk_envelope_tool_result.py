@@ -274,3 +274,39 @@ class TestDisplayToolResultImage:
         env = _sdk_envelope(msg, "sess")
         assert env["tool_use_result"] == {"type": "image", "originalSize": 128_000}
         assert "/9j/4AAQ" not in repr(env)
+
+
+# ── per-step facts ────────────────────────────────────────────────────────────
+
+
+class _Msg:
+    """Minimal message stand-in: message_to_dict reads attributes."""
+
+    def __init__(self, **fields):
+        self.role = "assistant"
+        self.content = "hi"
+        self.uuid = "u1"
+        for key, value in fields.items():
+            setattr(self, key, value)
+
+
+def test_envelope_carries_per_step_usage_model_and_stop_reason() -> None:
+    """A turn's `result` reports totals only. Without these, a ten-request
+    turn and a one-request turn look identical to any client."""
+    env = _sdk_envelope(
+        _Msg(usage={"input_tokens": 10, "output_tokens": 2}, model="m1",
+             stop_reason="tool_calls"),
+        "s1",
+    )
+    assert env is not None
+    assert env["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert env["model"] == "m1"
+    assert env["stop_reason"] == "tool_calls"
+
+
+def test_envelope_omits_step_facts_the_message_does_not_carry() -> None:
+    """The envelope every existing consumer already reads is unchanged when
+    the backend reports nothing extra."""
+    env = _sdk_envelope(_Msg(), "s1")
+    assert env is not None
+    assert set(env) == {"type", "uuid", "session_id", "message"}

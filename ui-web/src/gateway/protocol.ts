@@ -44,11 +44,46 @@ export interface MessageCompletePayload {
   usage?: UsagePayload
 }
 
+/**
+ * Token counters for one request or turn.
+ *
+ * The first four are always present; the rest are reported only when the
+ * provider supplies them.
+ *
+ * **`input` is the cache MISS, not the whole prompt.** The backend splits a
+ * prompt into the part it paid full price for (`input`) and the part served
+ * from cache (`cache_read`), because they are billed differently — see
+ * `_build_usage_dict` in `src/providers/deepseek_provider.py`. The full prompt
+ * is therefore `input + cache_read`, and so is the correct denominator for a
+ * cache-hit rate. `total` follows the backend's own convention of
+ * `input + output`, so it excludes the cached part too; use `promptTokens()`
+ * rather than reading these fields directly.
+ */
 export interface UsagePayload {
+  cache_read?: number
+  cache_write?: number
   calls: number
   input: number
   output: number
+  reasoning?: number
   total: number
+}
+
+/** The whole prompt: what was paid for plus what came from cache. */
+export function promptTokens(usage: UsagePayload): number {
+  return usage.input + (usage.cache_read ?? 0)
+}
+
+/**
+ * `step.complete` — one finished model request inside a turn.
+ *
+ * A turn's `message.complete` reports totals only; an agentic turn is many
+ * requests, and this is what makes the individual ones visible.
+ */
+export interface StepCompletePayload {
+  model?: string
+  stop_reason?: string
+  usage?: UsagePayload
 }
 
 /**
@@ -112,6 +147,7 @@ export type GatewayEventType =
   | 'sessions.changed'
   | 'thinking.delta'
   | 'tool.complete'
+  | 'step.complete'
   | 'tool.start'
   | (string & {})
 

@@ -28,6 +28,7 @@ The whole coupling to the backend lives in four files:
 | `src/gateway/client.ts` | The socket: request/response by id, pushes by type, reconnect with backoff. |
 | `src/gateway/tool-vocabulary.ts` | ClawCodex tool names → the names the tool cards are keyed by (mirrors the server's own table, for rehydrated transcripts). |
 | `src/state/transcript.ts` | Gateway events → renderable nodes. Every rule about what the reader sees is a pure function here. |
+| `src/state/trajectory.ts` | The same events at full resolution, timed — the ledger behind the Trajectory tab. |
 
 Everything above those is ordinary UI and knows nothing about JSON-RPC.
 
@@ -40,6 +41,7 @@ src/
   layout/        three-column solver + AppFrame (drag handles, concession chain)
   sidebar/       project/worktree/session tree
   conversation/  chat flow, message + tool + reasoning rows, composer, approvals
+  trajectory/    the run as a metered ledger: timeline, rows, inspector, totals
   details/       right-hand column: session facts, files touched, tool runs
   ui/            primitives (buttons, cards, code/diff/terminal blocks) + markdown
   styles/        design tokens, typography, scrollbars, shiki wiring
@@ -53,6 +55,40 @@ Two structural rules hold throughout:
 - **One width axis.** `--cc-chat-content-width` sizes the transcript and the
   dock cards; the input card is exactly that plus 32px, at every viewport. The
   relation is declared once, on the conversation root.
+
+## Trajectory
+
+The **Trajectory** tab is the forensic view of the same session: every model
+request and tool call in order, with what each cost and how long each phase
+took. Chat answers "what was said"; this answers "what happened, and where did
+the time go".
+
+- **Timeline** — three lanes (input / model / tools). `Duration` off gives every
+  operation equal width (the run's *shape*); on, it uses real elapsed widths with
+  idle removed (where the time *went*). A model bar is drawn two-tone: the pale
+  head is time waiting for the first token, the solid tail is generation. Drag
+  across it to filter the ledger to a time range.
+- **Ledger** — one line per operation, foldable by turn and by step.
+- **Inspector** — Summary (tokens, model, stop reason, request timing),
+  Preview (rendered content), Raw (the record as JSON).
+
+### Where the numbers come from
+
+Token counts are the backend's own per-request accounting, carried by the
+`step.complete` event. **Timings are observed on the client** — the gateway
+reports what happened, not when — so they include the loopback socket's
+transport, which is far below the resolution these are read at.
+
+A metric that could not be measured says so ("First token unavailable") rather
+than showing a zero. That is why a **resumed** session starts with an empty
+ledger: a replayed transcript carries no timings, and inventing them would be
+worse than the empty state.
+
+One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
+prompt — the backend splits a prompt into what it paid full price for and what
+came from cache, because they bill differently. The full prompt is
+`input + cache_read`, which is what the UI shows and what the cache-hit rate is
+computed against.
 
 ## Development
 

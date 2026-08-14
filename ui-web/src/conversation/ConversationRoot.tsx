@@ -16,14 +16,19 @@ import {
   $commands,
   $connection,
   $contextUsage,
+  $conversationTab,
   $models,
   $queue,
   $sessionId,
   $sessionLoading,
   $sessionTitle,
+  $trajectory,
   $transcript,
   $workspace,
 } from '../state/store.ts'
+import { trajectoryStats } from '../state/trajectory.ts'
+import { TrajectoryStatsBar } from '../trajectory/TrajectoryStatsBar.tsx'
+import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
 import { $detailsWidth, closeDetails, openDetails } from '../state/layout.ts'
 import { ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
 import { ApprovalPanel } from './ApprovalPanel.tsx'
@@ -58,6 +63,8 @@ export function ConversationRoot() {
   const commands = useStore($commands)
   const detailsWidth = useStore($detailsWidth)
   const loading = useStore($sessionLoading)
+  const tab = useStore($conversationTab)
+  const trajectory = useStore($trajectory)
 
   const [draft, setDraft] = useState('')
   const [atBottom, setAtBottom] = useState(true)
@@ -229,7 +236,45 @@ export function ConversationRoot() {
           </div>
         </div>
       )}
+      {!hero && (
+        <div className={css.tabs} role="tablist">
+          {(['chat', 'trajectory'] as const).map(id => (
+            <button
+              aria-selected={tab === id}
+              className={[css.tab, tab === id ? css.tabActive : ''].filter(Boolean).join(' ')}
+              key={id}
+              onClick={() => {
+                $conversationTab.set(id)
+              }}
+              role="tab"
+              type="button"
+            >
+              {id === 'chat' ? 'Chat' : 'Trajectory'}
+            </button>
+          ))}
+        </div>
+      )}
       {banner}
+      {!hero && tab === 'trajectory' ? (
+        <>
+          <div className={css.viewBody}>
+            <TrajectoryView trajectory={trajectory} />
+          </div>
+          <div className={css.footer}>
+            {transcript.approval === undefined ? (
+              composer
+            ) : (
+              <ApprovalPanel
+                onRespond={choice => {
+                  void respondApproval(choice)
+                }}
+                request={transcript.approval}
+              />
+            )}
+            <TrajectoryStatsBar stats={trajectoryStats(trajectory)} />
+          </div>
+        </>
+      ) : (
       <div
         className={css.scrollBody}
         data-phase={hero ? 'hero' : 'active'}
@@ -290,6 +335,7 @@ export function ConversationRoot() {
           </>
         )}
       </div>
+      )}
     </div>
   )
 }

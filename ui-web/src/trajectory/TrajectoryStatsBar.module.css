@@ -1,0 +1,42 @@
+/* The run's totals, on one line under the composer. Reads left to right as
+   scale → where the time went → how fast → what it cost. */
+.root {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 3px 12px;
+  border-top: 1px solid var(--cc-alias-border-l1);
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group + .group::before {
+  content: '';
+  width: 1px;
+  height: 10px;
+  margin: 0 10px;
+  background: var(--cc-alias-separator-primary);
+}
+
+.value {
+  color: var(--cc-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.dot {
+  color: var(--cc-alias-label-caption);
+}

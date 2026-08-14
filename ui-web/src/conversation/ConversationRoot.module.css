@@ -89,6 +89,70 @@
   gap: 4px;
 }
 
+/* View tabs, bottom-aligned to the header's own border so the active bar and
+   the border share a line. */
+.tabs {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+  gap: 24px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.tab {
+  position: relative;
+  padding: 4px 0 7px;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--cc-alias-label-secondary);
+}
+
+/* The selected tab is blue, not ink: brand-primary resolves to near-black in
+   this token sheet, which would not read as a selection. */
+.tabActive {
+  color: var(--cc-alias-state-business-primary);
+}
+
+.tabActive::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--cc-alias-state-business-primary);
+}
+
+/* Trajectory owns its own scrollers (the ledger scrolls inside it), so this
+   box does not scroll and the composer below it is an ordinary footer rather
+   than a sticky seat. */
+.viewBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--cc-alias-border-l1);
+  background: var(--cc-alias-bg-base);
+}
+
 .iconButton {
   display: inline-flex;
   align-items: center;

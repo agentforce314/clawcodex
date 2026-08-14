@@ -1,0 +1,182 @@
+/* Three-lane overview strip. Fixed 50px: it is a glance surface, and every
+   pixel it takes comes out of the ledger below it. */
+.root {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+  user-select: none;
+}
+
+.plot {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  height: 50px;
+  overflow: hidden;
+  background: var(--cc-alias-bg-layer-2);
+}
+
+.labels {
+  position: relative;
+  border-right: 1px solid var(--cc-alias-border-l1);
+  color: var(--cc-alias-label-caption);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Absolute, aligned to each lane's 8px band rather than flowed: the bands are
+   positioned by the same arithmetic on the track side. */
+.labels span {
+  position: absolute;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 8px;
+}
+
+.labels span:nth-child(1) {
+  top: 7px;
+}
+
+.labels span:nth-child(2) {
+  top: 21px;
+}
+
+.labels span:nth-child(3) {
+  top: 35px;
+}
+
+.track {
+  position: relative;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* The 1px inset is what keeps three back-to-back tool calls from reading as
+   one long call — without it, adjacent spans merge into a single bar and the
+   count of operations is lost. */
+.span {
+  position: absolute;
+  top: calc(var(--span-lane) * 14px + 7px);
+  left: calc(var(--span-left) + 1px);
+  width: max(2px, calc(var(--span-width) - 2px));
+  height: 8px;
+  border-radius: 1px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+/* What went in: the accent, the same hue the user bubble uses in chat. */
+.span[data-kind='user'] {
+  background: var(--cc-alias-state-business-primary);
+}
+
+.span[data-kind='notice'] {
+  background: var(--cc-alias-state-error-primary);
+}
+
+/* The model: a violet that belongs to neither the input nor the tool family,
+   so the three lanes stay distinguishable at 8px with no labels. */
+.span[data-kind='assistant'] {
+  --span-decoding: color-mix(
+    in srgb,
+    var(--cc-static-accent-500) 60%,
+    var(--cc-alias-state-error-secondary)
+  );
+  --span-waiting: color-mix(in srgb, var(--span-decoding) 54%, var(--cc-alias-bg-layer-2));
+
+  background: var(--span-decoding);
+}
+
+/* Two-tone when the timings are known: the pale head is time spent waiting for
+   the first token, the solid tail is generation. A step that is mostly pale
+   was mostly queueing, which is a different problem from a slow decode. */
+.span[data-kind='assistant'][data-ttft] {
+  background: linear-gradient(
+    to right,
+    var(--span-waiting) 0,
+    var(--span-waiting) var(--span-ttft),
+    var(--span-decoding) var(--span-ttft),
+    var(--span-decoding) 100%
+  );
+}
+
+.span[data-kind='tool'] {
+  background: var(--cc-alias-state-warn-label);
+}
+
+.span[data-error='true'] {
+  background: var(--cc-alias-state-error-primary);
+}
+
+.span[data-selected='true'] {
+  outline: 1px solid var(--cc-alias-label-primary);
+  outline-offset: 1px;
+}
+
+.span[data-match='true'] {
+  box-shadow: 0 0 0 1px var(--cc-alias-state-warn-primary);
+}
+
+/* Turn boundary: a full-height hairline, drawn under the spans so it never
+   hides one. */
+.turnMark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--cc-alias-border-l4);
+  pointer-events: none;
+}
+
+.turnLabel {
+  position: absolute;
+  top: 0;
+  padding-left: 3px;
+  color: var(--cc-alias-label-caption);
+  font-size: 9px;
+  line-height: 10px;
+  pointer-events: none;
+}
+
+/* Brush selection over the track. */
+.selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--cc-alias-state-business-primary) 16%, transparent);
+  border-left: 1px solid var(--cc-alias-state-business-primary);
+  border-right: 1px solid var(--cc-alias-state-business-primary);
+  pointer-events: none;
+}
+
+.clear {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  z-index: 3;
+  padding: 1px 6px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 999px;
+  background: var(--cc-alias-bg-layer-2);
+  color: var(--cc-alias-label-secondary);
+  font-size: 10px;
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.clear:hover {
+  color: var(--cc-alias-label-primary);
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+}

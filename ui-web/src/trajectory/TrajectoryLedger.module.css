@@ -1,0 +1,209 @@
+/* The ledger: one line per operation, in order, dense enough that a whole
+   agentic turn fits on a screen. Everything here serves that — 20px rows, a
+   fixed tag column so the eye can scan roles down a straight edge, and
+   single-line content that ellipsises rather than wrapping. */
+.root {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--cc-alias-bg-layer-1);
+}
+
+.table {
+  width: 100%;
+  min-width: 0;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--cc-alias-label-primary);
+  font: var(--cc-font-xxs-12);
+}
+
+.eventColumn {
+  width: 122px;
+}
+
+.contentColumn {
+  width: auto;
+}
+
+.row td {
+  height: 20px;
+  padding: 0;
+  border-bottom: 1px solid transparent;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.row:hover td {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.row[data-selected='true'] td {
+  background: var(--cc-alias-button-ghost-active-fill);
+}
+
+/* Outside the timeline's brush, or not a search hit: dimmed rather than
+   hidden, so the run's shape and the row numbering stay intact. */
+.row[data-dim='true'] td {
+  opacity: 0.28;
+}
+
+.row[data-match='true'] .contentText {
+  background: color-mix(in srgb, var(--cc-alias-state-warn-primary) 26%, transparent);
+}
+
+.event {
+  position: relative;
+  padding-right: 4px !important;
+  padding-left: 36px !important;
+  overflow: visible !important;
+}
+
+/* Turn marker, pinned at the row that opens the turn. Absolute so it costs the
+   row no height and the tag column stays aligned. */
+.turnLabel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  display: inline-grid;
+  align-items: center;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 1px 5px;
+  color: var(--cc-alias-label-caption);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+}
+
+.eventInner {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  height: 100%;
+}
+
+.caret {
+  flex: none;
+  width: 12px;
+  margin-right: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--cc-alias-label-caption);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.caret:hover {
+  color: var(--cc-alias-label-primary);
+}
+
+.kindSlot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  width: 76px;
+}
+
+.kindTag {
+  display: inline-flex;
+  box-sizing: border-box;
+  align-items: center;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.user {
+  background: var(--cc-alias-state-business-tertiary);
+  color: var(--cc-alias-state-business-primary);
+}
+
+.assistant {
+  background: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--cc-static-accent-500) 55%, var(--cc-alias-state-error-secondary)) 15%,
+    var(--cc-alias-bg-layer-1)
+  );
+  color: color-mix(
+    in srgb,
+    var(--cc-static-accent-500) 60%,
+    var(--cc-alias-state-error-secondary)
+  );
+}
+
+.tool {
+  background: var(--cc-alias-state-warn-tertiary);
+  color: var(--cc-alias-state-warn-label);
+}
+
+.notice {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+  color: var(--cc-alias-state-error-primary);
+}
+
+.content {
+  padding-left: 4px !important;
+  overflow: hidden;
+}
+
+.contentText {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A tool's result rides the same line as its call, after an arrow: the pair is
+   one operation and reads as one fact. */
+.resultArrow {
+  margin: 0 6px;
+  color: var(--cc-alias-label-caption);
+}
+
+.resultText {
+  color: var(--cc-alias-label-tertiary);
+}
+
+.resultError {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.mono {
+  font-family: var(--cc-font-family-code);
+}
+
+.dim {
+  color: var(--cc-alias-label-tertiary);
+}
+
+.pending {
+  color: var(--cc-alias-label-caption);
+  font-style: italic;
+}
+
+/* Fold summary: what a collapsed turn or step is hiding. */
+.foldSummary {
+  color: var(--cc-alias-label-caption);
+}
+
+.empty {
+  padding: 28px 16px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  text-align: center;
+}

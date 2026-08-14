@@ -1,0 +1,17 @@
+.root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--cc-alias-bg-layer-1);
+}
+
+/* Ledger and inspector share the row below the timeline; the inspector is a
+   fixed column so the ledger's own layout never reflows when it opens. */
+.panes {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}

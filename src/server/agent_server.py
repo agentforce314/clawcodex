@@ -6156,6 +6156,17 @@ def _sdk_envelope(message: Any, session_id: str) -> dict | None:
     tool_use_result = _display_tool_result(d.get("toolUseResult"))
     if tool_use_result is not None:
         env["tool_use_result"] = tool_use_result
+    # Per-STEP facts, carried so a client can attribute cost and model to the
+    # individual request rather than only to the turn. ``result`` reports the
+    # turn's totals; an agentic turn is many requests, and without this the
+    # difference between "one 200k-token step" and "ten 20k steps" is
+    # invisible. Only set when the message actually carries them (the fields
+    # are already persisted by ``message_to_dict``), so every existing
+    # consumer sees the envelope it saw before.
+    for key in ("usage", "model", "stop_reason"):
+        value = d.get(key)
+        if value:
+            env[key] = value
     return env
 
 

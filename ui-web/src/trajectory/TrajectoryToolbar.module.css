@@ -1,0 +1,104 @@
+/* Sticky control strip above the timeline: fold controls on the left, live
+   search on the right. Deliberately low-contrast — it sits above a dense
+   ledger and must not compete with it for attention. */
+.root {
+  flex: none;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+  background: var(--cc-alias-bg-base);
+}
+
+.inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 30px;
+  padding: 0 8px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font: var(--cc-font-xxs-12);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+/* Pressed state is the fill, not a color change: these are toggles whose two
+   states must be distinguishable at a glance in a dense strip. */
+.action[aria-pressed='true'] {
+  background: var(--cc-alias-button-ghost-active-fill);
+  color: var(--cc-alias-label-primary);
+}
+
+.actionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: min(240px, 34%);
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--cc-alias-label-caption);
+}
+
+.search:focus-within {
+  border-color: var(--cc-alias-border-l2);
+  background: var(--cc-alias-bg-layer-2);
+}
+
+.searchInput {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font: var(--cc-font-xxs-12);
+}
+
+.searchInput::placeholder {
+  color: var(--cc-alias-label-caption);
+}
+
+/* Native clear affordance would sit on a transparent field at the wrong size. */
+.searchInput::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.count {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+  font: var(--cc-font-xxxs-11);
+  font-variant-numeric: tabular-nums;
+}
