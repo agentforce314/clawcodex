@@ -981,11 +981,65 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
+
+  // The /model picker dispatches `/model …` then `/effort …` synchronously in
+  // one tick. A single shared flight counter made the second dispatch mark the
+  // first as superseded, so the `/model` reply — which folds provider+model
+  // into ui.info and prints `model → …` — was dropped and the stats line kept
+  // describing the previous session while the backend had already switched.
+  it('still applies a /model switch when another command is dispatched in the same tick', async () => {
+    patchUiState({
+      info: { model: 'claude-opus-5', profile_name: 'anthropic', skills: {}, tools: {} },
+      sid: 'sid-abc'
+    })
+
+    const rpc = vi.fn((method: string) =>
+      Promise.resolve(
+        method === 'config.set' ? { ok: true, provider: 'deepseek', value: 'deepseek-v4-flash' } : { ok: true }
+      )
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+    const handler = createSlashHandler(ctx)
+
+    for (const cmd of [`/model deepseek-v4-flash --provider deepseek ${TUI_SESSION_MODEL_FLAG}`, '/effort max']) {
+      handler(cmd)
+    }
+
+    await vi.waitFor(() => {
+      expect(getUiState().info).toMatchObject({ model: 'deepseek-v4-flash', profile_name: 'deepseek' })
+    })
+
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('model → deepseek-v4-flash')
+  })
+
+  it('still supersedes an older dispatch of the SAME command', async () => {
+    patchUiState({
+      info: { model: 'claude-opus-5', profile_name: 'anthropic', skills: {}, tools: {} },
+      sid: 'sid-abc'
+    })
+
+    const rpc = vi.fn((_method: string, params: any) =>
+      Promise.resolve({ ok: true, provider: 'deepseek', value: String(params.value).split(' ')[0] })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+    const handler = createSlashHandler(ctx)
+
+    handler('/model deepseek-v4-flash --provider deepseek')
+    handler('/model deepseek-v4-plus --provider deepseek')
+
+    await vi.waitFor(() => {
+      expect(getUiState().info).toMatchObject({ model: 'deepseek-v4-plus' })
+    })
+
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('model → deepseek-v4-flash')
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
   ...overrides,
-  slashFlightRef: overrides.slashFlightRef ?? { current: 0 },
+  slashFlightRef: overrides.slashFlightRef ?? { current: {} },
   composer: { ...buildComposer(), ...overrides.composer },
   gateway: { ...buildGateway(), ...overrides.gateway },
   local: { ...buildLocal(), ...overrides.local },
@@ -1050,7 +1104,7 @@ const buildVoice = () => ({
 })
 
 interface Ctx {
-  slashFlightRef: { current: number }
+  slashFlightRef: { current: Record<string, number> }
   composer: ReturnType<typeof buildComposer>
   gateway: ReturnType<typeof buildGateway>
   local: ReturnType<typeof buildLocal>

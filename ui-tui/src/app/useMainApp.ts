@@ -217,7 +217,7 @@ export function useMainApp(gw: GatewayClient) {
     )
   )
 
-  const slashFlightRef = useRef(0)
+  const slashFlightRef = useRef<Record<string, number>>({})
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)

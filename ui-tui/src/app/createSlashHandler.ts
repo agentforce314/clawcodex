@@ -13,13 +13,36 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
   const { page, send, sys } = ctx.transcript
 
   const handler = (cmd: string): boolean => {
-    const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
     const sid = ui.sid
     const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
-    const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid
+    const found = findSlashCommand(parsed.name)
+
+    // A registered command counts its own dispatches; everything that falls
+    // through to the backend pipeline below shares one lane.
+    //
+    // The guard exists so a late reply cannot clobber state the user has moved
+    // on from, but "the user ran some other command" is not moving on from this
+    // one — and a single shared counter could not tell those apart. The /model
+    // picker dispatches `/model …` and `/effort …` back-to-back in one tick
+    // (useMainApp onModelSelect), so the second marked the first superseded and
+    // the pending `/model` reply — the one that folds provider+model into
+    // ui.info and prints `model → …` — was dropped, leaving the stats line
+    // describing the previous session while the backend had already switched.
+    //
+    // The shared exec lane is deliberate rather than incidental: there the
+    // OUTPUT is the whole product, so printing the results of a command the
+    // user has already moved past is noise, and any newer exec slash should
+    // still suppress it. Keyed on the canonical name so aliases of one command
+    // supersede each other; a session change is caught by the sid check.
+    const flights = ctx.slashFlightRef
+    const key = found ? `cmd:${found.name}` : 'exec'
+    const flight = (flights.current[key] ?? 0) + 1
+    flights.current[key] = flight
+
+    const stale = () => flight !== flights.current[key] || getUiState().sid !== sid
 
     const guarded =
       <T>(fn: (r: T) => void) =>
@@ -36,8 +59,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     }
 
     const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, sid, stale, ui }
-
-    const found = findSlashCommand(parsed.name)
 
     if (found) {
       found.run(parsed.arg, runCtx, cmd)

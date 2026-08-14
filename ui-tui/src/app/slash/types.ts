@@ -7,7 +7,7 @@ export interface SlashRunCtx extends SlashHandlerContext {
   guarded: <T>(fn: (r: T) => void) => (r: null | T) => void
   guardedErr: (e: unknown) => void
   sid: null | string
-  slashFlightRef: MutableRefObject<number>
+  slashFlightRef: MutableRefObject<Record<string, number>>
   stale: () => boolean
   ui: UiState
 }

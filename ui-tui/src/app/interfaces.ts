@@ -397,7 +397,8 @@ export interface SlashHandlerContext {
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>
   }
-  slashFlightRef: MutableRefObject<number>
+  /** Newest dispatch number per command name — see createSlashHandler. */
+  slashFlightRef: MutableRefObject<Record<string, number>>
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
