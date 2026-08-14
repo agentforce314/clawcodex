@@ -9,11 +9,37 @@ to read sends the user hunting for a project that is right there.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from src.server.desktop_fs import home_directory, list_directory
+
+# Windows needs Developer Mode or elevation to create a symlink, so the two
+# symlink cases below are probed rather than assumed. Probing beats checking
+# `os.name`: an unprivileged Windows runner and a privileged one differ, and
+# only the attempt can tell them apart.
+
+
+def _symlinks_available() -> bool:
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "target").mkdir()
+            (root / "link").symlink_to(root / "target", target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+SYMLINKS = _symlinks_available()
+needs_symlinks = pytest.mark.skipif(not SYMLINKS, reason="symlink creation not permitted here")
+
+# `os.geteuid` is Unix-only, and a skipif condition is evaluated at import
+# time even when an earlier skipif on the same test already matched — reading
+# it directly takes the whole module down on Windows during collection.
+IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 
 @pytest.fixture()
@@ -76,9 +102,11 @@ def test_crumbs_run_root_to_target_inclusive(tree: Path) -> None:
     listing = list_directory(str(tree / "alpha"))
     crumbs = listing["crumbs"]
     assert crumbs[-1]["path"] == str((tree / "alpha").resolve())
-    assert crumbs[0]["path"] == os.path.abspath(os.sep) or Path(crumbs[0]["path"]).parent == Path(
-        crumbs[0]["path"]
-    )
+    # The first crumb is the filesystem root, whatever it is called on this
+    # platform (`/` on POSIX, a drive root on Windows): the one thing true of
+    # a root everywhere is that it is its own parent.
+    root = Path(crumbs[0]["path"])
+    assert root.parent == root
     # Each crumb is a jump target, so each must be a real absolute path.
     for crumb in crumbs:
         assert os.path.isabs(crumb["path"])
@@ -124,7 +152,7 @@ def test_a_file_target_raises(tree: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads regardless of mode")
+@pytest.mark.skipif(IS_ROOT, reason="root reads regardless of mode")
 def test_unreadable_directory_raises_rather_than_looking_empty(tmp_path: Path) -> None:
     """The failure this module exists to avoid: a permission error rendered as
     an empty folder, sending the user hunting for a project that is right
@@ -140,6 +168,7 @@ def test_unreadable_directory_raises_rather_than_looking_empty(tmp_path: Path) -
         locked.chmod(0o755)
 
 
+@needs_symlinks
 def test_an_unstattable_child_is_skipped_not_fatal(tmp_path: Path) -> None:
     """A broken symlink costs its own row, not the whole listing."""
     (tmp_path / "real").mkdir()
@@ -147,6 +176,7 @@ def test_an_unstattable_child_is_skipped_not_fatal(tmp_path: Path) -> None:
     assert _names(list_directory(str(tmp_path))) == ["real"]
 
 
+@needs_symlinks
 def test_symlink_to_a_directory_is_listed(tmp_path: Path) -> None:
     """Reaching a project through a symlink is normal; refusing it is not."""
     (tmp_path / "real").mkdir()
