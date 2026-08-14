@@ -102,7 +102,7 @@ def _display_kind(role: str, content: Any) -> str | None:
 
 
 def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any] | None:
-    """Transcript for one saved session: ``{messages, message_count}``.
+    """Transcript for one saved session: ``{messages, message_count, title}``.
 
     Messages pass through in their stored shape (string or content-block list)
     — the renderer already narrows both, live and rehydrated.
@@ -126,10 +126,15 @@ def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any]
         if kind:
             message["display_kind"] = kind
         messages.append(message)
+    # The stored name, so a resumed session keeps the title it was given —
+    # the sidebar reads it from this same file, and a header that disagreed
+    # with the row the user just clicked is its own small confusion.
+    name = data.get("name")
     return {
         "messages": messages,
         "message_count": len(messages),
         "session_id": str(data.get("session_id") or safe),
+        "title": str(name) if isinstance(name, str) and name.strip() else "",
     }
 
 

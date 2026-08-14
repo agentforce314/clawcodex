@@ -885,3 +885,39 @@ def test_a_serve_model_without_a_provider_still_names_the_model() -> None:
 
     assert result["model"] == "deepseek-v4-pro"
     assert result["provider"] == "anthropic"
+
+
+# ── resumed titles ────────────────────────────────────────────────────────────
+
+
+def _saved(tmp_path, **extra: Any) -> str:
+    import json
+
+    session_id = "ds_resume_me"
+    payload = {
+        "session_id": session_id,
+        "conversation": {"messages": [{"role": "user", "content": "hello"}]},
+        **extra,
+    }
+    (tmp_path / f"{session_id}.json").write_text(json.dumps(payload))
+    return session_id
+
+
+def test_a_saved_session_reports_its_stored_title(tmp_path) -> None:
+    # The sidebar reads the name from this same file; a header that disagreed
+    # with the row the user just clicked is its own small confusion.
+    from src.server.desktop_sessions import load_session_messages
+
+    session_id = _saved(tmp_path, name="Count slowly from 1 to 40")
+
+    assert load_session_messages(tmp_path, session_id)["title"] == "Count slowly from 1 to 40"
+
+
+@pytest.mark.parametrize("extra", [{}, {"name": ""}, {"name": "   "}, {"name": 7}])
+def test_a_session_with_no_usable_name_reports_no_title(tmp_path, extra: dict[str, Any]) -> None:
+    # Empty rather than absent, so the client's check is one shape not four.
+    from src.server.desktop_sessions import load_session_messages
+
+    session_id = _saved(tmp_path, **extra)
+
+    assert load_session_messages(tmp_path, session_id)["title"] == ""

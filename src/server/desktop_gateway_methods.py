@@ -1033,6 +1033,8 @@ class GatewayConnection:
             if stored is not None:
                 response["messages"] = stored["messages"]
                 response["message_count"] = stored["message_count"]
+                if stored.get("title"):
+                    response["title"] = stored["title"]
         elif wanted and omit:
             response["messages_omitted"] = True
         return response

@@ -201,6 +201,8 @@ export interface SessionResumeResult extends SessionCreateResult {
   messages?: StoredMessage[]
   messages_omitted?: boolean
   resumed?: string
+  /** The stored name, so the header keeps the title the sidebar row showed. */
+  title?: string
 }
 
 export interface ModelOption {

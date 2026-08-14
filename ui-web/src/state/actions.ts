@@ -249,6 +249,11 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
 
     adoptSession(result)
 
+    // Without this the header falls back to its "Untitled session"
+    // placeholder while the sidebar row the user just clicked keeps showing
+    // the real name.
+    if (result.title !== undefined && result.title !== '') $sessionTitle.set(result.title)
+
     if (result.messages !== undefined && result.messages.length > 0) {
       $transcript.set({
         ...$transcript.get(),
