@@ -820,3 +820,68 @@ def test_a_plain_approval_still_uses_its_suggestions() -> None:
     asyncio.run(session.respond_approval("session"))
 
     assert agent.replies[0]["response"]["chosen_updates"] == [suggestion]
+
+
+# ── the welcome screen's model chip ───────────────────────────────────────────
+
+
+def _model_options(agent_config: Any, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
+    import src.server.desktop_gateway_methods as mod
+
+    connection = mod.GatewayConnection.__new__(mod.GatewayConnection)
+    connection._first_session = lambda p: None  # type: ignore[method-assign]
+
+    class _State:
+        pass
+
+    state = _State()
+    state.agent_config = agent_config
+    connection.state = state  # type: ignore[attr-defined]
+
+    base = catalog if catalog is not None else {
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "providers": [],
+    }
+    original = mod._catalog_from_config
+    mod._catalog_from_config = lambda: dict(base)
+    try:
+        return asyncio.run(mod.GatewayConnection.model_options(connection, {}))
+    finally:
+        mod._catalog_from_config = original
+
+
+class _ServeConfig:
+    def __init__(self, model: str = "", provider_name: str = "") -> None:
+        self.model = model
+        self.provider_name = provider_name
+
+
+def test_welcome_chip_names_the_model_serve_was_launched_with() -> None:
+    # Otherwise the composer advertises the config default on the welcome
+    # screen and silently switches the moment a session starts.
+    result = _model_options(_ServeConfig(model="deepseek-v4-pro", provider_name="deepseek"))
+
+    assert result["model"] == "deepseek-v4-pro"
+    assert result["provider"] == "deepseek"
+
+
+def test_welcome_chip_falls_back_to_config_when_serve_overrode_nothing() -> None:
+    result = _model_options(_ServeConfig())
+
+    assert result["model"] == "claude-sonnet-4-6"
+    assert result["provider"] == "anthropic"
+
+
+def test_welcome_chip_survives_a_state_with_no_agent_config() -> None:
+    # Tests inject a bare spawn with no config; the catalog still answers.
+    result = _model_options(None)
+
+    assert result["model"] == "claude-sonnet-4-6"
+
+
+def test_a_serve_model_without_a_provider_still_names_the_model() -> None:
+    result = _model_options(_ServeConfig(model="deepseek-v4-pro"))
+
+    assert result["model"] == "deepseek-v4-pro"
+    assert result["provider"] == "anthropic"

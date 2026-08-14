@@ -1319,7 +1319,19 @@ class GatewayConnection:
         # first prompt), or the session couldn't answer — enumerate the whole
         # registry directly from config. The catalog is session-independent;
         # it only needs the default provider + its model list.
-        return await asyncio.to_thread(_catalog_from_config)
+        catalog = await asyncio.to_thread(_catalog_from_config)
+        # …but what the FIRST session will actually run on is what `serve` was
+        # launched with, not the config default. Without this the composer
+        # advertises one model on the welcome screen and silently switches to
+        # another the moment a session starts.
+        config = self.state.agent_config
+        model = _clean(getattr(config, "model", None)) if config is not None else ""
+        provider = _clean(getattr(config, "provider_name", None)) if config is not None else ""
+        if model:
+            catalog["model"] = model
+        if provider:
+            catalog["provider"] = provider
+        return catalog
 
     def _first_session(self, params: dict[str, Any]) -> DesktopSession | None:
         session_id = str(params.get("session_id") or "")
