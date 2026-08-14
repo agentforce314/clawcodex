@@ -197,6 +197,18 @@ export function InputBar({
     [draft, onDraftChange],
   )
 
+  /**
+   * Say why an image was ignored, rather than swallowing it in silence.
+   *
+   * A paste that does nothing visible reads as a broken paste. Naming the
+   * model is the one piece of information that makes it actionable.
+   */
+  const refuseImage = useCallback(() => {
+    const name = sessionModel === undefined || sessionModel === '' ? 'This model' : sessionModel
+
+    $notice.set({ text: `${name} cannot read images — switch models to attach one.`, tone: 'error' })
+  }, [sessionModel])
+
   const dropAttachment = useCallback(
     (id: number) => {
       onDraftChange(removePlaceholder(draft, id))
@@ -408,11 +420,12 @@ export function InputBar({
             aria-label="Message ClawCodex"
             className={css.input}
             onDragOver={event => {
-              if (vision && event.dataTransfer.types.includes('Files')) event.preventDefault()
+              // Accept the drag even when the model cannot read images: the
+              // drop handler is where the reason gets explained, and refusing
+              // here would make the file bounce with no explanation at all.
+              if (event.dataTransfer.types.includes('Files')) event.preventDefault()
             }}
             onDrop={event => {
-              if (!vision) return
-
               const file = [...event.dataTransfer.files].find(item =>
                 item.type.startsWith('image/'),
               )
@@ -420,14 +433,16 @@ export function InputBar({
               if (file === undefined) return
 
               event.preventDefault()
+
+              if (!vision) {
+                refuseImage()
+
+                return
+              }
+
               void attach(file, file.name)
             }}
             onPaste={event => {
-              // A model that cannot read images must not swallow the paste —
-              // letting it through as text is better than attaching something
-              // the turn will 400 on.
-              if (!vision) return
-
               // Only take over when an image is actually on the clipboard; a
               // normal text paste must keep working.
               const item = [...event.clipboardData.items].find(entry =>
@@ -441,6 +456,14 @@ export function InputBar({
               if (file === null) return
 
               event.preventDefault()
+
+              // A model that cannot read images gets told so. Attaching anyway
+              // is a hard 400 that kills the turn.
+              if (!vision) {
+                refuseImage()
+
+                return
+              }
               void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
             }}
             onChange={event => {
