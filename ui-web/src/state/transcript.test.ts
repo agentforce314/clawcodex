@@ -330,7 +330,7 @@ describe('rehydration', () => {
 })
 
 describe('rewindLastTurn', () => {
-  const turn = (prompt: string, reply: string): GatewayEvent[] => [
+  const turn = (reply: string): GatewayEvent[] => [
     event('message.start'),
     event('message.delta', { text: reply }),
     event('message.complete'),
@@ -338,10 +338,10 @@ describe('rewindLastTurn', () => {
 
   function conversation(): TranscriptState {
     let state = appendUserMessage(emptyTranscript(), 'first question')
-    state = fold(turn('first question', 'first answer'), state)
+    state = fold(turn('first answer'), state)
     state = appendUserMessage(state, 'second question')
 
-    return fold(turn('second question', 'second answer'), state)
+    return fold(turn('second answer'), state)
   }
 
   it('cuts back to just before the last prompt and hands it back', () => {
@@ -380,9 +380,9 @@ describe('rewindLastTurn', () => {
   })
 
   it('keeps everything else on the state', () => {
-    const before = { ...conversation(), running: false, usage: { input: 5, output: 7 } }
+    const before = { ...conversation(), running: false, usage: { calls: 1, input: 5, output: 7, total: 12 } }
 
-    expect(rewindLastTurn(before)?.state.usage).toEqual({ input: 5, output: 7 })
+    expect(rewindLastTurn(before)?.state.usage).toEqual({ calls: 1, input: 5, output: 7, total: 12 })
   })
 
   it('returns null when there is no prompt to rewind to', () => {

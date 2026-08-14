@@ -126,6 +126,10 @@ class DesktopSession:
         self._pending_question: str | None = None
         # Set only once a client has said it renders questions (see _create).
         self.asks_questions = False
+        # Whether this session already has a name worth keeping. True for a
+        # resumed session (it has the user's own title) and after any explicit
+        # rename, so auto-titling only ever fills in a blank.
+        self.titled = False
         self.sockets: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
@@ -301,6 +305,55 @@ class DesktopSession:
         )
 
     # ── client-facing operations ────────────────────────────────────────────
+
+    def schedule_auto_title(self, text: str) -> None:
+        """Fire-and-forget ``auto_title``; held so it is not GC'd mid-flight."""
+        if self.titled:
+            return
+
+        task = asyncio.create_task(self._safe_auto_title(text))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _safe_auto_title(self, text: str) -> None:
+        try:
+            await self.auto_title(text)
+        except Exception:  # noqa: BLE001 — a title is never worth killing a session
+            logger.debug("desktop session %s: auto-title failed",
+                         self.session_id, exc_info=True)
+
+    async def auto_title(self, text: str) -> str | None:
+        """Name an untitled session after its first prompt.
+
+        Uses the heuristic, not ``generate_llm_title``: that one is hardcoded
+        to Anthropic and a fixed Haiku model, so on a session running any other
+        provider it would bill an account the user did not choose to use here —
+        and silently return None wherever that provider is not configured.
+        A first line with the throat-clearing stripped is a good title and
+        costs nothing.
+        """
+        if self.titled:
+            return None
+
+        from src.services.session_title import auto_title_from_message
+
+        title = auto_title_from_message(text)
+        if not title or title == "Untitled session":
+            return None
+
+        # Set before the round-trip: a second prompt arriving while this one is
+        # in flight must not start a second rename of the same session.
+        self.titled = True
+        await self.control_query("rename", {"name": title})
+        try:
+            from src.server.desktop_sessions import update_session_meta
+
+            update_session_meta(self.state.saved_sessions_dir(), self.session_id, name=title)
+        except Exception:  # noqa: BLE001 — best-effort file sync
+            logger.debug("auto_title: could not stamp the saved session", exc_info=True)
+        await self._broadcast("session.title", {"title": title})
+        await self._broadcast("sessions.changed", {})
+        return title
 
     async def submit_prompt(self, text: str) -> None:
         await self._broadcast("message.start", {})
@@ -839,6 +892,9 @@ class GatewayConnection:
                     "session %s: interactive questions refused: %r", session_id, reply
                 )
         if resume:
+            # A stored session brings its own name; auto-titling would rename
+            # someone's saved conversation after whatever they type next.
+            session.titled = True
             reply = await session.control_query("resume", {"session_id": resume})
             if not isinstance(reply, dict) or reply.get("ok") is False:
                 logger.warning("session %s: resume of %s refused: %r",
@@ -1003,7 +1059,9 @@ class GatewayConnection:
 
     async def session_title(self, params: dict[str, Any]) -> dict[str, Any]:
         title = str(params.get("title") or params.get("name") or "").strip()
-        result = await self._session(params).control_query("rename", {"name": title})
+        session = self._session(params)
+        session.titled = True
+        result = await session.control_query("rename", {"name": title})
         name = (result or {}).get("name") if isinstance(result, dict) else None
         # Also stamp the saved-session file so the sidebar row updates without a
         # live turn (rename control persists the runtime session; the sidebar
@@ -1025,6 +1083,10 @@ class GatewayConnection:
         session = self._session(params)
         text = str(params.get("text") or "")
         await session.submit_prompt(text)
+        # Scheduled, never awaited. Titling is a control round-trip, and this
+        # RPC's ack is what unlocks the composer — a session slow to answer the
+        # rename would otherwise hold the prompt ack for the control timeout.
+        session.schedule_auto_title(text)
         return {"ok": True}
 
     async def approval_respond(self, params: dict[str, Any]) -> dict[str, Any]:

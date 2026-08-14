@@ -166,6 +166,7 @@ export type GatewayEventType =
   | 'message.start'
   | 'reasoning.delta'
   | 'session.info'
+  | 'session.title'
   | 'sessions.changed'
   | 'thinking.delta'
   | 'tool.complete'

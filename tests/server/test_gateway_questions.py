@@ -514,3 +514,88 @@ def test_rewind_passes_the_refusal_through() -> None:
 
 def test_rewind_reports_a_session_that_did_not_answer() -> None:
     assert _rewind(None)["ok"] is False
+
+
+# ── auto session title ────────────────────────────────────────────────────────
+
+
+def _titling_session(tmp_path, titled: bool = False):
+    """A DesktopSession wired just enough to auto-title."""
+    from src.server.desktop_gateway_methods import DesktopSession
+
+    session = DesktopSession.__new__(DesktopSession)
+    session.session_id = "s1"
+    session.titled = titled
+    session._background = set()
+    renames: list[dict[str, Any]] = []
+    events: list[tuple[str, Any]] = []
+
+    async def _control_query(subtype: str, params: dict[str, Any]) -> Any:
+        renames.append({"subtype": subtype, **params})
+        return {"ok": True, "name": params.get("name")}
+
+    async def _broadcast(type_: str, payload: Any = None) -> None:
+        events.append((type_, payload))
+
+    class _State:
+        def saved_sessions_dir(self) -> str:
+            return str(tmp_path)
+
+    session.control_query = _control_query  # type: ignore[method-assign]
+    session._broadcast = _broadcast  # type: ignore[method-assign]
+    session.state = _State()  # type: ignore[assignment]
+    return session, renames, events
+
+
+def test_auto_title_names_an_untitled_session_after_its_first_prompt(tmp_path) -> None:
+    session, renames, events = _titling_session(tmp_path)
+
+    title = asyncio.run(session.auto_title("please add a retry button to the composer"))
+
+    # The heuristic strips the throat-clearing and capitalizes.
+    assert title == "Add a retry button to the composer"
+    assert renames[0]["name"] == title
+    assert ("session.title", {"title": title}) in events
+
+
+def test_auto_title_leaves_a_named_session_alone(tmp_path) -> None:
+    # A resumed session carries the user's own title, and an explicit rename
+    # is a decision auto-titling must not undo.
+    session, renames, events = _titling_session(tmp_path, titled=True)
+
+    assert asyncio.run(session.auto_title("something else entirely")) is None
+    assert renames == []
+    assert events == []
+
+
+def test_auto_title_happens_once_even_if_two_prompts_race(tmp_path) -> None:
+    # The flag is set BEFORE the rename round-trip, so a second prompt arriving
+    # while the first is in flight cannot start a second rename.
+    session, renames, _ = _titling_session(tmp_path)
+
+    asyncio.run(session.auto_title("first prompt"))
+    asyncio.run(session.auto_title("second prompt"))
+
+    assert len(renames) == 1
+
+
+def test_auto_title_skips_a_prompt_it_cannot_name(tmp_path) -> None:
+    # "Untitled session" is the heuristic's way of saying it has nothing; it
+    # would be a worse title than the blank it replaces.
+    session, renames, _ = _titling_session(tmp_path)
+
+    assert asyncio.run(session.auto_title("   ")) is None
+    assert renames == []
+    # …and the session stays open to being named by a later prompt.
+    assert session.titled is False
+
+
+def test_auto_title_survives_a_saved_file_it_cannot_stamp(tmp_path) -> None:
+    # The runtime rename is the part that matters; a file sync failure must not
+    # lose the title the client is about to be told about.
+    session, _renames, events = _titling_session(tmp_path / "does-not-exist")
+
+    title = asyncio.run(session.auto_title("run the tests"))
+
+    assert title == "Run the tests"
+    assert ("session.title", {"title": title}) in events

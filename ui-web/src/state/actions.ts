@@ -166,6 +166,17 @@ function handleEvent(event: GatewayEvent): void {
 
   if (event.session_id !== undefined && event.session_id !== active) return
 
+  // The backend names an untitled session after its first prompt; the header
+  // reads this store, so without handling it the title would only appear on
+  // the next sidebar refresh.
+  if (event.type === 'session.title') {
+    const title = (event.payload as { title?: string } | undefined)?.title
+
+    if (title !== undefined && title !== '') $sessionTitle.set(title)
+
+    return
+  }
+
   $transcript.set(applyEvent($transcript.get(), event))
   $trajectory.set(applyTrajectoryEvent($trajectory.get(), event))
 
