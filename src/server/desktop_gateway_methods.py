@@ -504,6 +504,107 @@ class DesktopSession:
         return {"resolved": True}
 
 
+# cwd -> (expires_at, files, truncated). A mention is typed one keystroke at a
+# time and `rg --files` runs per call; the TTL is short enough that a file
+# created while typing appears in the same sitting.
+_FILE_CACHE_TTL_S = 5.0
+_file_cache: dict[str, tuple[float, list[str], bool]] = {}
+
+
+# Pruned by the fallback walker below. Not a .gitignore substitute — just the
+# directories that are noise in every repo and would otherwise dominate a
+# mention menu.
+_WALK_SKIP = {
+    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".next",
+    ".turbo", "target", ".idea", ".tox",
+}
+_WALK_MAX_FILES = 5000
+
+
+def _walk_workspace_files(cwd: str) -> tuple[list[str], bool]:
+    """A file list without ripgrep, for machines that do not have it.
+
+    Degraded on purpose and knowingly: this does NOT read .gitignore, so it can
+    surface files ``rg --files`` would hide. That is a worse list than
+    ripgrep's — but a mention picker that works everywhere beats one that is
+    silently empty wherever ``rg`` is not installed, and the paths it offers
+    are real files either way.
+
+    BREADTH-first, which matters more than it looks. Depth-first spends the cap
+    on whichever subtree sorts first: measured on this repo it produced 5000
+    files that stopped at ``install.ps1`` and contained not one
+    ``ui-web/src/...`` path, so the obvious query returned nothing. Level order
+    gives every directory its shallow files before any subtree goes deep, so
+    truncation drops the deepest paths — the ones least likely to be typed —
+    rather than everything after the letter I.
+    """
+    import os
+    from collections import deque
+
+    found: list[str] = []
+    queue: deque[str] = deque([cwd])
+
+    while queue:
+        current = queue.popleft()
+        try:
+            entries = sorted(os.scandir(current), key=lambda e: e.name)
+        except OSError:
+            # One unreadable directory should not end the walk; the rest of
+            # the tree is still a useful list.
+            continue
+
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+
+            if directory:
+                if entry.name not in _WALK_SKIP:
+                    queue.append(entry.path)
+
+                continue
+
+            rel = os.path.relpath(entry.path, cwd)
+            found.append(rel.replace(os.sep, "/") if os.sep != "/" else rel)
+
+            if len(found) >= _WALK_MAX_FILES:
+                return found, True
+
+    return found, False
+
+
+def _workspace_files_cached(cwd: str) -> tuple[list[str], bool]:
+    """``list_workspace_files`` behind a short per-directory TTL.
+
+    Falls back to a plain walk when ripgrep is missing. Any OTHER failure
+    propagates: an unreadable directory is a real answer the caller reports,
+    not something to paper over with a partial list.
+    """
+    import time
+
+    from src.services.workspace_search import list_workspace_files
+
+    now = time.monotonic()
+    hit = _file_cache.get(cwd)
+    if hit is not None and hit[0] > now:
+        return hit[1], hit[2]
+
+    try:
+        files, truncated = list_workspace_files(cwd)
+    except Exception as exc:  # noqa: BLE001 — narrowed by the message check
+        if "ripgrep" not in str(exc).lower():
+            raise
+        logger.info("fs.search_files: ripgrep unavailable, walking %s instead", cwd)
+        files, truncated = _walk_workspace_files(cwd)
+
+    _file_cache[cwd] = (now + _FILE_CACHE_TTL_S, files, truncated)
+    return files, truncated
+
+
 def _wants_questions(params: dict[str, Any]) -> bool:
     """Whether this client declared it can render AskUserQuestion."""
     capabilities = params.get("capabilities")
@@ -659,6 +760,7 @@ class GatewayConnection:
             "complete.slash": self.complete_slash,
             "complete.path": self.complete_empty,
             "fs.list_directory": self.fs_list_directory,
+            "fs.search_files": self.fs_search_files,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -914,6 +1016,45 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def fs_search_files(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Workspace files matching ``query``, for the composer's @ mentions.
+
+        Ranked server-side by ``workspace_search.filter_files`` rather than
+        shipping the list for the client to score: that is the same fuzzy
+        scorer the TUI's quick-open and the history search use, and a second
+        implementation in TypeScript would rank the same query differently on
+        two surfaces of the same app.
+
+        The file list is cached briefly per directory because ``rg --files``
+        runs per call and a mention is typed one keystroke at a time. The TTL
+        is short enough that a file created while typing shows up in the same
+        sitting.
+        """
+        import asyncio as _asyncio
+
+        from src.services.workspace_search import filter_files
+
+        cwd = _clean(params.get("cwd")) or self.state.workspace
+        query = str(params.get("query") or "")
+        try:
+            limit = max(1, min(int(params.get("limit") or 20), 100))
+        except (TypeError, ValueError):
+            limit = 20
+
+        try:
+            files, truncated = await _asyncio.to_thread(_workspace_files_cached, cwd)
+        except Exception as exc:  # noqa: BLE001 — a picker must not kill the socket
+            logger.warning("fs.search_files: listing %s failed: %s", cwd, exc)
+            # Reported rather than returned as an empty list: "no files here"
+            # and "I could not look" are different answers.
+            return {"error": str(exc), "files": [], "truncated": False}
+
+        return {
+            "files": filter_files(files, query, limit=limit),
+            "total": len(files),
+            "truncated": truncated,
+        }
 
     async def effort_options(self, params: dict[str, Any]) -> dict[str, Any]:
         """The effort levels the given (or running) model will actually accept.

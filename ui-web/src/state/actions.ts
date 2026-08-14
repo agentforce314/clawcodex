@@ -17,6 +17,7 @@ import type {
   DirectoryListing,
   GatewayEvent,
   EffortOptionsResult,
+  FileSearchResult,
   ModelOptionsResult,
   ProjectsTreeResult,
   SessionResumeResult,
@@ -521,6 +522,29 @@ export async function chooseWorkspace(path: string): Promise<void> {
   $workspace.set(path)
 
   if ($sessionId.get() !== null) await createSession({ cwd: path })
+}
+
+/**
+ * Workspace paths matching `query`, for the composer's @ mentions.
+ *
+ * Ranked server-side: that is the same fuzzy scorer the TUI's quick-open uses,
+ * and a second implementation here would rank the same query differently on
+ * two surfaces of the same app.
+ */
+export async function searchFiles(query: string, limit = 12): Promise<string[]> {
+  try {
+    const result = await gateway().request<FileSearchResult>('fs.search_files', {
+      cwd: $workspace.get(),
+      limit,
+      query,
+    })
+
+    return result.files ?? []
+  } catch {
+    // The menu simply does not open; a failed lookup is not worth a banner
+    // over a draft the user is still typing.
+    return []
+  }
 }
 
 /* ── model + catalogs ────────────────────────────────────────────────────── */

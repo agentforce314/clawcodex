@@ -11,9 +11,14 @@ and the shape of what crosses the wire once it has.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import pytest
+
+# Evaluated at import on EVERY platform, so it must not touch a POSIX-only
+# name directly: pytest reads each skipif condition even when another matched.
+IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 from src.server.desktop_gateway_methods import (
     DesktopSession,
@@ -358,3 +363,111 @@ def test_effort_reports_unsupported_when_the_control_fails() -> None:
 
 def test_effort_never_claims_support_on_a_truthy_non_true_flag() -> None:
     assert _effort({"ok": True, "supported": "yes", "levels": ["low"]})["supported"] is False
+
+
+# ── workspace file listing (@ mentions) ───────────────────────────────────────
+
+
+def _tree(root, spec: dict) -> None:
+    """Build a directory tree from a nested dict; str values are file bodies."""
+    for name, value in spec.items():
+        path = root / name
+        if isinstance(value, dict):
+            path.mkdir(parents=True, exist_ok=True)
+            _tree(path, value)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+
+
+def test_walk_lists_files_relative_and_posix(tmp_path) -> None:
+    from src.server.desktop_gateway_methods import _walk_workspace_files
+
+    _tree(tmp_path, {"a.py": "", "src": {"b.py": "", "deep": {"c.py": ""}}})
+
+    files, truncated = _walk_workspace_files(str(tmp_path))
+
+    assert sorted(files) == ["a.py", "src/b.py", "src/deep/c.py"]
+    assert truncated is False
+
+
+def test_walk_skips_noise_directories_and_dotfiles(tmp_path) -> None:
+    from src.server.desktop_gateway_methods import _walk_workspace_files
+
+    _tree(tmp_path, {
+        "keep.py": "",
+        ".hidden": "",
+        ".git": {"config": ""},
+        "node_modules": {"pkg": {"index.js": ""}},
+        "__pycache__": {"x.pyc": ""},
+    })
+
+    assert _walk_workspace_files(str(tmp_path))[0] == ["keep.py"]
+
+
+def test_walk_is_breadth_first_so_truncation_drops_the_deepest(tmp_path, monkeypatch) -> None:
+    # The bug this ordering exists for: depth-first spent the whole cap on
+    # whichever subtree sorted first, and the obvious query returned nothing
+    # because its directory was never reached.
+    import src.server.desktop_gateway_methods as mod
+
+    monkeypatch.setattr(mod, "_WALK_MAX_FILES", 2)
+    _tree(tmp_path, {
+        "aaa": {"deep": {"deeper": {"buried.py": ""}}, "one.py": ""},
+        "zzz": {"two.py": ""},
+    })
+
+    files, truncated = mod._walk_workspace_files(str(tmp_path))
+
+    assert truncated is True
+    # Both top-level directories are represented before anything goes deep.
+    assert "aaa/one.py" in files
+    assert "zzz/two.py" in files
+    assert "aaa/deep/deeper/buried.py" not in files
+
+
+def test_walk_survives_an_unreadable_directory(tmp_path) -> None:
+    import os
+
+    from src.server.desktop_gateway_methods import _walk_workspace_files
+
+    if IS_ROOT:
+        pytest.skip("root reads every directory regardless of mode")
+
+    _tree(tmp_path, {"readable.py": "", "locked": {"hidden.py": ""}})
+    os.chmod(tmp_path / "locked", 0o000)
+    try:
+        files, _ = _walk_workspace_files(str(tmp_path))
+    finally:
+        os.chmod(tmp_path / "locked", 0o755)
+
+    # The rest of the tree is still a useful list.
+    assert files == ["readable.py"]
+
+
+def test_cache_falls_back_to_the_walk_when_ripgrep_is_missing(tmp_path, monkeypatch) -> None:
+    import src.server.desktop_gateway_methods as mod
+
+    def _no_rg(cwd: str) -> tuple[list[str], bool]:
+        raise RuntimeError("ripgrep (rg) is required for file search but could not be found")
+
+    monkeypatch.setattr("src.services.workspace_search.list_workspace_files", _no_rg)
+    monkeypatch.setattr(mod, "_file_cache", {})
+    _tree(tmp_path, {"kept.py": ""})
+
+    assert mod._workspace_files_cached(str(tmp_path))[0] == ["kept.py"]
+
+
+def test_cache_does_not_swallow_a_real_listing_failure(tmp_path, monkeypatch) -> None:
+    # An unreadable workspace is a real answer the caller reports; papering
+    # over it with a partial list would look like an empty repository.
+    import src.server.desktop_gateway_methods as mod
+
+    def _boom(cwd: str) -> tuple[list[str], bool]:
+        raise PermissionError("nope")
+
+    monkeypatch.setattr("src.services.workspace_search.list_workspace_files", _boom)
+    monkeypatch.setattr(mod, "_file_cache", {})
+
+    with pytest.raises(PermissionError):
+        mod._workspace_files_cached(str(tmp_path))

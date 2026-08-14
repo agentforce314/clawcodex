@@ -230,6 +230,15 @@ export interface EffortOptionsResult {
   supported?: boolean
 }
 
+/** `fs.search_files` — workspace paths ranked by the backend's fuzzy scorer. */
+export interface FileSearchResult {
+  /** Present when the listing itself failed; "could not look" ≠ "nothing here". */
+  error?: string
+  files?: string[]
+  total?: number
+  truncated?: boolean
+}
+
 export interface SessionRow {
   cwd?: string | null
   id: string

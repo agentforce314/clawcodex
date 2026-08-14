@@ -14,9 +14,11 @@ import type {
   EffortOptionsResult,
   ModelOptionsResult,
 } from '../gateway/protocol.ts'
+import { searchFiles } from '../state/actions.ts'
 import { $commands, $notice } from '../state/store.ts'
 import { ArrowUpIcon, StopIcon } from '../ui/icons.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
+import { applyMention, mentionAt, type MentionToken } from './mentions.ts'
 import { EffortSelect } from './EffortSelect.tsx'
 import { ModelSelect } from './ModelSelect.tsx'
 import { PermissionSelect, type ApprovalMode } from './PermissionSelect.tsx'
@@ -97,9 +99,45 @@ export function InputBar({
       .slice(0, MAX_SUGGESTIONS)
   }, [commands, draft])
 
+  // The @ mention being typed, tracked from the CARET: unlike a slash command,
+  // a mention can sit anywhere in the draft and a message can hold several.
+  const [mention, setMention] = useState<MentionToken | null>(null)
+  const [files, setFiles] = useState<string[]>([])
+
+  const syncMention = useCallback((element: HTMLTextAreaElement | null) => {
+    if (element === null) return
+
+    setMention(mentionAt(element.value, element.selectionStart))
+  }, [])
+
+  // Debounced: a mention is typed one keystroke at a time, and every query
+  // costs an `rg --files` on the backend. 120ms is under the gap between
+  // keystrokes for anyone typing a path, so the menu still feels immediate.
+  useEffect(() => {
+    if (mention === null) {
+      setFiles([])
+
+      return
+    }
+
+    let live = true
+    const timer = setTimeout(() => {
+      void searchFiles(mention.query).then(result => {
+        // A reply that lands after the token moved on describes a query the
+        // user is no longer typing.
+        if (live) setFiles(result)
+      })
+    }, 120)
+
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [mention])
+
   useEffect(() => {
     setHighlight(0)
-  }, [suggestions.length])
+  }, [suggestions.length, files.length])
 
   const accept = useCallback(
     (name: string) => {
@@ -107,6 +145,30 @@ export function InputBar({
       textarea.current?.focus()
     },
     [onDraftChange],
+  )
+
+  const acceptFile = useCallback(
+    (path: string) => {
+      if (mention === null) return
+
+      const next = applyMention(draft, mention, path)
+
+      onDraftChange(next.text)
+      setMention(null)
+      setFiles([])
+
+      // The caret has to be restored after React commits the new value, or it
+      // snaps to the end and the next mention in the sentence is unreachable.
+      requestAnimationFrame(() => {
+        const element = textarea.current
+
+        if (element === null) return
+
+        element.focus()
+        element.setSelectionRange(next.caret, next.caret)
+      })
+    },
+    [draft, mention, onDraftChange],
   )
 
   const submit = useCallback(() => {
@@ -120,6 +182,46 @@ export function InputBar({
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      // The file menu is checked first: it is anchored at the caret, so it is
+      // the one the user is looking at when both could be open.
+      if (files.length > 0 && mention !== null) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          setHighlight(value => (value + 1) % files.length)
+
+          return
+        }
+
+        if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          setHighlight(value => (value - 1 + files.length) % files.length)
+
+          return
+        }
+
+        if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+          const choice = files[highlight]
+
+          if (choice !== undefined && !event.nativeEvent.isComposing) {
+            event.preventDefault()
+            acceptFile(choice)
+
+            return
+          }
+        }
+
+        if (event.key === 'Escape') {
+          // Dismiss the menu only. Clearing the draft — what Escape does to a
+          // half-typed slash command — would throw away a sentence over a
+          // mention the user decided against.
+          event.preventDefault()
+          setMention(null)
+          setFiles([])
+
+          return
+        }
+      }
+
       if (suggestions.length > 0) {
         if (event.key === 'ArrowDown') {
           event.preventDefault()
@@ -161,7 +263,7 @@ export function InputBar({
         submit()
       }
     },
-    [accept, highlight, onDraftChange, submit, suggestions],
+    [accept, acceptFile, files, highlight, mention, onDraftChange, submit, suggestions],
   )
 
   return (
@@ -177,6 +279,27 @@ export function InputBar({
         </div>
       )}
       <div className={css.card}>
+        {mention !== null && files.length > 0 && (
+          <div className={css.popover} role="listbox">
+            {files.map((path, index) => (
+              <button
+                className={css.option}
+                data-active={index === highlight ? '' : undefined}
+                key={path}
+                onClick={() => {
+                  acceptFile(path)
+                }}
+                onPointerEnter={() => {
+                  setHighlight(index)
+                }}
+                type="button"
+              >
+                <span className={css.optionName}>{path.split('/').pop()}</span>
+                <span className={css.optionDescription}>{path}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {suggestions.length > 0 && (
           <div className={css.popover} role="listbox">
             {suggestions.map((command, index) => (
@@ -207,8 +330,15 @@ export function InputBar({
             className={css.input}
             onChange={event => {
               onDraftChange(event.target.value)
+              syncMention(event.target)
             }}
+            // Clicking or arrowing through the draft moves the caret without
+            // changing the text, and a mention is defined by where the caret
+            // is — so the token has to be re-read on selection too.
             onKeyDown={onKeyDown}
+            onSelect={event => {
+              syncMention(event.currentTarget)
+            }}
             placeholder={running ? 'Queue a follow-up…' : 'Ask ClawCodex to build something…'}
             ref={textarea}
             rows={hero ? 2 : 1}
