@@ -1,0 +1,230 @@
+/* Settings, as a takeover over the whole app. Colors ride the alias tokens. */
+
+.scrim {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--cc-alias-bg-mask-2);
+}
+
+.panel {
+  display: flex;
+  width: min(920px, 100%);
+  max-height: min(720px, 100%);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 18px;
+  background: var(--cc-alias-bg-layer-1);
+  box-shadow: var(--cc-shadow-lv3, var(--cc-shadow-lv2));
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.title {
+  flex: 1;
+  color: var(--cc-alias-label-primary);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.nav {
+  display: flex;
+  flex: none;
+  width: 168px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--cc-alias-border-l2);
+}
+
+.navItem {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.navItem:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.navItemOn,
+.navItemOn:hover {
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}
+
+.content {
+  min-width: 0;
+  flex: 1;
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.blurb {
+  margin: 0 0 4px;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.blurb code {
+  font-family: var(--cc-font-family-code);
+}
+
+.empty {
+  padding: 24px 0;
+  color: var(--cc-alias-label-caption);
+  font-size: 13px;
+}
+
+/* ── one provider ────────────────────────────────────────────────────────── */
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 12px;
+}
+
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rowName {
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.rowSpacer {
+  flex: 1;
+}
+
+.badge {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-secondary);
+  font-size: 10px;
+  line-height: 17px;
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+}
+
+.stateOn {
+  color: var(--cc-alias-label-secondary);
+}
+
+.rowMeta {
+  display: flex;
+  gap: 10px;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+}
+
+.env {
+  font-family: var(--cc-font-family-code);
+}
+
+.keyRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.keyInput {
+  min-width: 0;
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.keyInput:focus {
+  border-color: var(--cc-alias-label-tertiary);
+  outline: none;
+}
+
+.cancel {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.cancel:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}

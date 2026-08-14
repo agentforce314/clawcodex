@@ -209,6 +209,9 @@ export interface ModelOption {
   authenticated?: boolean
   auth_type?: string
   is_current?: boolean
+  /** The environment variable a key could come from, e.g. DEEPSEEK_API_KEY. */
+  key_env?: string
+  total_models?: number
   models?: string[]
   /** Display name — "DeepSeek", "Anthropic Claude", "Moonshot / Kimi". */
   name: string
@@ -219,6 +222,19 @@ export interface ModelOption {
    * `name` and sends `slug`.
    */
   slug?: string
+}
+
+/** `provider.list` — every provider, configured or not. Carries no secrets. */
+export interface ProviderListResult {
+  current?: string
+  providers?: ModelOption[]
+}
+
+export interface ProviderMutationResult {
+  error?: string
+  message?: string
+  ok?: boolean
+  provider?: ModelOption
 }
 
 export interface ModelOptionsResult {

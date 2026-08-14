@@ -14,6 +14,7 @@ import type {
   ContextUsageResult,
   EffortOptionsResult,
   ModelOptionsResult,
+  ProviderListResult,
   ProjectNode,
 } from '../gateway/protocol.ts'
 import { emptyTrajectory, type TrajectoryState } from './trajectory.ts'
@@ -64,6 +65,9 @@ export const $workspace = atom<string>('')
 export const $models = atom<ModelOptionsResult>({})
 /** Effort ladder for the running model; `supported: false` hides the chip. */
 export const $effort = atom<EffortOptionsResult>({ supported: false })
+/** Settings overlay: null when closed, else the section on show. */
+export const $settingsTab = atom<'general' | 'providers' | null>(null)
+export const $providers = atom<ProviderListResult>({})
 export const $commands = atom<CommandEntry[]>([])
 export const $contextUsage = atom<ContextUsageResult | null>(null)
 

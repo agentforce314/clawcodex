@@ -849,6 +849,9 @@ class GatewayConnection:
             "fs.search_files": self.fs_search_files,
             "image.attach": self.image_attach,
             "plan.get": self.plan_get,
+            "provider.list": self.provider_list,
+            "provider.save_key": self.provider_save_key,
+            "provider.disconnect": self.provider_disconnect,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -1142,6 +1145,79 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def provider_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Every provider ClawCodex knows, configured or not.
+
+        Deliberately NOT ``model.options``, which filters to the configured
+        ones: that is right for a picker (you cannot run on a provider you have
+        no key for) and wrong for settings, where the whole point is adding a
+        key to one you have not set up yet.
+
+        Carries no secrets — the catalog reports ``authenticated`` and the
+        environment variable a key could come from, never the key itself.
+        """
+        session = self._first_session(params)
+        if session is not None:
+            result = await session.control_query("list_model_providers", {})
+            if isinstance(result, dict) and result.get("providers"):
+                return {
+                    "current": result.get("provider") or "",
+                    "providers": result["providers"],
+                }
+        catalog = await asyncio.to_thread(_catalog_from_config)
+        return {
+            "current": catalog.get("provider") or "",
+            "providers": catalog.get("providers") or [],
+        }
+
+    async def provider_save_key(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Store an API key for a provider, where `clawcodex login` stores it.
+
+        Needs a live session because the control lives on the agent: the reply
+        is the provider's refreshed catalog row, so the client can show the new
+        state without a second round trip — and without ever being handed the
+        key back.
+        """
+        session = self._first_session(params)
+        if session is None:
+            return {"ok": False, "error": "start a session before changing providers"}
+        result = await session.control_query(
+            "save_provider_key",
+            {"slug": _clean(params.get("slug")), "api_key": str(params.get("api_key") or "")},
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "no response from the session"}
+        return {
+            "error": str(result.get("error") or ""),
+            "ok": result.get("ok") is not False,
+            "provider": result.get("provider"),
+        }
+
+    async def provider_disconnect(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Clear a provider's stored credentials.
+
+        The agent refuses the ACTIVE provider — this session holds a
+        constructed provider instance, and pulling its key would leave the next
+        turn firing at an endpoint it can no longer authenticate against — and
+        reports honestly when the key lives in the real shell environment,
+        where nothing here can remove it. Both are passed through rather than
+        smoothed into a generic failure.
+        """
+        session = self._first_session(params)
+        if session is None:
+            return {"ok": False, "error": "start a session before changing providers"}
+        result = await session.control_query(
+            "disconnect_provider", {"slug": _clean(params.get("slug"))}
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "no response from the session"}
+        return {
+            "error": str(result.get("error") or ""),
+            "message": str(result.get("message") or ""),
+            "ok": result.get("ok") is not False,
+            "provider": result.get("provider"),
+        }
 
     async def plan_get(self, params: dict[str, Any]) -> dict[str, Any]:
         """The session's current plan text.

@@ -19,6 +19,8 @@ import type {
   EffortOptionsResult,
   FileSearchResult,
   ModelOptionsResult,
+  ProviderListResult,
+  ProviderMutationResult,
   ProjectsTreeResult,
   SessionResumeResult,
   SlashResult,
@@ -34,6 +36,7 @@ import {
   $models,
   $notice,
   $pendingApprovalMode,
+  $providers,
   $projects,
   $projectsLoading,
   $queue,
@@ -721,6 +724,100 @@ async function blobToBase64(blob: Blob): Promise<string> {
     }
     reader.readAsDataURL(blob)
   })
+}
+
+/* ── providers (settings) ────────────────────────────────────────────────── */
+
+export async function refreshProviders(): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  try {
+    $providers.set(
+      await gateway().request<ProviderListResult>(
+        'provider.list',
+        sessionId === null ? {} : { session_id: sessionId },
+      ),
+    )
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+}
+
+/**
+ * Store an API key for a provider.
+ *
+ * The key goes one way. Nothing echoes it back — the reply is the provider's
+ * refreshed catalog row, which reports `authenticated` and never the secret —
+ * so the caller can clear its field the moment this returns.
+ */
+export async function saveProviderKey(slug: string, apiKey: string): Promise<boolean> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) {
+    notice('Start a session before changing providers.', 'error')
+
+    return false
+  }
+
+  try {
+    const result = await gateway().request<ProviderMutationResult>('provider.save_key', {
+      api_key: apiKey,
+      session_id: sessionId,
+      slug,
+    })
+
+    if (result.ok === false) {
+      notice(result.error === undefined || result.error === '' ? 'Could not save that key' : result.error, 'error')
+
+      return false
+    }
+
+    notice(`Saved the ${slug} key.`)
+    await refreshProviders()
+    await refreshModels()
+
+    return true
+  } catch (error) {
+    notice(errorText(error), 'error')
+
+    return false
+  }
+}
+
+/**
+ * Clear a provider's stored credentials.
+ *
+ * The agent refuses the provider this session is running on, and says so when
+ * the key lives in the shell environment where nothing here can remove it.
+ * Both come back as their own message rather than a generic failure.
+ */
+export async function disconnectProvider(slug: string): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) {
+    notice('Start a session before changing providers.', 'error')
+
+    return
+  }
+
+  try {
+    const result = await gateway().request<ProviderMutationResult>('provider.disconnect', {
+      session_id: sessionId,
+      slug,
+    })
+
+    if (result.ok === false) {
+      notice(result.error === undefined || result.error === '' ? 'Could not disconnect' : result.error, 'error')
+
+      return
+    }
+
+    notice(result.message === undefined || result.message === '' ? `Disconnected ${slug}.` : result.message)
+    await refreshProviders()
+    await refreshModels()
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
 }
 
 /* ── model + catalogs ────────────────────────────────────────────────────── */

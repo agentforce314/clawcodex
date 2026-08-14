@@ -5,7 +5,14 @@ import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
 import { createSession, resumeSession } from '../state/actions.ts'
 import { toggleSidebar } from '../state/layout.ts'
 import { BrandMark } from '../ui/BrandMark.tsx'
-import { $connection, $projects, $sessionId, $storedSessionId, $workspace } from '../state/store.ts'
+import {
+  $connection,
+  $projects,
+  $sessionId,
+  $settingsTab,
+  $storedSessionId,
+  $workspace,
+} from '../state/store.ts'
 import { $themePreference, cycleTheme } from '../state/theme.ts'
 import {
   ChevronDownIcon,
@@ -16,6 +23,7 @@ import {
   PanelLeftIcon,
   PlusIcon,
   SearchIcon,
+  SettingsIcon,
   SunIcon,
   XIcon,
 } from '../ui/icons.tsx'
@@ -257,6 +265,17 @@ export function Sidebar({ collapsed }: SidebarProps) {
           type="button"
         >
           <ThemeIcon size={16} />
+        </button>
+        <button
+          aria-label="Settings"
+          className={css.iconButton}
+          onClick={() => {
+            $settingsTab.set('providers')
+          }}
+          title="Settings"
+          type="button"
+        >
+          <SettingsIcon size={16} />
         </button>
         {!collapsed && (
           <>

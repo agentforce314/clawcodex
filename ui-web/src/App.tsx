@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { ConversationRoot } from './conversation/ConversationRoot.tsx'
 import { DetailsPanel } from './details/DetailsPanel.tsx'
+import { SettingsOverlay } from './settings/SettingsOverlay.tsx'
 import { AppFrame } from './layout/AppFrame.tsx'
 import { Sidebar } from './sidebar/Sidebar.tsx'
 import { createSession, start } from './state/actions.ts'
@@ -106,10 +107,15 @@ export function App() {
   if (phase !== 'ready') return <BootScreen error={phase === 'failed' ? error : ''} />
 
   return (
-    <AppFrame
-      conversation={<ConversationRoot />}
-      details={detailsWidth === 0 ? null : <DetailsPanel />}
-      sidebar={state => <Sidebar collapsed={state.collapsed} />}
-    />
+    <>
+      <AppFrame
+        conversation={<ConversationRoot />}
+        details={detailsWidth === 0 ? null : <DetailsPanel />}
+        sidebar={state => <Sidebar collapsed={state.collapsed} />}
+      />
+      {/* Outside the frame: it covers the whole app, including the sidebar
+          it is opened from. */}
+      <SettingsOverlay />
+    </>
   )
 }
