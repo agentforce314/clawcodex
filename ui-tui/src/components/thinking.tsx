@@ -26,6 +26,7 @@ import {
   thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
+import { isChecklistHudTool } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type {
   ActiveTool,
@@ -860,9 +861,10 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
-    // Todo tools never render inline (original CC) — the checklist HUD is
-    // their entire UI; a blinking "TodoWrite" row would just be noise.
-    if (tool.name === 'TodoWrite') {
+    // Checklist tools never render inline (original CC) — the HUD is their
+    // entire UI; a blinking "TodoWrite"/"TaskUpdate" row would just be noise,
+    // and their completion appends no trail line to replace it either.
+    if (isChecklistHudTool(tool.name)) {
       continue
     }
 

@@ -18,6 +18,7 @@ import {
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
+import { isChecklistHudOnly } from '../lib/todo.js'
 import type { ActiveTool, ActivityItem, Msg, MsgDiffData, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
@@ -898,9 +899,16 @@ class TurnController {
     const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName
     const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText, rawText)
 
-    // The original renders NOTHING inline for todo tools — the checklist HUD
-    // is the whole UI. completeTool still ran above (clears activeTools +
-    // bookkeeping), only the trail-line append is suppressed.
+    // The original renders NOTHING inline for the checklist tools — TodoWrite
+    // and the TaskV2 mutations (TaskCreate/TaskUpdate) — because the pinned
+    // HUD is their whole UI, and recordTodos() above has already fed it this
+    // very call. completeTool still ran too (clears activeTools + bookkeeping),
+    // only the trail-line append is suppressed. A refused mutation still
+    // renders: see isChecklistHudOnly (lib/todo.ts) for why the result text
+    // has to be consulted and not just the tool name.
+    //
+    // TaskList/TaskGet/TaskOutput deliberately keep their rows: they are reads
+    // whose output (task bodies, background-shell logs) the HUD never shows.
     //
     // AskUserQuestion deliberately does NOT get the same treatment, even though
     // upstream also hides its row (userFacingName() === '', renderToolUseMessage
@@ -912,7 +920,7 @@ class TurnController {
     // the stated goal (a readable summary, not a JSON blob) without upstream's
     // exact label. Do not "fix" this to match upstream without first giving the
     // renderer that facility.
-    if (name !== 'TodoWrite' || error) {
+    if (!isChecklistHudOnly(name, error, resultText)) {
       this.pendingSegmentTools = [...this.pendingSegmentTools, line]
       this.pendingSegmentToolsVerbose = [...this.pendingSegmentToolsVerbose, this.lastVerboseLine]
       this.flushPendingToolsIntoLastSegment()

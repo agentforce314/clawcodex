@@ -175,6 +175,90 @@ describe('turnController TodoWrite lifecycle', () => {
   })
 })
 
+// ── turnController: TaskV2 mutations are HUD-only too ───────────────────────
+
+describe('turnController TaskV2 lifecycle', () => {
+  const TASK_TODOS = [{ activeForm: 'Fixing auth', content: 'Fix auth', id: 'abc123', status: 'in_progress' }]
+
+  it('renders no trail line for TaskCreate/TaskUpdate — the checklist HUD is the whole UI', () => {
+    turnController.recordError()
+    resetTurnState()
+    turnController.startMessage()
+
+    turnController.recordToolStart('t1', 'TaskCreate', 'Fix auth')
+    expect(getTurnState().tools).toHaveLength(1)
+
+    turnController.recordToolComplete(
+      't1',
+      'TaskCreate',
+      undefined,
+      undefined,
+      0.1,
+      [{ activeForm: 'Fixing auth', content: 'Fix auth', id: 'abc123', status: 'pending' }],
+      '{"task": {"id": "abc123", "subject": "Fix auth"}}'
+    )
+
+    turnController.recordToolStart('t2', 'TaskUpdate', '')
+    turnController.recordToolComplete(
+      't2',
+      'TaskUpdate',
+      undefined,
+      undefined,
+      0.1,
+      TASK_TODOS,
+      '{"success": true, "taskId": "abc123", "updatedFields": ["status"], "statusChange": {"from": "pending", "to": "in_progress"}}'
+    )
+
+    const state = getTurnState()
+
+    expect(state.todos).toEqual(TASK_TODOS) // HUD still fed by both calls
+    expect(state.tools).toHaveLength(0) // activeTools cleared — no stranded spinner
+    expect(state.streamPendingTools).toHaveLength(0) // no `⏺ TaskCreate ⎿ {…}` rows
+    expect(state.streamSegments).toHaveLength(0)
+
+    turnController.recordError()
+    resetTurnState()
+  })
+
+  it('keeps the trail line for a REFUSED TaskUpdate (success:false is not a tool error)', () => {
+    turnController.recordError()
+    resetTurnState()
+    turnController.startMessage()
+
+    turnController.recordToolStart('t1', 'TaskUpdate', '')
+    // tasks_v2.py returns this as a normal (non-error) result, and the HUD
+    // redraws the unchanged list — so the row is the only trace of the miss.
+    turnController.recordToolComplete(
+      't1',
+      'TaskUpdate',
+      undefined,
+      undefined,
+      0.1,
+      undefined,
+      '{"success": false, "taskId": "gone", "updatedFields": [], "error": "Task not found"}'
+    )
+
+    expect(getTurnState().streamPendingTools[0]).toContain('TaskUpdate')
+
+    turnController.recordError()
+    resetTurnState()
+  })
+
+  it('keeps the trail line for TaskList/TaskGet/TaskOutput reads', () => {
+    turnController.recordError()
+    resetTurnState()
+    turnController.startMessage()
+
+    turnController.recordToolStart('t1', 'TaskList', '')
+    turnController.recordToolComplete('t1', 'TaskList', undefined, undefined, 0.1, undefined, '{"tasks": []}')
+
+    expect(getTurnState().streamPendingTools[0]).toContain('TaskList')
+
+    turnController.recordError()
+    resetTurnState()
+  })
+})
+
 // ── TodoPanel: TaskListV2 anatomy ────────────────────────────────────────────
 
 const renderToString = (element: React.ReactElement): string => {
