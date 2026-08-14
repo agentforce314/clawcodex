@@ -15,28 +15,16 @@ import {
   MoonIcon,
   PanelLeftIcon,
   PlusIcon,
+  SearchIcon,
   SunIcon,
+  XIcon,
 } from '../ui/icons.tsx'
+import { filterProjects } from './filter.ts'
+import { absoluteTime, relativeTime } from './recency.ts'
 import css from './Sidebar.module.css'
 
 export interface SidebarProps {
   collapsed: boolean
-}
-
-function relativeTime(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === '') return ''
-
-  const at = Date.parse(value)
-
-  if (Number.isNaN(at)) return ''
-
-  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
-
-  if (seconds < 60) return 'now'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`
-
-  return `${Math.floor(seconds / 86_400)}d`
 }
 
 function sessionLabel(row: SessionRow): string {
@@ -92,7 +80,9 @@ function SessionList({ activeId, hiddenId, liveId, project }: SessionListProps) 
               >
                 {row.id === liveId && <span className={css.liveDot} />}
                 <span className={css.sessionTitle}>{sessionLabel(row)}</span>
-                <span className={css.sessionMeta}>{relativeTime(row.last_active)}</span>
+                <span className={css.sessionMeta} title={absoluteTime(row.last_active)}>
+                  {relativeTime(row.last_active)}
+                </span>
               </button>
             ))}
           </div>
@@ -119,10 +109,14 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const themePreference = useStore($themePreference)
 
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
+  const [query, setQuery] = useState('')
+
+  const searching = query.trim() !== ''
 
   const ordered = useMemo(
-    () => [...projects].sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0)),
-    [projects],
+    () =>
+      filterProjects(projects, query).sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0)),
+    [projects, query],
   )
 
   // Resuming spawns a FRESH runtime session that replays a stored one, so the
@@ -181,13 +175,48 @@ export function Sidebar({ collapsed }: SidebarProps) {
         <span className={css.newSessionLabel}>New session</span>
       </button>
 
+      {!collapsed && (
+        <div className={css.search}>
+          <SearchIcon size={13} />
+          <input
+            aria-label="Filter sessions"
+            className={css.searchInput}
+            onChange={event => {
+              setQuery(event.target.value)
+            }}
+            onKeyDown={event => {
+              if (event.key === 'Escape') setQuery('')
+            }}
+            placeholder="Filter sessions"
+            value={query}
+          />
+          {searching && (
+            <button
+              aria-label="Clear the filter"
+              className={css.searchClear}
+              onClick={() => {
+                setQuery('')
+              }}
+              type="button"
+            >
+              <XIcon size={12} />
+            </button>
+          )}
+        </div>
+      )}
+
       <div className={css.region}>
         {!collapsed &&
           (ordered.length === 0 ? (
-            <div className={css.empty}>No sessions yet. Start one above.</div>
+            <div className={css.empty}>
+              {searching ? `No sessions match “${query.trim()}”.` : 'No sessions yet. Start one above.'}
+            </div>
           ) : (
             ordered.map(project => {
-              const isCollapsed = collapsedProjects[project.id] === true
+              // While searching, every surviving project is open: a project
+              // that kept a match is exactly the one the user is looking in,
+              // and leaving it collapsed hides the result they searched for.
+              const isCollapsed = !searching && collapsedProjects[project.id] === true
 
               return (
                 <div className={css.project} key={project.id}>

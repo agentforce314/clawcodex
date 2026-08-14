@@ -310,3 +310,59 @@
 .connectionError .connectionDot {
   background: var(--cc-alias-state-error-primary);
 }
+
+/* Session filter. Sits under New session, above the tree, so it reads as a
+   control over the list rather than a global search of the app. */
+.search {
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0 2px 8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-caption);
+}
+
+.search:focus-within {
+  border-color: var(--cc-alias-border-l2);
+}
+
+.searchInput {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.searchInput::placeholder {
+  color: var(--cc-alias-label-caption);
+}
+
+.searchClear {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-alias-label-caption);
+  cursor: pointer;
+}
+
+.searchClear:hover {
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}

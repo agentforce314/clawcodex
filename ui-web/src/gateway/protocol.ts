@@ -219,12 +219,18 @@ export interface SessionRow {
   cwd?: string | null
   id: string
   is_active?: boolean
-  last_active?: string | null
+  /**
+   * Epoch seconds OR an ISO string, depending on where the row came from —
+   * `desktop_projects.py` says so outright ("Both may be epoch floats or ISO
+   * strings (saved rows)") and coerces both. Typing this `string` is what made
+   * `Date.parse` return NaN for every live row.
+   */
+  last_active?: number | string | null
   message_count?: number
   model?: string | null
   preview?: string
   source?: string
-  started_at?: string | null
+  started_at?: number | string | null
   title?: string
 }
 
