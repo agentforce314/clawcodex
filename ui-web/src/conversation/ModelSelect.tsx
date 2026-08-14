@@ -47,6 +47,18 @@ export function buildModelMenu(models: ModelOptionsResult): {
   return { choices, items }
 }
 
+/**
+ * How a model is named wherever it appears: `provider:model`.
+ *
+ * Bare until a provider is known, rather than showing a lone colon — an
+ * unqualified name is incomplete, but a dangling separator is broken.
+ */
+export function qualifiedModel(model: string, provider?: string): string {
+  if (model === '') return 'Model'
+
+  return provider === undefined || provider === '' ? model : `${provider}:${model}`
+}
+
 /** The row to check: the exact pair when the catalog has it, else the model. */
 export function selectedModelId(
   choices: Map<string, ModelChoice>,
@@ -114,7 +126,11 @@ export function ModelSelect({
     [choices, onChange],
   )
 
-  const label = currentModel === '' ? 'Model' : currentModel
+  // Qualified, because the same model id is offered by several providers —
+  // `deepseek-v4-pro` comes from both deepseek and openrouter, and they are
+  // different choices with different keys and different bills. A bare model
+  // name does not say which one is running.
+  const label = qualifiedModel(currentModel, currentProvider)
 
   return (
     <Menu
@@ -129,7 +145,7 @@ export function ModelSelect({
           onClick={() => {
             setOpen(value => !value)
           }}
-          title={currentProvider === '' ? label : `${currentProvider} · ${label}`}
+          title={`Model: ${label}`}
           type="button"
         >
           <span className={css.triggerLabel}>{label}</span>

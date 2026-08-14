@@ -44,7 +44,7 @@ describe('RunStatsBar', () => {
     // A fresh session still says what it is about to run on.
     render(<RunStatsBar model="deepseek-v4-pro" provider="deepseek" stats={EMPTY} />)
 
-    expect(screen.getByText('deepseek · deepseek-v4-pro')).toBeTruthy()
+    expect(screen.getByText('deepseek:deepseek-v4-pro')).toBeTruthy()
     expect(text()).not.toMatch(/turn|LLM|tok/)
   })
 

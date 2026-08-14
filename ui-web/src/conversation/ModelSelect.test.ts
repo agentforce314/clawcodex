@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ModelOptionsResult } from '../gateway/protocol.ts'
-import { buildModelMenu, selectedModelId } from './ModelSelect.tsx'
+import { buildModelMenu, qualifiedModel, selectedModelId } from './ModelSelect.tsx'
 
 const CATALOG: ModelOptionsResult = {
   providers: [
@@ -116,5 +116,28 @@ describe('provider identity', () => {
     const { choices } = buildModelMenu(CATALOG)
 
     expect([...choices.values()][0]).toEqual({ model: 'deepseek-v4-pro', provider: 'deepseek' })
+  })
+})
+
+describe('qualifiedModel', () => {
+  it('names the provider alongside the model', () => {
+    // The same id comes from more than one provider, with different keys and
+    // different bills; a bare name does not say which is running.
+    expect(qualifiedModel('deepseek-v4-pro', 'deepseek')).toBe('deepseek:deepseek-v4-pro')
+    expect(qualifiedModel('deepseek/deepseek-v4-pro', 'openrouter')).toBe(
+      'openrouter:deepseek/deepseek-v4-pro',
+    )
+  })
+
+  it('stays bare rather than showing a dangling colon', () => {
+    // An unqualified name is incomplete; a separator with nothing after it is
+    // broken.
+    expect(qualifiedModel('deepseek-v4-pro')).toBe('deepseek-v4-pro')
+    expect(qualifiedModel('deepseek-v4-pro', '')).toBe('deepseek-v4-pro')
+  })
+
+  it('falls back to a placeholder when there is no model at all', () => {
+    expect(qualifiedModel('')).toBe('Model')
+    expect(qualifiedModel('', 'deepseek')).toBe('Model')
   })
 })

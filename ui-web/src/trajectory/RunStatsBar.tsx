@@ -1,3 +1,4 @@
+import { qualifiedModel } from '../conversation/ModelSelect.tsx'
 import { formatMs, formatTokens, type TrajectoryStats } from '../state/trajectory.ts'
 import css from './RunStatsBar.module.css'
 
@@ -31,9 +32,7 @@ export function RunStatsBar({ model, provider, stats }: RunStatsBarProps) {
     <div className={css.root}>
       {named && (
         <span className={css.group}>
-          <span className={css.model}>
-            {provider === undefined || provider === '' ? model : `${provider} · ${model}`}
-          </span>
+          <span className={css.model}>{qualifiedModel(model ?? '', provider)}</span>
         </span>
       )}
 
