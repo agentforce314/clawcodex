@@ -1,0 +1,51 @@
+/*
+ * Type scale and motion curves.
+ *
+ * Each `--cc-font-*` is a complete `font` shorthand, so a rule states its type
+ * in one declaration (`font: var(--cc-font-s-strong-14)`) and cannot drift on
+ * one axis. The code stack deliberately omits a bare `monospace` tail: on
+ * Windows that resolves CJK to SimSun and the whole block changes metrics.
+ */
+
+:root {
+  --cc-font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --cc-font-family-code:
+    'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier,
+    'PingFang SC', 'Microsoft YaHei';
+
+  --cc-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --cc-duration-fast: 0.1s;
+  --cc-duration: 0.2s;
+  --cc-duration-slow: 0.3s;
+
+  /* Markdown scale — the transcript's body copy. */
+  --cc-font-markdown-h1: 700 24px/34px var(--cc-font-family);
+  --cc-font-markdown-h2: 700 22px/32px var(--cc-font-family);
+  --cc-font-markdown-h3: 700 20px/30px var(--cc-font-family);
+  --cc-font-markdown-h4: 600 16px/28px var(--cc-font-family);
+  --cc-font-markdown-base: 16px/28px var(--cc-font-family);
+  --cc-font-markdown-base-strong: 600 16px/28px var(--cc-font-family);
+  --cc-font-markdown-table: 15px/25px var(--cc-font-family);
+  --cc-font-markdown-table-head: 500 15px/25px var(--cc-font-family);
+  --cc-font-markdown-code: 14px/22px var(--cc-font-family-code);
+  --cc-font-markdown-code-block: 13px/22px var(--cc-font-family-code);
+  /* The smaller code size used inside tool-row cards. */
+  --cc-font-markdown-code-block-small: 12px/18px var(--cc-font-family-code);
+
+  /* UI scale — chrome, rows, chips. */
+  --cc-font-xl-24: 600 24px/32px var(--cc-font-family);
+  --cc-font-l-20: 500 20px/28px var(--cc-font-family);
+  --cc-font-m-18: 500 16px/28px var(--cc-font-family);
+  --cc-font-base-16: 16px/24px var(--cc-font-family);
+  --cc-font-base-strong-16: 500 16px/24px var(--cc-font-family);
+  --cc-font-s-14: 14px/22px var(--cc-font-family);
+  --cc-font-s-strong-14: 500 14px/22px var(--cc-font-family);
+  --cc-font-xs-13: 13px/20px var(--cc-font-family);
+  --cc-font-xs-strong-13: 500 13px/20px var(--cc-font-family);
+  --cc-font-xxs-12: 12px/18px var(--cc-font-family);
+  --cc-font-xxs-strong-12: 500 12px/18px var(--cc-font-family);
+  --cc-font-xxxs-11: 11px/14px var(--cc-font-family);
+  --cc-font-xxxs-strong-11: 500 11px/14px var(--cc-font-family);
+}

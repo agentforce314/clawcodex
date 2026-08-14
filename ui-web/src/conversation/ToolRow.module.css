@@ -1,0 +1,81 @@
+.root {
+  min-width: 0;
+}
+
+/* Every disclosed card shares the flow's indent (4px past the row's 16px icon
+   column) and the row rhythm, so a diff, a terminal card and a plain output
+   card all line up under their titles. */
+.body {
+  margin: 4px 0 4px 4px;
+}
+
+/* In-row code renders at the smaller 12/18 size; standalone markdown blocks
+   keep 13/22. Rebinding the primitives' own seams rather than restyling them. */
+.body {
+  --cc-code-block-font: var(--cc-font-markdown-code-block-small);
+  --cc-terminal-font: var(--cc-font-markdown-code-block-small);
+  --cc-terminal-line-height: 18px;
+  /* 224px = the 260px card cap minus the ~36px banner. */
+  --cc-terminal-output-max-height: 224px;
+}
+
+.terminalBody {
+  border: 1px solid var(--cc-alias-border-l1);
+}
+
+/* Path shown in place of the summary for file tools: monospace, with a
+   persistent link affordance since it opens the file in the details column. */
+.path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-secondary);
+  font-family: var(--cc-font-family-code);
+  font-size: 13px;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todoList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 4px 26px;
+  padding: 0;
+  list-style: none;
+}
+
+.todoItem {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.todoGlyph {
+  flex: none;
+  width: 14px;
+  color: var(--cc-alias-label-caption);
+  text-align: center;
+}
+
+.todoDone {
+  color: var(--cc-alias-state-success-primary);
+}
+
+.todoActive {
+  color: var(--cc-alias-state-business-primary);
+}
+
+.todoText {
+  min-width: 0;
+}
+
+.todoItem[data-status='completed'] .todoText {
+  color: var(--cc-alias-label-tertiary);
+  text-decoration: line-through;
+}

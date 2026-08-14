@@ -1,0 +1,154 @@
+/* Shared disclosure header: [16px leading] gap 6 [title 14/24] · [summary]. */
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 24px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.row[data-expandable] {
+  cursor: pointer;
+}
+
+.row[data-expandable]:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+/* Running rows carry a glare band that glides across the row content, washing
+   glyphs toward the background as it passes — the same "this is live" language
+   the turn-status line uses, at row scale. `ease-out` with a hold at the end
+   gives each pass a beat before the next. */
+.root[data-state='running'] .row::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 300px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--cc-alias-bg-base) 60%, transparent) 55%,
+    transparent 100%
+  );
+  animation: cc-disclosure-sweep 2.6s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes cc-disclosure-sweep {
+  0% {
+    left: -300px;
+  }
+
+  90%,
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root[data-state='running'] .row::after {
+    animation: none;
+  }
+}
+
+.leading {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  color: var(--cc-alias-label-tertiary);
+}
+
+/* The idle glyph and the chevron occupy the same cell and cross-fade, so the
+   row never changes width when the pointer enters it. */
+.iconIdle {
+  display: inline-flex;
+  opacity: 1;
+  transition: opacity 100ms ease;
+}
+
+.chevron {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: auto;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.row[data-expandable]:hover .iconIdle,
+.row[data-expanded] .iconIdle {
+  opacity: 0;
+}
+
+.row[data-expandable]:hover .chevron,
+.row[data-expanded] .chevron {
+  opacity: 1;
+}
+
+.title {
+  flex: none;
+  color: var(--cc-alias-label-secondary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--cc-alias-label-caption);
+}
+
+.summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summaryError {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.trailing {
+  flex: none;
+  margin-left: 8px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+}

@@ -1,0 +1,67 @@
+.boot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  background: var(--cc-alias-bg-base);
+}
+
+.bootCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 420px;
+  text-align: center;
+}
+
+.bootMark {
+  color: var(--cc-alias-label-primary);
+  animation: cc-boot-pulse 1.6s var(--cc-ease-in-out) infinite;
+}
+
+@keyframes cc-boot-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bootMark {
+    animation: none;
+  }
+}
+
+.bootTitle {
+  color: var(--cc-alias-label-primary);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+}
+
+.bootMessage {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.bootError {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.bootHint {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-secondary);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+}

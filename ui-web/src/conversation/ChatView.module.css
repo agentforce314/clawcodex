@@ -1,0 +1,76 @@
+/* One 16px rhythm everywhere, through the column gap. The scroller is the
+   conversation root's; this view is ordinary flow inside it. */
+.root {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-width: 0;
+  /* Sides = composer clearance + 16px, so the transcript stays exactly 32px
+     narrower than the input card at every viewport (the shared width rule). */
+  padding: 16px calc(var(--cc-composer-side-clearance) + 16px);
+}
+
+/* Message column: the shared chat width, centred on the same axis as the input
+   card; the scroller itself stays full-bleed. */
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: var(--cc-chat-content-width);
+  margin: 0 auto;
+}
+
+.item {
+  min-width: 0;
+}
+
+/* Turn activity keeps a loader's one-line footprint. A pale accent band sweeps
+   left to right across the words; reduced motion keeps it static. */
+.turnStatus {
+  align-self: flex-start;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  font: var(--cc-font-s-strong-14);
+  white-space: nowrap;
+  background: linear-gradient(
+    90deg,
+    var(--cc-static-accent-500) 0%,
+    var(--cc-static-accent-500) 40%,
+    var(--cc-static-accent-200) 50%,
+    var(--cc-static-accent-500) 60%,
+    var(--cc-static-accent-500) 100%
+  );
+  background-position: 100% 0;
+  background-size: 250% 100%;
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: cc-turn-status-shimmer 1.8s linear infinite;
+}
+
+.turnStatusClock {
+  margin-left: 8px;
+  color: var(--cc-alias-label-caption);
+  font: var(--cc-font-xs-13);
+  font-variant-numeric: tabular-nums;
+  -webkit-text-fill-color: var(--cc-alias-label-caption);
+}
+
+@keyframes cc-turn-status-shimmer {
+  to {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turnStatus {
+    background-position: 0 0;
+    background-size: 100% 100%;
+    animation: none;
+  }
+}

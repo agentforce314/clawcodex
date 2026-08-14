@@ -36,6 +36,7 @@ import logging
 import os
 import secrets
 import sys
+from typing import Callable
 
 # Same per-process default as the agent-server entry: experimental API betas
 # off unless the user opts in. This process makes the API calls.
@@ -61,6 +62,10 @@ logger = logging.getLogger(__name__)
 READY_MARKER = "CLAWCODEX_BACKEND_READY"
 TOKEN_ENV = "CLAWCODEX_DASHBOARD_SESSION_TOKEN"
 READY_FILE_ENV = "CLAWCODEX_DESKTOP_READY_FILE"
+
+# ``(host, port, token) -> None``, called once the socket is bound. See
+# ``run_serve_subcommand``.
+ReadyHook = Callable[[str, int, str], None]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -125,8 +130,13 @@ def _exit_when_stdin_closes() -> None:
     threading.Thread(target=_watch, name="serve-parent-watch", daemon=True).start()
 
 
-def run_serve_subcommand(argv: list[str]) -> int:
-    """Entry point for ``clawcodex serve`` (fast-path subcommand)."""
+def run_serve_subcommand(argv: list[str], *, on_ready: ReadyHook | None = None) -> int:
+    """Entry point for ``clawcodex serve`` (fast-path subcommand).
+
+    ``on_ready(host, port, token)`` replaces the desktop readiness marker when
+    given — ``clawcodex web`` uses it to print a browser URL instead. Default
+    None keeps the desktop's stdout contract exactly as it was.
+    """
     try:
         from src.utils.legacy_migration import migrate_user_dir_once
         migrate_user_dir_once()
@@ -203,7 +213,7 @@ def run_serve_subcommand(argv: list[str]) -> int:
     )
 
     try:
-        return asyncio.run(_serve(args, workspace, token, agent_config))
+        return asyncio.run(_serve(args, workspace, token, agent_config, on_ready=on_ready))
     except KeyboardInterrupt:
         print("\nserve: shutting down", file=sys.stderr)
         return 0
@@ -232,7 +242,8 @@ def _announce_ready(port: int) -> None:
 
 
 async def _serve(args, workspace: str, token: str,
-                 agent_config: AgentServerConfig) -> int:
+                 agent_config: AgentServerConfig,
+                 on_ready: ReadyHook | None = None) -> int:
     import uvicorn
 
     from src.server.desktop_serve import DesktopServeState, build_app
@@ -282,7 +293,10 @@ async def _serve(args, workspace: str, token: str,
             break
         if bound_port:
             break
-    _announce_ready(bound_port)
+    if on_ready is None:
+        _announce_ready(bound_port)
+    else:
+        on_ready(args.host, bound_port, token)
     logger.info("serve: listening on http://%s:%s (workspace %s)",
                 args.host, bound_port, workspace)
 

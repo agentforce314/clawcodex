@@ -1,0 +1,131 @@
+/* Context-occupancy ring beside the send button, plus its click-open
+   breakdown panel on the menu surface. */
+.root {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Same 28px circular hit target family as the composer's other chips. */
+.trigger {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.trigger:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.track {
+  fill: none;
+  stroke: var(--cc-alias-border-l3);
+  stroke-width: 2;
+}
+
+.fill {
+  fill: none;
+  stroke: var(--cc-alias-label-tertiary);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Past three quarters the reading stops being background information. */
+.high .fill {
+  stroke: var(--cc-alias-state-warn-primary);
+}
+
+.critical .fill {
+  stroke: var(--cc-alias-state-error-primary);
+}
+
+.panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 100;
+  box-sizing: border-box;
+  width: 264px;
+  padding: 12px;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  cursor: default;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.figures {
+  margin-left: auto;
+  color: var(--cc-alias-label-primary);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  display: flex;
+  gap: 1px;
+  height: 4px;
+  margin: 10px 0 12px;
+  border-radius: 999px;
+  background: var(--cc-alias-interactive-bg-hover);
+  overflow: hidden;
+}
+
+.segment {
+  flex: none;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--meter-tint, var(--cc-alias-label-tertiary));
+}
+
+.swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+  background: var(--meter-tint);
+  vertical-align: baseline;
+}
+
+.rows {
+  margin: 6px 0 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.row dt {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row dd {
+  margin: 0;
+  color: var(--cc-alias-label-primary);
+  font-variant-numeric: tabular-nums;
+}

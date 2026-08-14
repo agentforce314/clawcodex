@@ -1,0 +1,110 @@
+/* The empty-state hero: mark + headline, workspace chip, then the shared input
+   card. Only the stack geometry and the chip live here — the input itself is
+   the same InputBar the docked composer renders. */
+
+.stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: calc(var(--cc-composer-card-max-width) + 2 * var(--cc-composer-side-clearance));
+  margin: 0 auto;
+  /* A foot inside the centred box floats the stack slightly above true centre,
+     which reads as centred to the eye. */
+  padding-bottom: 32px;
+}
+
+/* Accent wash behind the card. Sits at z-index -1 inside this stacking context,
+   so it stays behind the in-flow hero content without a separate layer. */
+.glow {
+  position: absolute;
+  bottom: 92px;
+  left: 50%;
+  z-index: -1;
+  width: calc(100% * 1051 / 776);
+  aspect-ratio: 1051 / 468;
+  transform: translate(-50%, 50%);
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--cc-static-accent-400) 22%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(28px);
+  pointer-events: none;
+}
+
+.headline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--cc-alias-label-primary);
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 500;
+}
+
+.mark {
+  color: var(--cc-alias-label-primary);
+}
+
+.workspaceRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: calc(var(--cc-composer-side-clearance) + 8px);
+}
+
+.workspace {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 420px);
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.folder {
+  flex: none;
+  color: var(--cc-alias-label-primary);
+}
+
+.workspaceLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 var(--cc-composer-side-clearance);
+}
+
+.suggestion {
+  padding: 6px 12px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.suggestion:hover {
+  border-color: var(--cc-alias-border-l3);
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}

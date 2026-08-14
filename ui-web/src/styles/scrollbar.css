@@ -1,0 +1,68 @@
+/*
+ * Scrollbar skin — the sole consumer of the four --cc-alias-scrollbar-* tokens.
+ * Without it every scrolling region renders the UA bar, which ignores the
+ * theme: a light native bar over the dark palette.
+ *
+ * Surfaces pick their elevation by rebinding --cc-scrollbar-thumb{,-hover} on
+ * their own container: the l1 pair here is the base-surface default, and an
+ * elevated surface (menu, popover, composer card) rebinds to the l2 pair. Both
+ * rendering paths below read the indirection, so one rebind reaches whichever
+ * path the engine took.
+ */
+
+:root {
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l1);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l1);
+  /* The WebKit bar's layout width, mirrored by the ::-webkit-scrollbar rule
+     below. A surface that must align itself beside a space-consuming bar reads
+     this instead of hardcoding the number. */
+  --cc-scrollbar-width: 8px;
+}
+
+/*
+ * The two paths are mutually exclusive, and the gate is load-bearing rather
+ * than defensive: a non-`auto` `scrollbar-width`/`scrollbar-color` makes
+ * Chromium and Safari drop every `::-webkit-scrollbar*` rule for that element,
+ * including the `:hover` thumb. Declaring both unconditionally would therefore
+ * leave the hover token with no rendering at all — the engines that implement
+ * the pseudo-element are exactly the ones the standard properties silence, and
+ * Firefox has no hover pseudo-element to fall back on.
+ *
+ * `not selector(::-webkit-scrollbar)` is true only where the pseudo-element is
+ * unimplemented, so Firefox takes the standard path and WebKit-based engines
+ * take the pseudo-element path.
+ */
+@supports not selector(::-webkit-scrollbar) {
+  /* Declared per element rather than inherited: inheriting would pass down the
+     COLOR already substituted at the root, so a descendant rebinding
+     --cc-scrollbar-thumb could not change it. */
+  body,
+  body * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--cc-scrollbar-thumb) transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* Transparent track so the thumb reads against whatever surface scrolls under
+   it; only the thumb carries a token color. */
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--cc-scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cc-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

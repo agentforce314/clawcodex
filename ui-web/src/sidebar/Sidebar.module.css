@@ -1,0 +1,312 @@
+/* Sidebar column: vertical stack on the sidebar fill; the 1px right border is
+   painted by the layout column, not here. */
+.root {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 6px 12px;
+  background: var(--cc-specific-sidebar-fill);
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  /* The sidebar is elevated above the conversation surface, so a revealed
+     scrollbar takes the l2 pair. */
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+/* Rail: 36x36 control boxes centred in the 56px column (10px side padding). */
+.collapsed {
+  padding: 18px 10px 6px;
+}
+
+.logoRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  margin-bottom: 8px;
+  padding: 8px 0 8px 4px;
+  overflow: hidden;
+}
+
+.collapsed .logoRow {
+  height: 36px;
+  margin-bottom: 12px;
+  padding: 0;
+}
+
+.brand {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.brandLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.collapsed .iconButton {
+  width: 36px;
+  height: 36px;
+  color: var(--cc-alias-label-primary);
+}
+
+/* New Session: a 38px bar at 12px radius; collapsed it becomes a rail icon. */
+.newSession {
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  margin: 0 2px 8px;
+  padding: 8px 16px;
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 12px;
+  background: var(--cc-alias-button-elevated-fill);
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.newSession:hover {
+  background: var(--cc-alias-button-floating-hover);
+}
+
+.collapsed .newSession {
+  align-self: flex-start;
+  gap: 0;
+  width: 36px;
+  height: 36px;
+  margin: 0 0 12px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+.collapsed .newSession:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.newSessionLabel {
+  max-width: 200px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.collapsed .newSessionLabel {
+  max-width: 0;
+}
+
+/* Session tree. The seat is always mounted so the footer never moves. */
+.region {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-right: -12px;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.collapsed .region {
+  margin-right: 0;
+  padding-right: 0;
+  overflow: hidden;
+}
+
+.project {
+  margin-bottom: 6px;
+}
+
+.projectHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.projectHeader:hover {
+  background: var(--cc-specific-sidebar-nav-item-hover);
+  color: var(--cc-alias-label-secondary);
+}
+
+.projectLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectCount {
+  margin-left: auto;
+  color: var(--cc-alias-label-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.laneLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 2px 22px;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.sessionRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px 6px 22px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sessionRow:hover {
+  background: var(--cc-specific-sidebar-nav-item-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.sessionActive {
+  background: var(--cc-specific-sidebar-nav-item-active);
+  color: var(--cc-alias-label-primary);
+}
+
+.sessionActive:hover {
+  background: var(--cc-specific-sidebar-nav-item-active);
+}
+
+.sessionTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionMeta {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.liveDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cc-alias-state-success-primary);
+}
+
+.empty {
+  padding: 12px 8px;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Footer: additive actions stack above the appearance control. */
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--cc-alias-border-l1);
+}
+
+.collapsed .foot {
+  flex-direction: column;
+}
+
+.footSpacer {
+  flex: 1;
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  color: var(--cc-alias-label-caption);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.connectionDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cc-alias-label-caption);
+}
+
+.connectionOk .connectionDot {
+  background: var(--cc-alias-state-success-primary);
+}
+
+.connectionWarn .connectionDot {
+  background: var(--cc-alias-state-warn-primary);
+}
+
+.connectionError .connectionDot {
+  background: var(--cc-alias-state-error-primary);
+}

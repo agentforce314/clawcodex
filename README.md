@@ -581,6 +581,27 @@ The app boots its own backend via `clawcodex serve` (loopback HTTP +
 WebSocket gateway over the in-process agent core). See
 [`ui-desktop/README.md`](ui-desktop/README.md) for development docs.
 
+## 🌐 ClawCodex Web
+
+The same agent in a browser tab (`ui-web/`): three-column shell with a
+project/worktree session tree, streaming replies with reasoning and live tool
+cards (terminal, diff, line-numbered read), permission approvals as a composer
+takeover, a prompt queue, a context meter, and light/dark themes.
+
+```bash
+# from a source checkout (builds the bundle on first run)
+clawcodex web --build
+clawcodex web            # once built
+```
+
+It is not a second server: `clawcodex web` is `clawcodex serve` with the built
+`ui-web/dist` mounted on it, so a tab drives the **same in-process agent, the
+same gateway socket, and the same saved sessions** as the TUI and the desktop
+app. `GET /` inlines the session token so the browser can open the socket —
+which is why a non-loopback `--host` is refused unless you pass
+`--allow-remote` and put your own auth in front of it. See
+[`ui-web/README.md`](ui-web/README.md) for development docs.
+
 ## 🚀 Quick Start
 
 ### Install

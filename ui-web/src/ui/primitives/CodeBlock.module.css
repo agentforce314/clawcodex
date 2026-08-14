@@ -1,0 +1,85 @@
+.block {
+  --cc-code-block-radius: 12px;
+  /* Rebindable seam: a surface that wants the smaller in-row code size (a tool
+     card) rebinds this on its own container instead of restyling the block. */
+  --cc-code-block-font: var(--cc-font-markdown-code-block);
+
+  position: relative;
+  margin: 16px 0;
+  border-radius: var(--cc-code-block-radius);
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-primary);
+}
+
+/* The banner sticks while a long block scrolls past, so the language and the
+   copy control stay in reach. Its own opaque backing is the page surface, not
+   the card's — the card's fill would leave a seam at the rounded corners. */
+.bannerWrap {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  border-top-left-radius: var(--cc-code-block-radius);
+  border-top-right-radius: var(--cc-code-block-radius);
+  background: var(--cc-alias-bg-base);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-top-left-radius: var(--cc-code-block-radius);
+  border-top-right-radius: var(--cc-code-block-radius);
+  background: var(--cc-alias-markdown-code-block-banner);
+  font: var(--cc-font-xs-13);
+}
+
+.infostring {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyButton {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  color: var(--cc-alias-label-primary);
+}
+
+.pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  /* Bottom radii live on <pre>: `overflow: hidden` on the card would kill the
+     sticky banner, and this opaque fill would otherwise square off the corner. */
+  border-bottom-left-radius: var(--cc-code-block-radius);
+  border-bottom-right-radius: var(--cc-code-block-radius);
+  font: var(--cc-code-block-font);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.pre :global(.shiki) {
+  background: transparent !important;
+}
+
+.pre code {
+  padding: 0;
+  background: none;
+  font: inherit;
+}

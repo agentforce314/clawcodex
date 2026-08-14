@@ -1,0 +1,111 @@
+/* User turn: a right-aligned bubble with its actions below. */
+.userRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.bubble {
+  /* 525px inside the 748 column keeps a short message from spanning the full
+     width; the percentage keeps narrow windows sane. */
+  max-width: min(525px, 82%);
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: var(--cc-specific-bubble);
+  color: var(--cc-alias-label-primary);
+  font-size: 16px;
+  line-height: 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Actions reveal on hover of the turn, so a settled transcript stays quiet. */
+.actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.userRow:hover .actions,
+.actions:focus-within {
+  opacity: 1;
+}
+
+.action {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+}
+
+/* Assistant turn: full-width markdown, no bubble — the reply is the page. */
+.assistant {
+  min-width: 0;
+}
+
+.assistantRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.noticeGlyph {
+  margin-top: 2px;
+}
+
+.noticeError .noticeGlyph {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.noticeWarn .noticeGlyph {
+  color: var(--cc-alias-state-warn-primary);
+}
+
+.noticeInfo .noticeGlyph {
+  color: var(--cc-alias-label-tertiary);
+}
+
+.noticeTitle {
+  margin-right: 6px;
+  font-weight: 600;
+}
+
+.noticeError .noticeTitle {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.noticeWarn .noticeTitle {
+  color: var(--cc-alias-state-warn-primary);
+}
+
+.noticeInfo .noticeTitle {
+  color: var(--cc-alias-label-secondary);
+}
+
+.noticeBody {
+  min-width: 0;
+  color: var(--cc-alias-label-secondary);
+  overflow-wrap: anywhere;
+}

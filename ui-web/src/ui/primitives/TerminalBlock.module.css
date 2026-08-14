@@ -1,0 +1,155 @@
+/* Geometry mirrors CodeBlock (12px radius, code-block surface + banner) so a
+   terminal card and a fenced block read as one family. The one deliberate
+   divergence: output keeps `white-space: pre` and scrolls horizontally —
+   folding a column-aligned command's output destroys its alignment. */
+.block {
+  --cc-terminal-radius: 12px;
+  --cc-terminal-line-height: 22px;
+  --cc-terminal-font: var(--cc-font-markdown-code-block);
+  /* The card's own left inset, holding the run-state dot in a column of its
+     own so it never competes with the command for horizontal space. */
+  --cc-terminal-gutter: 30px;
+
+  position: relative;
+  /* The gutter is the card's OWN padding, not a margin: render sites rewrite
+     `margin` wholesale to set their indent, which would silently cancel the
+     reservation and drop the dot outside the card. */
+  padding-left: var(--cc-terminal-gutter);
+  border-radius: var(--cc-terminal-radius);
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-primary);
+  /* Clip the banner to the card's radius so a consumer's border leaves no
+     notch at the corner. Nothing inside renders out of the box. */
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  /* Pulled back across the gutter so the banner spans the FULL surface, then
+     re-inset by the same amount so the command text keeps its position. */
+  margin-left: calc(-1 * var(--cc-terminal-gutter));
+  padding: 9px 14px 9px var(--cc-terminal-gutter);
+  /* A long multi-line command scrolls inside the banner instead of pushing the
+     output off screen. */
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.block:not([data-running]) .header {
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.prompt {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font: var(--cc-terminal-font);
+}
+
+.promptLine {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: var(--cc-terminal-line-height);
+}
+
+/* Out of flow inside the card's own gutter padding, so the reservation and the
+   dot move together and the dot neither indents its command nor depends on the
+   code font's baseline to line up. */
+.runState {
+  position: absolute;
+  top: 50%;
+  left: calc(-1 * var(--cc-terminal-gutter) + 8px);
+  transform: translateY(-50%);
+}
+
+.cwd {
+  flex: none;
+  color: var(--cc-alias-label-tertiary);
+}
+
+/* `pre`, not `nowrap`: the row renders the command verbatim, and `nowrap`
+   collapses the repeated spaces and alignment of an indented continuation. */
+.command {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.copyButton {
+  flex: none;
+  position: sticky;
+  top: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  /* Card surface, not transparent: the control is sticky over the banner's own
+     scroll, so scrolled command text must not bleed through it. */
+  background-color: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-xs-13);
+  line-height: var(--cc-terminal-line-height);
+  cursor: pointer;
+}
+
+/* Vertical scrolling lives on the OUTPUT, not the card root: a root scroller
+   would run its bar over the banner and the copy control. */
+.output {
+  max-height: var(--cc-terminal-output-max-height, none);
+  padding: 12px 14px 12px 0;
+  font: var(--cc-terminal-font);
+  overflow: auto;
+}
+
+/* Both output bars float 2px off the card edge: a transparent border clips the
+   thumb inward so it never hugs the rounded corner. */
+.output::-webkit-scrollbar-thumb,
+.header::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+
+.output::-webkit-scrollbar-track,
+.header::-webkit-scrollbar-track {
+  margin: 6px;
+}
+
+/* No wrapping, no word-break: alignment is the payload of terminal output. */
+.line {
+  min-height: var(--cc-terminal-line-height);
+  white-space: pre;
+}
+
+.stderr {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.expand:hover {
+  color: var(--cc-alias-label-secondary);
+}
+
+.empty {
+  padding: 12px 14px 12px 0;
+  color: var(--cc-alias-label-tertiary);
+  font: var(--cc-terminal-font);
+}

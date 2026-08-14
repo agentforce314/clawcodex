@@ -1,0 +1,66 @@
+@import './tokens.css';
+@import './typography.css';
+@import './scrollbar.css';
+@import './shiki.css';
+
+/*
+ * Document-level reset and the app's own resting surface. Everything narrower
+ * than "applies to the whole document" belongs to a component's CSS module.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--cc-alias-bg-base);
+  color: var(--cc-alias-label-primary);
+  font: var(--cc-font-base-16);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* The app owns its own scrolling regions; the document never scrolls. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+#root {
+  height: 100%;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* A visible focus ring everywhere, in one place: components that draw their
+   own state still get keyboard affordance for free. */
+:focus-visible {
+  outline: 2px solid var(--cc-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--cc-alias-state-business-primary) 28%, transparent);
+}
+
+/* Screen-reader-only text: used by state dots and shimmer rows whose meaning
+   is otherwise carried by color and motion alone. */
+.cc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

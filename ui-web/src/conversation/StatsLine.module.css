@@ -1,0 +1,23 @@
+/* Session stats under the composer: 12/20 tertiary text on the shared column
+   axis. Block, not flex — text-overflow only elides a block's inline content,
+   so an overlong line ends in an ellipsis instead of a mid-glyph clip. */
+.root {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  max-width: var(--cc-composer-card-max-width);
+  margin: 0 auto;
+  padding: 4px calc(var(--cc-composer-side-clearance) + 16px) 0;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sep {
+  margin: 0 10px;
+  color: var(--cc-alias-separator-primary);
+}

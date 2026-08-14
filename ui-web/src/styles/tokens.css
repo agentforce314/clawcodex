@@ -1,0 +1,286 @@
+/*
+ * Design tokens for the ClawCodex web client.
+ *
+ * Three layers, in the order a value resolves:
+ *   --cc-static-*    raw palette steps. Identical in both themes: a palette is
+ *                    a set of colors, not a set of roles.
+ *   --cc-alias-*     semantic roles (surfaces, labels, borders, states). These
+ *                    are what components reference, and these are what the
+ *                    dark theme re-points.
+ *   --cc-specific-*  the handful of roles owned by one surface (sidebar fill,
+ *                    input fill, bubble) that have no general meaning.
+ *
+ * Declared on :root so both `html` and `body` rules can resolve them (custom
+ * properties inherit downward only — a token declared on `body` is invisible
+ * to an `html` rule, which is what silently disables `scrollbar-color`).
+ *
+ * Adapted from the DeepSeek Harness web client's design-platform sheet
+ * (MIT-licensed; see ui-web/README.md). Names carry the ClawCodex prefix and
+ * the role vocabulary is unchanged, so a rule ported from that codebase means
+ * the same thing here.
+ */
+
+:root {
+  /* ── palette ───────────────────────────────────────────────────────────── */
+  --cc-static-amber-100: rgb(254, 245, 231);
+  --cc-static-amber-400: rgb(247, 173, 49);
+  --cc-static-amber-500: rgb(245, 158, 11);
+  --cc-static-amber-600: rgb(221, 134, 41);
+  --cc-static-amber-900: rgb(39, 36, 31);
+
+  --cc-static-blue-100: rgb(219, 234, 254);
+  --cc-static-blue-300: rgb(147, 197, 253);
+  --cc-static-blue-400: rgb(96, 165, 250);
+  --cc-static-blue-450: rgb(77, 147, 248);
+  --cc-static-blue-500: rgb(59, 130, 246);
+  --cc-static-blue-50: rgb(239, 246, 255);
+  --cc-static-blue-600: rgb(37, 99, 235);
+  --cc-static-blue-800: rgb(30, 64, 175);
+  --cc-static-blue-900: rgb(14, 48, 116);
+
+  /* Accent family — the one hue the product answers in. */
+  --cc-static-accent-50: rgb(237, 243, 254);
+  --cc-static-accent-100: rgb(228, 237, 253);
+  --cc-static-accent-200: rgb(211, 226, 255);
+  --cc-static-accent-300: rgb(183, 200, 254);
+  --cc-static-accent-400: rgb(103, 158, 254);
+  --cc-static-accent-450: rgb(86, 134, 254);
+  --cc-static-accent-500: rgb(65, 118, 230);
+  --cc-static-accent-600: rgb(72, 104, 178);
+  --cc-static-accent-800: rgb(52, 65, 91);
+  --cc-static-accent-900: rgb(40, 49, 66);
+
+  --cc-static-green-100: rgb(230, 250, 237);
+  --cc-static-green-400: rgb(78, 209, 126);
+  --cc-static-green-500: rgb(34, 197, 94);
+  --cc-static-green-900: rgb(35, 60, 44);
+
+  --cc-static-red-50: rgb(254, 242, 242);
+  --cc-static-red-100: rgb(254, 226, 226);
+  --cc-static-red-400: rgb(242, 90, 90);
+  --cc-static-red-500: rgb(239, 68, 68);
+  --cc-static-red-600: rgb(236, 19, 19);
+  --cc-static-red-900: rgb(87, 12, 12);
+
+  --cc-static-neutral-00: rgb(255, 255, 255);
+  --cc-static-neutral-50: rgb(250, 250, 250);
+  --cc-static-neutral-100: rgb(245, 245, 245);
+  --cc-static-neutral-200: rgb(229, 229, 229);
+  --cc-static-neutral-300: rgb(212, 212, 212);
+  --cc-static-neutral-400: rgb(162, 164, 166);
+  --cc-static-neutral-500: rgb(127, 130, 135);
+  --cc-static-neutral-550: rgb(101, 103, 107);
+  --cc-static-neutral-600: rgb(84, 85, 87);
+  --cc-static-neutral-700: rgb(60, 60, 61);
+  --cc-static-neutral-800: rgb(41, 41, 41);
+  --cc-static-neutral-900: rgb(15, 15, 15);
+  --cc-static-neutral-1000: rgb(0, 0, 0);
+
+  /* The bluish neutrals carry the whole UI: surfaces, labels, chrome. */
+  --cc-static-ink-00: rgb(255, 255, 255);
+  --cc-static-ink-50: rgb(249, 250, 251);
+  --cc-static-ink-60: rgb(245, 246, 247);
+  --cc-static-ink-75: rgb(241, 243, 245);
+  --cc-static-ink-100: rgb(235, 238, 242);
+  --cc-static-ink-150: rgb(233, 236, 242);
+  --cc-static-ink-200: rgb(225, 229, 238);
+  --cc-static-ink-300: rgb(207, 211, 214);
+  --cc-static-ink-400: rgb(173, 178, 184);
+  --cc-static-ink-500: rgb(151, 157, 166);
+  --cc-static-ink-600: rgb(129, 133, 140);
+  --cc-static-ink-700: rgb(97, 102, 107);
+  --cc-static-ink-750: rgb(67, 69, 74);
+  --cc-static-ink-800: rgb(53, 54, 56);
+  --cc-static-ink-850: rgb(44, 44, 46);
+  --cc-static-ink-875: rgb(35, 35, 36);
+  --cc-static-ink-900: rgb(27, 27, 28);
+  --cc-static-ink-950: rgb(21, 21, 23);
+  --cc-static-ink-1000: rgb(15, 17, 21);
+
+  /* ── semantic aliases (light) ──────────────────────────────────────────── */
+  --cc-alias-bg-base: var(--cc-static-ink-00);
+  --cc-alias-bg-layer-1: var(--cc-static-ink-00);
+  --cc-alias-bg-layer-2: var(--cc-static-ink-00);
+  --cc-alias-bg-layer-3: var(--cc-static-ink-00);
+  --cc-alias-bg-mask-1: rgba(0, 0, 0, 0.24);
+  --cc-alias-bg-mask-2: rgba(0, 0, 0, 0.12);
+  --cc-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --cc-alias-bg-module-platform: var(--cc-static-ink-60);
+  --cc-alias-bg-overlay: var(--cc-static-ink-150);
+  --cc-alias-bg-skeleton: rgba(0, 0, 0, 0.04);
+
+  --cc-alias-border-inverted: rgba(0, 0, 0, 0);
+  --cc-alias-border-l1: rgba(0, 0, 0, 0.04);
+  --cc-alias-border-l2-thin: rgba(0, 0, 0, 0.1);
+  --cc-alias-border-l2: rgba(0, 0, 0, 0.1);
+  --cc-alias-border-l3: rgba(0, 0, 0, 0.12);
+  --cc-alias-border-l4: rgba(0, 0, 0, 0.16);
+
+  --cc-alias-brand-primary: var(--cc-static-ink-1000);
+  --cc-alias-brand-text: var(--cc-static-ink-1000);
+
+  --cc-alias-button-contrast-fill: var(--cc-static-ink-700);
+  --cc-alias-button-elevated-fill: var(--cc-static-ink-00);
+  --cc-alias-button-floating-fill: var(--cc-static-ink-00);
+  --cc-alias-button-floating-hover: var(--cc-static-ink-75);
+  --cc-alias-button-ghost-active-border: var(--cc-static-ink-500);
+  --cc-alias-button-ghost-active-fill: var(--cc-static-ink-100);
+  --cc-alias-button-info-fill: var(--cc-static-accent-500);
+  --cc-alias-button-info-hover: var(--cc-static-accent-400);
+  --cc-alias-button-primary-fill: var(--cc-alias-brand-primary);
+  --cc-alias-button-primary-hover: var(--cc-static-ink-750);
+
+  --cc-alias-interactive-bg-active: rgba(38, 49, 72, 0.1);
+  --cc-alias-interactive-bg-hover: rgba(38, 49, 72, 0.06);
+  --cc-alias-interactive-bg-hover-accent: rgba(38, 49, 72, 0.14);
+  --cc-alias-interactive-bg-hover-danger: rgba(236, 19, 19, 0.05);
+  --cc-alias-interactive-bg-hover-solid: var(--cc-static-ink-75);
+
+  --cc-alias-label-caption: var(--cc-static-ink-400);
+  --cc-alias-label-dimmed: var(--cc-static-ink-200);
+  --cc-alias-label-primary: var(--cc-static-ink-1000);
+  --cc-alias-label-primary-accent: var(--cc-static-blue-900);
+  --cc-alias-label-primary-dimmed: var(--cc-static-ink-950);
+  --cc-alias-label-primary-foreground: var(--cc-static-ink-00);
+  --cc-alias-label-quaternary: var(--cc-static-ink-300);
+  --cc-alias-label-secondary: var(--cc-static-ink-700);
+  --cc-alias-label-tertiary: var(--cc-static-ink-600);
+
+  --cc-alias-markdown-code-block: var(--cc-static-ink-50);
+  --cc-alias-markdown-code-block-banner: var(--cc-static-ink-50);
+  --cc-alias-markdown-inline-code: var(--cc-static-ink-100);
+
+  --cc-alias-scrollbar-bg-l1: var(--cc-static-neutral-200);
+  --cc-alias-scrollbar-bg-l2: var(--cc-static-neutral-200);
+  --cc-alias-scrollbar-hover-l1: var(--cc-static-neutral-300);
+  --cc-alias-scrollbar-hover-l2: var(--cc-static-neutral-300);
+
+  --cc-alias-separator-primary: var(--cc-static-ink-200);
+
+  --cc-alias-state-business-primary: var(--cc-static-accent-500);
+  --cc-alias-state-business-tertiary: var(--cc-static-accent-100);
+  --cc-alias-state-error-primary: var(--cc-static-red-600);
+  --cc-alias-state-error-secondary: var(--cc-static-red-400);
+  --cc-alias-state-success-primary: var(--cc-static-green-500);
+  --cc-alias-state-success-secondary: var(--cc-static-green-400);
+  --cc-alias-state-success-tertiary: var(--cc-static-green-100);
+  --cc-alias-state-warn-label: var(--cc-static-amber-600);
+  --cc-alias-state-warn-primary: var(--cc-static-amber-500);
+  --cc-alias-state-warn-secondary: var(--cc-static-amber-400);
+  --cc-alias-state-warn-tertiary: var(--cc-static-amber-100);
+
+  --cc-alias-toast-bg: var(--cc-static-ink-800);
+  --cc-alias-tooltip-bg: var(--cc-static-ink-850);
+
+  /* ── surface-specific (light) ──────────────────────────────────────────── */
+  --cc-specific-bubble: var(--cc-static-accent-50);
+  --cc-specific-bubble-highlight: var(--cc-static-accent-200);
+  --cc-specific-input-major: var(--cc-static-ink-00);
+  --cc-specific-menu: var(--cc-alias-bg-layer-3);
+  --cc-specific-selector: var(--cc-static-ink-60);
+  --cc-specific-sidebar-fill: var(--cc-static-ink-50);
+  --cc-specific-sidebar-nav-item-active: var(--cc-static-ink-100);
+  --cc-specific-sidebar-nav-item-active-accent: var(--cc-static-accent-100);
+  --cc-specific-sidebar-nav-item-hover: var(--cc-static-ink-75);
+  --cc-specific-tip: var(--cc-static-ink-60);
+
+  /* ── shadows ───────────────────────────────────────────────────────────── */
+  --cc-shadow-lv1: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  --cc-shadow-lv2: 0 4px 12px 0 rgba(0, 0, 0, 0.02), 0 2px 8px 0 rgba(0, 0, 0, 0.04);
+  --cc-shadow-lv3:
+    0 0 1px 0 rgba(0, 0, 0, 0.2), 0 0 4px 0 rgba(0, 0, 0, 0.02),
+    0 12px 32px 0 rgba(0, 0, 0, 0.08);
+}
+
+/*
+ * Dark theme: only the ROLES move. The palette above is untouched, which is
+ * what keeps a token's meaning stable across themes — `label-secondary` is
+ * "one step quieter than the body text" in both, and only the step it points
+ * at changes.
+ */
+:root[data-theme='dark'] {
+  --cc-alias-bg-base: var(--cc-static-ink-950);
+  --cc-alias-bg-layer-1: var(--cc-static-ink-875);
+  --cc-alias-bg-layer-2: var(--cc-static-ink-850);
+  --cc-alias-bg-layer-3: var(--cc-static-ink-800);
+  --cc-alias-bg-mask-1: rgba(0, 0, 0, 0.5);
+  --cc-alias-bg-mask-2: rgba(0, 0, 0, 0.2);
+  --cc-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --cc-alias-bg-module-platform: var(--cc-static-ink-800);
+  --cc-alias-bg-overlay: var(--cc-static-ink-700);
+  --cc-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
+
+  --cc-alias-border-inverted: rgba(255, 255, 255, 0.06);
+  --cc-alias-border-l1: rgba(255, 255, 255, 0.06);
+  --cc-alias-border-l2-thin: rgba(255, 255, 255, 0.06);
+  --cc-alias-border-l2: rgba(255, 255, 255, 0.12);
+  --cc-alias-border-l3: rgba(255, 255, 255, 0.16);
+  --cc-alias-border-l4: rgba(255, 255, 255, 0.2);
+
+  --cc-alias-brand-primary: var(--cc-static-ink-50);
+  --cc-alias-brand-text: var(--cc-static-ink-50);
+
+  --cc-alias-button-contrast-fill: var(--cc-static-ink-50);
+  --cc-alias-button-elevated-fill: var(--cc-static-ink-750);
+  --cc-alias-button-floating-fill: var(--cc-static-ink-850);
+  --cc-alias-button-floating-hover: var(--cc-static-ink-800);
+  --cc-alias-button-ghost-active-border: var(--cc-static-ink-600);
+  --cc-alias-button-ghost-active-fill: var(--cc-static-ink-750);
+  --cc-alias-button-info-fill: var(--cc-static-accent-400);
+  --cc-alias-button-info-hover: var(--cc-static-accent-500);
+  --cc-alias-button-primary-fill: var(--cc-alias-brand-primary);
+  --cc-alias-button-primary-hover: var(--cc-static-ink-100);
+
+  --cc-alias-interactive-bg-active: rgba(255, 255, 255, 0.14);
+  --cc-alias-interactive-bg-hover: rgba(255, 255, 255, 0.08);
+  --cc-alias-interactive-bg-hover-accent: rgba(255, 255, 255, 0.24);
+  --cc-alias-interactive-bg-hover-danger: rgba(242, 90, 90, 0.15);
+  --cc-alias-interactive-bg-hover-solid: var(--cc-static-ink-800);
+
+  --cc-alias-label-caption: var(--cc-static-ink-600);
+  --cc-alias-label-dimmed: var(--cc-static-ink-750);
+  --cc-alias-label-primary: var(--cc-static-ink-50);
+  --cc-alias-label-primary-accent: var(--cc-static-ink-50);
+  --cc-alias-label-primary-dimmed: var(--cc-static-ink-100);
+  --cc-alias-label-primary-foreground: var(--cc-static-ink-1000);
+  --cc-alias-label-quaternary: var(--cc-static-ink-750);
+  --cc-alias-label-secondary: var(--cc-static-ink-300);
+  --cc-alias-label-tertiary: var(--cc-static-ink-400);
+
+  --cc-alias-markdown-code-block: var(--cc-static-ink-900);
+  --cc-alias-markdown-code-block-banner: var(--cc-static-ink-850);
+  --cc-alias-markdown-inline-code: var(--cc-static-ink-850);
+
+  --cc-alias-scrollbar-bg-l1: var(--cc-static-neutral-700);
+  --cc-alias-scrollbar-bg-l2: var(--cc-static-neutral-600);
+  --cc-alias-scrollbar-hover-l1: var(--cc-static-neutral-600);
+  --cc-alias-scrollbar-hover-l2: var(--cc-static-neutral-550);
+
+  --cc-alias-separator-primary: var(--cc-static-ink-750);
+
+  --cc-alias-state-business-primary: var(--cc-static-accent-400);
+  --cc-alias-state-business-tertiary: var(--cc-static-accent-800);
+  --cc-alias-state-error-primary: var(--cc-static-red-400);
+  --cc-alias-state-error-secondary: var(--cc-static-red-400);
+  --cc-alias-state-success-primary: var(--cc-static-green-500);
+  --cc-alias-state-success-secondary: var(--cc-static-green-400);
+  --cc-alias-state-success-tertiary: var(--cc-static-green-900);
+  --cc-alias-state-warn-label: var(--cc-static-amber-600);
+  --cc-alias-state-warn-primary: var(--cc-static-amber-500);
+  --cc-alias-state-warn-secondary: var(--cc-static-amber-400);
+  --cc-alias-state-warn-tertiary: var(--cc-static-amber-900);
+
+  --cc-alias-toast-bg: var(--cc-static-ink-750);
+  --cc-alias-tooltip-bg: var(--cc-static-ink-750);
+
+  --cc-specific-bubble: var(--cc-static-ink-850);
+  --cc-specific-bubble-highlight: var(--cc-static-ink-750);
+  --cc-specific-input-major: var(--cc-static-ink-850);
+  --cc-specific-menu: var(--cc-alias-bg-layer-3);
+  --cc-specific-selector: var(--cc-static-ink-800);
+  --cc-specific-sidebar-fill: var(--cc-static-ink-900);
+  --cc-specific-sidebar-nav-item-active: var(--cc-static-ink-750);
+  --cc-specific-sidebar-nav-item-active-accent: var(--cc-static-ink-800);
+  --cc-specific-sidebar-nav-item-hover: var(--cc-static-ink-850);
+  --cc-specific-tip: var(--cc-static-ink-800);
+}

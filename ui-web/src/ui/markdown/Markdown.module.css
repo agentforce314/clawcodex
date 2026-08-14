@@ -1,0 +1,233 @@
+/* Markdown body. The whole sheet is scoped to `.markdown` and styles plain
+   elements, so the renderer emits ordinary HTML and this file owns every
+   typographic decision in one place. */
+
+.markdown {
+  min-width: 0;
+  color: var(--cc-alias-label-primary);
+  font: var(--cc-font-markdown-base);
+  overflow-wrap: anywhere;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown strong {
+  font-weight: 600;
+}
+
+.markdown h1 {
+  margin: 32px 0 16px;
+  font: var(--cc-font-markdown-h1);
+}
+
+.markdown h2 {
+  margin: 32px 0 16px;
+  font: var(--cc-font-markdown-h2);
+}
+
+.markdown h3 {
+  margin: 32px 0 16px;
+  font: var(--cc-font-markdown-h3);
+}
+
+.markdown h4 {
+  margin: 16px 0;
+  font: var(--cc-font-markdown-h4);
+}
+
+.markdown :where(h5, h6) {
+  margin: 16px 0;
+  font: var(--cc-font-markdown-base-strong);
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6) strong {
+  font-weight: inherit;
+}
+
+.markdown p {
+  margin: 16px 0;
+}
+
+/* Tighten a heading against the list it introduces. */
+.markdown :where(h4, h5, h6) + :where(ul, ol) {
+  margin-top: 8px;
+}
+
+.markdown :where(h4, h5, h6):has(+ :where(ul, ol)) {
+  margin-bottom: 8px;
+}
+
+.markdown a {
+  position: relative;
+  color: var(--cc-alias-state-business-primary);
+  text-decoration: none;
+  transition: box-shadow var(--cc-duration) var(--cc-ease-in-out);
+}
+
+.markdown a:hover,
+.markdown a:focus {
+  outline: none;
+  text-decoration: underline var(--cc-alias-state-business-primary);
+  text-underline-offset: 3px;
+}
+
+.markdown :where(ul, ol) {
+  margin: 16px 0;
+  padding-left: 18px;
+}
+
+.markdown li:not(:first-child) {
+  margin-top: 6px;
+}
+
+.markdown li > :where(ul, ol) {
+  margin-top: 4px;
+}
+
+.markdown li::marker {
+  color: var(--cc-alias-label-secondary);
+  line-height: 28px;
+}
+
+.markdown li > p {
+  margin: 8px 0;
+}
+
+.markdown li > *:first-child {
+  margin-top: 0;
+}
+
+.markdown li > *:last-child {
+  margin-bottom: 0;
+}
+
+.taskItem {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.taskItem input[type='checkbox'] {
+  margin: 0 8px 0 0;
+  accent-color: var(--cc-alias-label-secondary);
+}
+
+.markdown hr {
+  display: block;
+  height: 1px;
+  margin: 32px 0;
+  border: none;
+  background: var(--cc-alias-border-l2);
+}
+
+.markdown blockquote {
+  margin: 16px 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--cc-alias-label-caption);
+  color: var(--cc-alias-label-secondary);
+}
+
+.markdown :not(pre) > code {
+  display: inline;
+  padding: 0 5px;
+  border-radius: 6px;
+  background-color: var(--cc-alias-markdown-inline-code);
+  font-family: var(--cc-font-family-code);
+  font-size: 0.875em;
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6) code {
+  font: inherit;
+  font-family: var(--cc-font-family-code);
+}
+
+/* Tables scroll inside their own box: the transcript column must never gain a
+   horizontal bar because one cell was wide. */
+.tableScroll {
+  max-width: 100%;
+  margin: 16px 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.tableScroll table {
+  width: max-content;
+  max-width: max-content;
+  border-collapse: collapse;
+}
+
+.tableScroll th {
+  min-width: 100px;
+  max-width: min(30vw, 320px);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cc-alias-border-l3);
+  font: var(--cc-font-markdown-table-head);
+  text-align: start;
+}
+
+.tableScroll td {
+  min-width: 100px;
+  max-width: min(30vw, 320px);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+  font: var(--cc-font-markdown-table);
+}
+
+.tableScroll th:first-child,
+.tableScroll td:first-child {
+  padding-left: 0;
+}
+
+.tableScroll td:last-child {
+  padding-right: 0;
+}
+
+.markdown img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: var(--cc-alias-bg-base);
+  object-fit: contain;
+}
+
+/* Display math gets its own scrollport: a long derivation must not widen the
+   column. */
+.markdown :global(.katex-display-wrap) {
+  max-width: 100%;
+  margin: 16px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Streaming caret: a thin block on the trailing line while the reply is still
+   arriving, so a pause reads as "still coming" rather than "finished". */
+.cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  border-radius: 1px;
+  background: var(--cc-alias-state-business-primary);
+  vertical-align: text-bottom;
+  animation: cc-md-cursor 1s steps(2, start) infinite;
+}
+
+@keyframes cc-md-cursor {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor {
+    animation: none;
+    opacity: 0.6;
+  }
+}

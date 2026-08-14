@@ -7,9 +7,12 @@ Route surface (all consumed by ``ui-desktop``):
 - ``GET /api/status`` — token-gated backend facts
   (``electron/connection-config.ts`` reads ``auth_required`` to pick the
   auth mode; local mode is token auth, never OAuth).
-- ``GET /`` — one inline page carrying ``window.__CLAWCODEX_SESSION_TOKEN__``
-  so ``electron/dashboard-token.ts`` can adopt an already-running backend's
-  token when it recognizes the process as ours.
+- ``GET /`` — a page carrying ``window.__CLAWCODEX_SESSION_TOKEN__`` so
+  ``electron/dashboard-token.ts`` can adopt an already-running backend's token
+  when it recognizes the process as ours. When a built browser client is
+  present (``ui-web/dist``), this route serves that app with the same global
+  inlined, so one page answers both readers; without one it is the bare token
+  page the desktop has always had. See :mod:`src.server.web_assets`.
 - ``WS /api/ws`` — the JSON-RPC gateway socket (chat surface); handled by
   :mod:`src.server.desktop_gateway`.
 
@@ -450,9 +453,20 @@ def build_app(state: DesktopServeState) -> Starlette:
         return JSONResponse(payload)
 
     async def index(_: Request) -> Response:
-        # dashboard-token.ts scrapes this global from the served page to adopt
-        # a running backend's token. Serve nothing else here — the desktop
-        # renderer ships in the app, not from this server.
+        # Two readers, one page. dashboard-token.ts scrapes
+        # __CLAWCODEX_SESSION_TOKEN__ to adopt a running backend's token; the
+        # browser client (ui-web) reads the same global to open its socket. So
+        # when a built web bundle is present this route serves that app with
+        # the token inlined, and otherwise the bare token page the desktop has
+        # always had — the desktop's contract is unchanged either way.
+        from src.server.web_assets import web_index_html
+
+        page = web_index_html(state.token)
+        if page is not None:
+            # No-store: the page carries a per-process token, so a cached copy
+            # would point a later run's browser at a dead session.
+            return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
         html = (
             "<!doctype html><html><head><meta charset=\"utf-8\">"
             "<title>ClawCodex</title></head><body>"
@@ -504,12 +518,23 @@ def build_app(state: DesktopServeState) -> Starlette:
         Route("/api/sessions/{session_id}", session_detail,
               methods=["GET", "PATCH", "DELETE"]),
         Route("/api/audio/transcribe", audio_transcribe, methods=["POST"]),
+        # ui-web's hashed chunks + icons. Empty (and this server unchanged)
+        # when no bundle is built; declared after every /api route and before
+        # the catch-all, since Starlette matches in order.
+        *_web_routes(),
         Route("/", index),
         WebSocketRoute("/api/ws", gateway_ws),
         Route("/{rest:path}", not_found,
               methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
     ]
     return Starlette(routes=routes)
+
+
+def _web_routes() -> list[Any]:
+    """Static routes for the browser client, or none when it is not built."""
+    from src.server.web_assets import web_routes
+
+    return list(web_routes())
 
 
 # ``config`` is not a key in the config schema — the file holds
@@ -596,10 +621,15 @@ def redact_secrets(value: Any) -> Any:
 
 
 def _js_string(value: str) -> str:
-    """Serialize ``value`` as a safe JS string literal for the inline page."""
-    import json
+    """Serialize ``value`` as a safe JS string literal for the inline page.
 
-    return json.dumps(value)
+    Delegates to the shared escaper, which also neutralizes ``<``/``>``/``&``
+    — ``json.dumps`` leaves those alone, so a value containing ``</script>``
+    would close the element and everything after it would parse as markup.
+    """
+    from src.server.web_assets import js_string
+
+    return js_string(value)
 
 
 __all__ = ["DesktopServeState", "build_app", "ws_token"]

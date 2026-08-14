@@ -1,0 +1,104 @@
+/* Same family as CodeBlock. Content keeps `white-space: pre` and scrolls
+   horizontally rather than folding: a source line's indentation is part of what
+   the reader is reading. */
+.block {
+  --cc-read-radius: 12px;
+  --cc-read-line-height: 22px;
+  /* Fixed-width gutter so the content edge stays put down the whole window,
+     however wide the line numbers grow. */
+  --cc-read-gutter: 52px;
+
+  position: relative;
+  border-radius: var(--cc-read-radius);
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-primary);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-top-left-radius: var(--cc-read-radius);
+  border-top-right-radius: var(--cc-read-radius);
+  background: var(--cc-alias-markdown-code-block-banner);
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.count {
+  color: var(--cc-alias-label-tertiary);
+  font: var(--cc-font-xs-13);
+}
+
+.copyButton {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-xs-13);
+  cursor: pointer;
+}
+
+.body {
+  padding: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  font: var(--cc-font-markdown-code-block);
+}
+
+.line {
+  display: flex;
+  min-height: var(--cc-read-line-height);
+  line-height: var(--cc-read-line-height);
+  white-space: pre;
+}
+
+.gutter {
+  flex: none;
+  width: var(--cc-read-gutter);
+  padding-right: 14px;
+  color: var(--cc-alias-label-tertiary);
+  text-align: right;
+  /* The gutter is chrome, not content: keep it out of a selection so a copy of
+     the visible rows carries the source, not the line numbers. */
+  user-select: none;
+}
+
+.content {
+  color: var(--cc-alias-label-primary);
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 0 0 0 var(--cc-read-gutter);
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.expand:hover {
+  color: var(--cc-alias-label-secondary);
+}

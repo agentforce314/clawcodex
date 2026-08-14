@@ -109,6 +109,52 @@ jobs:
           path: ui-desktop/test-results/*.xml
           retention-days: 3
 
+  web-test:
+    # The browser client (ui-web/): typecheck + the vitest suite over the
+    # protocol adaptation layer (transcript reducer, gateway client, column
+    # solver, markdown) and the production build.
+    #
+    # The build is part of the gate, not a nicety: `clawcodex web` serves
+    # `ui-web/dist`, so a bundle that does not compile is a subcommand that
+    # does not run. Linux only — this is browser code with no native deps, and
+    # the desktop job already covers the Windows toolchain.
+    name: "Web client"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ui-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        # junit output feeds the same "Test Results" publisher as the pytest
+        # legs (test-results.yml globs every artifact for *.xml).
+        run: npx vitest run --reporter=default --reporter=junit --outputFile.junit=test-results/web.xml
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload test results
+        if: (!cancelled())
+        uses: actions/upload-artifact@v4
+        with:
+          name: Test Results (Web)
+          path: ui-web/test-results/*.xml
+          retention-days: 3
+
   harbor-adapter:
     # The harbor eval adapter (eval/harbor/clawcodex_agent.py) cannot be
     # imported by the 3.11 job above: it uses `typing.override` (3.12+) and

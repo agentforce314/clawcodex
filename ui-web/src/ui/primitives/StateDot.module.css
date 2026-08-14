@@ -1,0 +1,79 @@
+/* Solid states: a same-color halo (::before at 10% opacity) around a 60%-scale
+   solid core, both riding currentColor so one `color` per state paints both. */
+.dot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+
+.dot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.1;
+}
+
+.dot::after {
+  content: '';
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dot[data-state='done'] {
+  color: var(--cc-alias-state-success-primary);
+}
+
+.dot[data-state='warning'] {
+  color: var(--cc-alias-state-warn-primary);
+}
+
+.dot[data-state='error'] {
+  color: var(--cc-alias-state-error-primary);
+}
+
+/* Running: a pixel chase. Each cell holds a discrete brightness step (flat
+   keyframe holds, no tweening) and the phase offset comes from a per-rect
+   animation-delay the component sets inline. */
+.matrix {
+  flex: none;
+  color: var(--cc-static-accent-450);
+}
+
+.cell {
+  fill: currentColor;
+  opacity: 0.15;
+  animation: cc-state-dot-chase 1s infinite;
+}
+
+@keyframes cc-state-dot-chase {
+  0%,
+  12.4% {
+    opacity: 1;
+  }
+
+  12.5%,
+  24.9% {
+    opacity: 0.6;
+  }
+
+  25%,
+  37.4% {
+    opacity: 0.35;
+  }
+
+  37.5%,
+  100% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell {
+    opacity: 0.5;
+    animation: none;
+  }
+}

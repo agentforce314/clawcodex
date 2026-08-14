@@ -1,0 +1,91 @@
+/* Composer takeover: the same floating footprint as the input card, with an
+   amber header band, the model's justification, the command, and right-aligned
+   actions. Warn semantics ride the state tokens — no literal colors. */
+
+/* Mirrors InputBar .root so the takeover is a content swap, not a layout jump. */
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Sides = clearance + 16 so the card lands on the shared content width. */
+  padding: 8px calc(var(--cc-composer-side-clearance) + 16px) 12px;
+}
+
+.card {
+  width: 100%;
+  max-width: var(--cc-chat-content-width);
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-state-warn-secondary);
+  border-radius: 20px;
+  background: var(--cc-specific-input-major);
+  box-shadow: var(--cc-shadow-lv2);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--cc-alias-state-warn-tertiary);
+  color: var(--cc-alias-state-warn-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cc-alias-state-warn-primary);
+}
+
+/* A justification and a command are unbounded model text (a one-line `cd` or a
+   40-line heredoc) in a fixed-height column. Uncapped, a long command pushes
+   the action row off screen and the approval cannot be answered at all — so
+   the body scrolls and the strip and actions stay outside it. */
+.body {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: var(--cc-composer-text-max-height);
+  padding: 12px 16px 0;
+  overflow-y: auto;
+}
+
+.headline {
+  color: var(--cc-alias-label-primary);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.command {
+  color: var(--cc-alias-label-tertiary);
+  font-family: var(--cc-font-family-code);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.warning {
+  color: var(--cc-alias-state-warn-label);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.actionRow {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 16px;
+}
+
+.reject:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--cc-alias-interactive-bg-hover-danger);
+  color: var(--cc-alias-state-error-primary);
+}

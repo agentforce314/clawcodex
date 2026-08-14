@@ -1,0 +1,224 @@
+/* Conversation column: header over the scrollport, composer docked at the
+   bottom of that same scrollport. Column width is the layout's; this fills its
+   cell. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--cc-alias-bg-base);
+
+  /* One width axis for the whole column: the transcript and the dock cards
+     share content width W, and the input card alone is W + 32px. The relation
+     holds at every viewport because the transcript and the takeover pad
+     clearance + 16px per side while the input card clears the bare clearance.
+     Declared on the root because the transcript and the composer seat are
+     sibling subtrees. */
+  --cc-chat-content-width: 748px;
+  --cc-composer-card-max-width: calc(var(--cc-chat-content-width) + 32px);
+  --cc-composer-side-clearance: 16px;
+  --cc-composer-dock-inset: 8px;
+  /* One cap for every scrolling text region a composer seat can hold (the
+     draft, the approval body), so electing a takeover never grows the footer
+     past the card it replaces. */
+  --cc-composer-text-max-height: 336px;
+}
+
+.header {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+}
+
+.titleCluster {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title {
+  min-width: 0;
+  max-width: 420px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title:hover:not(:disabled),
+.title:focus {
+  border-color: var(--cc-alias-border-l2);
+  outline: none;
+}
+
+.crumbSep {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+  font-size: 14px;
+}
+
+.crumb {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The column scrolls on ONE axis. Stating `hidden` on the other is what
+   removes the horizontal bar: a box that scrolls in one axis computes the
+   other to `auto`, so any bleed (the hero glow, by construction) becomes
+   user-scrollable. */
+.scrollBody {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Reserved unconditionally: the sticky seat rides this box's content box, so
+     an `auto` gutter would move the input card sideways the moment the flow
+     grows past one screen. */
+  scrollbar-gutter: stable;
+}
+
+/* Hero phase: the composer stack is flex-centred in the column. Flex, not
+   absolute + transform — a transform would make this box the containing block
+   for any position:fixed descendant (menus, dialogs) and shrink them. */
+.scrollBody[data-phase='hero'] {
+  justify-content: center;
+}
+
+.flow {
+  flex: 1 0 auto;
+  min-height: auto;
+}
+
+.settling {
+  padding: 24px calc(var(--cc-composer-side-clearance) + 16px);
+  color: var(--cc-alias-label-caption);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+
+/* The composer seat sticks to the bottom of the scrollport, so a wheel gesture
+   over the input card still moves the transcript. */
+.composerSeat {
+  position: sticky;
+  bottom: 0;
+  z-index: 7;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The transcript fades out under a fixed 36px band at the seat's top and is
+     solid below. Px stops, not percentages: a growing draft only widens the
+     solid region and the fade band never stretches. The 0px stop is the base
+     surface at zero alpha, so both themes fade from their own ground. */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--cc-alias-bg-base) 0%, transparent) 0px,
+    var(--cc-alias-bg-base) 36px
+  );
+}
+
+/* Back-to-bottom: a zero-height sticky slot so the control never extends
+   scrollHeight; the button translates up into the viewport above the seat. */
+.toBottomSlot {
+  position: sticky;
+  bottom: calc(var(--cc-composer-height, 152px) + 16px);
+  z-index: 8;
+  display: flex;
+  justify-content: flex-end;
+  height: 0;
+  padding-right: max(0px, calc((100% - var(--cc-chat-content-width)) / 2));
+  pointer-events: none;
+}
+
+.toBottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-top: -34px;
+  padding: 0;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 100px;
+  background: var(--cc-alias-button-floating-fill);
+  box-shadow: var(--cc-shadow-lv2);
+  color: var(--cc-alias-label-primary);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.toBottom:hover {
+  background: var(--cc-alias-button-floating-hover);
+}
+
+/* Connection banner: a quiet strip, not a modal — a dropped socket reconnects
+   on its own and the transcript stays readable meanwhile. */
+.banner {
+  flex: none;
+  padding: 6px 20px;
+  background: var(--cc-alias-state-warn-tertiary);
+  color: var(--cc-alias-state-warn-label);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.bannerError {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+  color: var(--cc-alias-state-error-primary);
+}

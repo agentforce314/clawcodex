@@ -1,0 +1,107 @@
+.frame {
+  /* Anchors the drag handles, which straddle the column borders. */
+  position: relative;
+  display: grid;
+  grid-template-rows: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--cc-alias-bg-base);
+  transition: grid-template-columns var(--cc-duration-slow) var(--cc-ease-in-out);
+}
+
+/* Dragging writes widths at pointer cadence; easing them would detach the
+   column edge from the handle. */
+.frame[data-dragging] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame {
+    transition: none;
+  }
+}
+
+.sidebarCol {
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--cc-alias-border-l1);
+  background: var(--cc-specific-sidebar-fill);
+}
+
+.centerCol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.detailsCol {
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--cc-alias-border-l2);
+}
+
+/* The details subtree stays mounted at zero width so its state survives a
+   close — but its border must not paint a 1px seam while it is closed. */
+.frame[data-details-collapsed] .detailsCol {
+  border-left: none;
+}
+
+/* Drag handles are frame children (the columns clip overflow): an 8px hit
+   strip centred on the column border via an inline `left`, above the column
+   content. */
+.handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  margin-left: -4px;
+  cursor: col-resize;
+  touch-action: none;
+  /* Rides the same curve as the tracks so the pill stays on the moving border
+     during a collapse; paused while dragging by the frame rule above. */
+  transition: left var(--cc-duration-slow) var(--cc-ease-in-out);
+}
+
+.frame[data-dragging] .handle {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .handle {
+    transition: none;
+  }
+}
+
+/* The details handle carries a visible pill; the sidebar keeps only the strip.
+   The pill hides until the pointer is over its column, the strip, or a drag. */
+.handle[data-side='details']::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  box-sizing: border-box;
+  width: 12px;
+  height: 32px;
+  border: 1px solid var(--cc-alias-border-l2-thin);
+  border-radius: 10px;
+  background: var(--cc-alias-button-floating-fill);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition:
+    opacity var(--cc-duration-slow) var(--cc-ease-in-out),
+    background var(--cc-duration-slow) var(--cc-ease-in-out);
+}
+
+.detailsCol:hover ~ .handle[data-side='details']::after,
+.handle[data-side='details']:hover::after,
+.handle[data-side='details'][data-dragging]::after {
+  opacity: 1;
+}
+
+.handle[data-side='details']:hover::after,
+.handle[data-side='details'][data-dragging]::after {
+  border-color: var(--cc-alias-border-l3);
+  background: var(--cc-alias-button-floating-hover);
+}

@@ -1,0 +1,79 @@
+/* Queued prompts, docked above the composer. Shares the dock geometry with any
+   other card in that stack: 12px radius, tip surface, 12px side padding — the
+   card is inset from the input card by the dock inset on each side. */
+.root {
+  box-sizing: border-box;
+  flex: none;
+  width: calc(100% - 2 * var(--cc-composer-side-clearance) - 4 * var(--cc-composer-dock-inset));
+  max-width: calc(var(--cc-composer-card-max-width) - 4 * var(--cc-composer-dock-inset));
+  margin: 0 auto;
+  padding: 6px 12px;
+  border: 1px solid var(--cc-alias-border-l1);
+  border-radius: 12px;
+  background: var(--cc-specific-tip);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 500;
+}
+
+.count {
+  color: var(--cc-alias-label-tertiary);
+  font-weight: 400;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  margin: 4px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cc-alias-label-caption);
+  cursor: pointer;
+}
+
+.remove:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}

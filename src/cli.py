@@ -124,6 +124,9 @@ def main():
         if token == 'desktop':
             from src.entrypoints.desktop_cli import run_desktop_subcommand
             return run_desktop_subcommand(rest)
+        if token == 'web':
+            from src.entrypoints.web_cli import run_web_subcommand
+            return run_web_subcommand(rest)
         if token == 'tui':
             return _run_tui_subcommand(rest)
         if token == 'migrate':
@@ -400,6 +403,7 @@ Examples:
   clawcodex config                      Show current configuration
   clawcodex                             Start the interactive Ink TUI
   clawcodex tui                         Start the interactive Ink TUI (explicit)
+  clawcodex web                         Open the browser client (loopback only)
   clawcodex -p "hello"                  Non-interactive mode (text output)
   clawcodex -p "hi" --output-format json
   clawcodex -p --output-format stream-json --input-format stream-json < input.ndjson

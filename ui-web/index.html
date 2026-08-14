@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>ClawCodex</title>
+    <script>
+      // Paint the resting surface before the bundle lands, so a cold load in
+      // the dark theme never flashes white. Mirrors resolveTheme() in
+      // src/state/theme.ts — keep the storage key and the attribute in sync.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('clawcodex.web.theme')
+          var dark =
+            stored === 'dark' ||
+            ((stored === null || stored === 'system') &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.setAttribute('data-boot-dark', '')
+        } catch (_) {
+          /* private mode: fall through to the light default */
+        }
+      })()
+    </script>
+    <style>
+      html {
+        background: rgb(255, 255, 255);
+      }
+      html[data-boot-dark] {
+        background: rgb(21, 21, 23);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

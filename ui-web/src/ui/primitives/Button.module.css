@@ -1,0 +1,69 @@
+/* Capsule geometry: h36 / pad 14 / gap 4 / r18 at the default size. Owners
+   with a wider form (the sidebar's New Session bar) set their own radius. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.md {
+  height: 36px;
+}
+
+/* Compact height for dense rows. */
+.sm {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.primary {
+  background: var(--cc-alias-button-primary-fill);
+  color: var(--cc-alias-label-primary-foreground);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--cc-alias-button-primary-hover);
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.ghost:active:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-active);
+}
+
+/* Bordered capsule on a transparent fill — the dialog "Cancel" form. */
+.outline {
+  border: 1px solid var(--cc-alias-border-l2);
+  background: transparent;
+}
+
+.outline:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}

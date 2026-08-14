@@ -1,0 +1,97 @@
+/* Same family as CodeBlock / TerminalBlock. The body keeps `white-space: pre`
+   and scrolls horizontally: folding a source line destroys the indentation a
+   diff is read by. */
+.block {
+  --cc-diff-radius: 12px;
+  --cc-diff-line-height: 22px;
+
+  position: relative;
+  border-radius: var(--cc-diff-radius);
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-primary);
+}
+
+/* The copy control floats over the body's top-right corner, so the card has no
+   empty banner row above its first diff line. */
+.copyButton {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-xs-13);
+  cursor: pointer;
+}
+
+.body {
+  padding: 12px 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  font: var(--cc-font-markdown-code-block);
+}
+
+.line {
+  min-height: var(--cc-diff-line-height);
+  white-space: pre;
+}
+
+/* A file header: the path in the primary tone, set apart by weight. Reserve
+   space at the line's end so a long path does not scroll under the floating
+   copy button (whose hit area would otherwise eat clicks on the path's tail). */
+.path {
+  padding-right: 56px;
+  color: var(--cc-alias-label-primary);
+  font-weight: 600;
+}
+
+/* A same-file second hunk's separator (a scattered edit). */
+.gap {
+  color: var(--cc-alias-label-tertiary);
+}
+
+/* The `- `/`+ ` prefixes are drawn rather than sliced off the source line, so a
+   copied line and the shown line agree and the sign reads without relying on
+   color alone. */
+.del::before {
+  content: '- ';
+  color: var(--cc-alias-state-error-primary);
+}
+
+.del {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.add::before {
+  content: '+ ';
+  color: var(--cc-alias-state-success-primary);
+}
+
+.add {
+  color: var(--cc-alias-state-success-primary);
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.expand:hover {
+  color: var(--cc-alias-label-secondary);
+}
+
+.footer {
+  padding: 0 14px 12px;
+  color: var(--cc-alias-label-tertiary);
+  font: var(--cc-font-markdown-code-block);
+}

@@ -1,0 +1,57 @@
+/* The generic card: a tool result with no dedicated shape (a glob's file list,
+   a grep's matches, a fetch's extract). Same surface family as the code cards
+   so the flow keeps one rhythm; the body wraps rather than scrolling sideways,
+   because these payloads are lists and prose, not aligned columns. */
+.block {
+  position: relative;
+  border: 1px solid var(--cc-alias-border-l1);
+  border-radius: 12px;
+  background: var(--cc-alias-markdown-code-block);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+  color: var(--cc-alias-label-caption);
+  font: var(--cc-font-xxs-12);
+}
+
+.copyButton {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.body {
+  max-height: 260px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-markdown-code-block-small);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Card-internal bar floats off the rounded edge. */
+.body::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+
+.body::-webkit-scrollbar-track {
+  margin: 6px 0;
+}
+
+.error .body {
+  color: var(--cc-alias-state-error-primary);
+}

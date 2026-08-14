@@ -1,0 +1,28 @@
+/*
+ * Shiki dual-theme wiring. The highlighter emits both themes' colors on each
+ * token (`color` for light, `--shiki-dark` custom property for dark), so the
+ * theme switch is a CSS variable swap with no re-highlight and no flash.
+ */
+
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+  font-style: var(--shiki-light-font-style);
+  font-weight: var(--shiki-light-font-weight);
+  text-decoration: var(--shiki-light-text-decoration);
+}
+
+:root[data-theme='dark'] .shiki,
+:root[data-theme='dark'] .shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+  font-style: var(--shiki-dark-font-style);
+  font-weight: var(--shiki-dark-font-weight);
+  text-decoration: var(--shiki-dark-text-decoration);
+}
+
+/* The card owns the surface; shiki's own background must never paint over it. */
+.shiki {
+  background-color: transparent !important;
+}

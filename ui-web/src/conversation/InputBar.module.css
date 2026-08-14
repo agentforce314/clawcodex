@@ -1,0 +1,279 @@
+/* Floating capsule composer: textarea on top, control row below, primary
+   action bottom-right. The card width rides the column
+   (--cc-composer-card-max-width = chat content + 32px) as a CAP, not a fixed
+   size — the box shrinks with the centre column and keeps its clearance. */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* No top pad: the composer stack's gap owns the space above. The bottom
+     gradient mask is the scroller's. */
+  padding: 0 var(--cc-composer-side-clearance) 8px;
+}
+
+/* The centred hero form has no bottom pad, but the side clearance must
+   survive: on a narrow viewport it is the only thing keeping the card off the
+   window edges. */
+.hero {
+  padding: 0 var(--cc-composer-side-clearance);
+}
+
+.notice {
+  width: 100%;
+  max-width: var(--cc-composer-card-max-width);
+  margin-bottom: 6px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.noticeError {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+  color: var(--cc-alias-state-error-primary);
+}
+
+.card {
+  position: relative; /* overlay anchor for the slash popover */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--cc-composer-card-max-width);
+  padding-top: 10px;
+  /* One notch weaker than a button's stroke, on the input surface. */
+  border: 1px solid var(--cc-alias-border-l2-thin);
+  border-radius: 22px;
+  background: var(--cc-specific-input-major);
+  box-shadow: var(--cc-shadow-lv2);
+  font-size: 16px;
+  line-height: 24px;
+  /* Elevated surface: the draft scrolls inside once the composer hits its cap,
+     so its thumb takes the l2 pair. */
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.card:focus-within {
+  border-color: var(--cc-alias-border-l3);
+}
+
+/* The draft's scrollport and the 14-line cap. */
+.scroll {
+  max-height: var(--cc-composer-text-max-height);
+  overflow-y: auto;
+}
+
+.input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  padding: 4px 12px 0 16px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-family: var(--cc-font-family);
+  font-size: inherit;
+  line-height: inherit;
+  resize: none;
+  /* Never a scroller of its own: the wrapper above scrolls, so the caret
+     reveal moves one box and the height stays the draft's full height. */
+  overflow: hidden;
+}
+
+.input::placeholder {
+  color: var(--cc-alias-label-caption);
+  user-select: none;
+}
+
+.input:disabled {
+  color: var(--cc-alias-label-tertiary);
+  cursor: not-allowed;
+}
+
+/* Toolbar: modes on the left, model + send on the right. */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  /* 2px moved from the bottom pad to the top: the control row sits 2px lower
+     in the card (it read too high against the textarea) while the card height
+     and the controls' own centring stay untouched. */
+  padding: 2px 8px 6px;
+}
+
+.modes,
+.trailing {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.modes {
+  gap: 8px;
+}
+
+.trailing {
+  flex: none;
+  gap: 8px;
+}
+
+/* Chip-like closed chrome over a native select: the popup, keyboard handling
+   and accessibility come from the platform. */
+.select {
+  max-width: 220px;
+  height: 28px;
+  padding: 0 20px 0 8px;
+  border: none;
+  border-radius: 8px;
+  outline: none;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  background-size: 12px 12px;
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+}
+
+.select:hover:not(:disabled) {
+  background-color: var(--cc-alias-interactive-bg-hover);
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Primary send: a 34px circle in the info-fill pair (NOT button-primary, which
+   is ink), white glyph in both themes. */
+.primary {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: var(--cc-alias-button-info-fill);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  /* Opts out of the row's 2px downward shift: the send circle keeps its seat
+     while the smaller chips sit lower. Transform, so flex centring is intact. */
+  transform: translateY(-2px);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--cc-alias-button-info-hover);
+}
+
+.primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.stop {
+  background: var(--cc-alias-state-error-primary);
+}
+
+.stop:hover:not(:disabled) {
+  background: var(--cc-alias-state-error-secondary);
+}
+
+/* Queueing is a deferred action, so it reads quieter than a live send: the
+   outline form beside the stop circle rather than a second filled one. */
+.queue {
+  border: 1px solid var(--cc-alias-border-l3);
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+}
+
+.queue:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+.hint {
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* Slash popover: floats above the card, anchored to its top edge. */
+.popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  max-height: 280px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.option[data-active] {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.optionName {
+  flex: none;
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+}
+
+.optionHint {
+  flex: none;
+  color: var(--cc-alias-label-caption);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+}
+
+.optionDescription {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
