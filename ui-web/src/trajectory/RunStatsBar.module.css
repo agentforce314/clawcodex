@@ -40,3 +40,10 @@
 .dot {
   color: var(--cc-alias-label-caption);
 }
+
+/* The model that produced these figures. Dimmer than the numbers beside it —
+   it is context for them, not one of them. */
+.model {
+  color: var(--cc-alias-label-caption);
+  white-space: nowrap;
+}

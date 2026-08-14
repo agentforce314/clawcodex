@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import {
   clearSession,
@@ -32,7 +32,7 @@ import {
   $workspace,
 } from '../state/store.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
-import { TrajectoryStatsBar } from '../trajectory/TrajectoryStatsBar.tsx'
+import { RunStatsBar } from '../trajectory/RunStatsBar.tsx'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
 import { $detailsWidth, closeDetails, openDetails } from '../state/layout.ts'
@@ -43,7 +43,6 @@ import { HeroShell } from './HeroShell.tsx'
 import { InputBar } from './InputBar.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
 import { QueueDock } from './QueueDock.tsx'
-import { StatsLine } from './StatsLine.tsx'
 import css from './ConversationRoot.module.css'
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
@@ -74,6 +73,7 @@ export function ConversationRoot() {
   const loading = useStore($sessionLoading)
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
+  const stats = useMemo(() => trajectoryStats(trajectory), [trajectory])
 
   const [draft, setDraft] = useState('')
   const [atBottom, setAtBottom] = useState(true)
@@ -301,7 +301,11 @@ export function ConversationRoot() {
           </div>
           <div className={css.footer}>
             {seatPanel}
-            <TrajectoryStatsBar stats={trajectoryStats(trajectory)} />
+            <RunStatsBar
+              model={transcript.info.model}
+              provider={transcript.info.provider}
+              stats={stats}
+            />
           </div>
         </>
       ) : (
@@ -349,10 +353,10 @@ export function ConversationRoot() {
             <div className={css.composerSeat} ref={seat}>
               <QueueDock items={queue} onRemove={dequeue} />
               {seatPanel}
-              <StatsLine
+              <RunStatsBar
                 model={transcript.info.model}
                 provider={transcript.info.provider}
-                usage={transcript.usage}
+                stats={stats}
               />
             </div>
           </>
