@@ -1,0 +1,227 @@
+/* Composer takeover for AskUserQuestion. Same footprint and structure as
+   ApprovalPanel — strip, scrolling body, action row — but in the accent
+   palette rather than warn: a question is a request for input, not a risk
+   the user has to weigh. Colors ride the alias tokens, never literals. */
+
+/* Mirrors InputBar .root so the takeover is a content swap, not a layout jump. */
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px calc(var(--cc-composer-side-clearance) + 16px) 12px;
+}
+
+.card {
+  width: 100%;
+  max-width: var(--cc-chat-content-width);
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 20px;
+  background: var(--cc-specific-input-major);
+  box-shadow: var(--cc-shadow-lv2);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 10px 16px;
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.stripLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+/* Question prose, option descriptions and a four-question set are all
+   unbounded in a fixed-height column. Capped and scrolling so the action row
+   stays reachable — an unanswerable question would block the agent. */
+.body {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: var(--cc-composer-text-max-height);
+  padding: 14px 16px 4px;
+  overflow-y: auto;
+}
+
+.eyebrow {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: var(--cc-alias-label-primary);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.option:hover {
+  border-color: var(--cc-alias-border-inverted);
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.optionPicked,
+.optionPicked:hover {
+  border-color: var(--cc-alias-label-primary);
+  background: var(--cc-alias-interactive-bg-active);
+}
+
+/* The index badge doubles as the checked state, so an option reads the same
+   whether it is a radio or a checkbox. */
+.mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 6px;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.markOn {
+  border-color: var(--cc-alias-label-primary);
+  background: var(--cc-alias-label-primary);
+  color: var(--cc-specific-input-major);
+}
+
+.optionText {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.optionLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-tertiary);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.optionHint {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.custom {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.custom::placeholder {
+  color: var(--cc-alias-label-dimmed);
+}
+
+.custom:focus {
+  border-color: var(--cc-alias-label-tertiary);
+  outline: none;
+}
+
+.error {
+  color: var(--cc-alias-state-warn-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px 12px;
+}
+
+.actionsLeft {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nextIcon {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}

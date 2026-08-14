@@ -133,9 +133,31 @@ export interface ApprovalRequestPayload {
   warning?: string
 }
 
+export interface QuestionOption {
+  description?: string
+  label: string
+}
+
+export interface PendingQuestion {
+  header?: string
+  multi_select?: boolean
+  options: QuestionOption[]
+  /**
+   * The agent's answer KEY, not just display text — the tool drops any answer
+   * whose key it did not ask about, so this string is echoed back verbatim.
+   */
+  question: string
+}
+
+export interface QuestionRequestPayload {
+  questions: PendingQuestion[]
+  request_id: string
+}
+
 /** Every push type this client acts on; anything else is ignored by design. */
 export type GatewayEventType =
   | 'approval.request'
+  | 'question.request'
   | 'error'
   | 'gateway.ready'
   | 'message.complete'

@@ -8,6 +8,7 @@ import {
   interrupt,
   renameSession,
   respondApproval,
+  respondQuestion,
   setApprovalMode,
   setModel,
   submitPrompt,
@@ -37,6 +38,7 @@ import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
 import { HeroShell } from './HeroShell.tsx'
 import { InputBar } from './InputBar.tsx'
+import { QuestionComposer } from './QuestionComposer.tsx'
 import { QueueDock } from './QueueDock.tsx'
 import { StatsLine } from './StatsLine.tsx'
 import css from './ConversationRoot.module.css'
@@ -164,6 +166,32 @@ export function ConversationRoot() {
     />
   )
 
+  /**
+   * What sits in the composer seat. Both takeovers block the agent, so at most
+   * one can be pending — but the order is stated rather than assumed, and an
+   * approval wins: it can be raised by a sub-agent while the main turn is
+   * already parked on a question, and the question is still there underneath
+   * once the tool is allowed or denied.
+   */
+  const seatPanel =
+    transcript.approval !== undefined ? (
+      <ApprovalPanel
+        onRespond={choice => {
+          void respondApproval(choice)
+        }}
+        request={transcript.approval}
+      />
+    ) : transcript.question !== undefined ? (
+      <QuestionComposer
+        onRespond={(action, answers) => {
+          void respondQuestion(action, answers)
+        }}
+        request={transcript.question}
+      />
+    ) : (
+      composer
+    )
+
   const banner =
     connection === 'reconnecting' || connection === 'error' ? (
       <div className={[css.banner, connection === 'error' ? css.bannerError : ''].join(' ')}>
@@ -264,16 +292,7 @@ export function ConversationRoot() {
             <TrajectoryView trajectory={trajectory} />
           </div>
           <div className={css.footer}>
-            {transcript.approval === undefined ? (
-              composer
-            ) : (
-              <ApprovalPanel
-                onRespond={choice => {
-                  void respondApproval(choice)
-                }}
-                request={transcript.approval}
-              />
-            )}
+            {seatPanel}
             <TrajectoryStatsBar stats={trajectoryStats(trajectory)} />
           </div>
         </>
@@ -318,16 +337,7 @@ export function ConversationRoot() {
             )}
             <div className={css.composerSeat} ref={seat}>
               <QueueDock items={queue} onRemove={dequeue} />
-              {transcript.approval === undefined ? (
-                composer
-              ) : (
-                <ApprovalPanel
-                  onRespond={choice => {
-                    void respondApproval(choice)
-                  }}
-                  request={transcript.approval}
-                />
-              )}
+              {seatPanel}
               <StatsLine
                 model={transcript.info.model}
                 provider={transcript.info.provider}

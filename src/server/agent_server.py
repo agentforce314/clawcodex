@@ -448,6 +448,26 @@ class _AgentSession:
                     "goal_rev": goal_rev,
                 })
             return
+        if subtype == "set_ask_user_interactive":
+            # The capability negotiation the multi-session transport lacks (see
+            # the spawn-time wiring, which defaults to the non-interactive
+            # answer precisely BECAUSE it cannot know whether the client
+            # renders questions). A client that does render them says so here,
+            # and only then does AskUserQuestion actually reach a human.
+            #
+            # One-way on purpose: a client can enable it, and the only thing
+            # that turns it back off is the session ending. Toggling it off
+            # mid-turn would strand a question already blocking a worker
+            # thread with no one left to answer it -- that case is the ask
+            # timeout's job, not this handler's.
+            enabled = inner.get("enabled") is not False
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            if enabled:
+                self.tool_context.ask_user = self.ask_user
+            self._reply(request_id, {"ok": True, "interactive": bool(enabled)})
+            return
         if subtype == "set_permission_mode":
             mode = inner.get("mode")
             # Validate BEFORE setting: an unknown string would land verbatim in

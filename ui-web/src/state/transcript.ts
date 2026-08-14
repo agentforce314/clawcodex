@@ -20,6 +20,7 @@ import type {
   GatewayEvent,
   MessageCompletePayload,
   MessageDeltaPayload,
+  QuestionRequestPayload,
   SessionInfoPayload,
   ToolCompletePayload,
   ToolResult,
@@ -79,6 +80,7 @@ export interface TranscriptState {
   approval?: ApprovalRequestPayload
   info: SessionInfoPayload
   nodes: TranscriptNode[]
+  question?: QuestionRequestPayload
   running: boolean
   /** Wall-clock start of the running turn, for the elapsed clock. */
   turnStartedAt?: number
@@ -383,6 +385,17 @@ export function applyEvent(state: TranscriptState, event: GatewayEvent): Transcr
     case 'approval.request':
       return { ...state, approval: (event.payload ?? {}) as ApprovalRequestPayload }
 
+    case 'question.request': {
+      const payload = event.payload as QuestionRequestPayload | undefined
+
+      // A question set with nothing in it has no composer to show and no
+      // answer to give; ignoring it leaves the normal input in place rather
+      // than seating an empty takeover the user cannot get out of.
+      if (payload === undefined || payload.questions.length === 0) return state
+
+      return { ...state, question: payload }
+    }
+
     case 'error': {
       const payload = event.payload as { message?: string } | undefined
 
@@ -413,6 +426,16 @@ export function clearApproval(state: TranscriptState): TranscriptState {
 
   const next = { ...state }
   delete next.approval
+
+  return next
+}
+
+/** Clear the pending question after the user answered or declined it. */
+export function clearQuestion(state: TranscriptState): TranscriptState {
+  if (state.question === undefined) return state
+
+  const next = { ...state }
+  delete next.question
 
   return next
 }

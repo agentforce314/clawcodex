@@ -120,6 +120,12 @@ class DesktopSession:
         # approval per session).
         self._pending_asks: dict[str, dict[str, Any]] = {}
         self._last_ask_id: str | None = None
+        # AskUserQuestion rides its own slot rather than sharing _last_ask_id:
+        # an approval click and a question submit are different replies, and a
+        # single slot would let either resolve the other's request.
+        self._pending_question: str | None = None
+        # Set only once a client has said it renders questions (see _create).
+        self.asks_questions = False
         self.sockets: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
@@ -265,16 +271,28 @@ class DesktopSession:
         if not rid:
             return
         self._pending_asks[rid] = request
-        self._last_ask_id = rid
 
         if subtype == "can_use_tool":
+            # Claimed by the approval lane only; a question must not land in
+            # this slot or an approval click would answer it.
+            self._last_ask_id = rid
             await self._broadcast("approval.request", approval_request_payload(request))
             return
+
+        if subtype == "ask_user_question" and self.asks_questions:
+            payload = question_request_payload(rid, request)
+            # A malformed question set has nothing to render; falling through
+            # to the decline below is better than an empty modal the user
+            # cannot dismiss.
+            if payload is not None:
+                self._pending_question = rid
+                await self._broadcast("question.request", payload)
+                return
+
         # Unknown ask: deny rather than hang the agent behind an invisible
         # prompt (the desktop has no surface for it yet).
         logger.warning("desktop session %s: unsupported ask %s — denying", self.session_id, subtype)
         self._pending_asks.pop(rid, None)
-        self._last_ask_id = None
         await self._reply_ask(rid, {"behavior": "deny", "message": f"unsupported prompt {subtype}"})
 
     async def _reply_ask(self, rid: str, response: Any) -> None:
@@ -451,6 +469,87 @@ class DesktopSession:
         await self._reply_ask(rid, reply)
         return {"resolved": True}
 
+    async def respond_question(
+        self, action: str, answers: dict[str, str]
+    ) -> dict[str, Any]:
+        """Answer (or decline) the parked AskUserQuestion.
+
+        The agent reads anything that is not ``action == "submit"`` as a
+        decline, and filters the answers down to the questions it actually
+        asked — so an unknown key here is dropped there, not an error.
+        """
+        rid = self._pending_question
+        self._pending_question = None
+        if not rid or self._pending_asks.pop(rid, None) is None:
+            # Already answered, timed out, or never ours. Saying so lets the
+            # client drop a composer that is addressing a question the agent
+            # has since stopped waiting on.
+            return {"resolved": False}
+
+        if action != "submit":
+            await self._reply_ask(rid, {"action": "decline"})
+            return {"resolved": True}
+
+        await self._reply_ask(
+            rid,
+            {
+                "action": "submit",
+                "answers": {
+                    str(k): str(v)
+                    for k, v in answers.items()
+                    if isinstance(k, str) and isinstance(v, str)
+                },
+            },
+        )
+        return {"resolved": True}
+
+
+def _wants_questions(params: dict[str, Any]) -> bool:
+    """Whether this client declared it can render AskUserQuestion."""
+    capabilities = params.get("capabilities")
+    if isinstance(capabilities, dict):
+        return capabilities.get("ask_user_question") is True
+    if isinstance(capabilities, list):
+        return "ask_user_question" in capabilities
+    return False
+
+
+def question_request_payload(
+    request_id: str, request: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Shape one ``ask_user_question`` for the client, or None if unrenderable.
+
+    Question text is the agent's answer KEY (that is the contract the tool
+    filters on), so it is carried through verbatim and echoed back rather than
+    re-derived client-side from a label or an index.
+    """
+    questions: list[dict[str, Any]] = []
+    for item in request.get("questions") or []:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("question")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        options: list[dict[str, str]] = []
+        for option in item.get("options") or []:
+            if isinstance(option, dict) and isinstance(option.get("label"), str):
+                entry = {"label": option["label"]}
+                description = option.get("description")
+                if isinstance(description, str) and description:
+                    entry["description"] = description
+                options.append(entry)
+        question: dict[str, Any] = {"question": text, "options": options}
+        header = item.get("header")
+        if isinstance(header, str) and header:
+            question["header"] = header
+        if item.get("multiSelect") is True:
+            question["multi_select"] = True
+        questions.append(question)
+
+    if not questions:
+        return None
+    return {"request_id": request_id, "questions": questions}
+
 
 def configured_providers_only(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep only providers the user has actually configured.
@@ -550,6 +649,7 @@ class GatewayConnection:
             "projects.tree": self.projects_tree,
             "prompt.submit": self.prompt_submit,
             "approval.respond": self.approval_respond,
+            "question.respond": self.question_respond,
             "permission.cycle": self.permission_cycle,
             "model.options": self.model_options,
             "config.get": self.config_get,
@@ -621,6 +721,19 @@ class GatewayConnection:
             await asyncio.wait_for(session.init_seen.wait(), CONTROL_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning("session %s: no system/init within %ss", session_id, CONTROL_TIMEOUT_S)
+        # Capability negotiation, opt-in per client. Without it the agent
+        # substitutes the non-interactive answer for AskUserQuestion, because
+        # a client that ignored the question would park the session's worker
+        # thread until the ask timeout. Clients that render questions ask for
+        # the real thing here; the ones that don't are left exactly as before.
+        if _wants_questions(params):
+            reply = await session.control_query("set_ask_user_interactive", {"enabled": True})
+            if isinstance(reply, dict) and reply.get("ok") is not False:
+                session.asks_questions = True
+            else:
+                logger.warning(
+                    "session %s: interactive questions refused: %r", session_id, reply
+                )
         if resume:
             reply = await session.control_query("resume", {"session_id": resume})
             if not isinstance(reply, dict) or reply.get("ok") is False:
@@ -789,6 +902,13 @@ class GatewayConnection:
 
     async def approval_respond(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._session(params).respond_approval(str(params.get("choice") or "deny"))
+
+    async def question_respond(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw = params.get("answers")
+        answers = raw if isinstance(raw, dict) else {}
+        return await self._session(params).respond_question(
+            str(params.get("action") or "decline"), answers
+        )
 
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})

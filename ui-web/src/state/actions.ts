@@ -51,6 +51,7 @@ import {
   appendUserMessage,
   applyEvent,
   clearApproval,
+  clearQuestion,
   emptyTranscript,
   hydrateStoredMessages,
   markTurnStarted,
@@ -179,6 +180,17 @@ export interface SessionSpawnOptions {
   provider?: string
 }
 
+/**
+ * What this client can render, declared at session start.
+ *
+ * The backend defaults AskUserQuestion to a non-interactive answer because a
+ * client that ignored the question would block the agent's worker thread until
+ * the ask timeout. Declaring the capability is what makes the agent actually
+ * ask — so it belongs to the client that ships the composer, not to the
+ * backend.
+ */
+const CAPABILITIES = { ask_user_question: true }
+
 export async function createSession(options: SessionSpawnOptions = {}): Promise<void> {
   $transcript.set(emptyTranscript())
   $trajectory.set(emptyTrajectory())
@@ -187,7 +199,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   $sessionId.set(null)
   $storedSessionId.set(null)
 
-  const params: Record<string, unknown> = {}
+  const params: Record<string, unknown> = { capabilities: CAPABILITIES }
 
   if (options.cwd !== undefined && options.cwd !== '') params.cwd = options.cwd
   if (options.provider !== undefined && options.provider !== '') params.provider = options.provider
@@ -212,7 +224,7 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
   $detailsNodeId.set(null)
   $sessionLoading.set(true)
 
-  const params: Record<string, unknown> = { session_id: storedId }
+  const params: Record<string, unknown> = { capabilities: CAPABILITIES, session_id: storedId }
 
   if (cwd !== undefined && cwd !== '') params.cwd = cwd
 
@@ -422,6 +434,32 @@ export async function respondApproval(choice: ApprovalChoice): Promise<void> {
 
   try {
     await gateway().request('approval.respond', { session_id: sessionId, choice })
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+}
+
+/**
+ * Answer or decline the parked AskUserQuestion.
+ *
+ * Keys are the question texts verbatim: that is what the tool filters its
+ * answers on, so a re-derived label or an index would be silently dropped on
+ * the far side.
+ */
+export async function respondQuestion(
+  action: 'decline' | 'submit',
+  answers: Record<string, string> = {},
+): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  // Seat the composer back immediately. The agent is unblocked either way, and
+  // leaving the takeover up until the round-trip returns reads as a hang.
+  $transcript.set(clearQuestion($transcript.get()))
+
+  try {
+    await gateway().request('question.respond', { action, answers, session_id: sessionId })
   } catch (error) {
     notice(errorText(error), 'error')
   }
