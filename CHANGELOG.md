@@ -19,6 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   meter with per-category breakdown, slash-command completion, session resume
   from the sidebar, and light/dark/system themes.
 
+  It carries two views. **Chat** is the conversation. **Trajectory** is the
+  same run as a metered ledger: every model request and tool call in order, a
+  three-lane timeline (input / model / tools) that switches between
+  equal-width operations and real elapsed durations, per-step tokens and
+  timing (TTFT, generation, throughput, cache-hit rate), and an inspector with
+  Summary / Preview / Raw. Model time and tool time are reported separately —
+  "41s" is not actionable, "41s of model, 22s of tools" says which half to go
+  look at.
+
+  Making that honest needed per-request data the gateway was discarding:
+  `_sdk_envelope` now carries the `usage`/`model`/`stop_reason` it already
+  computed, and the gateway translates them into a `step.complete` event
+  (`result` only ever reported whole-turn totals, so a ten-request turn and a
+  one-request turn were indistinguishable). Both changes are additive — a
+  message without those fields produces exactly the envelope it always did.
+
   It is deliberately **not** a second server. `clawcodex web` is
   `clawcodex serve` with the built `ui-web/dist` mounted on it, so a browser
   drives the same in-process agent, the same JSON-RPC gateway (`/api/ws`), and
