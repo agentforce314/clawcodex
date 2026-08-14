@@ -149,3 +149,92 @@ def test_catalog_from_config_shows_only_configured() -> None:
     if current is not None:
         assert len(current["models"]) >= 1
 
+
+
+# ─── /bg listing ─────────────────────────────────────────────────────────────
+#
+# The list path used to call `bg_run` with `{"action": "list"}`. bg_run REQUIRES
+# a command and answers "usage: /bg <command>" without one, so `/bg` reported
+# zero tasks however many were actually running.
+
+
+def _bg_control(reply: dict, seen: list) -> object:
+    async def control(subtype: str, params: dict) -> dict:
+        seen.append((subtype, params))
+        return reply
+
+    return control
+
+
+@pytest.mark.asyncio
+async def test_bg_lists_via_bg_list_not_bg_run() -> None:
+    seen: list = []
+    reply = {
+        "ok": True,
+        "tasks": [{"id": "abc123", "command": "sleep 30", "status": "running", "exit_code": None}],
+    }
+
+    res = await dispatch_slash(_bg_control(reply, seen), "bg", None)
+
+    assert seen[0][0] == "bg_list"
+    assert "abc123" in res["output"]
+    assert "sleep 30" in res["output"]
+
+
+@pytest.mark.asyncio
+async def test_bg_lists_every_task_rather_than_counting_them() -> None:
+    # "3 background task(s)" says something is running but not what, whether it
+    # finished, or the id you would need to kill it.
+    seen: list = []
+    reply = {
+        "ok": True,
+        "tasks": [
+            {"id": "one", "command": "npm test", "status": "running", "exit_code": None},
+            {"id": "two", "command": "make build", "status": "exited", "exit_code": 0},
+        ],
+    }
+
+    res = await dispatch_slash(_bg_control(reply, seen), "bg", None)
+    lines = res["output"].splitlines()
+
+    assert len(lines) == 2
+    assert "npm test" in lines[0]
+    assert "make build" in lines[1]
+
+
+@pytest.mark.asyncio
+async def test_bg_shows_the_exit_code_of_a_finished_task_only() -> None:
+    # The code is the whole story for a finished task and noise for a live one.
+    seen: list = []
+    reply = {
+        "ok": True,
+        "tasks": [
+            {"id": "one", "command": "a", "status": "running", "exit_code": None},
+            {"id": "two", "command": "b", "status": "exited", "exit_code": 1},
+        ],
+    }
+
+    res = await dispatch_slash(_bg_control(reply, seen), "bg", None)
+    lines = res["output"].splitlines()
+
+    assert "(1)" in lines[1]
+    assert "(" not in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_bg_says_so_when_there_is_nothing_running() -> None:
+    seen: list = []
+
+    res = await dispatch_slash(_bg_control({"ok": True, "tasks": []}, seen), "bg", None)
+
+    assert res["output"] == "No background tasks."
+
+
+@pytest.mark.asyncio
+async def test_bg_with_an_argument_still_starts_an_agent() -> None:
+    seen: list = []
+
+    res = await dispatch_slash(_bg_control({"ok": True, "id": "xyz"}, seen), "bg", "review the diff")
+
+    assert seen[0][0] == "bg_agent"
+    assert "xyz" in res["output"]

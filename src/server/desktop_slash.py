@@ -25,6 +25,17 @@ def _out(text: str) -> dict[str, Any]:
     return {"output": text, "type": "exec"}
 
 
+def _bg_row(task: dict[str, Any]) -> str:
+    """One background task as a line: id, status, and what it is running."""
+    status = str(task.get("status") or "?")
+    code = task.get("exit_code")
+    # An exit code is the whole story for a finished task and noise for a
+    # running one.
+    if status != "running" and isinstance(code, int):
+        status = f"{status} ({code})"
+    return f"{task.get('id', '?')}  {status}  {task.get('command', '')}".rstrip()
+
+
 def _num(arg: str | None, default: int = 1) -> int:
     try:
         return int(str(arg).strip()) if arg else default
@@ -139,10 +150,18 @@ async def dispatch_slash(control: ControlQuery, name: str, arg: str | None) -> d
                 r = await control("bg_agent", {"command": arg})
                 r = r if isinstance(r, dict) else {}
                 return _out(f"Started background agent {r.get('id', '')}.")
-            r = await control("bg_run", {"action": "list"})
+            # bg_list, not bg_run: bg_run REQUIRES a command and answers
+            # "usage: /bg <command>" without one, so the old call reported
+            # zero tasks however many were actually running.
+            r = await control("bg_list", {})
             r = r if isinstance(r, dict) else {}
-            procs = r.get("processes") or r.get("tasks") or []
-            return _out(f"{len(procs)} background task(s).")
+            tasks = [t for t in (r.get("tasks") or []) if isinstance(t, dict)]
+            if not tasks:
+                return _out("No background tasks.")
+            # Listed rather than counted: "3 background task(s)" tells you
+            # something is running but not what, whether it finished, or the
+            # id you would need to kill it.
+            return _out("\n".join(_bg_row(t) for t in tasks))
 
         if name == "version":
             from src import __version__
