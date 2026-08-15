@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -160,6 +161,99 @@ def build_app(state: DesktopServeState) -> Starlette:
         # picked one up can't be round-tripped straight back by the renderer's
         # whole-record autosave.
         return JSONResponse(redact_secrets(strip_config_envelope(load_config())))
+
+    async def env_vars(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from src.config import load_config
+        from src.providers import PROVIDER_INFO, provider_env_vars
+        from src.secret_store import _config_env
+
+        if request.method == "PUT":
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001
+                body = None
+            if not isinstance(body, dict):
+                return JSONResponse({"ok": False, "error": "invalid body"},
+                                    status_code=400)
+            key = body.get("key")
+            value = body.get("value")
+            if not isinstance(key, str) or not key.strip():
+                return JSONResponse({"ok": False, "error": "key required"},
+                                    status_code=400)
+            if not isinstance(value, str):
+                value = str(value) if value is not None else ""
+            from src.secret_store import set_secret
+            try:
+                set_secret(key, value)
+                return JSONResponse({"ok": True})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("desktop: env set failed", exc_info=True)
+                return JSONResponse({"ok": False, "error": str(exc)},
+                                    status_code=500)
+
+        # GET - return all env vars in the EnvVarInfo format expected by the frontend
+        config = load_config()
+        stored_env = _config_env()
+        providers = config.get("providers", {})
+
+        # Build a map of provider -> canonical name for label lookup
+        provider_labels = {pid: info.get("label", pid) for pid, info in PROVIDER_INFO.items()}
+
+        # Map env var name -> provider info (from provider_env_vars)
+        env_to_provider = {}
+        for pid in PROVIDER_INFO:
+            for env_name in provider_env_vars(pid):
+                if env_name not in env_to_provider:
+                    env_to_provider[env_name] = {"id": pid, "label": provider_labels[pid]}
+
+        # Also include custom endpoint providers from config
+        for provider_name, provider_cfg in providers.items():
+            if isinstance(provider_cfg, dict):
+                base_url = provider_cfg.get("base_url")
+                if base_url and provider_name not in PROVIDER_INFO:
+                    env_name = f"{provider_name.upper().replace('-', '_')}_API_KEY"
+                    if env_name not in env_to_provider:
+                        env_to_provider[env_name] = {"id": provider_name, "label": provider_name}
+
+        # Build the response matching EnvVarInfo interface
+        result: dict[str, Any] = {}
+        all_keys = set(stored_env.keys()) | set(env_to_provider.keys()) | set(os.environ.keys())
+
+        for key in sorted(all_keys):
+            provider_info = env_to_provider.get(key)
+            is_set = key in stored_env and bool(stored_env[key].strip())
+            # Check if set in real env too
+            if not is_set:
+                env_val = os.environ.get(key)
+                if env_val and env_val.strip():
+                    is_set = True
+
+            # Determine category
+            category = "provider" if provider_info else "other"
+            # Some known non-provider categories
+            if key.startswith("TAVILY_") or key.startswith("BRAVE_") or key.startswith("SERP_"):
+                category = "tools"
+            elif key.startswith("GITHUB_") or key.startswith("GITLAB_") or key.startswith("BITBUCKET_"):
+                category = "vcs"
+            elif key.startswith("CLAWCODEX_"):
+                category = "settings"
+
+            result[key] = {
+                "advanced": False,
+                "category": category,
+                "description": f"API key for {provider_info['label'] if provider_info else key}",
+                "is_password": True,
+                "is_set": is_set,
+                "provider": provider_info["id"] if provider_info else None,
+                "provider_label": provider_info["label"] if provider_info else None,
+                "redacted_value": "••••••••" if is_set else None,
+                "tools": [],
+                "url": None,
+            }
+
+        return JSONResponse(result)
 
     def _int_param(request: Request, name: str, default: int) -> int:
         try:
@@ -395,13 +489,16 @@ def build_app(state: DesktopServeState) -> Starlette:
     def _default_profile_info() -> dict[str, Any]:
         from src.config import get_default_provider, get_provider_config, load_config
         from src.utils.clawcodex_dirs import get_user_config_dir
+        from src.skills.loader import get_all_skills
 
         model = provider = None
         has_env = False
+        skill_count = 0
         try:
             provider = get_default_provider()
             model = (get_provider_config(provider) or {}).get("default_model")
             has_env = bool((load_config() or {}).get("env"))
+            skill_count = len(get_all_skills())
         except Exception:  # noqa: BLE001 — profile card degrades soft
             pass
         return {
@@ -411,7 +508,7 @@ def build_app(state: DesktopServeState) -> Starlette:
             "model": model,
             "provider": provider,
             "has_env": has_env,
-            "skill_count": 0,
+            "skill_count": skill_count,
         }
 
     async def profiles(request: Request) -> Response:
@@ -451,6 +548,162 @@ def build_app(state: DesktopServeState) -> Starlette:
         # 200 with ok:false is the renderer's soft-fail shape; a hard status
         # would surface a generic "request failed" instead of our message.
         return JSONResponse(payload)
+
+    # ---- Custom Endpoints ----
+    # Stored in config.json under "custom_endpoints" key (list of endpoint objects)
+    def _load_custom_endpoints() -> list[dict[str, Any]]:
+        from src.config import load_config
+        config = load_config()
+        return config.get("custom_endpoints", [])
+
+    def _save_custom_endpoints(endpoints: list[dict[str, Any]]) -> None:
+        from src.config import _get_default_manager
+        mgr = _get_default_manager()
+        config = mgr.load_global()
+        config["custom_endpoints"] = endpoints
+        mgr.save_global(config)
+
+    def _validate_endpoint_data(data: dict[str, Any]) -> tuple[bool, str | None]:
+        """Validate required fields for a custom endpoint."""
+        required = ["name", "base_url", "model"]
+        for field in required:
+            if not data.get(field) or not str(data[field]).strip():
+                return False, f"Missing required field: {field}"
+        return True, None
+
+    async def custom_endpoints_list(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        endpoints = _load_custom_endpoints()
+        return JSONResponse({"endpoints": endpoints})
+
+    async def custom_endpoints_create(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "invalid body"}, status_code=400)
+
+        # Validate required fields
+        ok, msg = _validate_endpoint_data(body)
+        if not ok:
+            return JSONResponse({"ok": False, "error": msg}, status_code=400)
+
+        endpoints = _load_custom_endpoints()
+        endpoint_id = body.get("id") or body["name"].lower().replace(" ", "-").replace("_", "-")
+        # Ensure unique ID
+        base_id = endpoint_id
+        counter = 1
+        while any(e["id"] == endpoint_id for e in endpoints):
+            endpoint_id = f"{base_id}-{counter}"
+            counter += 1
+
+        new_endpoint = {
+            "id": endpoint_id,
+            "name": body["name"].strip(),
+            "base_url": body["base_url"].strip(),
+            "model": body["model"].strip(),
+            "api_key": body.get("api_key", "").strip() or None,
+            "context_length": body.get("context_length"),
+            "discover_models": body.get("discover_models", True),
+            "is_current": body.get("make_default", False),
+            "source": "api",
+            "models": body.get("models", []),
+            "api_key_preview": body.get("api_key") and "••••••••" or None,
+            "has_api_key": bool(body.get("api_key", "").strip()),
+        }
+
+        # If this is the default, unset others
+        if new_endpoint["is_current"]:
+            for e in endpoints:
+                e["is_current"] = False
+
+        endpoints.append(new_endpoint)
+        _save_custom_endpoints(endpoints)
+
+        return JSONResponse({"ok": True, "id": endpoint_id, "endpoints": endpoints})
+
+    async def custom_endpoints_validate(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "invalid body"}, status_code=400)
+
+        # Validate required fields
+        ok, msg = _validate_endpoint_data(body)
+        if not ok:
+            return JSONResponse({"ok": False, "error": msg}, status_code=400)
+
+        # Try to connect and fetch models
+        from openai import OpenAI
+        import os
+
+        base_url = body["base_url"].strip()
+        api_key = body.get("api_key", "").strip() or "EMPTY"
+        model = body["model"].strip()
+
+        try:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            models_response = client.models.list()
+            models = [m.id for m in models_response.data]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("custom endpoint validation failed", exc_info=True)
+            return JSONResponse({
+                "ok": False,
+                "reachable": False,
+                "message": f"Connection failed: {exc}",
+                "models": []
+            })
+
+        # If no model specified in form but we got models, use first one
+        suggested_model = model if model in models else (models[0] if models else model)
+
+        return JSONResponse({
+            "ok": True,
+            "reachable": True,
+            "message": f"Endpoint reachable. Found {len(models)} models.",
+            "models": models,
+            "suggested_model": suggested_model
+        })
+
+    async def custom_endpoints_activate(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        endpoint_id = request.path_params["endpoint_id"]
+        endpoints = _load_custom_endpoints()
+
+        endpoint = next((e for e in endpoints if e["id"] == endpoint_id), None)
+        if not endpoint:
+            return JSONResponse({"ok": False, "error": "endpoint not found"}, status_code=404)
+
+        # Set as current
+        for e in endpoints:
+            e["is_current"] = e["id"] == endpoint_id
+        _save_custom_endpoints(endpoints)
+
+        return JSONResponse({
+            "ok": True,
+            "provider": endpoint_id,
+            "model": endpoint["model"]
+        })
+
+    async def custom_endpoints_delete(request: Request) -> Response:
+        if not _token_ok(state, _rest_token(request)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        endpoint_id = request.path_params["endpoint_id"]
+        endpoints = _load_custom_endpoints()
+
+        endpoints = [e for e in endpoints if e["id"] != endpoint_id]
+        _save_custom_endpoints(endpoints)
+
+        return JSONResponse({"ok": True, "endpoints": endpoints})
 
     async def index(_: Request) -> Response:
         # Two readers, one page. dashboard-token.ts scrapes
@@ -502,6 +755,12 @@ def build_app(state: DesktopServeState) -> Starlette:
         Route("/api/status", status),
         Route("/api/config", config, methods=["GET", "PUT"]),
         Route("/api/config/defaults", config_defaults),
+        Route("/api/env", env_vars, methods=["GET", "PUT"]),
+        Route("/api/providers/custom-endpoints", custom_endpoints_list, methods=["GET"]),
+        Route("/api/providers/custom-endpoints", custom_endpoints_create, methods=["POST"]),
+        Route("/api/providers/custom-endpoints/validate", custom_endpoints_validate, methods=["POST"]),
+        Route("/api/providers/custom-endpoints/{endpoint_id}/activate", custom_endpoints_activate, methods=["POST"]),
+        Route("/api/providers/custom-endpoints/{endpoint_id}", custom_endpoints_delete, methods=["DELETE"]),
         Route("/api/sessions", sessions_list),
         Route("/api/sessions/{session_id}/messages", session_messages),
         Route("/api/profiles", profiles),
