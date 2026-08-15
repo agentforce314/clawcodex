@@ -160,6 +160,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The web composer's approval-mode picker now defaults to Full access,
+  matching the mode a session actually starts in (the backend's implicit
+  interactive default, same as the TUI). Before `session.info` arrived it
+  displayed "Ask every time" and then silently flipped once the session
+  spawned in Full Access.
 - The stdio agent-server pins `\n` framing on Windows (text-mode stdout
   would otherwise emit `\r\n` NDJSON), and the startup profiler no longer
   crashes on import when the environment lacks a resolvable home

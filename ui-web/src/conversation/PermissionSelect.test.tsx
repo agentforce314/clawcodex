@@ -92,6 +92,39 @@ describe('PermissionSelect', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('displays Full access while the session has not reported a mode', () => {
+    // Sessions spawn in Full Access under the backend's implicit interactive
+    // default, so the unknown-mode display must not claim something stricter.
+    render(<PermissionSelect onChange={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name: 'Approval mode: Full access' })).toBeTruthy()
+  })
+
+  it('registers every pick while the mode is unknown, including Full access', () => {
+    // With no session-reported mode the display is a guess, so a pick that
+    // happens to match the guessed label must still reach onChange — a
+    // deliberate pre-session "Full access" click goes through the full
+    // confirmation ceremony rather than being swallowed as a no-op.
+    const onChange = vi.fn()
+    render(<PermissionSelect onChange={onChange} />)
+    open()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Full access/ }))
+
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Enable full access' }))
+    expect(onChange).toHaveBeenCalledWith('off')
+  })
+
+  it('switches to a stricter mode immediately while the mode is unknown', () => {
+    const onChange = vi.fn()
+    render(<PermissionSelect onChange={onChange} />)
+    open()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Ask every time/ }))
+
+    expect(onChange).toHaveBeenCalledWith('manual')
+  })
+
   it('marks full access on the resting chip', () => {
     // The chip is the only persistent reminder that nothing will be asked.
     render(<PermissionSelect onChange={vi.fn()} value="off" />)

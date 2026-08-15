@@ -48,7 +48,14 @@ const ORDER: ApprovalMode[] = ['manual', 'smart', 'off']
 export interface PermissionSelectProps {
   disabled?: boolean
   onChange: (mode: ApprovalMode) => void
-  value: ApprovalMode
+  /**
+   * The session-reported mode; undefined until `session.info` carries one.
+   * While undefined the picker displays 'off' — sessions spawn in Full Access
+   * under the backend's implicit interactive default (same as the TUI), and a
+   * deployment that dials that down corrects the display as soon as the
+   * session reports its real mode.
+   */
+  value?: ApprovalMode
 }
 
 /**
@@ -81,6 +88,10 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
       const mode = id as ApprovalMode
       setOpen(false)
 
+      // Only a KNOWN equal mode is a no-op. While `value` is undefined the
+      // display is a guess, so every pick must reach `onChange` — otherwise a
+      // deliberate pre-session "Full access" click would be swallowed by the
+      // fallback that happens to show the same label.
       if (mode === value) return
 
       if (mode === 'off') {
@@ -95,7 +106,8 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
     [onChange, value],
   )
 
-  const current = MODES[value] ?? MODES.manual
+  const shown: ApprovalMode = value ?? 'off'
+  const current = MODES[shown] ?? MODES.manual
   const items: MenuEntry[] = ORDER.map(mode => ({
     danger: MODES[mode].danger,
     hint: MODES[mode].hint,
@@ -113,7 +125,7 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
             aria-expanded={open}
             aria-haspopup="menu"
             aria-label={`Approval mode: ${current.label}`}
-            className={[css.trigger, value === 'off' ? css.triggerDanger : '']
+            className={[css.trigger, shown === 'off' ? css.triggerDanger : '']
               .filter(Boolean)
               .join(' ')}
             disabled={disabled}
@@ -134,7 +146,7 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
         onClose={close}
         onSelect={choose}
         open={open}
-        selectedId={value}
+        selectedId={shown}
         side="top"
       />
       {confirming && (

@@ -516,8 +516,11 @@ export function InputBar({
               </>
             )}
             <PermissionSelect
+              // Passed through undefined until session.info reports a mode:
+              // PermissionSelect displays the Full Access default but still
+              // treats every pick as a real change while the mode is unknown.
               onChange={onApprovalModeChange}
-              value={approvalMode ?? 'manual'}
+              value={approvalMode}
             />
             <ModelSelect
               models={models}
