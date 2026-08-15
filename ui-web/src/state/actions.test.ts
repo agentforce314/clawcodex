@@ -363,15 +363,37 @@ describe('setDefaultProvider', () => {
     expect(switchFrame(gateway)).toBeUndefined()
   })
 
-  it('leaves a session that was deliberately put on another provider', async () => {
-    // Its provider is not the outgoing default, so it never inherited it.
+  it('switches even when the client cannot tell what the session inherited', async () => {
+    // The state that shipped broken: an earlier version required
+    // `info.provider` to equal the outgoing default, and those two facts
+    // arrive on different round-trips — in the field the match silently
+    // failed and the chip kept naming the replaced provider. An unused
+    // session has nothing to preserve either way.
     const gateway = await connect(REPLIES)
-    seatUntouchedSession('moonshot')
+    $sessionId.set('S1')
+    $transcript.set(emptyTranscript())
+    $providers.set({})
 
     await setDefaultProvider('deepseek')
     await settle()
 
-    expect(switchFrame(gateway)).toBeUndefined()
+    expect(switchFrame(gateway)?.params.value).toBe('deepseek-v4-pro --provider deepseek')
+  })
+
+  it('does not claim the new default when the switch was refused', async () => {
+    // The refusal has to stay on screen: this session is still on the old
+    // provider, and announcing the new one over it would hide that.
+    const gateway = await connect({
+      ...REPLIES,
+      'config.set': { error: 'deepseek is not configured', ok: false },
+    })
+    seatUntouchedSession()
+
+    await setDefaultProvider('deepseek')
+    await settle()
+
+    expect(switchFrame(gateway)).toBeDefined()
+    expect($notice.get()).toMatchObject({ text: 'deepseek is not configured', tone: 'error' })
   })
 
   it('says which provider new sessions start on, after any switch', async () => {

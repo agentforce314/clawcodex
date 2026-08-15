@@ -908,9 +908,6 @@ export async function saveProviderKey(slug: string, apiKey: string): Promise<boo
  * pre-seeded selection.
  */
 export async function setDefaultProvider(slug: string): Promise<void> {
-  // Read before the write: a session that is on the OUTGOING default was
-  // never a deliberate choice, it just inherited it.
-  const previous = $providers.get().default ?? ''
   let applied = slug
   let model = ''
 
@@ -936,27 +933,34 @@ export async function setDefaultProvider(slug: string): Promise<void> {
     return
   }
 
-  // Move a session that is still following the default onto the new one.
-  // "New session" creates its session eagerly, so the welcome screen usually
-  // HAS one — and a live session's own model outranks the catalog on the
-  // composer chip. Without this the chip kept naming the provider just
-  // replaced, directly under a notice announcing the new one, and the next
-  // prompt ran on the old provider. A session with a turn in it, or one
-  // deliberately switched to something else, is left alone.
+  // Move an UNUSED session onto the new default. "New session" creates its
+  // session eagerly, so the welcome screen usually has one already — and a
+  // live session's model outranks the catalog on the composer chip, so
+  // without this the chip keeps naming the provider just replaced, directly
+  // under a notice announcing the new one, and the next prompt runs on the
+  // old provider.
+  //
+  // The test is only "nothing has happened in it yet": no messages, no turn
+  // in flight. An earlier version also required the session to be running the
+  // OUTGOING default, on the theory that anything else was a deliberate pick
+  // worth preserving — but that read state this action cannot rely on
+  // (`$providers.default` and `info.provider` are populated by different
+  // round-trips at different times), so in the field it silently evaluated
+  // false and the chip stayed wrong. A session with nothing in it has nothing
+  // to preserve, and the user just said which provider they want.
   const transcript = $transcript.get()
-  const inherited =
-    $sessionId.get() !== null &&
-    transcript.nodes.length === 0 &&
-    !transcript.running &&
-    previous !== '' &&
-    transcript.info.provider === previous
+  const unused =
+    $sessionId.get() !== null && transcript.nodes.length === 0 && !transcript.running
 
-  if (inherited && model !== '') await setModel(model, applied)
+  const switched = unused && model !== '' ? await setModel(model, applied) : true
 
   await refreshProviders()
   await refreshModels()
-  // Last, so it survives the switch's own notice.
-  notice(`New sessions start on ${applied}.`)
+
+  // Only over a SUCCESSFUL switch: a refusal leaves its own message, and
+  // announcing the new default over it would hide that this session is still
+  // on the old one.
+  if (switched) notice(`New sessions start on ${applied}.`)
 }
 
 /**
@@ -1063,17 +1067,19 @@ export async function setEffort(effort: string): Promise<void> {
   await refreshEffort()
 }
 
-export async function setModel(model: string, provider?: string): Promise<void> {
+/** Switch the session's model; false when the agent refused it. */
+export async function setModel(model: string, provider?: string): Promise<boolean> {
   const sessionId = $sessionId.get()
 
   if (sessionId === null) {
     // No live session yet: the selection rides the next session.create.
     $models.set({ ...$models.get(), model, provider: provider ?? $models.get().provider })
 
-    return
+    return true
   }
 
   const value = provider === undefined ? model : `${model} --provider ${provider}`
+  let ok = true
 
   try {
     const result = await gateway().request<{ error?: string; ok?: boolean; value?: string }>(
@@ -1081,15 +1087,20 @@ export async function setModel(model: string, provider?: string): Promise<void> 
       { session_id: sessionId, key: 'model', value },
     )
 
-    if (result.ok === false) notice(result.error ?? 'Could not switch model', 'error')
-    else notice(`Model: ${result.value ?? model}`)
+    if (result.ok === false) {
+      ok = false
+      notice(result.error ?? 'Could not switch model', 'error')
+    } else notice(`Model: ${result.value ?? model}`)
   } catch (error) {
+    ok = false
     notice(errorText(error), 'error')
   }
 
   await refreshModels()
   // The ladder belongs to the model, so a switch can add, change or remove it.
   await refreshEffort()
+
+  return ok
 }
 
 export async function refreshCommands(): Promise<void> {
