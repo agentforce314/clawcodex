@@ -13,13 +13,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { GatewayClient } from '../gateway/client.ts'
 import {
   createSession,
+  setDefaultProvider,
   setModel,
   dequeue,
   setGatewayClient,
   start,
   submitPrompt,
 } from './actions.ts'
-import { $queue, $sessionId, $sessionLoading, $transcript } from './store.ts'
+import { $notice, $providers, $queue, $sessionId, $sessionLoading, $transcript } from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
 
 /** Answers every RPC from a canned table and lets tests push events. */
@@ -130,6 +131,7 @@ beforeEach(() => {
   window.__CLAWCODEX_SESSION_TOKEN__ = 'test-token'
   $transcript.set(emptyTranscript())
   $sessionId.set(null)
+  $providers.set({})
   $queue.set([])
 })
 
@@ -311,5 +313,76 @@ describe('createSession', () => {
     await settle()
 
     expect($sessionLoading.get()).toBe(false)
+  })
+})
+
+describe('setDefaultProvider', () => {
+  const REPLIES = {
+    'provider.set_default': { default: 'deepseek', model: 'deepseek-v4-pro', ok: true },
+    'provider.list': { default: 'deepseek', providers: [] },
+    'config.set': { ok: true, value: 'deepseek-v4-pro' },
+  }
+
+  /** A live session that has not been used, running the outgoing default. */
+  function seatUntouchedSession(provider = 'openai'): void {
+    $sessionId.set('S1')
+    $transcript.set({
+      ...emptyTranscript(),
+      info: { model: 'gpt-5.6-luna', provider },
+    })
+    $providers.set({ default: 'openai', providers: [] })
+  }
+
+  const switchFrame = (gateway: FakeGateway) =>
+    gateway.sent.find(frame => frame.method === 'config.set' && frame.params.key === 'model')
+
+  it('moves an unused session onto the new default', async () => {
+    // "New session" creates its session eagerly, so the welcome screen has
+    // one — and its own model outranks the catalog on the chip. Without the
+    // switch the composer keeps naming the provider just replaced.
+    const gateway = await connect(REPLIES)
+    seatUntouchedSession()
+
+    await setDefaultProvider('deepseek')
+    await settle()
+
+    expect(switchFrame(gateway)?.params.value).toBe('deepseek-v4-pro --provider deepseek')
+  })
+
+  it('leaves a session that has been used alone', async () => {
+    const gateway = await connect(REPLIES)
+    seatUntouchedSession()
+    $transcript.set({
+      ...$transcript.get(),
+      nodes: [{ id: 'n1', kind: 'user', text: 'hello' }] as never,
+    })
+
+    await setDefaultProvider('deepseek')
+    await settle()
+
+    expect(switchFrame(gateway)).toBeUndefined()
+  })
+
+  it('leaves a session that was deliberately put on another provider', async () => {
+    // Its provider is not the outgoing default, so it never inherited it.
+    const gateway = await connect(REPLIES)
+    seatUntouchedSession('moonshot')
+
+    await setDefaultProvider('deepseek')
+    await settle()
+
+    expect(switchFrame(gateway)).toBeUndefined()
+  })
+
+  it('says which provider new sessions start on, after any switch', async () => {
+    // The switch reports its own model change; the durable fact has to win
+    // the line, or the confirmation the user asked for is overwritten.
+    await connect(REPLIES)
+    seatUntouchedSession()
+
+    await setDefaultProvider('deepseek')
+    await settle()
+
+    expect($notice.get()).toMatchObject({ text: 'New sessions start on deepseek.' })
   })
 })

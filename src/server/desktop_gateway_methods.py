@@ -1360,7 +1360,7 @@ class GatewayConnection:
             return {"ok": False, "error": "provider slug required"}
 
         def _write() -> dict[str, Any]:
-            from src.config import load_config, set_default_provider
+            from src.config import get_provider_config, load_config, set_default_provider
             from src.providers import PROVIDER_INFO, canonical_provider_name
 
             pid = canonical_provider_name(slug)
@@ -1373,7 +1373,14 @@ class GatewayConnection:
             if not known:
                 return {"ok": False, "error": f"unknown provider: {slug}"}
             set_default_provider(pid)
-            return {"ok": True, "default": pid}
+            # The model a session spawned on this provider would land on, so a
+            # client can move an unused session onto the new default rather
+            # than leave it advertising the provider just replaced.
+            try:
+                model = str((get_provider_config(pid) or {}).get("default_model") or "")
+            except Exception:  # noqa: BLE001 — the write already succeeded
+                model = ""
+            return {"ok": True, "default": pid, "model": model}
 
         return await asyncio.to_thread(_write)
 
@@ -1587,7 +1594,18 @@ class GatewayConnection:
         }
 
     async def model_options(self, params: dict[str, Any]) -> dict[str, Any]:
-        session = self._first_session(params)
+        # Only a NAMED session answers here. ``provider.list`` is a
+        # process-wide catalog any session can report, but this drives ONE
+        # window's model chip — so a client with no session of its own is
+        # asking what the NEXT session will run on, and the config branch
+        # below already answers exactly that.
+        #
+        # Borrowing an unrelated window's session made the composer advertise
+        # a model this window would never use: with a session still live on
+        # openai, a fresh welcome screen showed "New sessions start on
+        # deepseek." beside an `openai:gpt-5.6-luna` chip — the notice and the
+        # chip describing different sessions.
+        session = self._first_session(params) if _clean(params.get("session_id")) else None
         if session is not None:
             result = await session.control_query("list_model_providers", {})
             if isinstance(result, dict) and result.get("providers"):

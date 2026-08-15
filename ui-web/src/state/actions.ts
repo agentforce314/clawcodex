@@ -908,11 +908,19 @@ export async function saveProviderKey(slug: string, apiKey: string): Promise<boo
  * pre-seeded selection.
  */
 export async function setDefaultProvider(slug: string): Promise<void> {
+  // Read before the write: a session that is on the OUTGOING default was
+  // never a deliberate choice, it just inherited it.
+  const previous = $providers.get().default ?? ''
+  let applied = slug
+  let model = ''
+
   try {
-    const result = await gateway().request<{ default?: string; error?: string; ok?: boolean }>(
-      'provider.set_default',
-      { slug },
-    )
+    const result = await gateway().request<{
+      default?: string
+      error?: string
+      model?: string
+      ok?: boolean
+    }>('provider.set_default', { slug })
 
     if (result.ok === false) {
       notice(result.error === undefined || result.error === '' ? 'Could not set the default provider' : result.error, 'error')
@@ -920,15 +928,35 @@ export async function setDefaultProvider(slug: string): Promise<void> {
       return
     }
 
-    notice(`New sessions start on ${result.default ?? slug}.`)
+    applied = result.default ?? slug
+    model = result.model ?? ''
   } catch (error) {
     notice(errorText(error), 'error')
 
     return
   }
 
+  // Move a session that is still following the default onto the new one.
+  // "New session" creates its session eagerly, so the welcome screen usually
+  // HAS one — and a live session's own model outranks the catalog on the
+  // composer chip. Without this the chip kept naming the provider just
+  // replaced, directly under a notice announcing the new one, and the next
+  // prompt ran on the old provider. A session with a turn in it, or one
+  // deliberately switched to something else, is left alone.
+  const transcript = $transcript.get()
+  const inherited =
+    $sessionId.get() !== null &&
+    transcript.nodes.length === 0 &&
+    !transcript.running &&
+    previous !== '' &&
+    transcript.info.provider === previous
+
+  if (inherited && model !== '') await setModel(model, applied)
+
   await refreshProviders()
   await refreshModels()
+  // Last, so it survives the switch's own notice.
+  notice(`New sessions start on ${applied}.`)
 }
 
 /**
