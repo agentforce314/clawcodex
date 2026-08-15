@@ -85,7 +85,9 @@ export function RunStatsBar({ model, provider, stats }: RunStatsBarProps) {
         </span>
       )}
 
-      {stats.turns > 0 && (
+      {/* A rehydrated ledger has real timings but no usage; zeros here would
+          read as "this run was free", so the group waits for a measurement. */}
+      {stats.turns > 0 && stats.inputTokens + stats.outputTokens > 0 && (
         <span className={css.group}>
           <span>
             Input <span className={css.value}>{formatTokens(stats.inputTokens)}</span> tok

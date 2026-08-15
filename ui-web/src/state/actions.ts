@@ -53,6 +53,7 @@ import {
 import {
   applyTrajectoryEvent,
   emptyTrajectory,
+  hydrateStoredTrajectory,
   recordPrompt,
 } from './trajectory.ts'
 import { updatesFor } from '../conversation/PlanReviewPanel.tsx'
@@ -255,8 +256,8 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
   $transcript.set(emptyTranscript())
-  // A replayed transcript carries no timings, so the ledger starts empty and
-  // records only what this window observes from here on.
+  // Cleared while the replay is in flight; the stored messages rebuild it
+  // below, timestamps included.
   $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
   $sessionLoading.set(true)
@@ -280,6 +281,10 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
         ...$transcript.get(),
         nodes: hydrateStoredMessages(result.messages),
       })
+      // The same stored messages carry wall-clock timestamps, which is enough
+      // for the Trajectory tab to show the run's shape and its tool timings
+      // instead of "nothing recorded".
+      $trajectory.set(hydrateStoredTrajectory(result.messages))
     }
   } catch (error) {
     notice(`Could not resume that session: ${errorText(error)}`, 'error')

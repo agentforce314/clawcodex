@@ -146,6 +146,15 @@ def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any]
         kind = _display_kind(role, content)
         if kind:
             message["display_kind"] = kind
+        # The wall-clock stamp and stop reason ride along when the file has
+        # them: they are what lets a resumed session's Trajectory tab show the
+        # run's real timings instead of "nothing recorded".
+        timestamp = entry.get("timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            message["timestamp"] = timestamp
+        stop_reason = entry.get("stop_reason")
+        if isinstance(stop_reason, str) and stop_reason:
+            message["stop_reason"] = stop_reason
         messages.append(message)
     # The stored name, so a resumed session keeps the title it was given —
     # the sidebar reads it from this same file, and a header that disagreed

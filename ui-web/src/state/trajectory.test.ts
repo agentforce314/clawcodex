@@ -5,6 +5,7 @@ import {
   applyTrajectoryEvent,
   emptyTrajectory,
   formatMs,
+  hydrateStoredTrajectory,
   recordPrompt,
   stepMetrics,
   stepTtft,
@@ -325,5 +326,123 @@ describe('formatting', () => {
     expect(toolSummary('read_file', { file_path: '/a/b.ts' })).toBe('/a/b.ts')
     expect(toolSummary('search_files', { pattern: 'TODO' })).toBe('TODO')
     expect(toolSummary('mystery', {})).toBe('mystery')
+  })
+})
+
+describe('hydrateStoredTrajectory', () => {
+  const T0 = '2026-08-14T23:25:50.000Z'
+  const T1 = '2026-08-14T23:25:53.000Z' // assistant reply, opens a tool
+  const T2 = '2026-08-14T23:25:58.500Z' // tool result: 5.5s tool call
+  const T3 = '2026-08-14T23:26:02.000Z' // final reply: 3.5s step
+
+  const MESSAGES = [
+    { content: 'run the sweep', role: 'user', timestamp: T0 },
+    {
+      content: [
+        { text: 'Listing first.', type: 'text' },
+        { id: 'tu1', input: { command: 'ls src/' }, name: 'Bash', type: 'tool_use' },
+      ],
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      timestamp: T1,
+    },
+    {
+      content: [{ content: 'a.ts\nb.ts', tool_use_id: 'tu1', type: 'tool_result' }],
+      role: 'user',
+      timestamp: T2,
+    },
+    {
+      content: [{ text: 'Two files there.', type: 'text' }],
+      role: 'assistant',
+      stop_reason: 'end_turn',
+      timestamp: T3,
+    },
+  ]
+
+  it('rebuilds turns, steps and tool calls in order', () => {
+    const state = hydrateStoredTrajectory(MESSAGES)
+
+    expect(state.records.map(r => r.kind)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(state.turn).toBe(1)
+    expect(state.records.map(r => r.step)).toEqual([0, 1, 1, 2])
+    expect(state.openTools).toEqual({})
+  })
+
+  it('derives real durations from the stored timestamps', () => {
+    const state = hydrateStoredTrajectory(MESSAGES)
+    const [, step1, tool, step2] = state.records
+
+    // Step 1 spans the prompt to its reply; the tool spans its envelope to
+    // its result; step 2 spans the last result to the final reply.
+    expect(step1?.durationMs).toBe(3000)
+    expect(tool?.durationMs).toBe(5500)
+    expect(step2?.durationMs).toBe(3500)
+    expect(tool?.toolName).toBe('terminal')
+    expect(tool?.result).toEqual({ output: 'a.ts\nb.ts' })
+  })
+
+  it('reports what the file does not carry as absent, never zero', () => {
+    const state = hydrateStoredTrajectory(MESSAGES)
+    const step = state.records[1]
+
+    expect(step?.metrics?.firstTokenAt).toBeNull()
+    expect(step?.metrics?.usage).toBeUndefined()
+    expect(step?.metrics?.stopReason).toBe('tool_use')
+
+    const stats = trajectoryStats(state)
+
+    expect(stats.turns).toBe(1)
+    expect(stats.steps).toBe(2)
+    expect(stats.inputTokens).toBe(0)
+    expect(stats.ttftMs).toBeNull()
+    expect(stats.llmMs).toBe(6500)
+    expect(stats.toolMs).toBe(5500)
+  })
+
+  it('marks a tool with no stored result as unrecorded, not running', () => {
+    const state = hydrateStoredTrajectory([
+      MESSAGES[0]!,
+      MESSAGES[1]!,
+      // The session ended before tu1's result was written.
+    ])
+    const tool = state.records.find(r => r.kind === 'tool')
+
+    expect(tool?.isError).toBe(true)
+    expect(tool?.error).toBe('No result recorded')
+    expect(state.openTools).toEqual({})
+  })
+
+  it('labels a prose-free step the way the live reducer does', () => {
+    const state = hydrateStoredTrajectory([
+      MESSAGES[0]!,
+      {
+        content: [{ id: 'tu9', input: { command: 'pwd' }, name: 'Bash', type: 'tool_use' }],
+        role: 'assistant',
+        timestamp: T1,
+      },
+    ])
+
+    expect(state.records[1]?.text).toBe('(tool calls only)')
+  })
+
+  it('survives messages with no timestamps', () => {
+    const state = hydrateStoredTrajectory([
+      { content: 'hi', role: 'user' },
+      { content: [{ text: 'hello', type: 'text' }], role: 'assistant' },
+    ])
+
+    expect(state.records).toHaveLength(2)
+    expect(state.records[1]?.durationMs).toBeNull()
+    expect(state.records[1]?.metrics?.startedAt).toBeNull()
+  })
+
+  it('skips hidden messages', () => {
+    const state = hydrateStoredTrajectory([
+      { content: 'internal', display_kind: 'hidden', role: 'user', timestamp: T0 },
+      ...MESSAGES,
+    ])
+
+    expect(state.turn).toBe(1)
+    expect(state.records[0]?.text).toBe('run the sweep')
   })
 })

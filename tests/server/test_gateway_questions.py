@@ -923,6 +923,37 @@ def test_a_session_with_no_usable_name_reports_no_title(tmp_path, extra: dict[st
     assert load_session_messages(tmp_path, session_id)["title"] == ""
 
 
+def test_stored_timestamps_and_stop_reasons_survive_the_resume(tmp_path) -> None:
+    # The client's Trajectory tab rebuilds a resumed run's timings from these;
+    # stripping them left the tab claiming nothing was recorded.
+    from src.server.desktop_sessions import load_session_messages
+
+    session_id = _saved(
+        tmp_path,
+        conversation={
+            "messages": [
+                {"role": "user", "content": "hi", "timestamp": "2026-08-14T23:25:53.251669"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hello"}],
+                    "timestamp": "2026-08-14T23:25:58.539747",
+                    "stop_reason": "end_turn",
+                },
+                # Absent or malformed stamps stay absent — never invented.
+                {"role": "user", "content": "next", "timestamp": 12345},
+            ]
+        },
+    )
+
+    messages = load_session_messages(tmp_path, session_id)["messages"]
+
+    assert messages[0]["timestamp"] == "2026-08-14T23:25:53.251669"
+    assert "stop_reason" not in messages[0]
+    assert messages[1]["timestamp"] == "2026-08-14T23:25:58.539747"
+    assert messages[1]["stop_reason"] == "end_turn"
+    assert "timestamp" not in messages[2]
+
+
 # ── general settings (settings.general + setters) ─────────────────────────────
 
 

@@ -35,6 +35,7 @@ import type {
   ToolCompletePayload,
   ToolStartPayload,
 } from '../gateway/protocol.ts'
+import { renderToolName, renderToolResult } from '../gateway/tool-vocabulary.ts'
 
 export type TrajectoryKind = 'assistant' | 'notice' | 'tool' | 'user'
 
@@ -406,6 +407,199 @@ export function applyTrajectoryEvent(
     default:
       return state
   }
+}
+
+/* ── rehydration ─────────────────────────────────────────────────────────── */
+
+interface StoredTrajectoryBlock {
+  content?: unknown
+  id?: string
+  input?: Record<string, unknown>
+  is_error?: boolean
+  name?: string
+  text?: string
+  thinking?: string
+  tool_use_id?: string
+  type?: string
+}
+
+interface StoredTrajectoryMessage {
+  content?: unknown
+  display_kind?: string
+  role?: string
+  stop_reason?: string
+  timestamp?: string
+}
+
+function storedBlocks(content: unknown): StoredTrajectoryBlock[] {
+  return Array.isArray(content) ? (content as StoredTrajectoryBlock[]) : []
+}
+
+function storedText(content: unknown): string {
+  if (typeof content === 'string') return content
+
+  return storedBlocks(content)
+    .map(block => (block.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+    .join('')
+}
+
+function storedAt(message: StoredTrajectoryMessage): number | null {
+  const parsed = Date.parse(message.timestamp ?? '')
+
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Stored transcript → a best-effort ledger, so the Trajectory tab of a
+ * resumed session shows the run instead of "nothing recorded".
+ *
+ * The saved file stamps every message with a wall-clock `timestamp`, which is
+ * enough for the shape of the run and for two honest duration families: a
+ * tool call spans its `tool_use` envelope to its `tool_result`, and a model
+ * request spans the previous message to its own reply. What the file does
+ * NOT carry — first-token times, per-step usage, the model id — stays null,
+ * and the readouts render the absence ("First token unavailable") exactly as
+ * they do for a live step that missed a reading. Never a zero standing in
+ * for "unknown".
+ */
+export function hydrateStoredTrajectory(
+  messages: readonly StoredTrajectoryMessage[],
+): TrajectoryState {
+  let state = emptyTrajectory()
+  // When the next model request began: the prompt, or the last tool result.
+  let pendingStart: number | null = null
+  const openByToolId = new Map<string, number>()
+  const rawNames = new Map<string, string>()
+
+  for (const message of messages) {
+    if (message.display_kind === 'hidden') continue
+
+    const at = storedAt(message)
+    const role = message.role ?? 'user'
+    const blocks = storedBlocks(message.content)
+
+    if (role === 'user') {
+      const results = blocks.filter(block => block.type === 'tool_result')
+
+      if (results.length > 0) {
+        for (const block of results) {
+          const toolId = String(block.tool_use_id ?? '')
+          const index = openByToolId.get(toolId)
+
+          if (index === undefined) continue
+
+          const record = recordAt(state, index)
+          const started = record?.startedAt ?? null
+          const text = storedText(block.content)
+          const raw = rawNames.get(toolId) ?? ''
+
+          state = patchRecord(state, index, {
+            durationMs: started !== null && at !== null ? Math.max(0, at - started) : null,
+            endedAt: at,
+            ...(block.is_error === true
+              ? { error: text, isError: true }
+              : { result: renderToolResult(raw, text) }),
+          })
+          openByToolId.delete(toolId)
+        }
+
+        if (openByToolId.size === 0) pendingStart = at
+
+        continue
+      }
+
+      const text = storedText(message.content)
+
+      if (text.trim() === '') continue
+
+      const turn = state.turn + 1
+
+      state = pushRecord(
+        { ...state, stepsThisTurn: 0, turn },
+        {
+          detail: text,
+          durationMs: null,
+          endedAt: at,
+          id: `user-${turn}`,
+          kind: 'user',
+          startedAt: at,
+          step: 0,
+          text: firstLine(text),
+          turn,
+        },
+      )
+      pendingStart = at
+      continue
+    }
+
+    if (role !== 'assistant') continue
+
+    const prose = storedText(message.content)
+    const thinking = blocks
+      .map(block => (block.type === 'thinking' && typeof block.thinking === 'string' ? block.thinking : ''))
+      .join('')
+    const step = state.stepsThisTurn + 1
+    const metrics: StepMetrics = {
+      completedAt: at,
+      firstTokenAt: null,
+      startedAt: pendingStart,
+      ...(typeof message.stop_reason === 'string' && message.stop_reason !== ''
+        ? { stopReason: message.stop_reason }
+        : {}),
+    }
+
+    state = pushRecord(state, {
+      detail: prose,
+      durationMs: pendingStart !== null && at !== null ? Math.max(0, at - pendingStart) : null,
+      endedAt: at,
+      id: `step-${state.turn}-${step}`,
+      kind: 'assistant',
+      metrics,
+      startedAt: pendingStart,
+      step,
+      // Same label the live reducer gives a step that only called tools.
+      text: prose === '' ? '(tool calls only)' : firstLine(prose),
+      ...(thinking === '' ? {} : { thinking }),
+      turn: state.turn,
+    })
+    state = { ...state, stepsThisTurn: step }
+
+    const toolUses = blocks.filter(block => block.type === 'tool_use')
+
+    for (const block of toolUses) {
+      const toolId = String(block.id ?? '')
+      const raw = String(block.name ?? 'tool')
+      const args = block.input ?? {}
+      const name = renderToolName(raw)
+
+      rawNames.set(toolId, raw)
+      state = pushRecord(state, {
+        args,
+        callId: toolId,
+        durationMs: null,
+        endedAt: null,
+        id: `tool-${toolId}`,
+        kind: 'tool',
+        // Tool calls ride the assistant envelope, so its clock is theirs.
+        startedAt: at,
+        step,
+        text: toolSummary(name, args),
+        toolName: name,
+        turn: state.turn,
+      })
+      openByToolId.set(toolId, state.records.length)
+    }
+
+    pendingStart = toolUses.length === 0 ? at : null
+  }
+
+  // A tool whose result never made it into the file (the session ended
+  // mid-call) resolves as the chat hydrator resolves it, not as still-running.
+  for (const index of openByToolId.values()) {
+    state = patchRecord(state, index, { error: 'No result recorded', isError: true })
+  }
+
+  return { ...state, openAssistant: null, openTools: {}, pendingStepStartedAt: null }
 }
 
 /* ── aggregates ──────────────────────────────────────────────────────────── */
