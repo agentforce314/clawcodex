@@ -384,6 +384,48 @@ def test_approvals_mode_get_and_set(tmp_path: Path) -> None:
         assert _drain_for_response(ws, 5, events)["result"]["ok"] is False
 
 
+def test_default_provider_set_and_listed(tmp_path: Path, monkeypatch) -> None:
+    """Settings → Providers writes `default_provider` to config.json and
+    `provider.list` reports it — without needing any session, because changing
+    the default is exactly what someone does when the current default cannot
+    even start one. New sessions follow it: _build_runtime resolves
+    `cfg.provider_name or get_default_provider()` at spawn time."""
+    import src.config as config_mod
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}")
+    monkeypatch.setattr("src.config.get_global_config_path", lambda: config_path)
+    config_mod._get_default_manager().invalidate()
+    try:
+        state, _ = _fake_state(tmp_path)
+        with TestClient(build_app(state)) as client, _connect(client) as ws:
+            ws.receive_json()
+            events: list[dict] = []
+
+            _rpc(ws, 1, "provider.set_default", {"slug": "deepseek"})
+            result = _drain_for_response(ws, 1, events)["result"]
+            assert result["ok"] is True and result["default"] == "deepseek"
+            saved = json.loads(config_path.read_text())
+            assert saved["default_provider"] == "deepseek"
+
+            # The reader of the same key: the settings page's list reply.
+            _rpc(ws, 2, "provider.list", {})
+            assert _drain_for_response(ws, 2, events)["result"]["default"] == "deepseek"
+
+            # An alias lands as its canonical id, matching the catalog's slugs.
+            _rpc(ws, 3, "provider.set_default", {"slug": "kimi"})
+            assert _drain_for_response(ws, 3, events)["result"]["default"] == "moonshot"
+
+            # An unknown provider is refused — every later session would fail
+            # to spawn on it.
+            _rpc(ws, 4, "provider.set_default", {"slug": "bogus"})
+            result = _drain_for_response(ws, 4, events)["result"]
+            assert result["ok"] is False and "bogus" in result["error"]
+            assert json.loads(config_path.read_text())["default_provider"] == "moonshot"
+    finally:
+        config_mod._get_default_manager().invalidate()
+
+
 def test_recap_get_and_set(tmp_path: Path) -> None:
     """The settings page round-trips the recap toggle: `settings.general`
     reports the flag only when the agent did (so "off" and "unknown" stay

@@ -235,7 +235,10 @@ export interface GeneralSettingsResult {
 
 /** `provider.list` — every provider, configured or not. Carries no secrets. */
 export interface ProviderListResult {
+  /** The provider the session runs on now. */
   current?: string
+  /** The config default the NEXT session starts on (`default_provider`). */
+  default?: string
   providers?: ModelOption[]
 }
 

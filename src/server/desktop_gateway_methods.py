@@ -800,6 +800,19 @@ def _catalog_from_config() -> dict[str, Any]:
     }
 
 
+def _config_default_provider() -> str:
+    """The config-declared default provider, "" when unreadable.
+
+    Sync (config access); call via ``to_thread``.
+    """
+    try:
+        from src.config import get_default_provider
+
+        return get_default_provider() or ""
+    except Exception:  # noqa: BLE001 — a settings page beats a dead RPC
+        return ""
+
+
 def _clean(value: Any) -> str | None:
     """A non-empty trimmed string, or None (empty selections → base config)."""
     if isinstance(value, str) and value.strip():
@@ -852,6 +865,7 @@ class GatewayConnection:
             "provider.list": self.provider_list,
             "provider.save_key": self.provider_save_key,
             "provider.disconnect": self.provider_disconnect,
+            "provider.set_default": self.provider_set_default,
             "settings.general": self.settings_general,
             "settings.set_output_style": self.settings_set_output_style,
             "settings.set_language": self.settings_set_language,
@@ -1269,18 +1283,55 @@ class GatewayConnection:
         environment variable a key could come from, never the key itself.
         """
         session = self._first_session(params)
+        reply: dict[str, Any] | None = None
         if session is not None:
             result = await session.control_query("list_model_providers", {})
             if isinstance(result, dict) and result.get("providers"):
-                return {
+                reply = {
                     "current": result.get("provider") or "",
                     "providers": result["providers"],
                 }
-        catalog = await asyncio.to_thread(_catalog_from_config)
-        return {
-            "current": catalog.get("provider") or "",
-            "providers": catalog.get("providers") or [],
-        }
+        if reply is None:
+            catalog = await asyncio.to_thread(_catalog_from_config)
+            reply = {
+                "current": catalog.get("provider") or "",
+                "providers": catalog.get("providers") or [],
+            }
+        # `current` is what THIS session runs on; `default` is what config
+        # says the NEXT one starts on. Settings needs both — they differ the
+        # moment a session switches provider or the default is changed.
+        reply["default"] = await asyncio.to_thread(_config_default_provider)
+        return reply
+
+    async def provider_set_default(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Persist ``default_provider`` in the global config.
+
+        A plain config write, so no session is required — changing the default
+        is exactly what someone does when their current default cannot even
+        start a session. A LIVE session keeps the provider it is running on;
+        the default governs sessions created after this.
+        """
+        slug = _clean(params.get("slug"))
+        if slug is None:
+            return {"ok": False, "error": "provider slug required"}
+
+        def _write() -> dict[str, Any]:
+            from src.config import load_config, set_default_provider
+            from src.providers import PROVIDER_INFO, canonical_provider_name
+
+            pid = canonical_provider_name(slug)
+            # The registry, or a config-defined block (custom endpoints) —
+            # anything else would make every later session fail to spawn.
+            configured = load_config().get("providers")
+            known = pid in PROVIDER_INFO or (
+                isinstance(configured, dict) and pid in configured
+            )
+            if not known:
+                return {"ok": False, "error": f"unknown provider: {slug}"}
+            set_default_provider(pid)
+            return {"ok": True, "default": pid}
+
+        return await asyncio.to_thread(_write)
 
     async def provider_save_key(self, params: dict[str, Any]) -> dict[str, Any]:
         """Store an API key for a provider, where `clawcodex login` stores it.
