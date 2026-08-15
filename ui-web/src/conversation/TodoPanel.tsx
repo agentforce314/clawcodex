@@ -64,9 +64,15 @@ export interface TodoPanelProps {
  * a checklist exists and collapses to its header line on demand.
  */
 function TodoPanelImpl({ todos }: TodoPanelProps) {
-  const [collapsed, setCollapsed] = useState(false)
+  // null = the reader has not chosen; the panel then decides for itself:
+  // open while work is in flight, folded to its header once every item is
+  // done — a finished checklist is a receipt, not something to keep reading.
+  const [choice, setChoice] = useState<boolean | null>(null)
 
   if (todos.length === 0) return null
+
+  const allDone = todos.every(todo => todo.status === 'completed')
+  const collapsed = choice ?? allDone
 
   return (
     <section aria-label="To-dos" className={css.panel}>
@@ -74,7 +80,7 @@ function TodoPanelImpl({ todos }: TodoPanelProps) {
         aria-expanded={!collapsed}
         className={css.header}
         onClick={() => {
-          setCollapsed(value => !value)
+          setChoice(!collapsed)
         }}
         type="button"
       >

@@ -1,10 +1,16 @@
 /* The checklist card docked above the composer. Same 12px card family as the
-   tool cards, on the platform surface so it reads as chrome, not content. */
+   tool cards, on the platform surface so it reads as chrome, not content.
+
+   Sized on the ONE width axis every dock card shares (see QueueDock): the
+   composer card's width minus the dock inset, centred. `width: 100%` alone
+   made it a full-bleed band on wide monitors while everything around it
+   stayed centred. */
 .panel {
   display: flex;
   flex-direction: column;
-  width: 100%;
-  margin-bottom: 8px;
+  width: calc(100% - 2 * var(--cc-composer-side-clearance) - 4 * var(--cc-composer-dock-inset));
+  max-width: calc(var(--cc-composer-card-max-width) - 4 * var(--cc-composer-dock-inset));
+  margin: 0 auto 8px;
   padding: 4px 0 6px;
   border-radius: 12px;
   background: var(--cc-alias-bg-module-platform);

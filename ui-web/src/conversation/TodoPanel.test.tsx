@@ -58,4 +58,32 @@ describe('TodoPanel', () => {
 
     expect(queryByText('Collect findings')).toBeTruthy()
   })
+
+  it('folds itself once every item is completed', () => {
+    const allDone = TODOS.map(todo => ({ ...todo, status: 'completed' as const }))
+    const { getByRole, getByText, queryByText } = render(<TodoPanel todos={allDone} />)
+
+    // A finished checklist is a receipt: header only, until asked.
+    expect(getByText('5 completed')).toBeTruthy()
+    expect(queryByText('Collect findings')).toBeNull()
+
+    fireEvent.click(getByRole('button', { expanded: false }))
+
+    expect(queryByText('Collect findings')).toBeTruthy()
+  })
+
+  it('stays open mid-run even after items complete', () => {
+    const { queryByText, rerender } = render(<TodoPanel todos={TODOS} />)
+
+    rerender(
+      <TodoPanel
+        todos={TODOS.map((todo, index) =>
+          index < 4 ? { ...todo, status: 'completed' as const } : todo,
+        )}
+      />,
+    )
+
+    // One item still pending: the list keeps showing.
+    expect(queryByText('Synthesize report')).toBeTruthy()
+  })
 })
