@@ -198,6 +198,49 @@ export function markTurnStarted(state: TranscriptState): TranscriptState {
   return { ...state, running: true, turnStartedAt: Date.now(), turnStreamedText: false }
 }
 
+/**
+ * The subject a task id was created under, recovered from the transcript.
+ *
+ * A TaskUpdate names only `taskId`; the human-readable subject lives on the
+ * TaskCreate that minted the id (its arguments) and the id itself in that
+ * call's result JSON. Scanning the existing rows keeps this a pure function
+ * of the nodes — no side registry to keep in step across live and rehydrated
+ * paths.
+ */
+function taskSubjectFor(nodes: TranscriptNode[], taskId: string): string | undefined {
+  if (taskId === '') return undefined
+
+  for (const node of nodes) {
+    if (node.kind !== 'tool' || node.name !== 'TaskCreate') continue
+
+    const subject = typeof node.args.subject === 'string' ? node.args.subject : ''
+
+    if (subject === '') continue
+
+    const output = node.result?.output ?? node.result?.context ?? ''
+
+    // The created id appears verbatim in the result JSON; a substring check
+    // is enough for the token-ish ids the task registry mints.
+    if (typeof output === 'string' && output.includes(taskId)) return subject
+  }
+
+  return undefined
+}
+
+/** Stamp a task row's context with its subject, so the row can say what the
+    update touched instead of which hex id it touched. */
+function enrichTaskContext(nodes: TranscriptNode[], node: ToolNode): ToolNode {
+  if (node.name !== 'TaskUpdate' && node.name !== 'TaskView' && node.name !== 'TaskGet') {
+    return node
+  }
+  if (node.context !== undefined && node.context !== '') return node
+
+  const taskId = typeof node.args.taskId === 'string' ? node.args.taskId : ''
+  const subject = taskSubjectFor(nodes, taskId)
+
+  return subject === undefined ? node : { ...node, context: subject }
+}
+
 function completeTool(
   nodes: TranscriptNode[],
   payload: ToolCompletePayload,
@@ -209,14 +252,14 @@ function completeTool(
 
     matched = true
 
-    return {
+    return enrichTaskContext(nodes, {
       ...node,
       endedAt: Date.now(),
       error: payload.error,
       name: payload.name && payload.name !== '' ? payload.name : node.name,
       result: payload.result,
       state: payload.error === undefined ? ('done' as const) : ('error' as const),
-    }
+    })
   })
 
   if (matched) return next

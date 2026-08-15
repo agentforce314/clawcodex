@@ -222,6 +222,35 @@ describe('turn state', () => {
     expect(state.running).toBe(false)
   })
 
+  it('stamps a TaskUpdate with the subject its id was created under', () => {
+    const created = '{"task": {"id": "a0a7148e59a2", "subject": "Map the parser"}}'
+    const state = fold([
+      event('tool.start', { args: { subject: 'Map the parser' }, name: 'TaskCreate', tool_id: 'c1' }),
+      event('tool.complete', { result: { context: created, output: created }, tool_id: 'c1' }),
+      event('tool.start', {
+        args: { status: 'completed', taskId: 'a0a7148e59a2' },
+        name: 'TaskUpdate',
+        tool_id: 'u1',
+      }),
+      event('tool.complete', { result: { output: '{"success": true}' }, tool_id: 'u1' }),
+    ])
+
+    expect(tools(state).at(-1)).toMatchObject({
+      context: 'Map the parser',
+      name: 'TaskUpdate',
+      state: 'done',
+    })
+  })
+
+  it('leaves a TaskUpdate context alone when no create matches', () => {
+    const state = fold([
+      event('tool.start', { args: { taskId: 'unknown' }, name: 'TaskUpdate', tool_id: 'u1' }),
+      event('tool.complete', { result: { output: '{"success": false}' }, tool_id: 'u1' }),
+    ])
+
+    expect(tools(state).at(-1)?.context).toBeUndefined()
+  })
+
   it('shows a replayed turn error once, not as bubble AND notice', () => {
     // The backend often streams the failure text as interim prose before the
     // result frame names the same words as the turn's error.

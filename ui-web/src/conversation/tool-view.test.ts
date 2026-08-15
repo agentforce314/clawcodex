@@ -5,6 +5,8 @@ import {
   describeTool,
   formatArgs,
   genericBodyText,
+  prettyMaybeJson,
+  readTaskEntries,
   shortPath,
   synthesizeDiff,
   todoSummary,
@@ -145,6 +147,94 @@ describe('describeTool', () => {
 
     expect(view.body).toBe('diff')
     expect(view.summary).toBe('')
+  })
+})
+
+describe('describeTool task registry rows', () => {
+  it('summarises TaskCreate by its subject, never its JSON', () => {
+    const view = describeTool(
+      tool({
+        args: { subject: 'Map DeepSeek R-series lineup' },
+        name: 'TaskCreate',
+        result: {
+          context: '{"task": {"id": "a0a7148e59a2", "subject": "Map DeepSeek R-series lineup"}}',
+          output: '{"task": {"id": "a0a7148e59a2", "subject": "Map DeepSeek R-series lineup"}}',
+        },
+      }),
+    )
+
+    expect(view).toMatchObject({ icon: 'list', title: 'Task' })
+    expect(view.summary).toBe('Map DeepSeek R-series lineup')
+  })
+
+  it('summarises TaskUpdate as subject → status word', () => {
+    const view = describeTool(
+      tool({
+        args: { status: 'completed', taskId: 'a0a7148e59a2' },
+        context: 'Map DeepSeek R-series lineup',
+        name: 'TaskUpdate',
+        result: { output: '{"success": true, "taskId": "a0a7148e59a2"}' },
+      }),
+    )
+
+    expect(view.summary).toBe('Map DeepSeek R-series lineup → completed')
+  })
+
+  it('recovers the new status from the result when the args lack it', () => {
+    const view = describeTool(
+      tool({
+        args: { taskId: 'a0a7148e59a2' },
+        name: 'TaskUpdate',
+        result: {
+          output: '{"success": true, "statusChange": {"from": "pending", "to": "in_progress"}}',
+        },
+      }),
+    )
+
+    expect(view.summary).toBe('a0a7148e59a2 → started')
+  })
+
+  it('reads a TaskList result as a checklist', () => {
+    const node = tool({
+      name: 'TaskList',
+      result: {
+        output:
+          '{"tasks": [{"id": "a", "subject": "First", "status": "completed"}, {"id": "b", "subject": "Second", "status": "pending"}]}',
+      },
+    })
+    const view = describeTool(node)
+
+    expect(view).toMatchObject({ body: 'todo', title: 'Tasks' })
+    expect(view.summary).toBe('1/2 done')
+    expect(readTaskEntries(node)).toEqual([
+      { active: 'First', content: 'First', status: 'completed' },
+      { active: 'Second', content: 'Second', status: 'pending' },
+    ])
+  })
+
+  it('never quotes JSON in a generic summary', () => {
+    const view = describeTool(
+      tool({
+        name: 'mcp__linear__create_issue',
+        result: {
+          context: '{"success": true, "id": "LIN-42"}',
+          output: '{"success": true, "id": "LIN-42"}',
+        },
+      }),
+    )
+
+    expect(view.summary).toBe('')
+  })
+})
+
+describe('prettyMaybeJson', () => {
+  it('indents a JSON payload', () => {
+    expect(prettyMaybeJson('{"a": 1, "b": [2, 3]}')).toBe('{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}')
+  })
+
+  it('leaves prose alone', () => {
+    expect(prettyMaybeJson('two unused exports found')).toBe('two unused exports found')
+    expect(prettyMaybeJson('{not json')).toBe('{not json')
   })
 })
 

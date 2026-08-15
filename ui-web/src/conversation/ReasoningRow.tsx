@@ -9,24 +9,36 @@ export interface ReasoningRowProps {
   node: ReasoningNode
 }
 
-/** Characters of the live tail shown beside the title while thinking. */
-const TAIL = 160
-
 /**
- * The model's reasoning, as one collapsed row.
+ * The model's reasoning.
  *
- * Live, the summary follows the newest words so the reader can see thinking
- * happen; sealed, it collapses to the first line and the full text is one
- * click away. Reasoning is context, not the answer — it never takes the
- * transcript's full width by default.
+ * LIVE, it is a small window onto the tail of the thought: the last few
+ * lines, wrapped and bottom-anchored, growing the way a terminal grows. The
+ * earlier design followed the newest words on a single collapsed line, which
+ * meant every delta shifted the whole line left — motion nobody can read.
+ * Words appearing at a reading pace under a stable header is the TUI's
+ * streaming-thought presentation, sized for the web column.
+ *
+ * SEALED, it collapses to one quiet row — first line as the summary, the
+ * full text one click away. Reasoning is context, not the answer; it never
+ * holds the transcript's full height once the thought is finished.
  */
 function ReasoningRowImpl({ node }: ReasoningRowProps) {
   const [expanded, setExpanded] = useState(false)
   const live = !node.sealed
-  const flat = node.text.replace(/\s+/g, ' ').trim()
-  // Live, the summary follows the newest words; sealed, it opens with the
-  // first ones — the thought's own topic sentence.
-  const summary = live ? flat.slice(-TAIL) : (node.text.split('\n').find(line => line.trim() !== '') ?? '').trim()
+
+  if (live) {
+    return (
+      <div className={css.liveRoot}>
+        <DisclosureRow icon={<BrainIcon size={14} />} state="running" title="Thinking" />
+        <div aria-live="off" className={css.liveWindow}>
+          <div className={css.liveText}>{node.text}</div>
+        </div>
+      </div>
+    )
+  }
+
+  const summary = (node.text.split('\n').find(line => line.trim() !== '') ?? '').trim()
 
   return (
     <DisclosureRow
@@ -36,9 +48,8 @@ function ReasoningRowImpl({ node }: ReasoningRowProps) {
       onToggle={() => {
         setExpanded(value => !value)
       }}
-      state={live ? 'running' : undefined}
-      summary={live ? <span className={css.summaryLive}>{summary}</span> : summary}
-      title={live ? 'Thinking' : 'Thought'}
+      summary={summary}
+      title="Thought"
     />
   )
 }

@@ -23,6 +23,8 @@ import {
   describeTool,
   formatArgs,
   genericBodyText,
+  prettyMaybeJson,
+  readTaskEntries,
   readTodos,
   synthesizeDiff,
   type ToolIconName,
@@ -86,7 +88,14 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
   const running = node.state === 'running'
   const failed = node.state === 'error'
 
-  const todos = view.body === 'todo' ? readTodos(node.args) : []
+  // The checklist card serves two families: TodoWrite carries its list in the
+  // ARGUMENTS, the task registry's TaskList in its result JSON.
+  const todos =
+    view.body === 'todo'
+      ? node.name === 'TaskList'
+        ? readTaskEntries(node)
+        : readTodos(node.args)
+      : []
   const generic = genericBodyText(node)
   const diff = view.body === 'diff' ? synthesizeDiff(node) : undefined
 
@@ -152,7 +161,7 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
         <IoCard
           className={css.body}
           input={input === '' ? undefined : input}
-          output={generic}
+          output={prettyMaybeJson(generic)}
         />
       )
     }

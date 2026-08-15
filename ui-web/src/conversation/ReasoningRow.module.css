@@ -7,12 +7,30 @@
   word-break: break-word;
 }
 
-/* While thinking is live the summary follows the newest text, so the ellipsis
-   would sit over the words the reader is watching. Clip instead. */
-.summaryLive {
-  direction: rtl;
-  text-align: left;
-  /* The text is left-to-right content shown right-anchored; `plaintext` keeps
-     its own direction so punctuation does not migrate to the wrong end. */
-  unicode-bidi: plaintext;
+.liveRoot {
+  min-width: 0;
+}
+
+/* A window onto the TAIL of the live thought: bottom-anchored, so text flows
+   in at the bottom and the oldest lines slide out the top, clipped. The mask
+   fades the exit edge so a line leaves gradually instead of guillotined. */
+.liveWindow {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* Seven lines of 24px plus the 2px breathing rows. */
+  max-height: 172px;
+  margin: 2px 0;
+  overflow: hidden;
+  mask-image: linear-gradient(180deg, transparent 0, #000 40px);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 40px);
+}
+
+.liveText {
+  padding: 2px 0 2px 22px;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

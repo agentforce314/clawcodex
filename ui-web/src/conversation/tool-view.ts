@@ -73,11 +73,103 @@ export function todoSummary(args: Record<string, unknown>): string {
 
   if (todos.length === 0) return ''
 
+  return todoProgress(todos)
+}
+
+function todoProgress(todos: TodoEntry[]): string {
   const done = todos.filter(todo => todo.status === 'completed').length
   const active = todos.find(todo => todo.status === 'in_progress')
   const progress = `${done}/${todos.length} done`
 
   return active === undefined ? progress : `${progress} · ${active.active}`
+}
+
+/** Parse a value that should be JSON, or undefined when it is not. */
+function parseJson(text: string): unknown {
+  const trimmed = text.trim()
+
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined
+
+  try {
+    return JSON.parse(trimmed) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/** A row summary must be a sentence, never a JSON dump; '' hides it. */
+function proseOnly(summary: string): string {
+  return parseJson(summary) === undefined ? summary : ''
+}
+
+/**
+ * Machine payloads read better indented. Applied to the generic card's OUT
+ * side only — copy fidelity matters less than a reader being able to see
+ * `"status": "completed"` without horizontal archaeology.
+ */
+export function prettyMaybeJson(text: string): string {
+  const parsed = parseJson(text)
+
+  if (parsed === undefined || typeof parsed !== 'object' || parsed === null) return text
+
+  try {
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return text
+  }
+}
+
+/**
+ * The task registry's checklist, from a TaskList result
+ * (`{"tasks": [{id, subject, status}, …]}`).
+ */
+export function readTaskEntries(node: ToolNode): TodoEntry[] {
+  const parsed = parseJson(str(node.result?.output) || str(node.result?.context))
+
+  if (parsed === null || typeof parsed !== 'object') return []
+
+  const tasks = (parsed as { tasks?: unknown }).tasks
+
+  if (!Array.isArray(tasks)) return []
+
+  return tasks.flatMap(entry => {
+    if (entry === null || typeof entry !== 'object') return []
+
+    const record = entry as Record<string, unknown>
+    const subject = typeof record.subject === 'string' ? record.subject : ''
+
+    if (subject === '') return []
+
+    return [
+      {
+        active: subject,
+        content: subject,
+        status: typeof record.status === 'string' ? record.status : 'pending',
+      },
+    ]
+  })
+}
+
+/** The status a TaskUpdate moved its task to, from args or the result JSON. */
+function taskStatusChange(node: ToolNode): string {
+  const fromArgs = str(node.args.status)
+
+  if (fromArgs !== '') return fromArgs
+
+  const parsed = parseJson(str(node.result?.output) || str(node.result?.context))
+
+  if (parsed === null || typeof parsed !== 'object') return ''
+
+  const change = (parsed as { statusChange?: { to?: unknown } }).statusChange
+
+  return typeof change?.to === 'string' ? change.to : ''
+}
+
+const TASK_STATUS_WORDS: Record<string, string> = {
+  completed: 'completed',
+  deleted: 'removed',
+  in_progress: 'started',
+  pending: 'queued',
 }
 
 const TITLES: Record<string, string> = {
@@ -168,7 +260,7 @@ function resultSummary(name: string, result: ToolResult | undefined): string {
     }
 
     default:
-      return str(result.context) || firstLine(str(result.output) || str(result.message))
+      return proseOnly(str(result.context) || firstLine(str(result.output) || str(result.message)))
   }
 }
 
@@ -226,10 +318,22 @@ export function synthesizeDiff(node: ToolNode): string | undefined {
   return undefined
 }
 
+/** `mcp__linear__create_issue` → `linear · create_issue`: the server and the
+    verb, without the wire prefix. */
+function mcpTitle(name: string): string | undefined {
+  if (!name.startsWith('mcp__')) return undefined
+
+  const parts = name.slice('mcp__'.length).split('__').filter(part => part !== '')
+
+  if (parts.length === 0) return undefined
+
+  return parts.join(' · ')
+}
+
 export function describeTool(node: ToolNode, workspace?: string): ToolView {
   const name = node.name
   const args = node.args
-  const title = TITLES[name] ?? name
+  const title = TITLES[name] ?? mcpTitle(name) ?? name
   const icon = ICONS[name] ?? 'tool'
 
   if (node.error !== undefined) {
@@ -294,11 +398,49 @@ export function describeTool(node: ToolNode, workspace?: string): ToolView {
     case 'clarify':
       return { body: 'output', icon, summary: str(node.context), title }
 
+    // The task registry's own tools. Their results are JSON envelopes; the
+    // row reads like the Todos row instead of quoting them.
+    case 'TaskCreate':
+      return { body: 'io', icon: 'list', summary: str(args.subject), title: 'Task' }
+
+    case 'TaskUpdate': {
+      const subject = str(node.context) || str(args.subject) || str(args.taskId)
+      const status = taskStatusChange(node)
+      const word = TASK_STATUS_WORDS[status] ?? status
+
+      return {
+        body: 'io',
+        icon: 'list',
+        summary: word === '' ? subject : subject === '' ? word : `${subject} → ${word}`,
+        title: 'Task',
+      }
+    }
+
+    case 'TaskView':
+    case 'TaskGet':
+      return {
+        body: 'io',
+        icon: 'list',
+        summary: str(node.context) || str(args.taskId),
+        title: 'Task',
+      }
+
+    case 'TaskList': {
+      const tasks = readTaskEntries(node)
+
+      return {
+        body: tasks.length > 0 ? 'todo' : 'io',
+        icon: 'list',
+        summary: tasks.length > 0 ? todoProgress(tasks) : '',
+        title: 'Tasks',
+      }
+    }
+
     default: {
       const summary =
         node.state === 'running'
           ? str(node.context) || str(args.description) || str(args.pattern)
-          : resultSummary(name, node.result) || str(node.context)
+          : resultSummary(name, node.result) || proseOnly(str(node.context))
 
       // Unknown tools (Task, MCP…) disclose both sides of the exchange: the
       // arguments are the only record of what was asked.
