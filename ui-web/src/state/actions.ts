@@ -305,6 +305,12 @@ function adoptSession(result: SessionResumeResult): void {
 
   void refreshProjects()
   void refreshUsage()
+  // The catalog belongs to the session that just started, not to whatever was
+  // read before it: a cross-provider fallback can land somewhere else
+  // entirely. It is also the picker's only repair point — a `model.options`
+  // that failed at boot would otherwise leave "No configured providers yet"
+  // on screen for the life of the page.
+  void refreshModels()
   // The effort ladder is a property of the model this session ended up on,
   // which is only known now — before a session there is nothing to ask.
   void refreshEffort()
