@@ -1,0 +1,122 @@
+/* The checklist card docked above the composer. Same 12px card family as the
+   tool cards, on the platform surface so it reads as chrome, not content. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 4px 0 6px;
+  border-radius: 12px;
+  background: var(--cc-alias-bg-module-platform);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.headerIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--cc-alias-label-secondary);
+}
+
+.title {
+  flex: none;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.counts {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* The list may outgrow its dock; it scrolls rather than squeezing the
+     composer below it. */
+  max-height: 208px;
+  margin: 0;
+  padding: 0 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 8px;
+}
+
+.glyph {
+  flex: none;
+  display: inline-flex;
+  margin-top: 3px;
+}
+
+.glyphDone {
+  color: var(--cc-alias-state-success-primary);
+}
+
+.glyphActive {
+  color: var(--cc-alias-state-business-primary);
+  animation: cc-todo-spin 1.2s linear infinite;
+}
+
+.glyphPending {
+  color: var(--cc-alias-label-caption);
+}
+
+@keyframes cc-todo-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyphActive {
+    animation: none;
+  }
+}
+
+.text {
+  min-width: 0;
+  color: var(--cc-alias-label-secondary);
+  font-size: 14px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.item[data-status='completed'] .text {
+  color: var(--cc-alias-label-tertiary);
+}

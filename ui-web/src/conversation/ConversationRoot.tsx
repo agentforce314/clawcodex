@@ -33,6 +33,7 @@ import {
   $transcript,
   $workspace,
 } from '../state/store.ts'
+import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
 import { RunStatsBar } from '../trajectory/RunStatsBar.tsx'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
@@ -46,6 +47,7 @@ import { InputBar } from './InputBar.tsx'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
 import { QueueDock } from './QueueDock.tsx'
+import { TodoPanel } from './TodoPanel.tsx'
 import css from './ConversationRoot.module.css'
 
 /** Distance from the bottom, in px, still counted as "at the bottom". */
@@ -77,6 +79,7 @@ export function ConversationRoot() {
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
   const stats = useMemo(() => trajectoryStats(trajectory), [trajectory])
+  const todos = useMemo(() => currentTodos(transcript.nodes), [transcript.nodes])
 
   const [draft, setDraft] = useState('')
   // null while in flight, so the panel can say "loading" rather than "no plan".
@@ -413,6 +416,7 @@ export function ConversationRoot() {
               </div>
             )}
             <div className={css.composerSeat} ref={seat}>
+              <TodoPanel todos={todos} />
               <QueueDock items={queue} onRemove={dequeue} />
               {seatPanel}
               <RunStatsBar
