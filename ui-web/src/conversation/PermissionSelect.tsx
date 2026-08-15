@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
-import { Button } from '../ui/primitives/Button.tsx'
+import { FullAccessDialog } from '../ui/FullAccessDialog.tsx'
 import { Menu, type MenuEntry } from '../ui/primitives/Menu.tsx'
 import {
-  AlertIcon,
   ChevronDownIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
@@ -70,13 +69,11 @@ export interface PermissionSelectProps {
 export function PermissionSelect({ disabled = false, onChange, value }: PermissionSelectProps) {
   const [open, setOpen] = useState(false)
   const [confirming, setConfirming] = useState(false)
-  const [acknowledged, setAcknowledged] = useState(false)
 
   // A mode change from elsewhere (a /permissions command, a session switch)
   // invalidates an in-flight confirmation.
   useEffect(() => {
     setConfirming(false)
-    setAcknowledged(false)
   }, [value])
 
   const close = useCallback(() => {
@@ -95,7 +92,6 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
       if (mode === value) return
 
       if (mode === 'off') {
-        setAcknowledged(false)
         setConfirming(true)
 
         return
@@ -150,62 +146,21 @@ export function PermissionSelect({ disabled = false, onChange, value }: Permissi
         side="top"
       />
       {confirming && (
-        <div
-          className={css.scrim}
-          onClick={() => {
+        <FullAccessDialog
+          acknowledgeLabel="I understand this session will not ask again."
+          body={
+            'In Full access the agent runs every tool without asking — editing ' +
+            'and deleting files, and running shell commands — for the rest of ' +
+            'this session.'
+          }
+          onCancel={() => {
             setConfirming(false)
           }}
-        >
-          <div
-            className={css.dialog}
-            onClick={event => {
-              event.stopPropagation()
-            }}
-            role="alertdialog"
-          >
-            <div className={css.dialogHead}>
-              <AlertIcon size={16} />
-              Turn off approvals?
-            </div>
-            <div className={css.dialogBody}>
-              In Full access the agent runs every tool without asking — editing
-              and deleting files, and running shell commands — for the rest of
-              this session.
-            </div>
-            <label className={css.acknowledge}>
-              <input
-                checked={acknowledged}
-                onChange={event => {
-                  setAcknowledged(event.currentTarget.checked)
-                }}
-                type="checkbox"
-              />
-              I understand this session will not ask again.
-            </label>
-            <div className={css.dialogActions}>
-              <Button
-                onClick={() => {
-                  setConfirming(false)
-                }}
-                size="sm"
-                variant="outline"
-              >
-                Cancel
-              </Button>
-              <Button
-                disabled={!acknowledged}
-                onClick={() => {
-                  setConfirming(false)
-                  onChange('off')
-                }}
-                size="sm"
-                variant="primary"
-              >
-                Enable full access
-              </Button>
-            </div>
-          </div>
-        </div>
+          onConfirm={() => {
+            setConfirming(false)
+            onChange('off')
+          }}
+        />
       )}
     </>
   )

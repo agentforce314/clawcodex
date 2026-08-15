@@ -78,6 +78,7 @@ class FakeAgent:
         self.model = "fake"
         self.provider = "fakeprov"
         self.permission_mode = "bypassPermissions"
+        self.recap = True
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -95,11 +96,19 @@ class FakeAgent:
             elif subtype == "set_permission_mode":
                 self.permission_mode = request.get("mode") or self.permission_mode
                 reply = {"ok": True, "mode": self.permission_mode, "persisted": True}
+            elif subtype == "set_recap":
+                value = request.get("value")
+                if value in ("on", "off"):
+                    self.recap = value == "on"
+                    reply = {"ok": True, "value": value}
+                else:
+                    reply = {"ok": False, "error": "usage: /recap [on|off|status]"}
             elif subtype == "get_settings":
                 reply = {
                     "model": self.model,
                     "provider": self.provider,
                     "permission_mode": self.permission_mode,
+                    "recap": self.recap,
                 }
             if reply is not None:
                 await self.queue.put(
@@ -373,6 +382,35 @@ def test_approvals_mode_get_and_set(tmp_path: Path) -> None:
         _rpc(ws, 5, "config.set", {"session_id": sid, "key": "approvals.mode",
                                    "value": "bogus"})
         assert _drain_for_response(ws, 5, events)["result"]["ok"] is False
+
+
+def test_recap_get_and_set(tmp_path: Path) -> None:
+    """The settings page round-trips the recap toggle: `settings.general`
+    reports the flag only when the agent did (so "off" and "unknown" stay
+    distinguishable), and `settings.set_recap` flips it."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        _rpc(ws, 2, "settings.general", {"session_id": sid})
+        assert _drain_for_response(ws, 2, events)["result"]["recap"] is True
+
+        _rpc(ws, 3, "settings.set_recap", {"session_id": sid, "value": "off"})
+        result = _drain_for_response(ws, 3, events)["result"]
+        assert result["ok"] is True and result["value"] == "off"
+        assert agents[0].recap is False
+
+        _rpc(ws, 4, "settings.general", {"session_id": sid})
+        assert _drain_for_response(ws, 4, events)["result"]["recap"] is False
+
+        # The agent's usage refusal passes through rather than becoming a
+        # generic failure.
+        _rpc(ws, 5, "settings.set_recap", {"session_id": sid, "value": "bogus"})
+        result = _drain_for_response(ws, 5, events)["result"]
+        assert result["ok"] is False and "recap" in result["error"]
 
 
 def test_init_session_info_carries_provider() -> None:

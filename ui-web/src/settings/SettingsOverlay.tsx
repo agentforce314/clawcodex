@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 import { useEffect } from 'react'
 
 import {
@@ -6,15 +7,35 @@ import {
   refreshGeneralSettings,
   refreshProviders,
   saveProviderKey,
+  setApprovalMode,
   setOutputStyle,
+  setRecap,
   setResponseLanguage,
 } from '../state/actions.ts'
 import { $themePreference, setThemePreference } from '../state/theme.ts'
 import { GeneralSection } from './GeneralSection.tsx'
-import { $generalSettings, $providers, $sessionId, $settingsTab } from '../state/store.ts'
+import {
+  $generalSettings,
+  $pendingApprovalMode,
+  $providers,
+  $sessionId,
+  $settingsTab,
+  $transcript,
+} from '../state/store.ts'
 import { XIcon } from '../ui/icons.tsx'
 import { ProvidersSection } from './ProvidersSection.tsx'
 import css from './Settings.module.css'
+
+/**
+ * The session's reported mode, or the choice held for the session that does
+ * not exist yet — the same resolution the composer's picker shows. Computed so
+ * the overlay re-renders on mode changes, not on every streamed delta the
+ * transcript atom carries.
+ */
+const $approvalMode = computed(
+  [$transcript, $pendingApprovalMode],
+  (transcript, pending) => transcript.info.approval_mode ?? pending ?? undefined,
+)
 
 const TABS = [
   { id: 'general', label: 'General' },
@@ -34,6 +55,7 @@ export function SettingsOverlay() {
   const general = useStore($generalSettings)
   const theme = useStore($themePreference)
   const sessionId = useStore($sessionId)
+  const approvalMode = useStore($approvalMode)
 
   const open = tab !== null
 
@@ -113,8 +135,15 @@ export function SettingsOverlay() {
           <div className={css.content}>
             {tab === 'general' ? (
               <GeneralSection
+                approvalMode={approvalMode}
+                onApproval={mode => {
+                  void setApprovalMode(mode)
+                }}
                 onLanguage={language => {
                   void setResponseLanguage(language)
+                }}
+                onRecap={enabled => {
+                  void setRecap(enabled)
                 }}
                 onStyle={style => {
                   void setOutputStyle(style)

@@ -9,11 +9,15 @@ const SETTINGS = {
   available_output_styles: ['default', 'explanatory'],
   language: '',
   output_style: 'default',
+  recap: true,
 }
 
 function mount(overrides: Partial<Parameters<typeof GeneralSection>[0]> = {}) {
   const props = {
+    approvalMode: 'manual' as const,
+    onApproval: vi.fn(),
     onLanguage: vi.fn(),
+    onRecap: vi.fn(),
     onStyle: vi.fn(),
     onTheme: vi.fn(),
     sessionLive: true,
@@ -59,7 +63,17 @@ describe('GeneralSection', () => {
     expect((screen.getByRole('button', { name: 'Explanatory' }) as HTMLButtonElement).disabled).toBe(
       true,
     )
-    expect(screen.getAllByText('Start a session to change this.')).toHaveLength(2)
+    expect((screen.getByRole('button', { name: 'Off' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getAllByText('Start a session to change this.')).toHaveLength(3)
+  })
+
+  it('keeps the approvals row working with no session', () => {
+    // A pre-session choice is held and applied to the session that gets
+    // created, so this row never waits for one.
+    const props = mount({ approvalMode: undefined, sessionLive: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask every time' }))
+    expect(props.onApproval).toHaveBeenCalledWith('manual')
   })
 
   it('saves a typed language, trimmed', () => {
@@ -105,5 +119,94 @@ describe('GeneralSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Default' }))
     expect(props.onStyle).not.toHaveBeenCalled()
+  })
+
+  it('marks the active approval mode and switches a safe mode on one click', () => {
+    const props = mount({ approvalMode: 'manual' })
+
+    expect(
+      screen.getByRole('button', { name: 'Ask every time' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Smart approvals' }))
+    expect(props.onApproval).toHaveBeenCalledWith('smart')
+  })
+
+  it('does not enable full access on the click alone', () => {
+    // The whole point of the guard: one click must not disable every
+    // permission check for this session and the ones after it.
+    const props = mount({ approvalMode: 'manual' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+    expect(props.onApproval).not.toHaveBeenCalled()
+
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog.textContent).toContain('default mode for new sessions')
+
+    const confirm = screen.getByRole('button', { name: 'Enable full access' })
+    expect((confirm as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(confirm)
+    expect(props.onApproval).toHaveBeenCalledWith('off')
+  })
+
+  it('cancelling the full-access confirmation leaves the mode alone', () => {
+    const props = mount({ approvalMode: 'manual' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    expect(props.onApproval).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('re-clicking a KNOWN current mode is a no-op, but an unknown one is not', () => {
+    // While no mode has been reported the pressed chip is a guess (sessions
+    // spawn in Full Access), so a deliberate pick that matches the guess must
+    // still go through the confirmation rather than being swallowed.
+    const props = mount({ approvalMode: 'off' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(props.onApproval).not.toHaveBeenCalled()
+
+    cleanup()
+    mount({ approvalMode: undefined })
+    expect(
+      screen.getByRole('button', { name: 'Full access' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
+  })
+
+  it('marks the recap state and reports a flip', () => {
+    const props = mount()
+
+    expect(screen.getByRole('button', { name: 'On' }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Off' }))
+    expect(props.onRecap).toHaveBeenCalledWith(false)
+  })
+
+  it('re-clicking the active recap state is a no-op', () => {
+    const props = mount({ settings: { ...SETTINGS, recap: false } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Off' }))
+    expect(props.onRecap).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'On' }))
+    expect(props.onRecap).toHaveBeenCalledWith(true)
+  })
+
+  it('presses neither recap chip while the state is unreported', () => {
+    // "off" and "unknown" must not look the same.
+    const { recap: _, ...rest } = SETTINGS
+
+    mount({ settings: rest })
+
+    expect(screen.getByRole('button', { name: 'On' }).getAttribute('aria-pressed')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Off' }).getAttribute('aria-pressed')).toBe('false')
   })
 })

@@ -778,6 +778,41 @@ export async function setOutputStyle(style: string): Promise<void> {
   await refreshGeneralSettings()
 }
 
+/**
+ * Flip the end-of-turn recap.
+ *
+ * The write is a GLOBAL preference (the TUI's /recap), but a project or local
+ * settings override wins at merge — the agent answers with the EFFECTIVE
+ * post-write state and says why when they disagree, so its `note` is shown
+ * rather than pretending the flip took.
+ */
+export async function setRecap(enabled: boolean): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<{
+      error?: string
+      note?: string
+      ok?: boolean
+      value?: string
+    }>('settings.set_recap', { session_id: sessionId, value: enabled ? 'on' : 'off' })
+
+    if (result.ok === false) {
+      notice(result.error === undefined || result.error === '' ? 'Could not change the recap setting' : result.error, 'error')
+    } else if (result.note !== undefined && result.note !== '') {
+      notice(`Recap ${result.value ?? (enabled ? 'on' : 'off')} — ${result.note}`)
+    } else {
+      notice(`Recap ${result.value ?? (enabled ? 'on' : 'off')}.`)
+    }
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+
+  await refreshGeneralSettings()
+}
+
 export async function setResponseLanguage(language: string): Promise<void> {
   const sessionId = $sessionId.get()
 

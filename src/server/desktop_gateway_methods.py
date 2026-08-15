@@ -855,6 +855,7 @@ class GatewayConnection:
             "settings.general": self.settings_general,
             "settings.set_output_style": self.settings_set_output_style,
             "settings.set_language": self.settings_set_language,
+            "settings.set_recap": self.settings_set_recap,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -1191,11 +1192,16 @@ class GatewayConnection:
         if not isinstance(result, dict):
             return {"available_output_styles": [], "language": "", "output_style": ""}
         styles = result.get("available_output_styles")
-        return {
+        reply = {
             "available_output_styles": styles if isinstance(styles, list) else [],
             "language": str(result.get("language") or ""),
             "output_style": str(result.get("output_style") or ""),
         }
+        # Only when the agent reported it: an absent flag must not render as a
+        # pressed Off chip in a client that cannot tell "off" from "unknown".
+        if isinstance(result.get("recap"), bool):
+            reply["recap"] = result["recap"]
+        return reply
 
     async def settings_set_output_style(self, params: dict[str, Any]) -> dict[str, Any]:
         """Switch the output style. The agent refuses mid-turn (it rebuilds the
@@ -1210,6 +1216,31 @@ class GatewayConnection:
         if not isinstance(result, dict):
             return {"ok": False, "error": "no response from the session"}
         return {"error": str(result.get("error") or ""), "ok": result.get("ok") is not False}
+
+    async def settings_set_recap(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Flip the end-of-turn recap (the TUI's /recap).
+
+        The write is a global preference, but a project/local settings override
+        wins at merge — the agent replies with the EFFECTIVE post-write state
+        and a ``note`` saying why when they disagree; both pass through.
+        """
+        session = self._first_session(params)
+        if session is None:
+            return {"ok": False, "error": "start a session before changing settings"}
+        result = await session.control_query(
+            "set_recap", {"value": _clean(params.get("value"))}
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "no response from the session"}
+        reply = {
+            "error": str(result.get("error") or ""),
+            "ok": result.get("ok") is not False,
+            "value": str(result.get("value") or ""),
+        }
+        note = result.get("note")
+        if isinstance(note, str) and note:
+            reply["note"] = note
+        return reply
 
     async def settings_set_language(self, params: dict[str, Any]) -> dict[str, Any]:
         """Set the preferred response language; empty clears it."""

@@ -229,6 +229,8 @@ export interface GeneralSettingsResult {
   available_output_styles?: string[]
   language?: string
   output_style?: string
+  /** End-of-turn recap on/off; absent when the session did not report it. */
+  recap?: boolean
 }
 
 /** `provider.list` — every provider, configured or not. Carries no secrets. */
