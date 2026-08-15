@@ -384,6 +384,78 @@ def test_approvals_mode_get_and_set(tmp_path: Path) -> None:
         assert _drain_for_response(ws, 5, events)["result"]["ok"] is False
 
 
+def test_a_starting_session_does_not_break_the_catalog_calls(tmp_path: Path) -> None:
+    """A session is registered BEFORE its agent is spawned, and spawning takes
+    seconds. Any call that reaches for "some session" in that window used to
+    crash on ``'NoneType' object has no attribute 'send_to_agent'`` — the
+    browser swallowed the error and the model picker sat empty ("No configured
+    providers yet") with a nameless model chip.
+
+    Dispatch is serial per socket, so this is reached from a SECOND window
+    while the first one starts a session — reproduced here by registering the
+    half-built session directly, which is exactly the state the traceback
+    proved exists.
+    """
+    from src.server.desktop_gateway_methods import DesktopSession
+
+    state, _ = _fake_state(tmp_path)
+    starting = DesktopSession("starting-1", state)
+    assert starting.agent is None and starting.ready is False
+    state.sessions["starting-1"] = starting
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+
+        # Each answers from config rather than failing the whole call.
+        _rpc(ws, 1, "model.options", {})
+        assert "error" not in _drain_for_response(ws, 1, events)
+
+        _rpc(ws, 2, "provider.list", {})
+        assert "error" not in _drain_for_response(ws, 2, events)
+
+        _rpc(ws, 3, "commands.catalog", {})
+        assert "error" not in _drain_for_response(ws, 3, events)
+
+        # Naming it explicitly is answered the same way — with the no-session
+        # fallback, never with another session's settings.
+        _rpc(ws, 4, "settings.general", {"session_id": "starting-1"})
+        assert _drain_for_response(ws, 4, events)["result"]["output_style"] == ""
+
+        # But a call that can only mean THAT session says so by name instead of
+        # dying somewhere deeper.
+        _rpc(ws, 5, "prompt.submit", {"session_id": "starting-1", "text": "hi"})
+        assert "still starting" in _drain_for_response(ws, 5, events)["error"]["message"]
+
+        # A ready session is still preferred over the one that is starting.
+        _rpc(ws, 6, "session.create", {})
+        sid = _drain_for_response(ws, 6, events)["result"]["session_id"]
+        _rpc(ws, 7, "settings.general", {})
+        assert _drain_for_response(ws, 7, events)["result"]["available_output_styles"] == []
+        assert state.sessions[sid].ready is True
+
+
+def test_a_cancelled_create_leaves_no_half_built_session(tmp_path: Path) -> None:
+    """A browser navigating away mid-spawn cancels the create. CancelledError
+    is not an Exception, so the cleanup used to be skipped and the agent-less
+    session stayed in the registry for the life of the process — poisoning
+    every later sessionless call from every window."""
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    state, _ = _fake_state(tmp_path)
+
+    async def cancelled_spawn(session_id, cwd, resume):
+        raise asyncio.CancelledError
+
+    state.spawn_agent = cancelled_spawn
+    conn = GatewayConnection(object(), state)  # type: ignore[arg-type]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(conn._create(str(tmp_path), None, {}))
+
+    assert state.sessions == {}
+
+
 def test_default_provider_set_and_listed(tmp_path: Path, monkeypatch) -> None:
     """Settings → Providers writes `default_provider` to config.json and
     `provider.list` reports it — without needing any session, because changing

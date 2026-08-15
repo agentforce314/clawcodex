@@ -159,6 +159,21 @@ class DesktopSession:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
+    @property
+    def ready(self) -> bool:
+        """Whether this session has an agent to talk to.
+
+        A session is published into ``state.sessions`` BEFORE :meth:`start`
+        spawns its agent — building the provider, tool registry and context
+        takes seconds — so there is a wide window where the session exists and
+        ``agent`` is still None. Every caller that reaches for a session has to
+        ask this first; the alternative is what actually shipped:
+        ``AttributeError: 'NoneType' object has no attribute 'send_to_agent'``
+        out of ``model.options``/``commands.catalog``, which the browser
+        swallows into an empty model picker.
+        """
+        return self.agent is not None
+
     async def start(self, cwd: str, spawn: Any = None) -> None:
         # spawn's third arg is a permission-mode override, NOT a resume id;
         # resuming a stored session is a post-init `resume` control request.
@@ -380,12 +395,18 @@ class DesktopSession:
         return title
 
     async def submit_prompt(self, text: str) -> None:
+        if not self.ready:
+            raise ValueError(f"session {self.session_id} is still starting")
         await self._broadcast("message.start", {})
         await self.agent.send_to_agent(
             {"type": "user", "message": {"role": "user", "content": text}}
         )
 
     async def interrupt(self) -> None:
+        # Nothing has started yet, so there is nothing to abort — and saying
+        # so would be reporting a failure for an already-satisfied request.
+        if not self.ready:
+            return
         await self.agent.send_to_agent(
             {
                 "type": "control_request",
@@ -396,6 +417,12 @@ class DesktopSession:
 
     async def control_query(self, subtype: str, params: dict[str, Any],
                             timeout: float = CONTROL_TIMEOUT_S) -> Any:
+        # No agent to ask yet: answer the way a timeout does. Every caller
+        # already handles "no reply" (`if not isinstance(result, dict)`) by
+        # degrading to its own fallback, which is the honest outcome — the
+        # alternative was an AttributeError that failed the whole RPC.
+        if not self.ready:
+            return None
         rid = f"srv-{uuid.uuid4().hex[:12]}"
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_control[rid] = fut
@@ -515,6 +542,8 @@ class DesktopSession:
         """Fire-and-forget control request (no reply awaited)."""
         import uuid as _uuid
 
+        if not self.ready:
+            raise ValueError(f"session {self.session_id} is still starting")
         await self.agent.send_to_agent(
             {"type": "control_request", "request_id": f"srv-{_uuid.uuid4().hex[:12]}",
              "request": {"subtype": subtype, **params}}
@@ -890,10 +919,19 @@ class GatewayConnection:
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _session(self, params: dict[str, Any]) -> DesktopSession:
+        """The named session, which must exist AND be able to act.
+
+        Unlike :meth:`_first_session` there is no fallback for these callers —
+        a prompt or an approval belongs to one session — so a session still
+        spawning its agent is an error with a name, not an AttributeError from
+        somewhere deeper.
+        """
         session_id = str(params.get("session_id") or "")
         session = self.state.sessions.get(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id or '<missing>'}")
+        if not session.ready:
+            raise ValueError(f"session {session_id} is still starting")
         return session
 
     async def _create(self, cwd: str | None, resume: str | None,
@@ -935,7 +973,13 @@ class GatewayConnection:
         )
         try:
             await session.start(workspace, spawn=spawn)
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a browser that navigates away mid-
+            # spawn cancels this task, and CancelledError does not inherit
+            # Exception. Leaving the half-built session in the registry poisons
+            # the whole process — it never gets an agent, and every later
+            # sessionless call (model.options, commands.catalog …) from any
+            # window picks it up. Re-raised untouched; this only cleans up.
             self.state.sessions.pop(session_id, None)
             raise
         try:
@@ -1574,11 +1618,25 @@ class GatewayConnection:
         return catalog
 
     def _first_session(self, params: dict[str, Any]) -> DesktopSession | None:
+        """A session that can answer a control request, or None.
+
+        ``None`` is a supported answer here — every caller degrades to reading
+        config directly, which is what the welcome screen does before any
+        session exists. So a session that is still starting reports as no
+        session rather than as a broken one.
+
+        A NAMED session that isn't ready gives None rather than falling
+        through to another: the caller asked about that session, and answering
+        with a different session's settings would be worse than answering with
+        the config defaults.
+        """
         session_id = str(params.get("session_id") or "")
-        if session_id and session_id in self.state.sessions:
-            return self.state.sessions[session_id]
+        if session_id:
+            session = self.state.sessions.get(session_id)
+            return session if session is not None and session.ready else None
         for session in self.state.sessions.values():
-            return session
+            if session.ready:
+                return session
         return None
 
     async def config_get(self, params: dict[str, Any]) -> dict[str, Any]:
