@@ -1,13 +1,25 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { disconnectProvider, refreshProviders, saveProviderKey } from '../state/actions.ts'
-import { $providers, $settingsTab } from '../state/store.ts'
+import {
+  disconnectProvider,
+  refreshGeneralSettings,
+  refreshProviders,
+  saveProviderKey,
+  setOutputStyle,
+  setResponseLanguage,
+} from '../state/actions.ts'
+import { $themePreference, setThemePreference } from '../state/theme.ts'
+import { GeneralSection } from './GeneralSection.tsx'
+import { $generalSettings, $providers, $sessionId, $settingsTab } from '../state/store.ts'
 import { XIcon } from '../ui/icons.tsx'
 import { ProvidersSection } from './ProvidersSection.tsx'
 import css from './Settings.module.css'
 
-const TABS = [{ id: 'providers', label: 'Providers' }] as const
+const TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'providers', label: 'Providers' },
+] as const
 
 /**
  * Settings, as a full-screen takeover.
@@ -19,13 +31,19 @@ const TABS = [{ id: 'providers', label: 'Providers' }] as const
 export function SettingsOverlay() {
   const tab = useStore($settingsTab)
   const providers = useStore($providers)
+  const general = useStore($generalSettings)
+  const theme = useStore($themePreference)
+  const sessionId = useStore($sessionId)
 
   const open = tab !== null
 
   // Re-read on every open: a key may have been set from the CLI, or another
   // window, since this was last looked at.
   useEffect(() => {
-    if (open) void refreshProviders()
+    if (!open) return
+
+    void refreshProviders()
+    void refreshGeneralSettings()
   }, [open])
 
   useEffect(() => {
@@ -93,13 +111,28 @@ export function SettingsOverlay() {
           </nav>
 
           <div className={css.content}>
-            <ProvidersSection
-              onDisconnect={slug => {
-                void disconnectProvider(slug)
-              }}
-              onSave={saveProviderKey}
-              providers={providers.providers ?? []}
-            />
+            {tab === 'general' ? (
+              <GeneralSection
+                onLanguage={language => {
+                  void setResponseLanguage(language)
+                }}
+                onStyle={style => {
+                  void setOutputStyle(style)
+                }}
+                onTheme={setThemePreference}
+                sessionLive={sessionId !== null}
+                settings={general}
+                theme={theme}
+              />
+            ) : (
+              <ProvidersSection
+                onDisconnect={slug => {
+                  void disconnectProvider(slug)
+                }}
+                onSave={saveProviderKey}
+                providers={providers.providers ?? []}
+              />
+            )}
           </div>
         </div>
       </div>

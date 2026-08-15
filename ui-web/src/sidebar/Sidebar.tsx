@@ -270,7 +270,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
           aria-label="Settings"
           className={css.iconButton}
           onClick={() => {
-            $settingsTab.set('providers')
+            $settingsTab.set('general')
           }}
           title="Settings"
           type="button"

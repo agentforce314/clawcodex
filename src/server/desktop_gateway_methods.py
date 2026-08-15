@@ -852,6 +852,9 @@ class GatewayConnection:
             "provider.list": self.provider_list,
             "provider.save_key": self.provider_save_key,
             "provider.disconnect": self.provider_disconnect,
+            "settings.general": self.settings_general,
+            "settings.set_output_style": self.settings_set_output_style,
+            "settings.set_language": self.settings_set_language,
             "slash.exec": self.slash_exec,
             "command.dispatch": self.command_dispatch,
             "setup.status": self.setup_status,
@@ -1145,6 +1148,55 @@ class GatewayConnection:
     async def permission_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self._session(params).control_query("cycle_permission_mode", {})
         return result or {}
+
+    async def settings_general(self, params: dict[str, Any]) -> dict[str, Any]:
+        """The session-side general settings: output style and response language.
+
+        Theme is deliberately absent — it is a property of this browser
+        (localStorage), not of the session, and putting it here would imply a
+        change in one window restyles every other.
+        """
+        session = self._first_session(params)
+        if session is None:
+            return {"available_output_styles": [], "language": "", "output_style": ""}
+        result = await session.control_query("get_settings", {})
+        if not isinstance(result, dict):
+            return {"available_output_styles": [], "language": "", "output_style": ""}
+        styles = result.get("available_output_styles")
+        return {
+            "available_output_styles": styles if isinstance(styles, list) else [],
+            "language": str(result.get("language") or ""),
+            "output_style": str(result.get("output_style") or ""),
+        }
+
+    async def settings_set_output_style(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Switch the output style. The agent refuses mid-turn (it rebuilds the
+        system prompt) and validates the name against the loader's truth; both
+        refusals pass through verbatim."""
+        session = self._first_session(params)
+        if session is None:
+            return {"ok": False, "error": "start a session before changing settings"}
+        result = await session.control_query(
+            "set_output_style", {"style": _clean(params.get("style"))}
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "no response from the session"}
+        return {"error": str(result.get("error") or ""), "ok": result.get("ok") is not False}
+
+    async def settings_set_language(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Set the preferred response language; empty clears it."""
+        session = self._first_session(params)
+        if session is None:
+            return {"ok": False, "error": "start a session before changing settings"}
+        result = await session.control_query(
+            "set_language", {"language": str(params.get("language") or "")}
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "no response from the session"}
+        return {
+            "language": str(result.get("language") or ""),
+            "ok": result.get("ok") is not False,
+        }
 
     async def provider_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """Every provider ClawCodex knows, configured or not.

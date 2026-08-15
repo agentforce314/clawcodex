@@ -224,6 +224,13 @@ export interface ModelOption {
   slug?: string
 }
 
+/** `settings.general` — the session-side general settings. */
+export interface GeneralSettingsResult {
+  available_output_styles?: string[]
+  language?: string
+  output_style?: string
+}
+
 /** `provider.list` — every provider, configured or not. Carries no secrets. */
 export interface ProviderListResult {
   current?: string

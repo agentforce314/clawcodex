@@ -921,3 +921,103 @@ def test_a_session_with_no_usable_name_reports_no_title(tmp_path, extra: dict[st
     session_id = _saved(tmp_path, **extra)
 
     assert load_session_messages(tmp_path, session_id)["title"] == ""
+
+
+# ── general settings (settings.general + setters) ─────────────────────────────
+
+
+def _general(reply: Any, *, live: bool = True) -> dict[str, Any]:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    session = _Queryable(reply) if live else None
+    connection._first_session = lambda p: session  # type: ignore[method-assign]
+    return asyncio.run(GatewayConnection.settings_general(connection, {}))
+
+
+def test_general_settings_report_style_and_language() -> None:
+    result = _general(
+        {
+            "ok": True,
+            "output_style": "explanatory",
+            "available_output_styles": ["default", "explanatory"],
+            "language": "Español",
+        }
+    )
+
+    assert result == {
+        "available_output_styles": ["default", "explanatory"],
+        "language": "Español",
+        "output_style": "explanatory",
+    }
+
+
+def test_general_settings_degrade_to_empty_without_a_session() -> None:
+    # The section renders its needs-a-session state from exactly this shape.
+    assert _general(None, live=False) == {
+        "available_output_styles": [],
+        "language": "",
+        "output_style": "",
+    }
+
+
+def test_set_output_style_passes_the_agents_refusal_through() -> None:
+    # "cannot change output style during an active turn" is the useful part.
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    session = _Queryable({"ok": False, "error": "cannot change output style during an active turn"})
+    connection._first_session = lambda p: session  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        GatewayConnection.settings_set_output_style(connection, {"style": "explanatory"})
+    )
+
+    assert result["ok"] is False
+    assert "active turn" in result["error"]
+    assert session.asked == ("set_output_style", {"style": "explanatory"})
+
+
+def test_set_language_forwards_empty_as_the_clear() -> None:
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    session = _Queryable({"ok": True, "language": ""})
+    connection._first_session = lambda p: session  # type: ignore[method-assign]
+
+    result = asyncio.run(GatewayConnection.settings_set_language(connection, {"language": ""}))
+
+    assert result == {"language": "", "ok": True}
+    assert session.asked == ("set_language", {"language": ""})
+
+
+def test_set_language_composes_the_block_into_the_system_prompt() -> None:
+    # The end of the chain the settings page drives. The block's own wording
+    # matters: "unless the user writes in another language" means an English
+    # prompt legitimately gets an English reply — the setting is a default,
+    # not a hard override.
+    from src.server.agent_server import _AgentSession
+
+    class _Bare:
+        cwd = "/tmp"
+        _language = None
+        _base_system_prompt = None
+        system_prompt = None
+
+        def _reply(self, rid: object, payload: object) -> None:
+            self.last = payload
+
+    bare = _Bare()
+    bare._compose_with_plan = _AgentSession._compose_with_plan.__get__(bare)
+    bare._base_system_prompt = [{"type": "text", "text": "You are ClawCodex."}]
+
+    _AgentSession._do_set_language(bare, "rid", "Spanish")
+
+    assert bare.last == {"ok": True, "language": "Spanish"}
+    assert "Respond in Spanish" in bare.system_prompt[-1]["text"]
+
+    # Empty clears: the block goes, the base stays.
+    _AgentSession._do_set_language(bare, "rid", "")
+
+    assert bare.last == {"ok": True, "language": ""}
+    assert len(bare.system_prompt) == 1
