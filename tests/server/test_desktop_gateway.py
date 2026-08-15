@@ -96,6 +96,20 @@ class FakeAgent:
             elif subtype == "set_permission_mode":
                 self.permission_mode = request.get("mode") or self.permission_mode
                 reply = {"ok": True, "mode": self.permission_mode, "persisted": True}
+            elif subtype == "list_model_providers":
+                reply = {
+                    "ok": True,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "providers": [{
+                        "authenticated": True,
+                        "auth_type": "api_key",
+                        "is_current": True,
+                        "models": [self.model],
+                        "name": "Fake",
+                        "slug": self.provider,
+                    }],
+                }
             elif subtype == "set_recap":
                 value = request.get("value")
                 if value in ("on", "off"):
@@ -494,6 +508,50 @@ def test_default_provider_set_and_listed(tmp_path: Path, monkeypatch) -> None:
             result = _drain_for_response(ws, 4, events)["result"]
             assert result["ok"] is False and "bogus" in result["error"]
             assert json.loads(config_path.read_text())["default_provider"] == "moonshot"
+    finally:
+        config_mod._get_default_manager().invalidate()
+
+
+def test_model_options_without_a_session_describes_the_next_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A window with no session of its own asks what the NEXT session will run
+    on — never what some other window is running.
+
+    Reported as a composer showing "New sessions start on deepseek." beside an
+    `openai:gpt-5.6-luna` chip: the sessionless call borrowed a session that
+    was still live on the old provider, so the notice and the chip described
+    different sessions.
+    """
+    import src.config as config_mod
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "default_provider": "deepseek",
+        "providers": {"deepseek": {"api_key": "k", "default_model": "deepseek-v4-pro"}},
+    }))
+    monkeypatch.setattr("src.config.get_global_config_path", lambda: config_path)
+    config_mod._get_default_manager().invalidate()
+    try:
+        state, agents = _fake_state(tmp_path)
+        with TestClient(build_app(state)) as client, _connect(client) as ws:
+            ws.receive_json()
+            events: list[dict] = []
+
+            _rpc(ws, 1, "session.create", {})
+            sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+            assert agents[0].provider == "fakeprov"
+
+            # No session named: the config default, not the live session's.
+            _rpc(ws, 2, "model.options", {})
+            result = _drain_for_response(ws, 2, events)["result"]
+            assert result["provider"] == "deepseek"
+            assert result["model"] == "deepseek-v4-pro"
+
+            # Naming one still reports what THAT session is really running.
+            _rpc(ws, 3, "model.options", {"session_id": sid})
+            result = _drain_for_response(ws, 3, events)["result"]
+            assert result["provider"] == "fakeprov"
     finally:
         config_mod._get_default_manager().invalidate()
 
