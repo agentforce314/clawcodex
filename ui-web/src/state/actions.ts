@@ -38,6 +38,7 @@ import {
   $models,
   $notice,
   $pendingApprovalMode,
+  $pendingModel,
   $providers,
   $projects,
   $projectsLoading,
@@ -223,15 +224,17 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES }
 
-  // A model chosen before there was a session lives in $models, because
-  // `setModel` has nowhere else to put it. Reading it here is what makes that
-  // choice ride the create — without this the picker on the welcome screen
-  // changed the chip and nothing else, and the session spawned on the config
-  // default provider instead. Explicit options still win: a caller naming a
-  // model means it.
-  const selected = $models.get()
-  const provider = options.provider ?? selected.provider
-  const model = options.model ?? selected.model
+  // A model is SESSION state. Only two things may name one on a create: an
+  // explicit option (a caller naming a model means it) and a pick made on the
+  // welcome screen for this very session ($pendingModel). Never $models —
+  // that mirrors whatever session the picker last asked about, and seeding
+  // from it made "New session" inherit the previous session's model. With
+  // neither, the create names no model and the backend reads the global
+  // default (default_provider + its default_model) into the session's own
+  // config, which is what "New sessions start on X." promises.
+  const pending = $pendingModel.get()
+  const provider = options.provider ?? pending?.provider
+  const model = options.model ?? pending?.model
 
   if (options.cwd !== undefined && options.cwd !== '') params.cwd = options.cwd
   if (provider !== undefined && provider !== '') params.provider = provider
@@ -296,6 +299,10 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
 function adoptSession(result: SessionResumeResult): void {
   $sessionId.set(result.session_id)
   $storedSessionId.set(result.stored_session_id ?? result.session_id)
+  // The welcome-screen pick was for the session that now exists — created
+  // with it, or superseded by a resume. Left standing, it would ride every
+  // LATER create too, which is the previous-session inheritance again.
+  $pendingModel.set(null)
 
   if (result.info !== undefined) {
     $transcript.set({ ...$transcript.get(), info: { ...$transcript.get().info, ...result.info } })
@@ -1072,8 +1079,10 @@ export async function setModel(model: string, provider?: string): Promise<boolea
   const sessionId = $sessionId.get()
 
   if (sessionId === null) {
-    // No live session yet: the selection rides the next session.create.
-    $models.set({ ...$models.get(), model, provider: provider ?? $models.get().provider })
+    // No live session yet: hold the pick for the session it is FOR. Not in
+    // $models — that is the catalog, and a selection written there outlives
+    // its session and leaks into later creates.
+    $pendingModel.set({ model, ...(provider === undefined ? {} : { provider }) })
 
     return true
   }

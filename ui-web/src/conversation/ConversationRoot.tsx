@@ -25,6 +25,7 @@ import {
   $effort,
   $models,
   $pendingApprovalMode,
+  $pendingModel,
   $queue,
   $sessionId,
   $sessionLoading,
@@ -75,6 +76,7 @@ export function ConversationRoot() {
   const commands = useStore($commands)
   const detailsWidth = useStore($detailsWidth)
   const pendingApproval = useStore($pendingApprovalMode)
+  const pendingModel = useStore($pendingModel)
   const loading = useStore($sessionLoading)
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
@@ -222,8 +224,12 @@ export function ConversationRoot() {
       }}
       onSubmit={onSubmit}
       running={transcript.running}
-      sessionModel={transcript.info.model}
-      sessionProvider={transcript.info.provider}
+      // The session's model when there is one, else a welcome-screen pick
+      // held for the session that does not exist yet — same shape as the
+      // approval mode above. With neither, the chip falls back to the
+      // catalog, which sessionless reports the config default.
+      sessionModel={transcript.info.model ?? pendingModel?.model}
+      sessionProvider={transcript.info.provider ?? pendingModel?.provider}
       usage={usage}
       vision={transcript.info.vision}
     />

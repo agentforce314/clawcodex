@@ -83,6 +83,19 @@ export const $contextUsage = atom<ContextUsageResult | null>(null)
  */
 export const $pendingApprovalMode = atom<'manual' | 'off' | 'smart' | null>(null)
 
+/**
+ * A model picked on the welcome screen, before the session it is for exists.
+ *
+ * The ONLY client-side carrier of a model into `session.create`. A model is
+ * session-scoped state: `$models` reflects whatever session the picker last
+ * asked about, so seeding a new session from it made "New session" inherit
+ * the previous session's model instead of the config default. A session
+ * consumes this on adoption; with nothing pending, the create names no model
+ * and the backend resolves the global default (`default_provider` + its
+ * `default_model`) into the new session's own config.
+ */
+export const $pendingModel = atom<{ model: string; provider?: string } | null>(null)
+
 /** Prompts typed while a turn was running, submitted in order when it ends. */
 export const $queue = atom<string[]>([])
 
