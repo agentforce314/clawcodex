@@ -69,6 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bubble and notice; and the flow re-pins to the bottom when content grows
   after layout (async highlight, image loads, card expansion).
 
+  A second pass, from a real run's screenshots: the task registry's rows
+  (TaskCreate/TaskUpdate/TaskList) no longer quote their JSON result
+  envelopes — a create says its subject, an update says
+  `<subject> → completed` (subject recovered from the create that minted the
+  id), a list renders the checklist card; no row summary may be a JSON dump
+  (machine payloads stay behind the disclosure, pretty-printed), which covers
+  MCP tools too. And live thinking stopped being a one-line ticker whose text
+  slid left on every delta: it is now a bottom-anchored window onto the tail
+  of the thought — the last few lines, wrapped, arriving at reading pace —
+  that collapses to the quiet one-line "Thought" row when the model moves on.
+
 - **Native Windows support for the CLI.** ClawCodex now runs first-class on
   Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
   required. The port follows the playbook of a reference Windows-supporting
