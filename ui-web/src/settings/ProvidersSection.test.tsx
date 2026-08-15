@@ -62,7 +62,11 @@ describe('credentialState', () => {
 })
 
 describe('ProvidersSection', () => {
-  const props = { onDisconnect: vi.fn(), onSave: vi.fn().mockResolvedValue(true) }
+  const props = {
+    onDisconnect: vi.fn(),
+    onMakeDefault: vi.fn(),
+    onSave: vi.fn().mockResolvedValue(true),
+  }
 
   it('marks the provider the session is running on', () => {
     render(<ProvidersSection {...props} providers={[DEEPSEEK]} />)
@@ -101,7 +105,7 @@ describe('ProvidersSection', () => {
 
   it('sends the slug and the typed key', async () => {
     const onSave = vi.fn().mockResolvedValue(true)
-    render(<ProvidersSection onDisconnect={vi.fn()} onSave={onSave} providers={[GROQ]} />)
+    render(<ProvidersSection onDisconnect={vi.fn()} onMakeDefault={vi.fn()} onSave={onSave} providers={[GROQ]} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.change(screen.getByLabelText('API key for Groq'), { target: { value: ' sk-abc ' } })
@@ -112,7 +116,7 @@ describe('ProvidersSection', () => {
 
   it('will not save an empty key', () => {
     const onSave = vi.fn()
-    render(<ProvidersSection onDisconnect={vi.fn()} onSave={onSave} providers={[GROQ]} />)
+    render(<ProvidersSection onDisconnect={vi.fn()} onMakeDefault={vi.fn()} onSave={onSave} providers={[GROQ]} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.change(screen.getByLabelText('API key for Groq'), { target: { value: '   ' } })
@@ -123,7 +127,7 @@ describe('ProvidersSection', () => {
 
   it('clears the field after a save, so a secret is not left on screen', async () => {
     const onSave = vi.fn().mockResolvedValue(false)
-    render(<ProvidersSection onDisconnect={vi.fn()} onSave={onSave} providers={[GROQ]} />)
+    render(<ProvidersSection onDisconnect={vi.fn()} onMakeDefault={vi.fn()} onSave={onSave} providers={[GROQ]} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     const field = screen.getByLabelText('API key for Groq')
@@ -138,7 +142,9 @@ describe('ProvidersSection', () => {
 
   it('reports the provider to disconnect by slug', () => {
     const onDisconnect = vi.fn()
-    render(<ProvidersSection onDisconnect={onDisconnect} onSave={vi.fn()} providers={[DEEPSEEK]} />)
+    render(
+      <ProvidersSection onDisconnect={onDisconnect} onMakeDefault={vi.fn()} onSave={vi.fn()} providers={[DEEPSEEK]} />,
+    )
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
 
@@ -149,6 +155,44 @@ describe('ProvidersSection', () => {
     render(<ProvidersSection {...props} providers={[]} />)
 
     expect(screen.getByText('No providers to show.')).toBeTruthy()
+  })
+
+  it('badges the default provider and offers Make default on the others', () => {
+    render(<ProvidersSection {...props} defaultSlug="deepseek" providers={[DEEPSEEK, GROQ]} />)
+
+    expect(screen.getByText('Default')).toBeTruthy()
+    // One button, on the row that is NOT the default.
+    expect(screen.getAllByRole('button', { name: 'Make default' })).toHaveLength(1)
+  })
+
+  it('reports the provider to make default by slug', () => {
+    const onMakeDefault = vi.fn()
+    render(
+      <ProvidersSection
+        {...props}
+        defaultSlug="deepseek"
+        onMakeDefault={onMakeDefault}
+        providers={[DEEPSEEK, GROQ]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make default' }))
+
+    expect(onMakeDefault).toHaveBeenCalledWith('groq')
+  })
+
+  it('badges no row and stays offered everywhere while the default is unknown', () => {
+    // "" means the backend could not say — claiming a default would be a guess.
+    render(<ProvidersSection {...props} providers={[DEEPSEEK, GROQ]} />)
+
+    expect(screen.queryByText('Default')).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Make default' })).toHaveLength(2)
+  })
+
+  it('orders the default right after the running provider', () => {
+    const order = orderProviders([GROQ, OPENAI, DEEPSEEK], 'groq').map(p => p.slug)
+
+    expect(order).toEqual(['deepseek', 'groq', 'openai'])
   })
 })
 
@@ -174,14 +218,14 @@ describe('providers that take no key', () => {
   })
 
   it('offers neither Add, Replace nor Disconnect', () => {
-    render(<ProvidersSection onDisconnect={vi.fn()} onSave={vi.fn()} providers={[OLLAMA]} />)
+    render(<ProvidersSection onDisconnect={vi.fn()} onMakeDefault={vi.fn()} onSave={vi.fn()} providers={[OLLAMA]} />)
 
     expect(screen.queryByRole('button', { name: /key/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull()
   })
 
   it('does not name an environment variable that is not used', () => {
-    render(<ProvidersSection onDisconnect={vi.fn()} onSave={vi.fn()} providers={[OLLAMA]} />)
+    render(<ProvidersSection onDisconnect={vi.fn()} onMakeDefault={vi.fn()} onSave={vi.fn()} providers={[OLLAMA]} />)
 
     expect(screen.queryByText('OLLAMA_API_KEY')).toBeNull()
   })

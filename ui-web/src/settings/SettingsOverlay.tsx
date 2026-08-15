@@ -8,6 +8,7 @@ import {
   refreshProviders,
   saveProviderKey,
   setApprovalMode,
+  setDefaultProvider,
   setOutputStyle,
   setRecap,
   setResponseLanguage,
@@ -155,8 +156,12 @@ export function SettingsOverlay() {
               />
             ) : (
               <ProvidersSection
+                defaultSlug={providers.default ?? ''}
                 onDisconnect={slug => {
                   void disconnectProvider(slug)
+                }}
+                onMakeDefault={slug => {
+                  void setDefaultProvider(slug)
                 }}
                 onSave={saveProviderKey}
                 providers={providers.providers ?? []}

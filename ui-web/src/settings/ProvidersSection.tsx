@@ -7,12 +7,16 @@ import css from './Settings.module.css'
 
 /**
  * Order providers by how much the reader cares: the one running now, then the
- * ones with credentials, then the rest alphabetically. The catalog knows ~30
- * providers and a user has configured two of them.
+ * default new sessions start on, then the ones with credentials, then the
+ * rest alphabetically. The catalog knows ~30 providers and a user has
+ * configured two of them.
  */
-export function orderProviders(providers: ModelOption[]): ModelOption[] {
+export function orderProviders(providers: ModelOption[], defaultSlug = ''): ModelOption[] {
+  const isDefault = (p: ModelOption) => defaultSlug !== '' && (p.slug ?? p.name) === defaultSlug
+
   return [...providers].sort((a, b) => {
     if ((a.is_current === true) !== (b.is_current === true)) return a.is_current === true ? -1 : 1
+    if (isDefault(a) !== isDefault(b)) return isDefault(a) ? -1 : 1
     if ((a.authenticated === true) !== (b.authenticated === true)) {
       return a.authenticated === true ? -1 : 1
     }
@@ -42,12 +46,15 @@ export function credentialState(provider: ModelOption): string {
 }
 
 interface ProviderRowProps {
+  /** Whether this provider is the config default new sessions start on. */
+  isDefault: boolean
   onDisconnect: (slug: string) => void
+  onMakeDefault: (slug: string) => void
   onSave: (slug: string, apiKey: string) => Promise<boolean>
   provider: ModelOption
 }
 
-function ProviderRow({ onDisconnect, onSave, provider }: ProviderRowProps) {
+function ProviderRow({ isDefault, onDisconnect, onMakeDefault, onSave, provider }: ProviderRowProps) {
   const [editing, setEditing] = useState(false)
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -76,11 +83,23 @@ function ProviderRow({ onDisconnect, onSave, provider }: ProviderRowProps) {
       <div className={css.rowHead}>
         <span className={css.rowName}>{provider.name}</span>
         {provider.is_current === true && <span className={css.badge}>Running</span>}
+        {isDefault && <span className={css.badge}>Default</span>}
         <span className={[css.state, configured ? css.stateOn : ''].filter(Boolean).join(' ')}>
           {configured && <CheckIcon size={11} />}
           {credentialState(provider)}
         </span>
         <span className={css.rowSpacer} />
+        {!editing && !isDefault && (
+          <Button
+            onClick={() => {
+              onMakeDefault(slug)
+            }}
+            size="sm"
+            variant="ghost"
+          >
+            Make default
+          </Button>
+        )}
         {!editing && keyed && (
           <Button
             onClick={() => {
@@ -161,20 +180,30 @@ function ProviderRow({ onDisconnect, onSave, provider }: ProviderRowProps) {
 }
 
 export interface ProvidersSectionProps {
+  /** Slug of the config default new sessions start on ("" when unknown). */
+  defaultSlug?: string
   onDisconnect: (slug: string) => void
+  onMakeDefault: (slug: string) => void
   onSave: (slug: string, apiKey: string) => Promise<boolean>
   providers: ModelOption[]
 }
 
 /**
- * Providers and their credentials.
+ * Providers, their credentials, and the default new sessions start on.
  *
  * The one thing that could not be done from the web at all: a broken or
  * missing key meant hand-editing `~/.clawcodex/config.json`. Keys are written
  * where `clawcodex login` writes them, so a key set here survives a restart
- * and the two paths agree.
+ * and the two paths agree. The default provider is `default_provider` in the
+ * same file — a live session keeps the provider it is running on.
  */
-export function ProvidersSection({ onDisconnect, onSave, providers }: ProvidersSectionProps) {
+export function ProvidersSection({
+  defaultSlug = '',
+  onDisconnect,
+  onMakeDefault,
+  onSave,
+  providers,
+}: ProvidersSectionProps) {
   if (providers.length === 0) {
     return <div className={css.empty}>No providers to show.</div>
   }
@@ -183,12 +212,15 @@ export function ProvidersSection({ onDisconnect, onSave, providers }: ProvidersS
     <div className={css.section}>
       <p className={css.blurb}>
         Keys are stored where <code>clawcodex login</code> stores them, so they survive a
-        restart. A key exported in your shell cannot be removed from here.
+        restart. A key exported in your shell cannot be removed from here. New sessions start
+        on the default provider; the session you are in keeps its own.
       </p>
-      {orderProviders(providers).map(provider => (
+      {orderProviders(providers, defaultSlug).map(provider => (
         <ProviderRow
+          isDefault={defaultSlug !== '' && (provider.slug ?? provider.name) === defaultSlug}
           key={provider.slug ?? provider.name}
           onDisconnect={onDisconnect}
+          onMakeDefault={onMakeDefault}
           onSave={onSave}
           provider={provider}
         />

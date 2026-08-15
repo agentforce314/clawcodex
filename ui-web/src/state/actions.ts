@@ -892,6 +892,40 @@ export async function saveProviderKey(slug: string, apiKey: string): Promise<boo
 }
 
 /**
+ * Persist `default_provider` — what new sessions start on.
+ *
+ * No session required: changing the default is exactly what someone does when
+ * the current default cannot even start one. A live session keeps its
+ * provider; the refreshes below re-seat the settings badge and, when no
+ * session exists, the composer's picker — which is what makes the NEXT
+ * `session.create` actually ride the new default instead of the stale
+ * pre-seeded selection.
+ */
+export async function setDefaultProvider(slug: string): Promise<void> {
+  try {
+    const result = await gateway().request<{ default?: string; error?: string; ok?: boolean }>(
+      'provider.set_default',
+      { slug },
+    )
+
+    if (result.ok === false) {
+      notice(result.error === undefined || result.error === '' ? 'Could not set the default provider' : result.error, 'error')
+
+      return
+    }
+
+    notice(`New sessions start on ${result.default ?? slug}.`)
+  } catch (error) {
+    notice(errorText(error), 'error')
+
+    return
+  }
+
+  await refreshProviders()
+  await refreshModels()
+}
+
+/**
  * Clear a provider's stored credentials.
  *
  * The agent refuses the provider this session is running on, and says so when
