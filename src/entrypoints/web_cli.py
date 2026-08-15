@@ -27,11 +27,18 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import socket
 import subprocess
 import sys
 import threading
 import webbrowser
 from pathlib import Path
+
+# A STABLE default, so the address is typeable from memory and bookmarkable —
+# GET / inlines the current session token, so http://127.0.0.1:8081 with no
+# ?token works. The old default (0, OS-assigned) never collided but handed out
+# a different port every launch.
+DEFAULT_WEB_PORT = 8081
 
 # Hosts that only accept connections originating on this machine.
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", ""})
@@ -80,8 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="Bind address (default: 127.0.0.1 — this machine only).")
-    parser.add_argument("--port", type=int, default=0,
-                        help="Port (default: 0 — OS-assigned; the URL is printed).")
+    parser.add_argument("--port", type=int, default=None,
+                        help=f"Port (default: {DEFAULT_WEB_PORT}, scanning upward when "
+                             "taken; 0 = OS-assigned).")
     parser.add_argument("--token", default=None, help="Session token (default: generated).")
     parser.add_argument("--workspace", default=None,
                         help="Default workspace for new sessions (default: cwd).")
@@ -153,6 +161,52 @@ def _open_browser_soon(url: str) -> None:
     threading.Timer(0.25, lambda: webbrowser.open(url)).start()
 
 
+def _port_is_free(host: str, port: int) -> bool:
+    """Whether ``host:port`` can be bound right now.
+
+    A best-effort probe — the real bind happens moments later in uvicorn, so a
+    race is possible but a clean refusal here beats uvicorn's traceback in the
+    common case (a second server, a leftover instance).
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.bind((host, port))
+    except OSError:
+        return False
+    return True
+
+
+def _resolve_port(host: str, requested: int | None) -> int | None:
+    """The port to serve on, or None (already reported) when nothing binds.
+
+    An explicit ``--port`` means that port: taken → a clear refusal, never a
+    silent neighbour. No flag → the stable default, scanning a few ports up so
+    a second server coexists instead of dying on "address already in use".
+    ``--port 0`` keeps its old meaning (OS-assigned).
+    """
+    if requested is not None:
+        if requested != 0 and not _port_is_free(host, requested):
+            print(
+                f"web: port {requested} is already in use — pass a different "
+                f"--port, or drop the flag for the default "
+                f"({DEFAULT_WEB_PORT}, scanning upward).",
+                file=sys.stderr,
+            )
+            return None
+        return requested
+    for port in range(DEFAULT_WEB_PORT, DEFAULT_WEB_PORT + 20):
+        if _port_is_free(host, port):
+            if port != DEFAULT_WEB_PORT:
+                print(f"web: port {DEFAULT_WEB_PORT} is in use; using {port}.", flush=True)
+            return port
+    print(
+        f"web: no free port in {DEFAULT_WEB_PORT}-{DEFAULT_WEB_PORT + 19} — pass --port.",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _serve_argv(args: argparse.Namespace) -> list[str]:
     """Translate the web flags into the ``clawcodex serve`` argv it delegates to."""
     argv = ["--host", args.host, "--port", str(args.port)]
@@ -185,6 +239,11 @@ def run_web_subcommand(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
+
+    port = _resolve_port(args.host, args.port)
+    if port is None:
+        return 2
+    args.port = port
 
     app_dir = web_app_dir()
     if args.build:

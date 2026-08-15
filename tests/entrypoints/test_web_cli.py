@@ -79,7 +79,9 @@ def _args(**overrides: object) -> argparse.Namespace:
 
 
 def test_serve_argv_is_minimal_by_default() -> None:
-    assert web_cli._serve_argv(_args()) == ["--host", "127.0.0.1", "--port", "0"]
+    # _serve_argv always receives a RESOLVED port (run_web_subcommand resolves
+    # before delegating), so the translation itself has no default to apply.
+    assert web_cli._serve_argv(_args(port=8081)) == ["--host", "127.0.0.1", "--port", "8081"]
 
 
 def test_serve_argv_forwards_every_agent_flag() -> None:
@@ -111,6 +113,7 @@ def test_web_delegates_to_serve_with_a_ready_hook(monkeypatch: pytest.MonkeyPatc
         return 0
 
     monkeypatch.setattr("src.entrypoints.serve_cli.run_serve_subcommand", fake_serve)
+    monkeypatch.setattr(web_cli, "_port_is_free", lambda host, port: True)
 
     assert web_cli.run_web_subcommand(["--no-open", "--port", "4321"]) == 0
     assert seen["argv"] == ["--host", "127.0.0.1", "--port", "4321"]
@@ -139,3 +142,58 @@ def test_cli_routes_web_to_the_subcommand(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert cli.main() == 0
     assert calls == [["--no-open"]]
+
+
+# ── port resolution ──────────────────────────────────────────────────────────
+
+
+def test_no_flag_lands_on_the_stable_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A default you can type from memory: `clawcodex web` always tries 8081
+    first, instead of the OS-assigned port that changed every launch."""
+    monkeypatch.setattr(web_cli, "_port_is_free", lambda host, port: True)
+
+    assert web_cli._resolve_port("127.0.0.1", None) == web_cli.DEFAULT_WEB_PORT
+
+
+def test_a_busy_default_scans_upward(monkeypatch: pytest.MonkeyPatch,
+                                     capsys: pytest.CaptureFixture[str]) -> None:
+    """A second server coexists on the next port instead of dying on
+    "address already in use"."""
+    monkeypatch.setattr(web_cli, "_port_is_free",
+                        lambda host, port: port != web_cli.DEFAULT_WEB_PORT)
+
+    assert web_cli._resolve_port("127.0.0.1", None) == web_cli.DEFAULT_WEB_PORT + 1
+    assert f"using {web_cli.DEFAULT_WEB_PORT + 1}" in capsys.readouterr().out
+
+
+def test_an_explicit_busy_port_is_refused_not_substituted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Naming a port means it — serving a neighbour would hand the user a URL
+    that does not match what they asked for."""
+    monkeypatch.setattr(web_cli, "_port_is_free", lambda host, port: False)
+
+    assert web_cli._resolve_port("127.0.0.1", 9013) is None
+    assert "9013 is already in use" in capsys.readouterr().err
+
+
+def test_port_zero_stays_os_assigned(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(web_cli, "_port_is_free", lambda host, port: False)
+
+    assert web_cli._resolve_port("127.0.0.1", 0) == 0
+
+
+def test_no_flag_delegates_the_default_to_serve(monkeypatch: pytest.MonkeyPatch,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr("src.server.web_assets.web_dist_dir", lambda: Path("/tmp/dist"))
+    monkeypatch.setattr(web_cli, "_port_is_free", lambda host, port: True)
+    seen: dict[str, object] = {}
+
+    def fake_serve(argv, *, on_ready=None):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr("src.entrypoints.serve_cli.run_serve_subcommand", fake_serve)
+
+    assert web_cli.run_web_subcommand(["--no-open"]) == 0
+    assert seen["argv"] == ["--host", "127.0.0.1", "--port", str(web_cli.DEFAULT_WEB_PORT)]
