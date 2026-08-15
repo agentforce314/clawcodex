@@ -434,7 +434,7 @@ class TestSetRecapControl(unittest.TestCase):
         sess._reply = lambda rid, payload: replies.append((rid, payload))
 
         mgr = MagicMock()
-        mgr.load_global.return_value = {"settings": {"theme": "dark"}}
+        mgr.load_global_for_write.return_value = {"settings": {"theme": "dark"}}
         with patch("src.config._get_default_manager", return_value=mgr), \
              patch("src.settings.settings.invalidate_settings_cache") as inv, \
              patch("src.server.agent_server._recap_setting_enabled",
@@ -456,7 +456,7 @@ class TestSetRecapControl(unittest.TestCase):
         sess._reply = lambda rid, payload: replies.append((rid, payload))
 
         mgr = MagicMock()
-        mgr.load_global.return_value = {}
+        mgr.load_global_for_write.return_value = {}
         with patch("src.config._get_default_manager", return_value=mgr), \
              patch("src.settings.settings.invalidate_settings_cache"), \
              patch("src.server.agent_server._recap_setting_enabled",
