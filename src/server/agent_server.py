@@ -64,7 +64,7 @@ import threading
 import time
 import uuid as _uuid
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -5291,7 +5291,14 @@ def make_spawn_agent(config: AgentServerConfig | None = None):
         sess = _AgentSession(
             session_id=session_id,
             cwd=cwd,
-            config=cfg,
+            # Each session owns a COPY. A model/provider switch writes
+            # self.config (_install_provider: cfg.provider_name/cfg.model),
+            # and with the one shared object that rewrote the spawn template
+            # for the whole process — every later bare session.create
+            # inherited the switched provider, overriding the user's
+            # default_provider until restart. A model is session state; the
+            # template it was born from is not its to edit.
+            config=_dc_replace(cfg),
             loop=loop,
             out_queue=out_queue,
         )
