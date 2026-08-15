@@ -177,7 +177,7 @@ def _persist_settings_keys(**keys: Any) -> None:
     from src.settings.settings import invalidate_settings_cache
 
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}
@@ -225,7 +225,7 @@ def _persist_config_keys(**keys: Any) -> None:
     from src import config as cfg_mod
 
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     cfg.update(keys)
     mgr.save_global(cfg)
 
@@ -367,7 +367,7 @@ def _on_advisor_model_change(old: AppState, new: AppState) -> None:
     from src.settings.settings import invalidate_settings_cache
     try:
         mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
+        cfg = mgr.load_global_for_write()
         settings_section = cfg.get("settings")
         if not isinstance(settings_section, dict):
             settings_section = {}
@@ -407,7 +407,7 @@ def _on_advisor_provider_change(old: AppState, new: AppState) -> None:
     from src.settings.settings import invalidate_settings_cache
     try:
         mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
+        cfg = mgr.load_global_for_write()
         settings_section = cfg.get("settings")
         if not isinstance(settings_section, dict):
             settings_section = {}
@@ -440,7 +440,7 @@ def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
     from src.settings.settings import invalidate_settings_cache
     try:
         mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
+        cfg = mgr.load_global_for_write()
         settings_section = cfg.get("settings")
         if not isinstance(settings_section, dict):
             settings_section = {}
@@ -468,7 +468,7 @@ def _on_advisor_enabled_change(old: AppState, new: AppState) -> None:
     from src.settings.settings import invalidate_settings_cache
     try:
         mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
+        cfg = mgr.load_global_for_write()
         settings_section = cfg.get("settings")
         if not isinstance(settings_section, dict):
             settings_section = {}

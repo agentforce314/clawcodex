@@ -111,7 +111,7 @@ def set_secret(name: str, value: str) -> None:
     from src.config import _get_default_manager
 
     mgr = _get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     section = cfg.get(CONFIG_ENV_KEY)
     if not isinstance(section, dict):
         section = {}
@@ -131,7 +131,7 @@ def delete_secret(name: str) -> bool:
     from src.config import _get_default_manager
 
     mgr = _get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     section = cfg.get(CONFIG_ENV_KEY)
     if not isinstance(section, dict) or name not in section:
         return False

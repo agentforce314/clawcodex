@@ -559,7 +559,7 @@ def build_app(state: DesktopServeState) -> Starlette:
     def _save_custom_endpoints(endpoints: list[dict[str, Any]]) -> None:
         from src.config import _get_default_manager
         mgr = _get_default_manager()
-        config = mgr.load_global()
+        config = mgr.load_global_for_write()
         config["custom_endpoints"] = endpoints
         mgr.save_global(config)
 

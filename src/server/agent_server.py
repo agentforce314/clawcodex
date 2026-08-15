@@ -1903,7 +1903,7 @@ class _AgentSession:
 
             removed = False
             mgr = _get_default_manager()
-            cfg = mgr.load_global()
+            cfg = mgr.load_global_for_write()
             blocks = cfg.get("providers")
             if isinstance(blocks, dict):
                 # Rebuild rather than pop in place: load_global returns a

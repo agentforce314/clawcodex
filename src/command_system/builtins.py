@@ -536,7 +536,7 @@ def _write_advisor_model(context: CommandContext, value: str | None) -> None:
     from .. import config as cfg_mod
     from ..settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}
@@ -579,7 +579,7 @@ def _write_advisor_provider(context: CommandContext, value: str | None) -> None:
     from .. import config as cfg_mod
     from ..settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}
@@ -633,7 +633,7 @@ def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
     from .. import config as cfg_mod
     from ..settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}
@@ -671,7 +671,7 @@ def _write_advisor_enabled(context: CommandContext, value: bool) -> None:
     from .. import config as cfg_mod
     from ..settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}
@@ -717,7 +717,7 @@ def _write_advisor_effort(context: CommandContext, value: str | None) -> None:
     from ..settings.settings import invalidate_settings_cache
     normalized = (value or "").strip().lower()
     mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     settings_section = cfg.get("settings")
     if not isinstance(settings_section, dict):
         settings_section = {}

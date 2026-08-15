@@ -109,3 +109,32 @@ def test_a_stored_mode_still_outranks_the_full_access_floor(config_file) -> None
     )
 
     assert mode == "default"
+
+
+def test_a_later_settings_writer_does_not_revert_the_mode(config_file) -> None:
+    """Regression: the whole-tier writers (set_recap_enabled, set_effort, …)
+    read-modify-write through the process-wide manager. When that manager's
+    cache predated a defaultMode write (made by what used to be a private
+    ConfigManager), saving the mutation wrote the PRE-defaultMode state back —
+    the web settings page set "Ask every time", flipped the recap toggle, and
+    the permission default silently reverted to Full Access."""
+    import src.config as config_mod
+
+    # Warm the shared cache the way a running agent does (boot-time reads).
+    config_mod.load_config()
+
+    assert set_settings_default_mode("default") is True
+
+    config_mod.set_recap_enabled(False)
+
+    saved = json.loads(config_file.read_text())
+    assert saved["settings"]["recap_enabled"] is False
+    assert saved["settings"]["permissions"]["defaultMode"] == "default"
+
+    # And the same coherence the other way around.
+    config_mod.set_effort("high")
+    assert set_settings_default_mode("plan") is True
+
+    saved = json.loads(config_file.read_text())
+    assert saved["settings"]["effort"] == "high"
+    assert saved["settings"]["permissions"]["defaultMode"] == "plan"

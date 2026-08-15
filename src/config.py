@@ -239,6 +239,18 @@ class ConfigManager:
             self._global_cache = _deep_merge(get_default_config(), on_disk)
         return dict(self._global_cache)
 
+    def load_global_for_write(self) -> dict[str, Any]:
+        """The global tier re-read from disk, for a read-modify-write.
+
+        The cache may predate a write made through another ConfigManager
+        instance or another process (e.g. ``set_settings_default_mode``'s
+        ``permissions.defaultMode``); mutating a stale copy and saving it back
+        silently reverts that write. Every writer that saves a whole mutated
+        tier must load through this, not :meth:`load_global`.
+        """
+        self._global_cache = None
+        return self.load_global()
+
     def load_project(self) -> dict[str, Any]:
         if self._project_cache is None:
             path = get_project_config_path(self.cwd)
@@ -302,7 +314,7 @@ class ConfigManager:
         return self.get_merged().get(key, default)
 
     def set_global(self, key: str, value: Any) -> None:
-        cfg = self.load_global()
+        cfg = self.load_global_for_write()
         cfg[key] = value
         self.save_global(cfg)
 
@@ -436,6 +448,17 @@ def _get_default_manager() -> ConfigManager:
     return _default_manager
 
 
+def get_default_manager() -> ConfigManager:
+    """The process-wide manager.
+
+    Writers outside this module must go through this (not a fresh
+    ``ConfigManager()``): a fresh instance's ``save_global`` clears only its
+    own cache, so the shared one keeps serving the pre-write state to every
+    later read in the process.
+    """
+    return _get_default_manager()
+
+
 def get_config_path() -> Path:
     """Get the path to the global configuration file."""
     return get_global_config_path()
@@ -483,7 +506,7 @@ def set_api_key(
 ) -> None:
     """Set API key for a provider."""
     mgr = _get_default_manager()
-    config = mgr.load_global()
+    config = mgr.load_global_for_write()
     if "providers" not in config:
         config["providers"] = {}
     if provider not in config["providers"]:
@@ -499,7 +522,7 @@ def set_api_key(
 def set_default_provider(provider: str) -> None:
     """Set the default provider."""
     mgr = _get_default_manager()
-    config = mgr.load_global()
+    config = mgr.load_global_for_write()
     config["default_provider"] = provider
     mgr.save_global(config)
 
@@ -549,7 +572,7 @@ def set_effort(value: Optional[str]) -> None:
     from src.settings.settings import invalidate_settings_cache
 
     mgr = _get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     section = cfg.get("settings")
     if not isinstance(section, dict):
         section = {}
@@ -573,7 +596,7 @@ def set_recap_enabled(enabled: bool) -> None:
     from src.settings.settings import invalidate_settings_cache
 
     mgr = _get_default_manager()
-    cfg = mgr.load_global()
+    cfg = mgr.load_global_for_write()
     section = cfg.get("settings")
     if not isinstance(section, dict):
         section = {}

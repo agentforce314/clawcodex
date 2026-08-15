@@ -354,11 +354,16 @@ def set_settings_default_mode(mode: PermissionMode) -> bool:
     # legacy settings.json is still READ (read_settings_default_mode), but
     # nothing writes it any more — a stale value there is shadowed by the
     # write here, which is what makes this a migration and not a second store.
+    #
+    # Through the SHARED manager, fresh-read: a private ConfigManager() here
+    # left the process-wide cache stale, and the next whole-tier writer riding
+    # that cache (set_recap_enabled, set_effort, …) saved the pre-write state
+    # back — silently reverting this very setting.
     try:
-        from src.config import ConfigManager
+        from src.config import get_default_manager
 
-        cm = ConfigManager()
-        data = cm.load_global()
+        cm = get_default_manager()
+        data = cm.load_global_for_write()
         settings = dict(data.get("settings") or {})
         perms = settings.get("permissions")
         # `permissions` doubles as a flat rule LIST in the schema; only a dict
