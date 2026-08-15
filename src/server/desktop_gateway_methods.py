@@ -899,9 +899,23 @@ class GatewayConnection:
         # broken (expired subscription, missing key). Empty values → the base
         # config's default provider.
         params = params or {}
+        provider = _clean(params.get("provider"))
+        model = _clean(params.get("model"))
+        if resume and not (provider or model):
+            # A resumed session comes back on the model it was USING, not the
+            # server's launch default. Without this the runtime either reverts
+            # outright (the in-runtime restore is gated on the provider
+            # matching, which the default rarely does) or restores while the
+            # init-frame info still names the default — so every client shows
+            # the wrong model until the next completed turn.
+            from src.server.desktop_sessions import load_session_meta
+
+            stored = load_session_meta(self.state.saved_sessions_dir(), resume)
+            provider = stored["provider"]
+            model = stored["model"]
         spawn = self.state.spawn_for(
-            _clean(params.get("provider")),
-            _clean(params.get("model")),
+            provider,
+            model,
             _clean(params.get("reasoning_effort") or params.get("effort")),
         )
         try:
@@ -1023,6 +1037,20 @@ class GatewayConnection:
     async def session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         wanted = str(params.get("session_id") or "") or None
         session = await self._create(params.get("cwd"), wanted, params)
+        # init_info was captured at SPAWN: before the resume control restored
+        # the stored model on a fresh runtime, and at create time for a
+        # still-live session that has since been switched. Either way the
+        # reply would name a model the session is not on — the chip renders
+        # this, so the user reads a switch that held as a revert. Re-read the
+        # live settings and tell the truth, here where both paths converge.
+        settings = await session.control_query("get_settings", {})
+        if isinstance(settings, dict):
+            live_model = settings.get("fusion") or settings.get("model")
+            if live_model:
+                session.init_info["model"] = str(live_model)
+            if settings.get("provider"):
+                session.init_info["provider"] = str(settings["provider"])
+        session.refresh_session_info()
         response: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": wanted or session.session_id,

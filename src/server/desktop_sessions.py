@@ -101,6 +101,27 @@ def _display_kind(role: str, content: Any) -> str | None:
     return None
 
 
+def load_session_meta(sessions_dir: Path, session_id: str) -> dict[str, Any]:
+    """The stored session's model/provider pairing, for the resume spawn.
+
+    A resumed session should come back on the model it was using — not the
+    server's launch default. Empty strings when the file is absent or predates
+    these fields, which callers read as "no opinion".
+    """
+    safe = _safe_id(session_id)
+    if safe is None:
+        return {"model": "", "provider": ""}
+    data = _read_session_file(sessions_dir / f"{safe}.json")
+    if data is None:
+        return {"model": "", "provider": ""}
+    model = data.get("model")
+    provider = data.get("provider")
+    return {
+        "model": model if isinstance(model, str) else "",
+        "provider": provider if isinstance(provider, str) else "",
+    }
+
+
 def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any] | None:
     """Transcript for one saved session: ``{messages, message_count, title}``.
 

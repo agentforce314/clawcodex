@@ -1580,6 +1580,13 @@ class _AgentSession:
         # persists (model, model_provider) to user settings — /model survives
         # restarts.
         _dispatch_app_state(self, main_loop_model=model)
+        # Persist the choice to the session file NOW, not at the next turn
+        # end: a user who switches and then quits without another turn would
+        # otherwise resume onto the model they switched away from. Guarded on
+        # an existing conversation so an untouched session does not mint a
+        # sidebar row just because its model chip was poked.
+        if getattr(getattr(self, "session", None), "conversation", None) is not None and self.session.conversation.messages:
+            self._save_session()
         # Echo the provider alongside the model. This path cannot CHANGE the
         # provider (a cross-provider id is refused above), but the client
         # displays provider and model as one line and only ever learns the
@@ -2102,6 +2109,10 @@ class _AgentSession:
         cfg.provider_name = name
         cfg.model = model
         self.tool_registry = registry
+        # Same rule as the plain-model switch: the pairing must survive a
+        # quit that happens before the next turn-end save.
+        if getattr(getattr(self, "session", None), "conversation", None) is not None and self.session.conversation.messages:
+            self._save_session()
         # ch03 round-4 GAP A: keep the persisted (model, model_provider)
         # pair coherent across a provider switch — the supplier reads
         # self.provider_name, updated above, so on_change persists the

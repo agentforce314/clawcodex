@@ -1021,3 +1021,158 @@ def test_set_language_composes_the_block_into_the_system_prompt() -> None:
 
     assert bare.last == {"ok": True, "language": ""}
     assert len(bare.system_prompt) == 1
+
+
+# ── model persistence across stop / quit / resume ─────────────────────────────
+
+
+def test_load_session_meta_reads_the_stored_pairing(tmp_path) -> None:
+    import json
+
+    from src.server.desktop_sessions import load_session_meta
+
+    (tmp_path / "s1.json").write_text(
+        json.dumps({"session_id": "s1", "model": "deepseek-v4-flash", "provider": "deepseek"})
+    )
+
+    assert load_session_meta(tmp_path, "s1") == {
+        "model": "deepseek-v4-flash",
+        "provider": "deepseek",
+    }
+
+
+@pytest.mark.parametrize("payload", [{}, {"model": 7, "provider": None}])
+def test_load_session_meta_has_no_opinion_on_junk(tmp_path, payload: dict[str, Any]) -> None:
+    import json
+
+    from src.server.desktop_sessions import load_session_meta
+
+    (tmp_path / "s1.json").write_text(json.dumps({"session_id": "s1", **payload}))
+
+    assert load_session_meta(tmp_path, "s1") == {"model": "", "provider": ""}
+    assert load_session_meta(tmp_path, "missing") == {"model": "", "provider": ""}
+
+
+def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
+    # The init frame is captured at spawn, before the resume control restores
+    # the stored model — replying with it makes every client render a revert
+    # that did not happen.
+    from src.server.desktop_gateway_methods import GatewayConnection
+
+    class _Session:
+        session_id = "rt1"
+        init_info = {"model": "launch-default", "provider": "deepseek", "cwd": "/w"}
+        titled = True
+
+        def __init__(self) -> None:
+            self.refreshed = False
+
+        async def control_query(self, subtype: str, params: dict[str, Any]) -> Any:
+            assert subtype == "get_settings"
+            return {"model": "deepseek-v4-flash", "provider": "deepseek", "fusion": ""}
+
+        def refresh_session_info(self) -> None:
+            self.refreshed = True
+
+    session = _Session()
+    connection = GatewayConnection.__new__(GatewayConnection)
+
+    async def _create(cwd: Any, resume: Any, params: Any) -> Any:
+        return session
+
+    connection._create = _create  # type: ignore[method-assign]
+
+    class _State:
+        def saved_sessions_dir(self):  # pragma: no cover - not reached
+            raise AssertionError
+
+    connection.state = _State()  # type: ignore[attr-defined]
+
+    result = asyncio.run(
+        GatewayConnection.session_resume(
+            connection, {"session_id": "stored-1", "omit_messages": True}
+        )
+    )
+
+    assert result["info"]["model"] == "deepseek-v4-flash"
+    # …and the correction is pushed to clients already listening.
+    assert session.refreshed is True
+
+
+def test_set_model_persists_the_session_file_immediately() -> None:
+    # A user who switches and then quits without another turn must not resume
+    # onto the model they switched away from — the turn-end save is too late.
+    from src.server.agent_server import _AgentSession
+
+    class _Conv:
+        messages = [{"role": "user", "content": "hi"}]
+
+    class _Sess:
+        conversation = _Conv()
+
+    class _Provider:
+        model = "deepseek-v4-pro"
+
+    class _Bare:
+        provider = _Provider()
+        provider_name = "deepseek"
+        session = _Sess()
+        saved = False
+
+        def _reply(self, rid: object, payload: object) -> None:
+            self.last = payload
+
+        def _do_set_fusion_model(self, rid: object, model: str) -> bool:
+            return False
+
+        def _available_models(self) -> list[str]:
+            return ["deepseek-v4-pro", "deepseek-v4-flash"]
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+    bare = _Bare()
+    _AgentSession._do_set_model(bare, "rid", "deepseek-v4-flash", None)
+
+    assert bare.last["ok"] is True
+    assert bare.provider.model == "deepseek-v4-flash"
+    assert bare.saved is True
+
+
+def test_set_model_does_not_mint_a_file_for_an_untouched_session() -> None:
+    # Poking the model chip on a session with no conversation must not create
+    # a sidebar row.
+    from src.server.agent_server import _AgentSession
+
+    class _Conv:
+        messages: list = []
+
+    class _Sess:
+        conversation = _Conv()
+
+    class _Provider:
+        model = "deepseek-v4-pro"
+
+    class _Bare:
+        provider = _Provider()
+        provider_name = "deepseek"
+        session = _Sess()
+        saved = False
+
+        def _reply(self, rid: object, payload: object) -> None:
+            self.last = payload
+
+        def _do_set_fusion_model(self, rid: object, model: str) -> bool:
+            return False
+
+        def _available_models(self) -> list[str]:
+            return []
+
+        def _save_session(self) -> None:
+            self.saved = True
+
+    bare = _Bare()
+    _AgentSession._do_set_model(bare, "rid", "deepseek-v4-flash", None)
+
+    assert bare.last["ok"] is True
+    assert bare.saved is False
