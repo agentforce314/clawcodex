@@ -52,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapted from the MIT-licensed DeepSeek Harness web client; see
   `ui-web/README.md`.
 
+- **Web chat rendering at reference-client fidelity (`ui-web/`).** A
+  side-by-side pass against the DeepSeek Harness client, closing every gap in
+  what the transcript shows: terminal output renders its ANSI colors (SGR incl.
+  256/truecolor, `\r` progress-bar overwrite) instead of escape-glyph salad;
+  math is tokenized in the markdown grammar so `$$\int x\,dx$$` survives
+  marked's own escapes; task lists draw a checkbox without the literal `[x]`;
+  links keep http/https/mailto only and images must be absolute http(s) (lazy,
+  no referrer); streaming freezes settled blocks and highlights each fence
+  once, at seal, instead of re-lexing the whole reply per delta; long
+  terminal/diff/read/web cards fold their middle and keep the tail (the exit
+  error is the point); resumed sessions keep their diffs (reconstructed from
+  the stored edit arguments), match/file counts and read summaries; the todo
+  row reports `2/6 done · <active item>`; unknown tools disclose an IN/OUT
+  card; web tools link their URLs; a turn-fatal error paints once, not as
+  bubble and notice; and the flow re-pins to the bottom when content grows
+  after layout (async highlight, image loads, card expansion).
+
 - **Native Windows support for the CLI.** ClawCodex now runs first-class on
   Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
   required. The port follows the playbook of a reference Windows-supporting
