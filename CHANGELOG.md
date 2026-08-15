@@ -80,6 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the thought — the last few lines, wrapped, arriving at reading pace —
   that collapses to the quiet one-line "Thought" row when the model moves on.
 
+  And the reference client's task-progress card, ported: a **To-dos panel
+  docked above the composer** — "2 completed · 1 in progress · 3 pending",
+  drawn status glyphs (ring-check, spinning arc, dashed ring), collapsible —
+  folded purely from the transcript so TodoWrite lists and the task
+  registry's incremental creates/updates/snapshots produce one running
+  total, identical live and after a resume.
+
 - **Native Windows support for the CLI.** ClawCodex now runs first-class on
   Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
   required. The port follows the playbook of a reference Windows-supporting
