@@ -20,7 +20,16 @@ import {
   start,
   submitPrompt,
 } from './actions.ts'
-import { $notice, $providers, $queue, $sessionId, $sessionLoading, $transcript } from './store.ts'
+import {
+  $models,
+  $notice,
+  $pendingModel,
+  $providers,
+  $queue,
+  $sessionId,
+  $sessionLoading,
+  $transcript,
+} from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
 
 /** Answers every RPC from a canned table and lets tests push events. */
@@ -132,6 +141,8 @@ beforeEach(() => {
   $transcript.set(emptyTranscript())
   $sessionId.set(null)
   $providers.set({})
+  $pendingModel.set(null)
+  $models.set({})
   $queue.set([])
 })
 
@@ -406,5 +417,49 @@ describe('setDefaultProvider', () => {
     await settle()
 
     expect($notice.get()).toMatchObject({ text: 'New sessions start on deepseek.' })
+  })
+})
+
+describe('a new session and the previous one', () => {
+  it('does not inherit the previous session model on New session', async () => {
+    // The reported screen: a session running openai:gpt-5.6-luna, config
+    // default deepseek, "New session" → the create carried the OLD session's
+    // model explicitly (from $models, which mirrors whatever session the
+    // picker last asked about) and overrode the default. A model is session
+    // state; a create that names none lets the backend read the global
+    // default into the new session's own config.
+    const gateway = await connect()
+
+    // The picker state after a turn on an openai session.
+    $models.set({ model: 'gpt-5.6-luna', provider: 'openai', providers: [] })
+    $sessionId.set('OLD')
+
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    await settle()
+
+    const create = gateway.sent.find(frame => frame.method === 'session.create')
+    expect(create).toBeDefined()
+    expect(create?.params).not.toHaveProperty('model')
+    expect(create?.params).not.toHaveProperty('provider')
+  })
+
+  it('consumes a welcome-screen pick with the session it was for', async () => {
+    // The pick rides exactly one create; the NEXT new session is back on the
+    // global default rather than silently inheriting it forever.
+    const gateway = await connect()
+
+    await setModel('deepseek-v4-flash', 'deepseek')
+    await createSession()
+    await settle()
+
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    await settle()
+
+    const creates = gateway.sent.filter(frame => frame.method === 'session.create')
+    expect(creates).toHaveLength(2)
+    expect(creates[0]?.params).toMatchObject({ model: 'deepseek-v4-flash', provider: 'deepseek' })
+    expect(creates[1]?.params).not.toHaveProperty('model')
   })
 })
