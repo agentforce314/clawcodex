@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { CopyButton } from './CopyButton.tsx'
+import { headTailCap, splitByCap } from './head-tail-cap.ts'
 import css from './ReadBlock.module.css'
 
 export interface ReadBlockProps {
@@ -41,9 +42,17 @@ export function ReadBlock({ className, content, label }: ReadBlockProps) {
   const [expanded, setExpanded] = useState(false)
   const lines = useMemo(() => parseLines(content), [content])
 
-  const overflowing = lines.length > HEAD_LINES && !expanded
-  const shown = overflowing ? lines.slice(0, HEAD_LINES) : lines
+  const cap = headTailCap(lines.length, HEAD_LINES)
+  const folded = cap.hidden > 0 && !expanded
+  const { head, tail } = folded ? splitByCap(lines, cap) : { head: lines, tail: [] }
   const plain = useMemo(() => lines.map(line => line.text).join('\n'), [lines])
+
+  const row = (line: ReadLine) => (
+    <div className={css.line} key={line.number}>
+      <span className={css.gutter}>{line.number}</span>
+      <span className={css.content}>{line.text === '' ? ' ' : line.text}</span>
+    </div>
+  )
 
   return (
     <div className={[css.block, className].filter(Boolean).join(' ')}>
@@ -59,23 +68,20 @@ export function ReadBlock({ className, content, label }: ReadBlockProps) {
         </span>
       </div>
       <div className={css.body}>
-        {shown.map(line => (
-          <div className={css.line} key={line.number}>
-            <span className={css.gutter}>{line.number}</span>
-            <span className={css.content}>{line.text === '' ? ' ' : line.text}</span>
-          </div>
-        ))}
-        {overflowing && (
+        {head.map(row)}
+        {cap.hidden > 0 && (
           <button
+            aria-expanded={expanded}
             className={css.expand}
             onClick={() => {
-              setExpanded(true)
+              setExpanded(value => !value)
             }}
             type="button"
           >
-            … show {lines.length - HEAD_LINES} more lines
+            {expanded ? 'collapse' : `… ${cap.hidden} more lines`}
           </button>
         )}
+        {tail.map(row)}
       </div>
     </div>
   )

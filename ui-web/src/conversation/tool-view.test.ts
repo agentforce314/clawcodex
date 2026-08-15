@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ToolNode } from '../state/transcript.ts'
-import { describeTool, genericBodyText, shortPath } from './tool-view.ts'
+import {
+  describeTool,
+  formatArgs,
+  genericBodyText,
+  shortPath,
+  synthesizeDiff,
+  todoSummary,
+} from './tool-view.ts'
 
 function tool(overrides: Partial<ToolNode> = {}): ToolNode {
   return {
@@ -93,11 +100,136 @@ describe('describeTool', () => {
     expect(view.body).toBe('output')
   })
 
-  it('falls back to a generic row for an unknown tool', () => {
+  it('falls back to an IN/OUT row for an unknown tool', () => {
     const view = describeTool(tool({ context: 'Explore the repo', name: 'Task', state: 'running' }))
 
-    expect(view).toMatchObject({ body: 'output', icon: 'tool', title: 'Task' })
+    expect(view).toMatchObject({ body: 'io', icon: 'tool', title: 'Task' })
     expect(view.summary).toBe('Explore the repo')
+  })
+
+  it('summarises todos as progress plus the live item', () => {
+    const view = describeTool(
+      tool({
+        args: {
+          todos: [
+            { activeForm: 'Mapping the code', content: 'Map the code', status: 'completed' },
+            { activeForm: 'Porting the polish', content: 'Port the polish', status: 'in_progress' },
+            { content: 'Run QA', status: 'pending' },
+          ],
+        },
+        name: 'todo',
+        result: { message: 'Todos have been modified successfully.' },
+      }),
+    )
+
+    expect(view.body).toBe('todo')
+    expect(view.summary).toBe('1/3 done · Porting the polish')
+  })
+
+  it('gives web tools a web card', () => {
+    expect(describeTool(tool({ args: { query: 'x' }, name: 'web_search' })).body).toBe('web')
+    expect(describeTool(tool({ args: { url: 'https://a.io' }, name: 'web_extract' })).body).toBe(
+      'web',
+    )
+  })
+
+  it('synthesizes a diff for a rehydrated edit with no inline_diff', () => {
+    const view = describeTool(
+      tool({
+        args: { file_path: '/repo/a.ts', new_string: 'const b = 2', old_string: 'const a = 1' },
+        name: 'edit_file',
+        result: { message: 'The file /repo/a.ts has been updated successfully.' },
+      }),
+      '/repo',
+    )
+
+    expect(view.body).toBe('diff')
+    expect(view.summary).toBe('')
+  })
+})
+
+describe('synthesizeDiff', () => {
+  it('prefers the diff the gateway sent', () => {
+    const diff = '--- a\n+++ a\n@@ -1 +1 @@\n-x\n+y'
+
+    expect(synthesizeDiff(tool({ name: 'edit_file', result: { inline_diff: diff } }))).toBe(diff)
+  })
+
+  it('reconstructs an edit from old_string and new_string', () => {
+    const node = tool({
+      args: { file_path: '/repo/a.ts', new_string: 'two\nlines', old_string: 'one line' },
+      name: 'edit_file',
+    })
+
+    expect(synthesizeDiff(node)).toBe('+++ /repo/a.ts\n-one line\n+two\n+lines')
+  })
+
+  it('reconstructs a MultiEdit as gap-separated hunks', () => {
+    const node = tool({
+      args: {
+        edits: [
+          { new_string: 'b', old_string: 'a' },
+          { new_string: 'd', old_string: 'c' },
+        ],
+        file_path: '/repo/a.ts',
+      },
+      name: 'edit_file',
+    })
+
+    expect(synthesizeDiff(node)).toBe('+++ /repo/a.ts\n-a\n+b\n@@\n-c\n+d')
+  })
+
+  it('reconstructs a write as pure additions', () => {
+    const node = tool({
+      args: { content: 'alpha\nbeta\n', file_path: '/repo/notes.md' },
+      name: 'write_file',
+    })
+
+    expect(synthesizeDiff(node)).toBe('+++ /repo/notes.md\n+alpha\n+beta')
+  })
+
+  it('declines when the arguments carry no mutation', () => {
+    expect(synthesizeDiff(tool({ name: 'edit_file' }))).toBeUndefined()
+    expect(synthesizeDiff(tool({ name: 'write_file' }))).toBeUndefined()
+  })
+
+  it('declines for a failed call: nothing was written', () => {
+    const node = tool({
+      args: { new_string: 'b', old_string: 'a' },
+      error: 'Error: not found',
+      name: 'edit_file',
+    })
+
+    expect(synthesizeDiff(node)).toBeUndefined()
+  })
+})
+
+describe('formatArgs', () => {
+  it('renders scalar arguments as key: value lines', () => {
+    expect(formatArgs({ description: 'Audit the store', subagent_type: 'Explore' })).toBe(
+      'description: Audit the store\nsubagent_type: Explore',
+    )
+  })
+
+  it('indents multi-line and structured values under their key', () => {
+    expect(formatArgs({ prompt: 'line one\nline two' })).toBe('prompt:\n  line one\n  line two')
+    expect(formatArgs({ flags: [1, 2] })).toBe('flags:\n  [\n   1,\n   2\n  ]')
+  })
+
+  it('returns empty for no arguments', () => {
+    expect(formatArgs({})).toBe('')
+  })
+})
+
+describe('todoSummary', () => {
+  it('is empty without todos', () => {
+    expect(todoSummary({})).toBe('')
+  })
+
+  it('shows progress alone when nothing is in flight', () => {
+    expect(
+      todoSummary({ todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'pending' }] }),
+    ).toBe('1/2 done')
   })
 })
 

@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react'
 
+import { parseAnsi } from '../ansi.ts'
+import { AnsiSpans } from './AnsiText.tsx'
 import { CopyButton } from './CopyButton.tsx'
 import { StateDot, type RunState } from './StateDot.tsx'
+import { headTailCap, splitByCap } from './head-tail-cap.ts'
 import css from './TerminalBlock.module.css'
 
 export interface TerminalBlockProps {
@@ -12,15 +15,18 @@ export interface TerminalBlockProps {
   state: RunState
 }
 
-/** Lines shown before the "show all" affordance; long output is the norm. */
-const HEAD_LINES = 40
+/** Visible lines when capped; the fold sits mid-card so the tail stays. */
+const MAX_LINES = 40
 
 export function TerminalBlock({ className, command, cwd, output, state }: TerminalBlockProps) {
   const [expanded, setExpanded] = useState(false)
 
-  const lines = useMemo(() => (output ?? '').replace(/\n$/, '').split('\n'), [output])
-  const overflowing = lines.length > HEAD_LINES && !expanded
-  const shown = overflowing ? lines.slice(0, HEAD_LINES) : lines
+  // ANSI is parsed once for the whole output: colors set on one line style the
+  // next, so per-line parsing would drop every multi-line span.
+  const lines = useMemo(() => parseAnsi(output ?? ''), [output])
+  const cap = headTailCap(lines.length, MAX_LINES)
+  const folded = cap.hidden > 0 && !expanded
+  const { head, tail } = folded ? splitByCap(lines, cap) : { head: lines, tail: [] }
   const running = state === 'running'
 
   return (
@@ -45,24 +51,30 @@ export function TerminalBlock({ className, command, cwd, output, state }: Termin
           <div className={css.empty}>(no output)</div>
         ) : (
           <div className={css.output}>
-            {shown.map((line, index) => (
+            {head.map((line, index) => (
               // Output lines have no identity of their own; the index is the
               // only stable key and the list is append-only in practice.
               <div className={css.line} key={index}>
-                {line === '' ? ' ' : line}
+                <AnsiSpans line={line} />
               </div>
             ))}
-            {overflowing && (
+            {cap.hidden > 0 && (
               <button
+                aria-expanded={expanded}
                 className={css.expand}
                 onClick={() => {
-                  setExpanded(true)
+                  setExpanded(value => !value)
                 }}
                 type="button"
               >
-                … show {lines.length - HEAD_LINES} more lines
+                {expanded ? 'collapse' : `… ${cap.hidden} more lines`}
               </button>
             )}
+            {tail.map((line, index) => (
+              <div className={css.line} key={`tail-${index}`}>
+                <AnsiSpans line={line} />
+              </div>
+            ))}
           </div>
         ))}
     </div>

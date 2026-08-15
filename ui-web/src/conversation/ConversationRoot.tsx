@@ -84,6 +84,7 @@ export function ConversationRoot() {
   const [atBottom, setAtBottom] = useState(true)
   const scroller = useRef<HTMLDivElement | null>(null)
   const seat = useRef<HTMLDivElement | null>(null)
+  const flow = useRef<HTMLDivElement | null>(null)
 
   // A replay in flight is NOT the empty state: showing the hero over a
   // conversation that is about to land reads as "your session is gone".
@@ -109,6 +110,29 @@ export function ConversationRoot() {
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
     setAtBottom(distance <= STICK_THRESHOLD)
   }, [])
+
+  // Content grows without the node list changing — a highlight lands, an
+  // image loads, a card is expanded. While the reader is at the bottom, any
+  // such growth re-pins; otherwise it would leak the flow past the fold one
+  // async paint at a time.
+  useEffect(() => {
+    if (!atBottom) return
+
+    const element = flow.current
+    const scrollerEl = scroller.current
+
+    if (element === null || scrollerEl === null) return
+
+    const observer = new ResizeObserver(() => {
+      scrollerEl.scrollTop = scrollerEl.scrollHeight
+    })
+
+    observer.observe(element)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [atBottom, hero, tab])
 
   // The back-to-bottom control clears the live composer height, which grows
   // with the draft. Measured rather than assumed so the button never overlaps.
@@ -360,7 +384,7 @@ export function ConversationRoot() {
           />
         ) : (
           <>
-            <div className={css.flow}>
+            <div className={css.flow} ref={flow}>
               {loading && transcript.nodes.length === 0 ? (
                 <div className={css.settling}>Loading session…</div>
               ) : (

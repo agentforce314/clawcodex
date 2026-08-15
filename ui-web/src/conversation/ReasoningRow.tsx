@@ -24,7 +24,9 @@ function ReasoningRowImpl({ node }: ReasoningRowProps) {
   const [expanded, setExpanded] = useState(false)
   const live = !node.sealed
   const flat = node.text.replace(/\s+/g, ' ').trim()
-  const summary = live ? flat.slice(-TAIL) : flat
+  // Live, the summary follows the newest words; sealed, it opens with the
+  // first ones — the thought's own topic sentence.
+  const summary = live ? flat.slice(-TAIL) : (node.text.split('\n').find(line => line.trim() !== '') ?? '').trim()
 
   return (
     <DisclosureRow

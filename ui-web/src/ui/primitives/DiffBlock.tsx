@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { CopyButton } from './CopyButton.tsx'
+import { headTailCap, splitByCap } from './head-tail-cap.ts'
 import css from './DiffBlock.module.css'
 
 export interface DiffBlockProps {
@@ -71,29 +72,34 @@ export function DiffBlock({ className, diff }: DiffBlockProps) {
 
   const added = lines.filter(line => line.kind === 'add').length
   const removed = lines.filter(line => line.kind === 'del').length
-  const overflowing = lines.length > HEAD_LINES && !expanded
-  const shown = overflowing ? lines.slice(0, HEAD_LINES) : lines
+  const cap = headTailCap(lines.length, HEAD_LINES)
+  const folded = cap.hidden > 0 && !expanded
+  const { head, tail } = folded ? splitByCap(lines, cap) : { head: lines, tail: [] }
+
+  const row = (line: DiffLine, key: string) => (
+    <div className={[css.line, css[line.kind]].filter(Boolean).join(' ')} key={key}>
+      {line.text === '' ? ' ' : line.text}
+    </div>
+  )
 
   return (
     <div className={[css.block, className].filter(Boolean).join(' ')}>
       <CopyButton className={css.copyButton} text={diff} />
       <div className={css.body}>
-        {shown.map((line, index) => (
-          <div className={[css.line, css[line.kind]].filter(Boolean).join(' ')} key={index}>
-            {line.text === '' ? ' ' : line.text}
-          </div>
-        ))}
-        {overflowing && (
+        {head.map((line, index) => row(line, `h${index}`))}
+        {cap.hidden > 0 && (
           <button
+            aria-expanded={expanded}
             className={css.expand}
             onClick={() => {
-              setExpanded(true)
+              setExpanded(value => !value)
             }}
             type="button"
           >
-            … show {lines.length - HEAD_LINES} more lines
+            {expanded ? 'collapse' : `… ${cap.hidden} more lines`}
           </button>
         )}
+        {tail.map((line, index) => row(line, `t${index}`))}
       </div>
       <div className={css.footer}>
         └ +{added} −{removed}
