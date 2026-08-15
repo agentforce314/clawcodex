@@ -241,6 +241,39 @@ def _default_max_tokens(model: str | None) -> int:
     return DEFAULT_MAX_OUTPUT_TOKENS_LEGACY
 
 
+def _strip_unsigned_thinking(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop assistant ``thinking`` blocks that carry no signature.
+
+    Signed blocks replay byte-for-byte (the signature is the opaque state the
+    API validates -- see ``ChatResponse.thinking_blocks``). An UNSIGNED block
+    can never satisfy that contract: Anthropic-shaped endpoints reject it
+    outright ("messages.N.content.0.thinking.signature: Field required"),
+    which killed the first turn after resuming a stored conversation and any
+    later turn against compatible endpoints that emit unsigned thinking.
+    History without a thinking block is legal; history with an unsigned one is
+    a guaranteed 400 -- so the block is dropped, not the turn.
+    ``redacted_thinking`` carries ``data`` rather than a signature and passes
+    through untouched.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") != "assistant" or not isinstance(content, list):
+            out.append(msg)
+            continue
+        kept = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "thinking"
+                and not block.get("signature")
+            )
+        ]
+        out.append({**msg, "content": kept} if len(kept) != len(content) else msg)
+    return out
+
+
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider."""
 
@@ -332,7 +365,7 @@ class AnthropicProvider(BaseProvider):
         """
         prepared = super()._prepare_messages(messages)
         from .openai_responses import strip_responses_item_blocks
-        return strip_responses_item_blocks(prepared)
+        return _strip_unsigned_thinking(strip_responses_item_blocks(prepared))
 
     def _effective_base_url(self) -> str | None:
         """The base URL the SDK will actually use.

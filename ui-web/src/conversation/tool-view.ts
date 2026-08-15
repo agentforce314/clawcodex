@@ -15,7 +15,7 @@
 import type { ToolResult } from '../gateway/protocol.ts'
 import type { ToolNode } from '../state/transcript.ts'
 
-export type ToolBodyKind = 'diff' | 'none' | 'output' | 'read' | 'terminal' | 'todo'
+export type ToolBodyKind = 'diff' | 'io' | 'none' | 'output' | 'read' | 'terminal' | 'todo' | 'web'
 
 export type ToolIconName =
   | 'edit'
@@ -35,6 +35,49 @@ export interface ToolView {
   path?: string
   summary: string
   title: string
+}
+
+export interface TodoEntry {
+  active: string
+  content: string
+  status: string
+}
+
+/** The `todos` argument, defensively: content-less or malformed entries drop. */
+export function readTodos(args: Record<string, unknown>): TodoEntry[] {
+  const raw = args.todos
+
+  if (!Array.isArray(raw)) return []
+
+  return raw.flatMap(entry => {
+    if (entry === null || typeof entry !== 'object') return []
+
+    const record = entry as Record<string, unknown>
+    const content = typeof record.content === 'string' ? record.content : ''
+
+    if (content === '') return []
+
+    return [
+      {
+        active: typeof record.activeForm === 'string' ? record.activeForm : content,
+        content,
+        status: typeof record.status === 'string' ? record.status : 'pending',
+      },
+    ]
+  })
+}
+
+/** `2/6 done · Porting the reference polish` — progress plus the live item. */
+export function todoSummary(args: Record<string, unknown>): string {
+  const todos = readTodos(args)
+
+  if (todos.length === 0) return ''
+
+  const done = todos.filter(todo => todo.status === 'completed').length
+  const active = todos.find(todo => todo.status === 'in_progress')
+  const progress = `${done}/${todos.length} done`
+
+  return active === undefined ? progress : `${progress} · ${active.active}`
 }
 
 const TITLES: Record<string, string> = {
@@ -98,10 +141,10 @@ function argPath(args: Record<string, unknown>): string {
   )
 }
 
-function countLabel(count: number | undefined, singular: string): string {
+function countLabel(count: number | undefined, singular: string, plural = `${singular}s`): string {
   if (count === undefined) return ''
 
-  return `${count} ${count === 1 ? singular : `${singular}s`}`
+  return `${count} ${count === 1 ? singular : plural}`
 }
 
 /** Summary for a finished call, from whichever result field its family uses. */
@@ -113,7 +156,7 @@ function resultSummary(name: string, result: ToolResult | undefined): string {
       return countLabel(num(result.file_count), 'file')
 
     case 'search_files':
-      return countLabel(num(result.match_count), 'match')
+      return countLabel(num(result.match_count), 'match', 'matches')
 
     case 'web_search': {
       const count = countLabel(num(result.result_count), 'result')
@@ -127,6 +170,60 @@ function resultSummary(name: string, result: ToolResult | undefined): string {
     default:
       return str(result.context) || firstLine(str(result.output) || str(result.message))
   }
+}
+
+/**
+ * The diff a mutation row shows.
+ *
+ * Live events carry the server's `inline_diff` (built from the agent's
+ * structuredPatch). A REHYDRATED session has no display envelope — but the
+ * stored `tool_use` arguments still hold the whole mutation (`old_string` /
+ * `new_string`, a MultiEdit's `edits`, a Write's `content`), so the diff is
+ * reconstructed from those rather than degrading to "file updated" prose.
+ */
+export function synthesizeDiff(node: ToolNode): string | undefined {
+  const stored = node.result?.inline_diff
+
+  if (stored !== undefined && stored !== '') return stored
+  if (node.error !== undefined) return undefined
+
+  const args = node.args
+  const path = argPath(args) || str(node.result?.path) || 'file'
+
+  const hunk = (oldText: string, newText: string): string[] => [
+    ...(oldText === '' ? [] : oldText.replace(/\n$/, '').split('\n').map(line => `-${line}`)),
+    ...(newText === '' ? [] : newText.replace(/\n$/, '').split('\n').map(line => `+${line}`)),
+  ]
+
+  if (node.name === 'edit_file') {
+    const edits = Array.isArray(args.edits)
+      ? (args.edits as { new_string?: unknown; old_string?: unknown }[])
+      : []
+
+    if (edits.length > 0) {
+      const body = edits.flatMap((edit, index) => {
+        const lines = hunk(str(edit.old_string), str(edit.new_string))
+
+        return index === 0 ? lines : ['@@', ...lines]
+      })
+
+      return body.length === 0 ? undefined : [`+++ ${path}`, ...body].join('\n')
+    }
+
+    const body = hunk(str(args.old_string), str(args.new_string))
+
+    return body.length === 0 ? undefined : [`+++ ${path}`, ...body].join('\n')
+  }
+
+  if (node.name === 'write_file') {
+    const content = str(args.content)
+
+    if (content === '') return undefined
+
+    return [`+++ ${path}`, ...hunk('', content)].join('\n')
+  }
+
+  return undefined
 }
 
 export function describeTool(node: ToolNode, workspace?: string): ToolView {
@@ -166,24 +263,33 @@ export function describeTool(node: ToolNode, workspace?: string): ToolView {
     case 'edit_file':
     case 'write_file': {
       const path = argPath(args) || str(node.result?.path)
+      const diff = synthesizeDiff(node)
 
       return {
-        body: node.result?.inline_diff === undefined ? 'output' : 'diff',
+        body: diff === undefined ? 'output' : 'diff',
         icon,
         path: shortPath(path, workspace),
-        summary: node.result?.inline_diff === undefined ? resultSummary(name, node.result) : '',
+        summary: diff === undefined ? resultSummary(name, node.result) : '',
         title,
       }
     }
 
-    case 'todo':
-      return { body: 'todo', icon, summary: resultSummary(name, node.result), title }
+    case 'todo': {
+      const summary = todoSummary(args)
+
+      return {
+        body: 'todo',
+        icon,
+        summary: summary === '' ? resultSummary(name, node.result) : summary,
+        title,
+      }
+    }
 
     case 'web_search':
-      return { body: 'output', icon, summary: str(args.query) || str(node.context), title }
+      return { body: 'web', icon, summary: str(args.query) || str(node.context), title }
 
     case 'web_extract':
-      return { body: 'output', icon, summary: str(args.url) || str(node.context), title }
+      return { body: 'web', icon, summary: str(args.url) || str(node.context), title }
 
     case 'clarify':
       return { body: 'output', icon, summary: str(node.context), title }
@@ -194,7 +300,9 @@ export function describeTool(node: ToolNode, workspace?: string): ToolView {
           ? str(node.context) || str(args.description) || str(args.pattern)
           : resultSummary(name, node.result) || str(node.context)
 
-      return { body: 'output', icon, summary, title }
+      // Unknown tools (Task, MCP…) disclose both sides of the exchange: the
+      // arguments are the only record of what was asked.
+      return { body: 'io', icon, summary, title }
     }
   }
 }
@@ -208,4 +316,39 @@ export function genericBodyText(node: ToolNode): string {
   if (result === undefined) return ''
 
   return str(result.output) || str(result.content) || str(result.message) || ''
+}
+
+/**
+ * Tool arguments as readable `key: value` lines for the IN side of a generic
+ * card — friendlier than JSON-escaped strings for the prompt-sized values a
+ * Task or MCP call carries. Multi-line and structured values indent under
+ * their key.
+ */
+export function formatArgs(args: Record<string, unknown>): string {
+  const lines: string[] = []
+
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined) continue
+
+    let text: string
+
+    if (typeof value === 'string') {
+      text = value
+    } else {
+      try {
+        text = JSON.stringify(value, null, 1) ?? String(value)
+      } catch {
+        text = String(value)
+      }
+    }
+
+    if (text.includes('\n')) {
+      lines.push(`${key}:`)
+      lines.push(...text.split('\n').map(line => `  ${line}`))
+    } else {
+      lines.push(`${key}: ${text}`)
+    }
+  }
+
+  return lines.join('\n')
 }

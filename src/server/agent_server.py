@@ -709,6 +709,10 @@ class _AgentSession:
                 "logo_color": _current_logo_color(),
                 # /recap — end-of-turn recap + composer suggestion toggle.
                 "recap": _recap_setting_enabled(),
+                # The preferred response language (set_language). Without this
+                # the setting is write-only: a client can change it but never
+                # show what it currently is.
+                "language": self._language or "",
             })
             return
         if subtype == "set_recap":

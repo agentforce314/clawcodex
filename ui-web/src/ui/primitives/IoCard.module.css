@@ -1,0 +1,74 @@
+/* IN/OUT card: one surface, two labelled scroll windows. */
+.card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--cc-alias-markdown-code-block);
+  overflow: hidden;
+}
+
+.section {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  max-height: 150px;
+  padding: 10px 14px;
+  overflow: auto;
+}
+
+/* The gutter label rides its section's scroll, staying put while the text
+   moves — the reader always knows which side of the exchange they are in. */
+.label {
+  position: sticky;
+  top: 0;
+  color: var(--cc-alias-label-caption);
+  font: var(--cc-font-xs-13);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.divider {
+  height: 1px;
+  background: var(--cc-alias-border-l2);
+}
+
+.outWrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--cc-alias-label-secondary);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text[data-error] {
+  color: var(--cc-alias-state-error-primary);
+}
+
+.copyButton {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  flex: none;
+  margin: 0 0 0 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-xs-13);
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  color: var(--cc-alias-label-primary);
+}

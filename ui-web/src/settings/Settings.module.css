@@ -228,3 +228,38 @@
 .cancel:hover {
   background: var(--cc-alias-interactive-bg-hover);
 }
+
+/* ── choice chips (theme, output style) ──────────────────────────────────── */
+
+.choiceRow {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.choice {
+  padding: 6px 14px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.choice:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.choice:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.choiceOn,
+.choiceOn:hover:not(:disabled) {
+  border-color: var(--cc-alias-label-primary);
+  background: var(--cc-alias-interactive-bg-active);
+  color: var(--cc-alias-label-primary);
+}

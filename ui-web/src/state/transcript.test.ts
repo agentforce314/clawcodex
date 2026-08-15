@@ -222,6 +222,28 @@ describe('turn state', () => {
     expect(state.running).toBe(false)
   })
 
+  it('shows a replayed turn error once, not as bubble AND notice', () => {
+    // The backend often streams the failure text as interim prose before the
+    // result frame names the same words as the turn's error.
+    const boom = 'Error code: 400 - invalid_request_error'
+    const state = fold([
+      event('message.interim', { text: boom }),
+      event('message.complete', { error: boom, status: 'error', text: boom }),
+    ])
+
+    expect(state.nodes.map(n => n.kind)).toEqual(['notice'])
+    expect(state.nodes[0]).toMatchObject({ body: boom, tone: 'error' })
+  })
+
+  it('keeps real streamed prose alongside the error notice', () => {
+    const state = fold([
+      event('message.delta', { text: 'Half an answer' }),
+      event('message.complete', { error: 'overloaded', status: 'error' }),
+    ])
+
+    expect(state.nodes.map(n => n.kind)).toEqual(['assistant', 'notice'])
+  })
+
   it('drops an empty trailing bubble instead of painting one', () => {
     const state = fold([
       event('message.delta', { text: '' }),

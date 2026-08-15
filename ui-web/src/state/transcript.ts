@@ -352,6 +352,21 @@ export function applyEvent(state: TranscriptState, event: GatewayEvent): Transcr
       }
 
       if (payload.status === 'error') {
+        // A turn-fatal error is often replayed as interim prose before the
+        // result frame arrives, leaving the same words in a bubble AND in
+        // this notice. One row carrying the failure is enough.
+        const errorText = (payload.error ?? '').trim()
+        const last = nodes[nodes.length - 1]
+
+        if (
+          errorText !== '' &&
+          last !== undefined &&
+          last.kind === 'assistant' &&
+          last.text.trim() === errorText
+        ) {
+          nodes = nodes.slice(0, -1)
+        }
+
         nodes = [
           ...nodes,
           {

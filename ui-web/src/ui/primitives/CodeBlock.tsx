@@ -8,22 +8,29 @@ export interface CodeBlockProps {
   className?: string
   code: string
   language?: string
+  /**
+   * False while the fence is still growing at the tail of a streaming reply.
+   * An unsettled block renders plain text: highlighting is async, so a block
+   * re-highlighted per delta would keep showing the PREVIOUS delta's colored
+   * copy — the reader watches code that lags the stream by one round trip.
+   * The one swap to colored happens when the text is final.
+   */
+  settled?: boolean
 }
 
 /**
  * A fenced code block: sticky banner (language + copy) over the source.
  *
  * Highlighting is progressive by design — the plain text paints immediately
- * and is replaced when the grammar chunk lands. That ordering matters while a
- * reply is streaming: the block is re-rendered on every delta, and waiting for
- * a highlight would leave the reader watching an empty card.
+ * and is replaced when the grammar chunk lands. A block must never fail to
+ * display over a missing grammar.
  */
-export function CodeBlock({ className, code, language }: CodeBlockProps) {
+export function CodeBlock({ className, code, language, settled = true }: CodeBlockProps) {
   const [html, setHtml] = useState<string | null>(null)
   const resolved = normalizeLanguage(language)
 
   useEffect(() => {
-    if (resolved === undefined) {
+    if (resolved === undefined || !settled) {
       setHtml(null)
 
       return
@@ -38,7 +45,7 @@ export function CodeBlock({ className, code, language }: CodeBlockProps) {
     return () => {
       cancelled = true
     }
-  }, [code, resolved])
+  }, [code, resolved, settled])
 
   return (
     <div className={[css.block, className].filter(Boolean).join(' ')}>

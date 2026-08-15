@@ -18,6 +18,7 @@ import type {
   GatewayEvent,
   EffortOptionsResult,
   FileSearchResult,
+  GeneralSettingsResult,
   ModelOptionsResult,
   ProviderListResult,
   ProviderMutationResult,
@@ -32,6 +33,7 @@ import {
   $connection,
   $contextUsage,
   $effort,
+  $generalSettings,
   $detailsNodeId,
   $models,
   $notice,
@@ -724,6 +726,71 @@ async function blobToBase64(blob: Blob): Promise<string> {
     }
     reader.readAsDataURL(blob)
   })
+}
+
+/* ── general settings ────────────────────────────────────────────────────── */
+
+export async function refreshGeneralSettings(): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) {
+    $generalSettings.set({})
+
+    return
+  }
+
+  try {
+    $generalSettings.set(
+      await gateway().request<GeneralSettingsResult>('settings.general', {
+        session_id: sessionId,
+      }),
+    )
+  } catch {
+    // The section renders its needs-a-session state; nothing to shout about.
+    $generalSettings.set({})
+  }
+}
+
+export async function setOutputStyle(style: string): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<{ error?: string; ok?: boolean }>(
+      'settings.set_output_style',
+      { session_id: sessionId, style },
+    )
+
+    // The agent refuses mid-turn and rejects unknown names; its wording is
+    // the useful part, so it is shown rather than summarized.
+    if (result.ok === false) notice(result.error === undefined || result.error === '' ? 'Could not change the output style' : result.error, 'error')
+    else notice(`Output style: ${style}`)
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+
+  await refreshGeneralSettings()
+}
+
+export async function setResponseLanguage(language: string): Promise<void> {
+  const sessionId = $sessionId.get()
+
+  if (sessionId === null) return
+
+  try {
+    const result = await gateway().request<{ language?: string; ok?: boolean }>(
+      'settings.set_language',
+      { language, session_id: sessionId },
+    )
+
+    if (result.ok === false) notice('Could not set the language', 'error')
+    else notice(language.trim() === '' ? 'Response language cleared.' : `Responses in ${language}.`)
+  } catch (error) {
+    notice(errorText(error), 'error')
+  }
+
+  await refreshGeneralSettings()
 }
 
 /* ── providers (settings) ────────────────────────────────────────────────── */

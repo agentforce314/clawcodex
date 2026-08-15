@@ -197,6 +197,13 @@
   object-fit: contain;
 }
 
+/* Stand-in for an image whose source failed the safety check: the alt text,
+   set quietly apart from the prose. */
+.imageAlt {
+  color: var(--cc-alias-label-tertiary);
+  font-style: italic;
+}
+
 /* Display math gets its own scrollport: a long derivation must not widen the
    column. */
 .markdown :global(.katex-display-wrap) {

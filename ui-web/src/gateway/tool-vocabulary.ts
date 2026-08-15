@@ -45,15 +45,44 @@ export function renderToolName(name: string): string {
   return RENDER_TOOL_NAMES[name.trim().toLowerCase()] ?? name
 }
 
+const NUMBERED_LINE = /^\s*\d+\t/
+
+function nonEmptyLines(text: string): number {
+  return text.split('\n').filter(line => line.trim() !== '').length
+}
+
 /** Tool output text → the result object the matching card knows how to read. */
 export function renderToolResult(name: string, text: string): ToolResult {
   const render = renderToolName(name)
 
   if (text === '') return {}
 
-  if (render === 'read_file' || render === 'web_extract') return { content: text }
+  if (render === 'read_file') {
+    // The live gateway summarises a numbered read as "Read N lines"; a resumed
+    // row deserves the same summary, not a blank one.
+    const lines = text.split('\n').filter(line => line !== '')
+    const first = lines[0]
+
+    if (first !== undefined && NUMBERED_LINE.test(first)) {
+      return {
+        content: text,
+        context: `Read ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`,
+      }
+    }
+
+    return { content: text }
+  }
+
+  if (render === 'web_extract') return { content: text }
   if (render === 'terminal') return { output: text }
   if (render === 'edit_file' || render === 'write_file') return { message: text }
+
+  // Counts, mirroring the live translate layer, so a resumed Search/List row
+  // keeps its "N matches" summary.
+  if (render === 'list_files') return { context: text, file_count: nonEmptyLines(text), output: text }
+  if (render === 'search_files') {
+    return { context: text, match_count: nonEmptyLines(text), output: text }
+  }
 
   // No dedicated card: the generic path prefers `context`, and `output` feeds
   // the copy affordance.

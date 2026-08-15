@@ -13,6 +13,7 @@ import type {
   CommandEntry,
   ContextUsageResult,
   EffortOptionsResult,
+  GeneralSettingsResult,
   ModelOptionsResult,
   ProviderListResult,
   ProjectNode,
@@ -68,6 +69,7 @@ export const $effort = atom<EffortOptionsResult>({ supported: false })
 /** Settings overlay: null when closed, else the section on show. */
 export const $settingsTab = atom<'general' | 'providers' | null>(null)
 export const $providers = atom<ProviderListResult>({})
+export const $generalSettings = atom<GeneralSettingsResult>({})
 export const $commands = atom<CommandEntry[]>([])
 export const $contextUsage = atom<ContextUsageResult | null>(null)
 

@@ -1,0 +1,44 @@
+/* ANSI palette roles. The values live in tokens.css (`--cc-ansi-*`) so light
+   and dark each pick tones readable on their own card surface. */
+
+.fg0 { color: var(--cc-ansi-0); }
+.fg1 { color: var(--cc-ansi-1); }
+.fg2 { color: var(--cc-ansi-2); }
+.fg3 { color: var(--cc-ansi-3); }
+.fg4 { color: var(--cc-ansi-4); }
+.fg5 { color: var(--cc-ansi-5); }
+.fg6 { color: var(--cc-ansi-6); }
+.fg7 { color: var(--cc-ansi-7); }
+.fg8 { color: var(--cc-ansi-8); }
+.fg9 { color: var(--cc-ansi-9); }
+.fg10 { color: var(--cc-ansi-10); }
+.fg11 { color: var(--cc-ansi-11); }
+.fg12 { color: var(--cc-ansi-12); }
+.fg13 { color: var(--cc-ansi-13); }
+.fg14 { color: var(--cc-ansi-14); }
+.fg15 { color: var(--cc-ansi-15); }
+
+.bg0 { background-color: var(--cc-ansi-0); }
+.bg1 { background-color: var(--cc-ansi-1); }
+.bg2 { background-color: var(--cc-ansi-2); }
+.bg3 { background-color: var(--cc-ansi-3); }
+.bg4 { background-color: var(--cc-ansi-4); }
+.bg5 { background-color: var(--cc-ansi-5); }
+.bg6 { background-color: var(--cc-ansi-6); }
+.bg7 { background-color: var(--cc-ansi-7); }
+.bg8 { background-color: var(--cc-ansi-8); }
+.bg9 { background-color: var(--cc-ansi-9); }
+.bg10 { background-color: var(--cc-ansi-10); }
+.bg11 { background-color: var(--cc-ansi-11); }
+.bg12 { background-color: var(--cc-ansi-12); }
+.bg13 { background-color: var(--cc-ansi-13); }
+.bg14 { background-color: var(--cc-ansi-14); }
+.bg15 { background-color: var(--cc-ansi-15); }
+
+.bold { font-weight: 600; }
+
+.dim { opacity: 0.65; }
+
+.italic { font-style: italic; }
+
+.underline { text-decoration: underline; }

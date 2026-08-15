@@ -147,6 +147,26 @@ def _translate_anthropic_multimodal_block(block: Any) -> dict[str, Any] | None:
     return _anthropic_document_block_to_openai(block)
 
 
+def _strip_thinking_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop ``thinking``/``redacted_thinking`` blocks from assistant history."""
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") != "assistant" or not isinstance(content, list):
+            out.append(msg)
+            continue
+        kept = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict)
+                and block.get("type") in ("thinking", "redacted_thinking")
+            )
+        ]
+        out.append({**msg, "content": kept} if len(kept) != len(content) else msg)
+    return out
+
+
 def _convert_anthropic_messages_to_openai(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -173,6 +193,13 @@ def _convert_anthropic_messages_to_openai(
     # unknown block types. See openai_responses.RESPONSES_ITEM_BLOCK_TYPE.
     from .openai_responses import strip_responses_item_blocks
     messages = strip_responses_item_blocks(messages)
+    # Thinking blocks have no Chat Completions representation either. Passing
+    # them through 400s at DeepSeek-style endpoints ("messages[N]: unknown
+    # variant `thinking`, expected `text`"), which killed every turn after
+    # resuming a stored conversation that carried them. The model regenerates
+    # its own reasoning; history without the old blocks is legal, history with
+    # them is a guaranteed rejection.
+    messages = _strip_thinking_blocks(messages)
 
     result: list[dict[str, Any]] = []
 

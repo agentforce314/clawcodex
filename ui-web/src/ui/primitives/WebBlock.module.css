@@ -1,0 +1,92 @@
+/* Web tool card: same 12px surface family as the other tool cards. */
+.block {
+  border-radius: 12px;
+  background: var(--cc-alias-markdown-code-block);
+  color: var(--cc-alias-label-primary);
+  overflow: hidden;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--cc-alias-border-l2);
+  font: var(--cc-font-xs-13);
+}
+
+.label {
+  color: var(--cc-alias-label-secondary);
+}
+
+/* The fetched address: the card's own citation, ellipsized mid-card. */
+.source {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-state-business-primary);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source:hover {
+  text-decoration: underline;
+}
+
+.copyButton {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  color: var(--cc-alias-label-primary);
+}
+
+.body {
+  max-height: 300px;
+  padding: 10px 14px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.line {
+  min-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.line a {
+  color: var(--cc-alias-state-business-primary);
+  text-decoration: none;
+}
+
+.line a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.expand:hover {
+  color: var(--cc-alias-label-secondary);
+}

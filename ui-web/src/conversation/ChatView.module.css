@@ -26,6 +26,11 @@
   min-width: 0;
 }
 
+/* A row whose renderer produced nothing must not spend the column gap. */
+.item:empty {
+  display: none;
+}
+
 /* Turn activity keeps a loader's one-line footprint. A pale accent band sweeps
    left to right across the words; reduced motion keeps it static. */
 .turnStatus {
