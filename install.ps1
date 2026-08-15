@@ -77,7 +77,7 @@ $ErrorActionPreference = 'Stop'
 # ============================================================================
 #  Config (defaults; env vars override like install.sh)
 # ============================================================================
-$INSTALLER_VERSION = '1.5.0'
+$INSTALLER_VERSION = '1.6.0'
 # CLAWCODEX_REPO_URL override: install from a fork/mirror (or a local
 # checkout when testing the installer itself).
 $REPO_URL = if ($env:CLAWCODEX_REPO_URL) { $env:CLAWCODEX_REPO_URL }

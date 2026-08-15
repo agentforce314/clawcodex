@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-15
+
 ### Added
 
 - **ClawCodex Web — the agent in a browser tab (`ui-web/`, `clawcodex web`).**
@@ -87,6 +89,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registry's incremental creates/updates/snapshots produce one running
   total, identical live and after a resume.
 
+- **Web settings, end to end.** A settings takeover reached from the sidebar
+  foot, covering the knobs that existed only as slash commands or a config
+  file nobody edits:
+  - **Providers** — every provider ClawCodex knows, configured or not: add,
+    replace, or disconnect API keys (stored where `clawcodex login` stores
+    them; nothing ever echoes a key back), and **set the default provider**,
+    persisted to `config.json` — new sessions start on it, the session you
+    are in keeps its own.
+  - **General** — appearance (light/dark/system, per browser), approvals
+    (the composer's three-mode scale, with the Full-access
+    acknowledge-checkbox confirmation and the persistence semantics stated
+    outright), response language, output style, and the end-of-turn recap
+    toggle.
+- **A stable web port.** `clawcodex web` now serves `http://127.0.0.1:8081`
+  by default instead of an OS-assigned port that changed every launch —
+  typeable from memory, bookmarkable, and `GET /` inlines the session token
+  so the bare URL works. A second server scans upward (8082, …) instead of
+  dying on "address already in use"; an explicit `--port` is honored exactly,
+  with a clean refusal when taken; `--port 0` keeps the OS-assigned behavior.
 - **Native Windows support for the CLI.** ClawCodex now runs first-class on
   Windows 10/11 — PowerShell, cmd, and Windows Terminal — with no WSL
   required. The port follows the playbook of a reference Windows-supporting
@@ -174,6 +195,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *interrupted*, matching POSIX `-SIGTERM`), and the stream watchdog's
   force-close actually wakes a reader parked in `recv` (WinSock
   `shutdown` alone never does).
+
+- A model (provider:model_id) is session-scoped config, and
+  `default_provider` is the global default — four leaks that together made
+  the web UI appear to ignore a just-set default provider are closed:
+  - `make_spawn_agent` handed every session the SAME config object, and a
+    cross-provider switch writes it (`_install_provider`) — one picker
+    switch rewrote the process-wide spawn template, so every later bare
+    `session.create` inherited the switched provider until restart. Each
+    spawn now owns a copy.
+  - The web client seeded `session.create` from the picker state, which
+    mirrors the CURRENT session — "New session" explicitly carried the old
+    session's model over the config default. A welcome-screen pick now rides
+    exactly one create (`$pendingModel`); with nothing pending the create
+    names no model and the backend resolves the global default.
+  - `model.options` with no session borrowed an unrelated window's session;
+    it now answers from config — what the NEXT session will run on.
+  - A session still spawning its agent could be handed out to sessionless
+    calls (`'NoneType' object has no attribute 'send_to_agent'`, surfacing
+    as an empty model picker), and a browser navigating away mid-spawn
+    leaked a permanently agent-less session into the registry.
+- Whole-tier config writers (`set_recap_enabled`, `set_effort`,
+  `set_api_key`, the env/advisor writers, …) could save a STALE cached copy
+  of `config.json` back to disk, silently reverting a `permissions.defaultMode`
+  (or any other) write made moments earlier through a different
+  `ConfigManager` instance. Every read-modify-write now re-reads from disk,
+  and `set_settings_default_mode` goes through the shared manager.
 
 ## [1.5.0] - 2026-08-08
 
@@ -836,7 +883,11 @@ The focus was on building a solid foundation with clean architecture, comprehens
 
 ---
 
-[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/agentforce314/clawcodex/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/agentforce314/clawcodex/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/agentforce314/clawcodex/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/agentforce314/clawcodex/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/agentforce314/clawcodex/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/agentforce314/clawcodex/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/agentforce314/clawcodex/compare/v1.0.0...v1.1.0
