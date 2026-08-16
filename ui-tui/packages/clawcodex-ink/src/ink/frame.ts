@@ -87,6 +87,11 @@ export type Patch =
   | { type: 'cursorShow' }
   | { type: 'cursorMove'; x: number; y: number }
   | { type: 'cursorTo'; col: number }
+  // EL(0). Emitted after a row's last painted cell to wipe anything living to
+  // the right of it. The renderer skips empty cells rather than painting
+  // spaces, so without this a character the renderer did not write (and does
+  // not know about) is never overwritten — see log-update's row-tail heal.
+  | { type: 'eraseToLineEnd' }
   | { type: 'carriageReturn' }
   | { type: 'hyperlink'; uri: string }
   // Pre-serialized style transition string from StylePool.transition() —

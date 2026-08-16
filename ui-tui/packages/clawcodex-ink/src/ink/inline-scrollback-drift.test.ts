@@ -40,6 +40,8 @@ const PROMPT = 'deepseek > '
 const PROMPT_W = PROMPT.length // 11, same as the real composer prompt
 const FOOTER_IDLE = '  ? for shortcuts'
 const FOOTER_BUSY = '  esc to interrupt'
+/** A glyph no component renders — stands in for a write ink did not make. */
+const FOREIGN = '\u00a7'
 
 const ESC = ''
 const BEL = ''
@@ -351,6 +353,10 @@ type StepOpts = Partial<HarnessState> & {
   /** Invoke ink.forceRedraw() after rendering this step (the ctrl+L /
    *  /redraw recovery path — ERASE_SCREEN + CURSOR_HOME + full repaint). */
   forceRedraw?: boolean
+  /** Stamp a character straight into the VT after this step's frame, as if
+   *  something other than ink had written to the terminal. y < 0 targets the
+   *  prompt row. */
+  foreign?: { ch: string; x: number; y: number }
   label: string
 }
 
@@ -386,6 +392,10 @@ function runScenario(steps: Array<StepOpts & { assert?: boolean }>, scrollbox: b
       .map(f => `${f.label}: ${JSON.stringify(f.bytes)}`)
       .join('\n')}`
 
+  const assertNoForeignChar = (label: string) => {
+    expect(vt.dump().includes(FOREIGN), `foreign char never cleared\n${ctx(label)}`).toBe(false)
+  }
+
   const assertComposerIntact = (label: string) => {
     const promptRow = vt.findRow('deepseek')
     expect(promptRow, `prompt row missing\n${ctx(label)}`).toBeGreaterThanOrEqual(0)
@@ -413,7 +423,7 @@ function runScenario(steps: Array<StepOpts & { assert?: boolean }>, scrollbox: b
     }
   }
 
-  for (const { assert = true, forceRedraw = false, label, ...patch } of steps) {
+  for (const { assert = true, forceRedraw = false, foreign, label, ...patch } of steps) {
     Object.assign(state, patch)
     const before = stdout.chunks.length
     ink.render(React.createElement(Harness, { ...state, lines: [...state.lines] }))
@@ -427,8 +437,13 @@ function runScenario(steps: Array<StepOpts & { assert?: boolean }>, scrollbox: b
     frames.push({ bytes, label })
     vt.feed(bytes)
 
+    if (foreign) {
+      vt.grid[foreign.y < 0 ? vt.findRow('deepseek') : foreign.y]![foreign.x] = foreign.ch
+    }
+
     if (assert) {
       assertComposerIntact(label)
+      assertNoForeignChar(label)
     }
   }
 
@@ -530,6 +545,66 @@ describe('inline-mode physical screen stays in sync across a full turn', () => {
 
   it('G: full realism — shell offset + ScrollBox + flash + reflow + virt slide', () => {
     runScenario(lifecycleSteps({ flashOnEnd: true, reflowOnEnd: true, virtSlideOnIdle: true }), true, 3)
+  })
+
+  // The renderer skips empty cells instead of painting spaces, so a character
+  // it did not write sits in a cell its model calls empty and no diff can ever
+  // remove it. Before the row-tail erase this survived the whole lifecycle.
+  it('I: a foreign char on a repainted row is cleared by later frames', () => {
+    const steps = lifecycleSteps({ flashOnEnd: false, reflowOnEnd: false, virtSlideOnIdle: true })
+    const at = steps.findIndex(s => s.label === 'virt-slide')
+    steps.splice(at + 1, 0, { assert: false, foreign: { ch: FOREIGN, x: 30, y: -1 }, label: 'foreign-write' })
+
+    runScenario(steps, false, 3)
+  })
+
+  // ctrl+L was the only thing that could clear one. Keep it that way.
+  it('J: ctrl+L clears a foreign char', () => {
+    const steps = lifecycleSteps({ flashOnEnd: false, reflowOnEnd: false, virtSlideOnIdle: true })
+    const at = steps.findIndex(s => s.label === 'virt-slide')
+    steps.splice(at + 1, 0, { assert: false, foreign: { ch: FOREIGN, x: 30, y: -1 }, label: 'foreign-write' })
+    steps.splice(at + 2, 0, { forceRedraw: true, label: 'ctrl-l' })
+
+    runScenario(steps, false, 3)
+  })
+
+  // ---- Known gaps in the row-tail erase. Each asserts that the run throws
+  // FOR THE DOCUMENTED REASON. `it.fails` was the obvious tool and the wrong
+  // one: it passes on ANY throw, so the first version of the interior case
+  // "passed" because its stamp landed inside the word `deepseek` and tripped
+  // `prompt row missing` instead — the tripwire recorded nothing and would
+  // never have flipped when the gap closed. toThrow(/…/) pins the reason and
+  // still flips loudly if a heal makes the run stop throwing.
+  //
+  // Both gaps fall out of the design: the erase anchors at lastPaintedX + 1 and
+  // only runs for rows the diff pass wrote to. Closing them needs a periodic
+  // in-place full-row repaint, not a bigger tail.
+
+  const gapSteps = (foreign: { ch: string; x: number; y: number }) => {
+    const steps = lifecycleSteps({ flashOnEnd: false, reflowOnEnd: false, virtSlideOnIdle: true })
+    const at = steps.findIndex(s => s.label === 'virt-slide')
+    steps.splice(at + 1, 0, { assert: false, foreign, label: 'foreign-write' })
+
+    return steps
+  }
+
+  // Interior: any cell whose model value does not change between frames is
+  // never re-emitted, and the tail anchor starts past it. Stamped on the
+  // composer's top border — a STABLE PAINTED cell, the sharpest form of the
+  // gap, and not one of the harness's own needles.
+  it('GAP: a foreign char INTERIOR to a row is not cleared', () => {
+    expect(() => runScenario(gapSteps({ ch: FOREIGN, x: 20, y: 4 }), false, 3)).toThrow(
+      /foreign char never cleared/
+    )
+  })
+
+  // Settled rows: during a long turn the only rows repainting are the busy line
+  // and the composer. Everything above is untouched, so nothing erases it —
+  // this is the "persists indefinitely" case from the bug report.
+  it('GAP: a foreign char on an UNTOUCHED transcript row is not cleared', () => {
+    expect(() => runScenario(gapSteps({ ch: FOREIGN, x: 35, y: 1 }), false, 3)).toThrow(
+      /foreign char never cleared/
+    )
   })
 
   it('H: ctrl+L mid-session re-anchors and typing stays correct after it', () => {

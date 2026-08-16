@@ -7,7 +7,7 @@ import { gte } from '../utils/semver.js'
 
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
-import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
+import { cursorMove, cursorTo, eraseLines, eraseToEndOfLine } from './termio/csi.js'
 import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
 import { link } from './termio/osc.js'
 
@@ -242,6 +242,11 @@ export function writeDiffToTerminal(
 
       case 'clearTerminal':
         buffer += getClearTerminalSequence()
+
+        break
+
+      case 'eraseToLineEnd':
+        buffer += eraseToEndOfLine()
 
         break
 

@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import type { Frame } from './frame.js'
 import { LogUpdate } from './log-update.js'
-import { CellWidth, CharPool, createScreen, HyperlinkPool, type Screen, setCellAt, StylePool } from './screen.js'
+import {
+  CellWidth,
+  CharPool,
+  createScreen,
+  HyperlinkPool,
+  isEmptyCellAt,
+  type Screen,
+  setCellAt,
+  StylePool
+} from './screen.js'
 
 /**
  * Contract tests for LogUpdate.render() — the diff-to-ANSI path that owns
@@ -67,6 +76,32 @@ describe('LogUpdate.render diff contract', () => {
     expect(written).toContain('CHANGE')
     expect(written).not.toContain('HELLO')
     expect(written).not.toContain('STAYSHERE')
+  })
+
+  // The row-tail erase anchors one column past the last non-empty cell, so
+  // "non-empty" has to mean every cell the terminal still shows something in.
+  // If a wide char's spacer ever counted as empty the anchor would land ON it
+  // and EL(0) would slice the character in half.
+  it('a wide char and its spacer both count as painted, so the tail anchor clears them', () => {
+    const screen = mkScreen(10, 1)
+    setCellAt(screen, 0, 0, { char: '世', styleId: stylePool.none, width: CellWidth.Wide, hyperlink: undefined })
+    setCellAt(screen, 1, 0, { char: '', styleId: stylePool.none, width: CellWidth.SpacerTail, hyperlink: undefined })
+
+    expect(isEmptyCellAt(screen, 0, 0), 'wide char cell').toBe(false)
+    expect(isEmptyCellAt(screen, 1, 0), 'its spacer tail').toBe(false)
+    expect(isEmptyCellAt(screen, 2, 0), 'the column after it').toBe(true)
+  })
+
+  // Same anchor, opposite risk: EL honours the current background (BCE), so a
+  // space carrying a background style is a VISIBLE block. It must not be
+  // treated as blank, or the erase would eat a coloured region.
+  it('a styled space counts as painted, so the tail erase cannot eat it', () => {
+    const screen = mkScreen(10, 1)
+    const styled = stylePool.intern([{ type: 'ansi', code: '[41m', endCode: '[49m' }])
+
+    setCellAt(screen, 0, 0, { char: ' ', styleId: styled, width: CellWidth.Narrow, hyperlink: undefined })
+
+    expect(isEmptyCellAt(screen, 0, 0), 'space with a background style').toBe(false)
   })
 
   it('width change emits a clearTerminal patch before repainting', () => {

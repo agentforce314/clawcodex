@@ -4,6 +4,7 @@ import { logForDebugging } from '../utils/debug.js'
 
 import type { Diff, FlickerReason, Frame } from './frame.js'
 import type { Point } from './layout/geometry.js'
+import { logDroppedRow, logSkippedWideCell, renderDebugEnabled } from './render-debug.js'
 import {
   type Cell,
   cellAt,
@@ -375,6 +376,15 @@ export class LogUpdate {
     // First pass: render changes to existing rows (rows < prev.screen.height)
     let needsFullReset = false
     let resetTriggerY = -1
+    // Rows this pass wrote to, and rows it dropped — both collected per ROW
+    // rather than per cell. diffEach walks row-major ascending, so a trailing
+    // compare against the last entry dedupes without a Set (this file is
+    // engineered for zero allocation on the diff path) AND makes the ascending
+    // order the erase loop's cursor walk relies on an explicit property.
+    const touchedRows: number[] = []
+    const droppedRows: number[] = []
+    // Read once per frame, not per cell: process.env lookups are ~190ns.
+    const traceDrops = renderDebugEnabled()
     diffEach(prev.screen, next.screen, (x, y, removed, added) => {
       // Skip new rows - we'll render them directly after
       if (growing && y >= prev.screen.height) {
@@ -408,6 +418,17 @@ export class LogUpdate {
       // physical buffer. Shrink-to-visible cases are handled above.
       if (y < viewportY) {
         if (!altScreen) {
+          // Dropped on purpose — but only sound if the row really has scrolled
+          // away. When it has not, this is where visible corruption is born:
+          // the change is discarded and no later frame repaints it. Recorded
+          // per ROW and emitted after the pass: the condition worth catching is
+          // a BURST (a virtualization slide drops thousands of cells at once),
+          // and a blocking write per cell would stall the very render loop
+          // whose timing is under investigation.
+          if (traceDrops && droppedRows[droppedRows.length - 1] !== y) {
+            droppedRows.push(y)
+          }
+
           return
         }
 
@@ -419,6 +440,10 @@ export class LogUpdate {
 
       moveCursorTo(screen, x, y)
 
+      if (touchedRows[touchedRows.length - 1] !== y) {
+        touchedRows.push(y)
+      }
+
       if (added) {
         const targetHyperlink = added.hyperlink
         currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, targetHyperlink)
@@ -426,6 +451,11 @@ export class LogUpdate {
 
         if (writeCellWithStyleStr(screen, added, styleStr)) {
           currentStyleId = added.styleId
+        } else if (traceDrops) {
+          // Refused as too wide for the edge. next.screen still calls the cell
+          // painted, so the next frame diffs clean and it is never repainted —
+          // a permanent hole. Traced alongside the scrolled-off drops.
+          logSkippedWideCell({ char: added.char, viewportWidth: screen.viewportWidth, x, y })
         }
       } else if (removed) {
         // Cell was removed - clear it with a space
@@ -447,6 +477,18 @@ export class LogUpdate {
       }
     })
 
+    for (const y of droppedRows) {
+      logDroppedRow({
+        nextLine: readLine(next.screen, y),
+        physCursorRow: this.physCursorRow,
+        prevLine: readLine(prev.screen, y),
+        screenHeight: next.screen.height,
+        viewportHeight: next.viewport.height,
+        viewportY,
+        y
+      })
+    }
+
     if (needsFullReset) {
       return this.fullReset(next, 'offscreen', altScreen, {
         triggerY: resetTriggerY,
@@ -458,6 +500,59 @@ export class LogUpdate {
     // Reset styles before rendering new rows (they'll set their own styles)
     currentStyleId = transitionStyle(screen.diff, stylePool, currentStyleId, stylePool.none)
     currentHyperlink = transitionHyperlink(screen.diff, currentHyperlink, undefined)
+
+    // Erase the tail of every row this pass wrote to. The renderer skips empty
+    // cells instead of painting spaces, so a character it did not write is in a
+    // cell its model calls empty and no diff can ever remove it; EL(0) restores
+    // the guarantee the old trailing-space padding gave us, at 4 bytes.
+    //
+    // PARTIAL BY CONSTRUCTION — this heals a row's TAIL, on rows the diff pass
+    // TOUCHED. It does not reach:
+    //   - interior columns (the anchor starts past the content, and an
+    //     unchanged painted cell is never re-emitted either), or
+    //   - rows no frame rewrote, which during a long turn is everything above
+    //     the busy line and composer.
+    // Both are pinned as it.fails cases in inline-scrollback-drift.test.ts.
+    // Closing them needs a periodic in-place full-row repaint (EL(2) + repaint
+    // per reachable row — NOT fullReset, whose clearTerminal carries
+    // ERASE_SCROLLBACK and would destroy the user's history). Until then a
+    // stray glyph outside the tail still needs ctrl+L.
+    //
+    // Ordering is load-bearing. After the style reset above: EL honours the
+    // current background (BCE), so erasing under an active style would paint a
+    // coloured bar. Before the growth pass below, which walks the cursor
+    // downward from here. Grown rows get no erase of their own: an inline frame
+    // is bottom-anchored so its new rows arrive by scrolling at the bottom
+    // margin (blank by construction), and the shrink path's clear(N) above
+    // already wiped any row the frame is re-growing into. Both of those are
+    // properties of bottom-anchoring, not of LF itself — LF onto a row that is
+    // not at the bottom margin moves onto existing content.
+    //
+    // Two preconditions, both re-checked rather than assumed. Reachability:
+    // the scrolled-off guard above returns before `touchedRows.push`, so an
+    // unreachable row cannot reach this list — but a clamped cursor-up here
+    // would desync physCursorRow and every later relative move (#633, "typing
+    // lands one row below the input box"), too costly to rest on another
+    // loop's control flow. Width: EL(0) erases to the end of the TERMINAL
+    // line, not of the frame, so a narrower frame would wipe columns ink does
+    // not own. Today the screen is built at terminalColumns and they always
+    // match; this keeps that a stated precondition rather than a coincidence.
+    if (next.screen.width >= next.viewport.width) {
+      for (const y of touchedRows) {
+        if (y < viewportY) {
+          continue
+        }
+
+        const tailX = lastPaintedX(next.screen, y) + 1
+
+        if (tailX >= next.screen.width) {
+          continue
+        }
+
+        moveCursorTo(screen, tailX, y)
+        screen.diff.push({ type: 'eraseToLineEnd' })
+      }
+    }
 
     // Handle growth: render new rows directly (they naturally scroll the terminal)
     if (growing) {
@@ -577,6 +672,21 @@ function transitionStyle(diff: Diff, stylePool: StylePool, currentId: number, ta
   return targetId
 }
 
+/**
+ * Rightmost column of row `y` holding content, or -1 for a blank row.
+ * Everything past it is meant to be blank, which makes it the anchor for the
+ * row-tail erase.
+ */
+function lastPaintedX(screen: Screen, y: number): number {
+  for (let x = screen.width - 1; x >= 0; x--) {
+    if (!isEmptyCellAt(screen, x, y)) {
+      return x
+    }
+  }
+
+  return -1
+}
+
 function readLine(screen: Screen, y: number): string {
   let line = ''
 
@@ -607,6 +717,8 @@ function renderFrameSlice(
   // Track the styleId of the last rendered cell on this line (-1 if none).
   // Passed to visibleCellAtIndex to enable fg-only space optimization.
   let lastRenderedStyleId = -1
+  // Once per slice, never per cell — process.env lookups are ~190ns.
+  const traceSkips = renderDebugEnabled()
 
   const { width: screenWidth, cells, charPool, hyperlinkPool } = frame.screen
 
@@ -659,6 +771,11 @@ function renderFrameSlice(
       if (writeCellWithStyleStr(screen, cell, styleStr)) {
         currentStyleId = cell.styleId
         lastRenderedStyleId = cell.styleId
+      } else if (traceSkips) {
+        // The likelier of the two edge-drop sites: this pass walks EVERY cell
+        // of every row, so it meets the right edge on all of them, where the
+        // diff pass only gets there when that cell changed.
+        logSkippedWideCell({ char: cell.char, viewportWidth: screen.viewportWidth, x, y })
       }
     }
 
