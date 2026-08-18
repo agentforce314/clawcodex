@@ -77,6 +77,18 @@ class ModelUsage:
 
 
 @dataclass
+class CompactionTelemetryData:
+    """Stores compaction telemetry data for post-compaction measurement."""
+    trigger: str = "manual"
+    tokens_shed: int = 0
+    pre_compact_token_count: int = 0
+    post_compact_token_count: int = 0
+    compaction_cost_usd: float = 0.0
+    cache_hit_rate_before: float | None = None
+    model: str | None = None
+
+
+@dataclass
 class InvokedSkillInfo:
     """One invoked skill, preserved across compaction.
 
@@ -206,6 +218,7 @@ class _BootstrapState:
     cached_clawcodex_md_content: str | None = None
     system_prompt_section_cache: dict[str, str | None] = field(default_factory=dict)
     pending_post_compaction: bool = False
+    compaction_telemetry_data: CompactionTelemetryData | None = None
     additional_directories_for_clawcodex_md: list[str] = field(default_factory=list)
 
     # --- Model (TS: lines 68-70) -------------------------------------------
@@ -806,6 +819,16 @@ def consume_post_compaction() -> bool:
     return was
 
 
+def get_compaction_telemetry_data() -> CompactionTelemetryData | None:
+    """Get the compaction telemetry data stored for post-compaction measurement."""
+    return _STATE.compaction_telemetry_data
+
+
+def set_compaction_telemetry_data(data: CompactionTelemetryData | None) -> None:
+    """Set the compaction telemetry data for post-compaction measurement."""
+    _STATE.compaction_telemetry_data = data
+
+
 def get_additional_directories_for_clawcodex_md() -> list[str]:
     return _STATE.additional_directories_for_clawcodex_md
 
@@ -1273,6 +1296,8 @@ __all__ = [
     "clear_system_prompt_section_state",
     "mark_post_compaction",
     "consume_post_compaction",
+    "get_compaction_telemetry_data",
+    "set_compaction_telemetry_data",
     "get_additional_directories_for_clawcodex_md",
     "set_additional_directories_for_clawcodex_md",
     # Model

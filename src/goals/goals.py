@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 #: Turn budget backstop (donor default). CC ships unbounded; the budget
 #: pauses (never clears) so ``/goal resume`` continues with a fresh budget.
-DEFAULT_GOAL_MAX_TURNS = 20
+DEFAULT_GOAL_MAX_TURNS = 100
 
 #: Claude Code's documented condition cap (docs/en/goal).
 GOAL_CONDITION_MAX_CHARS = 4000

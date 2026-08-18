@@ -73,6 +73,9 @@ class PipelineConfig:
     max_output_tokens: int | None = None
     autocompact_threshold: float = 0.80
     autocompact_tracking: AutoCompactTracking | None = None
+    # PR 2: Cost-aware compaction settings
+    compaction_mode: str = "token_threshold"  # "token_threshold" | "cost_aware"
+    break_even_turns: int = 10
 
     # Layer 5: post-compact attachment context
     # Forwarded into auto_compact_if_needed → CompactContext so post-compact
@@ -129,6 +132,19 @@ def build_production_pipeline_config(
             )
         except Exception:
             logger.debug("model context-window resolution failed", exc_info=True)
+
+    # Load compaction settings from user config (PR 2)
+    compaction_mode = "token_threshold"
+    break_even_turns = 10
+    try:
+        from src.settings.settings import get_settings
+        settings = get_settings()
+        if settings.compact:
+            compaction_mode = settings.compact.mode or "token_threshold"
+            break_even_turns = settings.compact.break_even_turns or 10
+    except Exception:
+        logger.debug("Failed to load compaction settings from config, using defaults", exc_info=True)
+
     return PipelineConfig(
         provider=provider,
         model=model,
@@ -136,6 +152,8 @@ def build_production_pipeline_config(
         max_output_tokens=max_output_tokens,
         read_file_state=read_file_state or None,
         autocompact_tracking=autocompact_tracking,
+        compaction_mode=compaction_mode,
+        break_even_turns=break_even_turns,
     )
 
 
@@ -267,6 +285,8 @@ class CompressionPipeline:
                     read_file_state=cfg.read_file_state,
                     plan_file_path=cfg.plan_file_path,
                     memory_paths=cfg.memory_paths,
+                    compaction_mode=cfg.compaction_mode,
+                    break_even_turns=cfg.break_even_turns,
                 )
                 if result is not None:
                     total_saved += result.tokens_saved

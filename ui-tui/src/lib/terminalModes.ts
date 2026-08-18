@@ -53,16 +53,20 @@ export function resetTerminalModes(stream: ResettableStream = process.stdout, le
   if (fd !== undefined) {
     try {
       writeSync(fd, seq)
-
       return true
-    } catch {
+    } catch (err: any) {
+      if (err?.code === 'EIO' || err?.code === 'EBADF') {
+        return false
+      }
       // Fall through to stream.write for mocked or unusual TTY streams.
     }
   }
 
   try {
+    if ((stream as any).destroyed) {
+      return false
+    }
     stream.write(seq)
-
     return true
   } catch {
     return false

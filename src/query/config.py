@@ -10,7 +10,7 @@ from uuid import uuid4
 class QueryConfig:
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 16384
-    max_turns: int = 50
+    max_turns: int = 200
     effort: str = "high"
     temperature: float | None = None
     stop_sequences: list[str] | None = None
@@ -41,7 +41,7 @@ class QueryConfig:
 class FrozenQueryConfig:
     model: str = "claude-sonnet-4-6"
     max_tokens: int = 16384
-    max_turns: int = 50
+    max_turns: int = 200
     effort: str = "high"
     temperature: float | None = None
     stop_sequences: tuple[str, ...] | None = None

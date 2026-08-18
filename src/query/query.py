@@ -1568,11 +1568,41 @@ async def _call_model_sync(
     try:
         from ..bootstrap.state import add_to_total_duration_state
         from ..cost_tracker import record_api_usage
+        from ..services.compact.compact import log_post_compaction_telemetry
 
         record_api_usage(
             getattr(response, "model", None) or getattr(provider, "model", "unknown"),
             response.usage,
         )
+
+        # Check if this is the first turn after compaction and log post-compaction telemetry
+        from ..bootstrap.state import consume_post_compaction, get_compaction_telemetry_data
+        if consume_post_compaction():
+            telemetry_data = get_compaction_telemetry_data()
+            model_name = getattr(response, "model", None) or getattr(provider, "model", None)
+            if telemetry_data:
+                log_post_compaction_telemetry(
+                    trigger=telemetry_data.trigger,
+                    tokens_shed=telemetry_data.tokens_shed,
+                    pre_compact_token_count=telemetry_data.pre_compact_token_count,
+                    post_compact_token_count=telemetry_data.post_compact_token_count,
+                    compaction_cost_usd=telemetry_data.compaction_cost_usd,
+                    cache_hit_rate_before=telemetry_data.cache_hit_rate_before or 0.0,
+                    response_usage=response.usage,
+                    model=model_name,
+                )
+            else:
+                # Fallback if no telemetry data was stored
+                log_post_compaction_telemetry(
+                    trigger="manual",
+                    tokens_shed=0,
+                    pre_compact_token_count=0,
+                    post_compact_token_count=0,
+                    compaction_cost_usd=0.0,
+                    cache_hit_rate_before=0.0,
+                    response_usage=response.usage,
+                    model=model_name,
+                )
         # The original records per-request API duration alongside cost
         # (addToTotalDuration beside addToTotalSessionCost); this feeds
         # /cost's "Total duration (API)". This layer can't split retries:

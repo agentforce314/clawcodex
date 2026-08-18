@@ -97,7 +97,7 @@ DEFAULT_ASK_USER_TIMEOUT_S = 1800.0
 #: Default agent-loop turn ceiling for an interactive session. Shared by the
 #: dataclass default below and the ``--max-turns`` CLI flag (agent_server_cli.py)
 #: so the two can't drift apart from independently hand-edited literals.
-DEFAULT_MAX_TURNS = 50
+DEFAULT_MAX_TURNS = 200
 
 _SHUTDOWN = object()  # sentinel pushed onto the worker inbox to stop it
 

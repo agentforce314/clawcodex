@@ -28,6 +28,8 @@ DEFAULT_SETTINGS = SettingsSchema(
         auto_compact=True,
         threshold_tokens=100_000,
         max_compact_retries=3,
+        mode="token_threshold",
+        break_even_turns=10,
     ),
     hooks=HookSettings(
         enabled=True,

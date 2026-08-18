@@ -68,6 +68,8 @@ class ContextData:
     api_usage: Optional[dict[str, int]] = None
     auto_compact_threshold: Optional[int] = None
     is_auto_compact_enabled: bool = False
+    # PR 3: Compaction telemetry for cache-hostile warning
+    compaction_telemetry: Optional[dict[str, Any]] = None
 
 
 def get_context_window_for_model(model: str) -> int:
@@ -195,6 +197,7 @@ def analyze_context(
     custom_agents: Optional[list[dict[str, Any]]] = None,
     auto_compact_threshold: Optional[int] = None,
     is_auto_compact_enabled: bool = False,
+    compaction_telemetry: Optional[dict[str, Any]] = None,
 ) -> ContextData:
     """
     Analyze context usage across all categories.
@@ -291,6 +294,7 @@ def analyze_context(
         api_usage=api_usage,
         auto_compact_threshold=auto_compact_threshold,
         is_auto_compact_enabled=is_auto_compact_enabled,
+        compaction_telemetry=compaction_telemetry,
     )
 
 
@@ -308,6 +312,16 @@ def format_context_as_markdown(data: ContextData) -> str:
         f"**Tokens:** {data.total_tokens:,} / {data.max_tokens:,} ({data.percentage}%)",
         "",
     ]
+
+    # PR 3: Cache-hostile compaction warning
+    if data.compaction_telemetry:
+        telemetry = data.compaction_telemetry
+        if telemetry.get("cost_increased"):
+            lines.append("> ⚠️ **Cache-hostile compaction detected!**")
+            lines.append(f"> Last compaction ({telemetry.get('trigger', 'unknown')}) shed {telemetry.get('tokens_shed', 0):,} tokens but increased effective cost by ${telemetry.get('estimated_cost_delta_usd', 0):.6f}.")
+            lines.append(f"> Pre-compaction cache hit rate: {telemetry.get('cache_hit_rate_before', 0):.1f}% → Post-compaction: {telemetry.get('cache_hit_rate_after', 0):.1f}%")
+            lines.append("> Consider: smaller compaction window, different model, or disable auto-compact.")
+            lines.append("")
 
     # Auto-compact status
     if data.auto_compact_threshold is not None:

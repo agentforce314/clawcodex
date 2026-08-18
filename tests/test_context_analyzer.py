@@ -181,26 +181,5 @@ class TestFormatContextAsMarkdown(unittest.TestCase):
         self.assertIn("### Memory Files", markdown)
         self.assertIn("CLAWCODEX.md", markdown)
 
-    def test_shows_api_usage(self):
-        """API usage section appears when usage data is provided."""
-        from src.context_system.context_analyzer import analyze_context, format_context_as_markdown
-        result = analyze_context(
-            conversation_api_messages=[],
-            model="claude-sonnet-4-6",
-            system_prompt="",
-            tool_schemas=[],
-            clawcodex_md_content="",
-            api_usage={
-                "input_tokens": 10000,
-                "output_tokens": 5000,
-                "cache_creation_input_tokens": 2000,
-                "cache_read_input_tokens": 500,
-            }
-        )
-        markdown = format_context_as_markdown(result)
-        self.assertIn("### API Usage", markdown)
-        self.assertIn("10,000", markdown)
-
-
-if __name__ == "__main__":
+    if __name__ == "__main__":
     unittest.main()

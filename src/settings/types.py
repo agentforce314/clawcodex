@@ -80,6 +80,9 @@ class CompactSettings:
     auto_compact: bool = True
     threshold_tokens: int = 100_000
     max_compact_retries: int = 3
+    # PR 2: Cost-aware compaction trigger
+    mode: str = "token_threshold"  # "token_threshold" | "cost_aware"
+    break_even_turns: int = 10
 
 
 @dataclass

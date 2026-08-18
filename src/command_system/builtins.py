@@ -404,6 +404,26 @@ def context_command_call(args: str, context: CommandContext) -> LocalCommandResu
         auto_compact_threshold = context.config.get("auto_compact_threshold")
         is_auto_compact_enabled = context.config.get("is_auto_compact_enabled", False)
 
+        # PR 3: Get compaction telemetry for cache-hostile warning
+        compaction_telemetry = None
+        try:
+            from ..bootstrap.state import get_compaction_telemetry_data
+            telemetry = get_compaction_telemetry_data()
+            if telemetry:
+                compaction_telemetry = {
+                    "trigger": telemetry.trigger,
+                    "tokens_shed": telemetry.tokens_shed,
+                    "pre_compact_token_count": telemetry.pre_compact_token_count,
+                    "post_compact_token_count": telemetry.post_compact_token_count,
+                    "compaction_cost_usd": telemetry.compaction_cost_usd,
+                    "cache_hit_rate_before": telemetry.cache_hit_rate_before,
+                    "cache_hit_rate_after": telemetry.cache_hit_rate_after,
+                    "estimated_cost_delta_usd": telemetry.estimated_cost_delta_usd,
+                    "cost_increased": telemetry.cost_increased,
+                }
+        except Exception:
+            pass
+
         data = analyze_context(
             conversation_api_messages=conversation_api,
             model=model,
@@ -417,6 +437,7 @@ def context_command_call(args: str, context: CommandContext) -> LocalCommandResu
             custom_agents=custom_agents,
             auto_compact_threshold=auto_compact_threshold,
             is_auto_compact_enabled=is_auto_compact_enabled,
+            compaction_telemetry=compaction_telemetry,
         )
 
         markdown = format_context_as_markdown(data)

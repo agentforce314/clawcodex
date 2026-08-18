@@ -93,7 +93,11 @@ setupGracefulExit({
     const message = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err)
 
     recordParentLifecycle(`${scope}: ${message.split('\n')[0]?.slice(0, 400) ?? ''}`)
-    process.stderr.write(`clawcodex-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+    try {
+      process.stderr.write(`clawcodex-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+    } catch {
+      // Ignore write errors on closed stderr during process termination
+    }
   },
   onSignal: signal => {
     // The next line in the crash log is the child's `=== SIGTERM received ===`
