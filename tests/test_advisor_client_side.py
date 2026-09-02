@@ -68,6 +68,16 @@ class TestDecideAdvisorMode(unittest.TestCase):
             )
             self.assertEqual(mode, ADVISOR_MODE_INACTIVE)
 
+    def test_inactive_by_default_even_when_fully_configured(self) -> None:
+        """The decision helper itself must be opt-in, not only its callers."""
+        mode = decide_advisor_mode(
+            self._first_party_provider(),
+            "claude-opus-4-6",
+            "claude-opus-4-6",
+            advisor_provider="anthropic",
+        )
+        self.assertEqual(mode, ADVISOR_MODE_INACTIVE)
+
     def test_server_side_for_1p_with_valid_models(self) -> None:
         # Server-side now requires advisor_provider == "anthropic" too.
         with patch(
@@ -79,6 +89,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "claude-opus-4-6",
                 "claude-opus-4-6",
                 advisor_provider="anthropic",
+                advisor_enabled=True,
             )
             self.assertEqual(mode, ADVISOR_MODE_SERVER_SIDE)
 
@@ -93,6 +104,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "claude-opus-4-6",
                 force_client_mode=True,
                 advisor_provider="anthropic",
+                advisor_enabled=True,
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
@@ -108,6 +120,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "claude-opus-4-5",
                 "claude-opus-4-6",
                 advisor_provider="anthropic",
+                advisor_enabled=True,
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
@@ -123,6 +136,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "gpt-5.4",
                 "claude-opus-4-6",
                 advisor_provider="anthropic",
+                advisor_enabled=True,
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
@@ -139,6 +153,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "claude-opus-4-6",
                 "gemini-2.5-pro",
                 advisor_provider="gemini",
+                advisor_enabled=True,
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 

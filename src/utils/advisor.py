@@ -393,7 +393,7 @@ def decide_advisor_mode(
     *,
     force_client_mode: bool = False,
     advisor_provider: str | None = None,
-    advisor_enabled: bool = True,
+    advisor_enabled: bool = False,
 ) -> str:
     """Pick activation mode for the upcoming turn.
 
@@ -422,9 +422,9 @@ def decide_advisor_mode(
 
     ``advisor_enabled`` is the master switch (settings ``advisor_enabled``,
     default False in production): when False the advisor is INACTIVE regardless
-    of model/provider. The parameter defaults True so direct callers (the
-    activation truth-table tests) keep their behavior; production call sites pass
-    ``get_settings().advisor_enabled``.
+    of model/provider. The parameter deliberately defaults False so callers must
+    explicitly opt in, just like users do through ``advisor_enabled`` in config
+    or the ``/advisor`` command.
     """
     if not advisor_enabled:
         return ADVISOR_MODE_INACTIVE
