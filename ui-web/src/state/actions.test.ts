@@ -12,7 +12,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { GatewayClient } from '../gateway/client.ts'
 import {
+  clearSession,
   createSession,
+  resumeSession,
   setDefaultProvider,
   setModel,
   dequeue,
@@ -39,6 +41,8 @@ class FakeGateway {
   sent: { id: string; method: string; params: Record<string, unknown> }[] = []
   results: Record<string, unknown> = {}
   failing = new Set<string>()
+
+  private readonly heldReplies = new Map<string, unknown[]>()
 
   private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
 
@@ -76,9 +80,25 @@ class FakeGateway {
       ? { error: { message: `${frame.method} refused` }, id: frame.id }
       : { id: frame.id, result: this.results[frame.method] ?? {} }
 
-    queueMicrotask(() => {
-      this.deliver(reply)
-    })
+    const held = this.heldReplies.get(frame.method)
+
+    if (held !== undefined) held.push(reply)
+    else {
+      queueMicrotask(() => {
+        this.deliver(reply)
+      })
+    }
+  }
+
+  hold(method: string): void {
+    this.heldReplies.set(method, [])
+  }
+
+  release(method: string): void {
+    const replies = this.heldReplies.get(method) ?? []
+    this.heldReplies.delete(method)
+
+    for (const reply of replies) this.deliver(reply)
   }
 
   /** Push a server event, as the gateway would. */
@@ -143,6 +163,7 @@ beforeEach(() => {
   $providers.set({})
   $pendingModel.set(null)
   $models.set({})
+  $notice.set({ text: '', tone: 'info' })
   $queue.set([])
 })
 
@@ -271,6 +292,7 @@ describe('createSession', () => {
     gateway.emit('message.complete', { status: 'ok', text: 'reply' }, 'S1')
     await settle()
     expect($transcript.get().nodes.length).toBeGreaterThan(0)
+    $notice.set({ text: 'Previous session notice', tone: 'info' })
 
     gateway.results['session.create'] = { session_id: 'S2' }
     await createSession()
@@ -278,6 +300,7 @@ describe('createSession', () => {
 
     expect($sessionId.get()).toBe('S2')
     expect($transcript.get().nodes).toEqual([])
+    expect($notice.get().text).toBe('')
   })
 
   it('spawns on the model picked before there was a session', async () => {
@@ -324,6 +347,55 @@ describe('createSession', () => {
     await settle()
 
     expect($sessionLoading.get()).toBe(false)
+  })
+})
+
+describe('clearSession', () => {
+  it('does not carry its confirmation into another conversation', async () => {
+    const gateway = await connect()
+    $sessionId.set('S1')
+
+    await clearSession()
+    await settle()
+
+    expect($notice.get()).toMatchObject({ text: 'Conversation cleared.', tone: 'info' })
+
+    gateway.results['session.resume'] = { session_id: 'S2', stored_session_id: 'stored-S2' }
+    await resumeSession('stored-S2')
+    await settle()
+
+    expect($notice.get().text).toBe('')
+  })
+
+  it('ignores a late clear reply after navigating to another conversation', async () => {
+    const gateway = await connect()
+    $sessionId.set('S1')
+    $transcript.set({
+      ...emptyTranscript(),
+      nodes: [{ at: 1, id: 'old', kind: 'user', text: 'old conversation' }],
+    })
+    gateway.hold('session.clear')
+
+    const clearing = clearSession()
+    await settle()
+
+    gateway.results['session.resume'] = { session_id: 'S2', stored_session_id: 'stored-S2' }
+    await resumeSession('stored-S2')
+    await settle()
+    $transcript.set({
+      ...emptyTranscript(),
+      nodes: [{ at: 2, id: 'new', kind: 'user', text: 'new conversation' }],
+    })
+
+    gateway.release('session.clear')
+    await clearing
+    await settle()
+
+    expect($sessionId.get()).toBe('S2')
+    expect($transcript.get().nodes).toMatchObject([
+      { id: 'new', kind: 'user', text: 'new conversation' },
+    ])
+    expect($notice.get().text).toBe('')
   })
 })
 

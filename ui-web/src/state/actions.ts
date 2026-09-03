@@ -71,6 +71,10 @@ import {
 } from './transcript.ts'
 
 let client: GatewayClient | null = null
+// Async session mutations capture this value before their request. Navigation
+// advances it immediately, so a late reply from the conversation being left
+// cannot overwrite the transcript or status line of the one being opened.
+let sessionNavigationEpoch = 0
 
 export function gateway(): GatewayClient {
   if (client === null) throw new Error('gateway not started')
@@ -85,6 +89,11 @@ export function setGatewayClient(next: GatewayClient | null): void {
 
 function notice(text: string, tone: 'error' | 'info' = 'info'): void {
   $notice.set({ text, tone })
+}
+
+function beginSessionNavigation(): void {
+  sessionNavigationEpoch += 1
+  notice('')
 }
 
 function errorText(error: unknown): string {
@@ -218,6 +227,7 @@ export interface SessionSpawnOptions {
 const CAPABILITIES = { ask_user_question: true }
 
 export async function createSession(options: SessionSpawnOptions = {}): Promise<void> {
+  beginSessionNavigation()
   $transcript.set(emptyTranscript())
   $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
@@ -261,6 +271,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 }
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
+  beginSessionNavigation()
   $transcript.set(emptyTranscript())
   // Cleared while the replay is in flight; the stored messages rebuild it
   // below, timestamps included.
@@ -386,13 +397,20 @@ export async function clearSession(): Promise<void> {
 
   if (sessionId === null) return
 
+  const navigationEpoch = sessionNavigationEpoch
+  const isStillCurrent = () =>
+    sessionNavigationEpoch === navigationEpoch && $sessionId.get() === sessionId
+
   try {
     await gateway().request('session.clear', { session_id: sessionId })
+
+    if (!isStillCurrent()) return
+
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
     $trajectory.set(emptyTrajectory())
     notice('Conversation cleared.')
   } catch (error) {
-    notice(errorText(error), 'error')
+    if (isStillCurrent()) notice(errorText(error), 'error')
   }
 }
 
