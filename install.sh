@@ -683,6 +683,7 @@ run_post_install_setup() {
         echo -e "    ${C_BOLD}clawcodex login${C_RESET}        # interactive provider + key setup"
         echo -e "    ${C_BOLD}clawcodex${C_RESET}              # start the REPL in any project"
         echo -e "    ${C_BOLD}clawcodex tui${C_RESET}          # the Ink TUI (Claude-Code-style)"
+        echo -e "    ${C_BOLD}clawcodex web --build${C_RESET}  # first run: build and start the Web UI"
     else
         log_warn "clawcodex not on PATH yet — run 'source ~/.bashrc' (or ~/.zshrc) first."
     fi

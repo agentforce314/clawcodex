@@ -115,7 +115,7 @@ Then configure a provider and start coding:
 ```bash
 clawcodex login   # interactive provider + API key setup → ~/.clawcodex/config.json
 clawcodex         # start it in any project — Full Access by default, /permissions to change
-clawcodex web     # start the Web UI at http://127.0.0.1:8081
+clawcodex web --build  # first run: build and start the Web UI at http://127.0.0.1:8081
 ```
 
 Both installers ship the same `clawcodex` lifecycle helpers — `doctor` (diagnose your
