@@ -4,8 +4,10 @@ Groups saved + live sessions into the ``SidebarProjectTree[]`` shape the
 desktop renderer expects (``ui-desktop/src/app/chat/sidebar/projects/
 workspace-groups.ts``): one *project* per git repo root, each holding one
 *repo* node whose *lanes* are the repo's checkouts (the main "home" lane plus
-one per linked worktree a session sits in). Sessions with no cwd, or a cwd
-that is not inside a git repo, fall into the synthetic "Home" bucket.
+one per linked worktree a session sits in). A resolvable non-git cwd becomes a
+workspace project keyed by its canonical directory path and labeled by its
+basename. Only sessions with no resolvable cwd fall into the synthetic "Home"
+bucket.
 
 This is the data behind the sidebar's worktree display. The renderer layers
 its live ``git worktree list`` probe on top (injecting EMPTY lanes for
@@ -32,6 +34,21 @@ import os
 from typing import Any, Callable
 
 NO_PROJECT_ID = "__no_project__"
+
+
+def canonical_workspace_path(path: str) -> str | None:
+    """Return the real path for an existing directory, else ``None``.
+
+    DeepSeek Harness uses ``fs.realpath`` as workspace identity so aliases,
+    ``..`` segments, and trailing separators cannot split one directory into
+    multiple sidebar groups. Keep the filesystem lookup outside the pure tree
+    builder by injecting this resolver from the gateway.
+    """
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+    return resolved if os.path.isdir(resolved) else None
 
 
 def _segments(path: str) -> list[str]:
@@ -97,18 +114,22 @@ def build_project_tree(
     *,
     repo_root_of: Callable[[str], str | None],
     worktrees_of: Callable[[str], list[str]],
+    workspace_path_of: Callable[[str], str | None],
     active_cwd: str | None = None,
     preview_limit: int = 3,
 ) -> dict[str, Any]:
     """Group ``rows`` (SessionInfo dicts) into the sidebar project tree.
 
     ``repo_root_of(cwd)`` → the repo root for a cwd, or None. ``worktrees_of(
-    repo_root)`` → the list of worktree paths for a repo (main first). Both are
-    injected so this stays pure/testable; the gateway wraps them with the
-    git-backed, per-cwd-memoized resolvers.
+    repo_root)`` → the list of worktree paths for a repo (main first).
+    ``workspace_path_of(cwd)`` → the canonical existing directory for a
+    non-git cwd, or None. All are injected so this stays pure/testable; the
+    gateway wraps them with per-path memoized resolvers.
     """
     # repo_root → { "path", "lanes": {lane_key → lane dict} }
     projects: dict[str, dict[str, Any]] = {}
+    # canonical non-git workspace path → sessions
+    workspaces: dict[str, list[dict[str, Any]]] = {}
     home_sessions: list[dict[str, Any]] = []
 
     def _lane_for(repo_root: str, cwd: str) -> tuple[str, str, bool, str]:
@@ -135,7 +156,11 @@ def build_project_tree(
         cwd = (row.get("cwd") or "").strip()
         repo_root = repo_root_of(cwd) if cwd else None
         if not repo_root:
-            home_sessions.append(row)
+            workspace_path = workspace_path_of(cwd) if cwd else None
+            if workspace_path:
+                workspaces.setdefault(workspace_path, []).append(row)
+            else:
+                home_sessions.append(row)
             continue
         proj = projects.setdefault(repo_root, {"path": repo_root, "lanes": {}})
         lane_key, label, is_main, lane_path = _lane_for(repo_root, cwd)
@@ -146,7 +171,10 @@ def build_project_tree(
         )
         lane["sessions"].append(row)
 
-    active_repo = repo_root_of(active_cwd.strip()) if active_cwd and active_cwd.strip() else None
+    active_path = active_cwd.strip() if active_cwd and active_cwd.strip() else None
+    active_project = None
+    if active_path:
+        active_project = repo_root_of(active_path) or workspace_path_of(active_path)
 
     project_nodes: list[dict[str, Any]] = []
     for repo_root, proj in projects.items():
@@ -167,6 +195,36 @@ def build_project_tree(
             }],
             "sessionCount": len(all_sessions),
             "lastActive": max((_recency(s) for s in all_sessions), default=0.0),
+            "previewSessions": preview,
+        })
+
+    for workspace_path, sessions in workspaces.items():
+        label = _basename(workspace_path)
+        preview = sorted(sessions, key=_recency, reverse=True)[:preview_limit]
+        # Keep the same nested wire shape as repo projects. The Web UI hides a
+        # single lane; the stable main-style id also lets the Desktop live-row
+        # overlay upsert into this lane instead of duplicating the session.
+        lane_id = f"{workspace_path}::branch::main"
+        project_nodes.append({
+            "id": workspace_path,
+            "label": label,
+            "path": workspace_path,
+            "isAuto": True,
+            "repos": [{
+                "id": workspace_path,
+                "label": label,
+                "path": workspace_path,
+                "groups": [{
+                    "id": lane_id,
+                    "label": label,
+                    "path": workspace_path,
+                    "isMain": True,
+                    "sessions": sessions,
+                }],
+                "sessionCount": len(sessions),
+            }],
+            "sessionCount": len(sessions),
+            "lastActive": max((_recency(s) for s in sessions), default=0.0),
             "previewSessions": preview,
         })
 
@@ -199,9 +257,9 @@ def build_project_tree(
 
     return {
         "projects": project_nodes,
-        "active_id": active_repo,
+        "active_id": active_project,
         "scoped_session_ids": [str(r.get("id")) for r in rows if r.get("id")],
     }
 
 
-__all__ = ["build_project_tree", "NO_PROJECT_ID"]
+__all__ = ["build_project_tree", "canonical_workspace_path", "NO_PROJECT_ID"]

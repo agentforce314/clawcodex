@@ -103,9 +103,9 @@ function SessionList({ activeId, hiddenId, liveId, project }: SessionListProps) 
 /**
  * The session tree.
  *
- * Sessions are grouped by the repository they were started in, with a lane per
- * worktree — the grouping the backend already computes for the desktop app, so
- * both surfaces place a session in the same place. Collapsed, the column
+ * Sessions are grouped by workspace directory. Git repositories retain a lane
+ * per worktree; non-Git directories use their basename as the project label.
+ * The backend computes the shared Web/Desktop grouping. Collapsed, the column
  * becomes a rail of the three controls that still make sense without labels.
  */
 export function Sidebar({ collapsed }: SidebarProps) {

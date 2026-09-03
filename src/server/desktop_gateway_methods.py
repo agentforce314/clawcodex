@@ -1034,7 +1034,7 @@ class GatewayConnection:
         return await _asyncio.to_thread(self._build_projects_tree, preview_limit)
 
     def _build_projects_tree(self, preview_limit: int) -> dict[str, Any]:
-        from src.server.desktop_projects import build_project_tree
+        from src.server.desktop_projects import build_project_tree, canonical_workspace_path
         from src.server.desktop_sessions import list_session_rows
         from src.utils.git import get_repo_root, list_worktrees
 
@@ -1062,6 +1062,7 @@ class GatewayConnection:
         # in the same repo, so probe each distinct path once.
         repo_cache: dict[str, str | None] = {}
         wt_cache: dict[str, list[str]] = {}
+        workspace_cache: dict[str, str | None] = {}
 
         def worktrees_of(repo_root: str) -> list[str]:
             # ``git worktree list`` is repo-global and main-first from ANY
@@ -1086,10 +1087,16 @@ class GatewayConnection:
                     repo_cache[cwd] = None
             return repo_cache[cwd]
 
+        def workspace_path_of(cwd: str) -> str | None:
+            if cwd not in workspace_cache:
+                workspace_cache[cwd] = canonical_workspace_path(cwd)
+            return workspace_cache[cwd]
+
         return build_project_tree(
             rows,
             repo_root_of=repo_root_of,
             worktrees_of=worktrees_of,
+            workspace_path_of=workspace_path_of,
             active_cwd=active_cwd,
             preview_limit=preview_limit,
         )

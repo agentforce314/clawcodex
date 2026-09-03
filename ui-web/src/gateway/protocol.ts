@@ -308,8 +308,9 @@ export interface SessionRow {
 /**
  * `projects.tree` shape (`src/server/desktop_projects.py`): one project per
  * git repo root, each holding repos whose *groups* are the repo's checkouts —
- * the main lane plus one per linked worktree that has sessions in it. Sessions
- * with no cwd, or a cwd outside any repo, land in the synthetic "Home" project.
+ * the main lane plus one per linked worktree that has sessions in it. A valid
+ * non-Git cwd is its own basename-labeled workspace project; only sessions
+ * without a resolvable cwd land in the synthetic "Home" project.
  */
 export interface ProjectLane {
   id: string
