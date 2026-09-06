@@ -26,7 +26,8 @@ from src.providers.openai_responses import (
     supports_reasoning,
 )
 
-REASONING = ["gpt-5.6-luna", "gpt-5.5", "gpt-5", "o1-preview", "o3-mini", "o4-mini",
+REASONING = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+             "gpt-5.5", "gpt-5", "o1-preview", "o3-mini", "o4-mini",
              "gpt-5-codex", "codex-mini-latest"]
 PLAIN = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-3.5-turbo", "chatgpt-4o-latest",
          # the non-reasoning variants of a reasoning family — the prefix

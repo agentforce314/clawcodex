@@ -89,7 +89,9 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.4",
         "available_models": [
-            # GPT-5.6 — the current frontier generation. Sol / Terra / Luna are
+            # https://developers.openai.com/api/docs/models (2026-09-06)
+            "gpt-6-astra",
+            # GPT-5.6 — Sol / Terra / Luna are
             # durable capability tiers rather than a size ladder: Sol is the
             # flagship, Terra balances capability against cost, Luna is the
             # cheap high-volume tier. ``gpt-5.6`` is OpenAI's alias for Sol.

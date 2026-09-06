@@ -161,6 +161,70 @@ class TestProviderCatalog:
         assert active["total_models"] == 1
         assert other["models"] == PROVIDER_INFO["anthropic"]["available_models"]
 
+    @pytest.mark.parametrize("current", ["openai", "deepseek", "anthropic", "glm", "ollama"])
+    def test_fusion_models_are_grouped_by_base_provider(self, current):
+        config_mod.save_config({"fusionModels": [
+            {
+                "name": "deepseek-v4-flash-luna",
+                "base": "deepseek:deepseek-v4-flash",
+                "vision": "openai:gpt-5.6-luna",
+            },
+            {"name": "glm-vision", "base": "glm:GLM-5.1", "vision": "openai:gpt-5.6-luna"},
+            {
+                "name": "disabled-fusion", "base": "deepseek:deepseek-v4-pro",
+                "vision": "openai:gpt-5.6-luna", "enabled": False,
+            },
+        ]})
+        session = _StubSession(provider_name=current)
+        # Exercise the real flat session inventory that caused the screenshot:
+        # it includes Fusion models belonging to other providers.
+        session.provider.get_available_models = lambda: ["native-model"]
+        session._models = _AgentSession._available_models(session)
+        assert "deepseek-v4-flash-luna" in session._models
+        _AgentSession._do_list_model_providers(session, "catalog")
+        assert session.last["ok"] is True
+        rows = {r["slug"]: r for r in session.last["providers"]}
+        for pid, row in rows.items():
+            assert ("deepseek-v4-flash-luna" in row["models"]) is (pid == "deepseek")
+            assert ("glm-vision" in row["models"]) is (pid == "zai")
+            assert "disabled-fusion" not in row["models"]
+            assert row["total_models"] == len(row["models"]) == len(set(row["models"]))
+        assert rows["deepseek"]["models"][0] == "deepseek-v4-flash-luna"
+        assert rows["zai" if current == "glm" else current]["models"][-1] == "native-model"
+
+    @pytest.mark.parametrize("api_key,base_url,subscription", [
+        ("", None, True),
+        ("sk-test", None, False),
+        ("", "https://proxy.example/v1", False),
+    ])
+    def test_inactive_openai_catalog_matches_its_auth_route(
+        self, monkeypatch, api_key, base_url, subscription,
+    ):
+        from src.providers.openai_responses import SUBSCRIPTION_MODELS
+
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setattr("src.providers.resolve_api_key", lambda pid: api_key if pid == "openai" else "")
+        monkeypatch.setattr(
+            "src.auth.openai_subscription.load_credentials",
+            lambda: SimpleNamespace(account_id="acct-test"),
+        )
+        def no_network(*args, **kwargs):
+            pytest.fail("Listing providers must not refresh OAuth or create an SDK client")
+
+        monkeypatch.setattr("src.auth.openai_subscription.get_valid_credentials", no_network)
+        monkeypatch.setattr("src.providers.openai_provider.OpenAIProvider._create_client", no_network)
+        if base_url:
+            config_mod.save_config({"providers": {"openai": {"base_url": base_url}}})
+        row = next(r for r in provider_catalog(current="deepseek") if r["slug"] == "openai")
+        expected = SUBSCRIPTION_MODELS if subscription else PROVIDER_INFO["openai"]["available_models"]
+        assert row["models"] == expected
+        assert {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(row["models"])
+        assert ("gpt-4o" in row["models"]) is not subscription
+
+    def test_live_gateway_models_are_not_filtered_by_vendor_name(self):
+        rows = provider_catalog(current="openai", current_models=["deepseek-custom", "gpt-6-astra"])
+        assert rows[0]["models"] == ["deepseek-custom", "gpt-6-astra"]
+
     def test_unreadable_config_still_yields_a_full_catalog(self, monkeypatch):
         """One bad config block must not blank the picker."""
         monkeypatch.setattr(

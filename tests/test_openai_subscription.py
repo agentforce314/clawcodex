@@ -636,7 +636,11 @@ def test_effort_setting_reaches_reasoning_body(monkeypatch) -> None:
 def test_provider_lists_subscription_models(monkeypatch) -> None:
     provider = _subscription_provider(monkeypatch)
     models = provider.get_available_models()
+    assert models[:4] == [
+        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]
     assert "gpt-5.5" in models and "gpt-5.3-codex-spark" in models
+    assert "gpt-4o" not in models and "gpt-5.4-pro" not in models
 
 
 def test_api_key_wins_over_subscription(monkeypatch) -> None:

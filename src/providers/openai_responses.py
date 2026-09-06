@@ -40,10 +40,14 @@ logger = logging.getLogger(__name__)
 # filter it; Gemini's converter drops unknown block types by construction.
 RESPONSES_ITEM_BLOCK_TYPE = "openai_responses_item"
 
-# Models served by the ChatGPT-subscription backend. Source of truth:
-# OpenCode's ALLOWED_MODELS (plugin/openai/codex.ts:15) — which matches the
-# live list Codex CLI caches from the backend (~/.codex/models_cache.json).
+# Models offered for ChatGPT subscriptions, separate from the API catalog.
+# Current Codex model IDs: https://learn.chatgpt.com/docs/models (2026-09-06).
+# Availability still depends on the user's plan (Spark requires Pro).
 SUBSCRIPTION_MODELS = [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -138,7 +142,7 @@ def supports_reasoning(model: str) -> bool:
         # older and more exercised path — whereas including them wrongly is a
         # hard 400 on every request.
         return False
-    if m.startswith(("gpt-5", "o1", "o3", "o4")):
+    if m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
         return True
     return "codex" in m
 

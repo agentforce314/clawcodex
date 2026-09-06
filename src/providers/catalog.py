@@ -84,6 +84,10 @@ def provider_catalog(
     ``current_ready`` marks the active provider authenticated because the
     session demonstrably constructed it.
 
+    The session's flat model list includes every enabled Fusion model.
+    Group those by their BASE provider here; the vision provider supplies
+    only image understanding and does not own the fused model.
+
     Credential probing deliberately mirrors ``get_provider_config``'s literal
     lookup rather than trying to be cleverer than it, because
     ``_do_set_provider`` resolves the same way: a row reported here as
@@ -109,7 +113,11 @@ def provider_catalog(
         resolve_api_key,
     )
 
+    from .fusion_models import load_fusion_models
+
     current_id = canonical_provider_name(current) if current else None
+    fusion_models = load_fusion_models()
+    fusion_names = {model.name.lower() for model in fusion_models}
 
     rows: list[dict[str, Any]] = []
     for pid, info in PROVIDER_INFO.items():
@@ -131,6 +139,28 @@ def provider_catalog(
         models = [str(m) for m in (info.get("available_models") or [])]
         if is_current and current_models:
             models = [str(m) for m in current_models]
+        elif pid == "openai":
+            # The inactive row must use the same auth-specific catalog as a
+            # live OpenAI session. Construction only checks local credentials;
+            # it neither creates an SDK client nor refreshes OAuth tokens.
+            try:
+                from src.config import get_provider_config
+                from .openai_provider import OpenAIProvider
+
+                models = OpenAIProvider(
+                    api_key=api_key,
+                    base_url=get_provider_config(pid).get("base_url"),
+                ).get_available_models()
+            except Exception:  # noqa: BLE001 — retain the static fallback
+                pass
+
+        own_fusion = [
+            model.name for model in fusion_models
+            if model.enabled and canonical_provider_name(model.base.provider) == pid
+        ]
+        models = list(dict.fromkeys(
+            own_fusion + [m for m in models if m.lower() not in fusion_names]
+        ))
 
         row: dict[str, Any] = {
             "slug": pid,

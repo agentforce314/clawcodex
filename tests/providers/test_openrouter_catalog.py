@@ -99,9 +99,9 @@ class TestOpenAIDirectCatalogue:
         assert provider.get_available_models() == self.DIRECT
         assert provider.get_available_models() is not self.DIRECT
 
-    def test_leads_with_the_5_6_generation(self):
-        assert self.DIRECT[0] == "gpt-5.6"
-        assert {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(self.DIRECT)
+    def test_leads_with_astra_and_keeps_the_5_6_generation(self):
+        assert self.DIRECT[0] == "gpt-6-astra"
+        assert {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(self.DIRECT)
 
     def test_ids_are_bare_not_openrouter_qualified(self):
         """``openai/gpt-5.6-sol`` is OpenRouter's addressing; the direct API
