@@ -20,8 +20,11 @@ desktop's ``dashboard-token.ts`` already scrapes from ``GET /``, so one page
 serves both readers.
 
 That page is unauthenticated by construction (it is what *hands out* the
-token), which is safe exactly as long as the server is bound to loopback. The
-``clawcodex web`` entry enforces that; see ``src/entrypoints/web_cli.py``.
+token), which is safe exactly as long as the server is bound to loopback.
+Both entry points enforce that — ``clawcodex serve`` and ``clawcodex web``
+refuse a non-loopback ``--host`` unless ``--allow-remote`` says the caller has
+put their own authentication in front of it. See ``entrypoints/serve_cli.py``
+and ``entrypoints/web_cli.py``.
 """
 
 from __future__ import annotations

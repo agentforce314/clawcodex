@@ -51,7 +51,7 @@ def test_web_serve_argv_forwards_nano():
         base = dict(
             host="127.0.0.1", port=8081, token=None, workspace=None,
             provider=None, model=None, effort=None, permission_mode=None,
-            nano=False, dangerously_skip_permissions=False,
+            nano=False, dangerously_skip_permissions=False, allow_remote=False,
         )
         base.update(overrides)
         return argparse.Namespace(**base)

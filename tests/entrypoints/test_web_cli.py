@@ -73,6 +73,7 @@ def _args(**overrides: object) -> argparse.Namespace:
     base = dict(
         host="127.0.0.1", port=0, token=None, workspace=None, provider=None, model=None,
         effort=None, permission_mode=None, nano=False, dangerously_skip_permissions=False,
+        allow_remote=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -82,6 +83,14 @@ def test_serve_argv_is_minimal_by_default() -> None:
     # _serve_argv always receives a RESOLVED port (run_web_subcommand resolves
     # before delegating), so the translation itself has no default to apply.
     assert web_cli._serve_argv(_args(port=8081)) == ["--host", "127.0.0.1", "--port", "8081"]
+
+
+def test_serve_argv_forwards_allow_remote() -> None:
+    """`serve` refuses a non-loopback bind on its own now, so a `web` that
+    cleared its own identical gate must pass the permission along — otherwise
+    the child stops what the parent just allowed."""
+    assert "--allow-remote" in web_cli._serve_argv(_args(allow_remote=True))
+    assert "--allow-remote" not in web_cli._serve_argv(_args())
 
 
 def test_serve_argv_forwards_every_agent_flag() -> None:
