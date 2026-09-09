@@ -99,6 +99,46 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(gw.request('session.create', {})).resolves.toMatchObject({ session_id: 's1' })
   })
 
+  // ─── banner version ──────────────────────────────────────────────────
+  // The header box renders "clawcodex v{version}" from SessionInfo.version
+  // (branding.tsx borderTitleParts) and useSessionLifecycle gates ready on it
+  // being truthy. It used to be a constant in this file, which drifted two
+  // releases behind the app (banner said v1.4.0 on a v1.6.0 build), so the
+  // backend now reports the running version on init.
+  const infoAfterInit = async (over: Record<string, unknown>) => {
+    proc.line({ ...INIT, ...over })
+    await vi.waitFor(() => expect(last('session.info')).toBeTruthy())
+
+    return last('session.info').payload
+  }
+
+  it('takes the banner version from the backend init frame', async () => {
+    expect(await infoAfterInit({ version: '9.9.9' })).toMatchObject({ version: '9.9.9' })
+  })
+
+  it('falls back to the bundled version when an older backend omits it', async () => {
+    // Pre-#838 backends send no `version` at all. The banner must still show
+    // something and the session must still reach ready.
+    const info = await infoAfterInit({})
+    expect(info.version).toBeTruthy()
+    expect(info.version).toMatch(/^\d+\.\d+\.\d+$/)
+  })
+
+  it('falls back rather than rendering an empty or non-string version', async () => {
+    // An empty string would render a bare "clawcodex v" AND strand the app at
+    // "starting agent…" forever, since ready is gated on truthiness.
+    expect((await infoAfterInit({ version: '' })).version).toBeTruthy()
+  })
+
+  it('ignores a non-string version from a malformed frame', async () => {
+    expect(typeof (await infoAfterInit({ version: 160 })).version).toBe('string')
+  })
+
+  it('keeps the app version separate from the wire protocol_version', async () => {
+    const info = await infoAfterInit({ protocol_version: '0.1.0', version: '1.6.0' })
+    expect(info.version).toBe('1.6.0')
+  })
+
   it('passes the session totals rider through on result (cost + session_turns)', async () => {
     proc.line({
       cost: { total_cost_usd: 0.0048 },

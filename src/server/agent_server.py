@@ -15,7 +15,7 @@ Wire protocol
 server → client (``messages_from_agent``)::
 
     {type:'system', subtype:'init', model, tools:[{name,description,input_schema}],
-     permission_mode, protocol_version, session_id, cwd}     # once, on connect
+     permission_mode, protocol_version, version, session_id, cwd}  # once, on connect
     {type:'stream_event', event:{...text_delta...}}           # live token deltas
     {type:'assistant', uuid, session_id, message:{role,content}}
     {type:'user',      uuid, session_id, message:{role,content:[tool_result…]}}
@@ -306,18 +306,26 @@ class _AgentSession:
 
         Re-emitted after a resume-driven coordinator-mode flip (_do_resume) so
         the client's cached tool list tracks the mode."""
-        # Coordinator mode narrows the MAIN loop's advertised tools to the
-        # orchestration set; workers keep the full captured registry. Fresh
-        # per call — see coordinator_main_loop_registry.
+        from src import __version__
         from src.coordinator.mode import coordinator_main_loop_registry
         from src.nano.state import is_nano_mode
 
+        # Coordinator mode narrows the MAIN loop's advertised tools to the
+        # orchestration set; workers keep the full captured registry. Fresh
+        # per call — see coordinator_main_loop_registry.
         tools = _tool_schemas(coordinator_main_loop_registry(self.tool_registry))
         self._emit({
             "type": "system",
             "subtype": "init",
             "session_id": self.session_id,
             "protocol_version": PROTOCOL_VERSION,
+            # The clawcodex APP version (distinct from protocol_version, which
+            # versions this wire format). The Ink client renders it in the
+            # header box as "clawcodex v{version}" and gates session-ready on
+            # it being non-empty. Sourced from src.__version__ so the banner
+            # always agrees with `clawcodex --version` and /release-notes
+            # rather than drifting behind a hand-maintained client constant.
+            "version": __version__,
             "model": getattr(self.provider, "model", self.config.model),
             # The active fusion model's name, "" when not fused. Carried on
             # init (not just the set_model reply) so a session started with

@@ -197,6 +197,8 @@ class OpenAIProvider(OpenAICompatibleProvider):
             if credentials is not None:
                 self._subscription_active = True
                 self._subscription_account_id = credentials.account_id
+                if model is None:
+                    self.model = SUBSCRIPTION_MODELS[0]
 
     def _create_client(self) -> Any:
         """Create OpenAI SDK client (API-key path only).
@@ -225,9 +227,9 @@ class OpenAIProvider(OpenAICompatibleProvider):
             List of model names
         """
         if self._subscription_active:
-            # A ChatGPT plan serves a SMALLER set than the API key does, so
-            # this stays its own list — see openai_responses.SUBSCRIPTION_MODELS.
-            return list(SUBSCRIPTION_MODELS)
+            from .openai_subscription_models import get_subscription_models
+
+            return get_subscription_models()
         # Read the registry rather than keep a second copy. This used to
         # duplicate PROVIDER_INFO["openai"]["available_models"] verbatim, and
         # the halves feed different surfaces — the registry drives `login` and
@@ -644,6 +646,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
                     raise RuntimeError(
                         "ChatGPT subscription login expired; run `clawcodex login`"
                     )
+                credentials = refreshed
                 self._subscription_account_id = (
                     refreshed.account_id or self._subscription_account_id
                 )
@@ -659,15 +662,35 @@ class OpenAIProvider(OpenAICompatibleProvider):
             if response.status_code != 200:
                 detail = response.read().decode("utf-8", "replace")
                 _who = "ChatGPT backend" if self._subscription_active else "OpenAI API"
+                hint = ""
+                if (self._subscription_active and response.status_code == 400
+                        and "not supported" in detail and "ChatGPT account" in detail):
+                    from .openai_subscription_models import (
+                        get_subscription_models,
+                        record_subscription_model,
+                    )
+
+                    if credentials is not None:
+                        record_subscription_model(credentials, str(body.get("model", "")), available=False)
+                    get_subscription_models(force=True)
+                    hint = (
+                        " This model is unavailable through your current ChatGPT login. "
+                        "Run /model to choose from your account's catalog."
+                    )
                 raise ResponsesHTTPError(
-                    f"{_who} error ({response.status_code}): {detail[:600]}",
+                    f"{_who} error ({response.status_code}): {detail[:600]}{hint}",
                     status_code=response.status_code,
                     response=response,
                 )
-            return self._consume_subscription_stream(
+            result = self._consume_subscription_stream(
                 response, guard, on_text_chunk, on_thinking_chunk,
                 request_model=str(body.get("model", "")),
             )
+            if credentials is not None and (result.content or result.tool_uses):
+                from .openai_subscription_models import record_subscription_model
+
+                record_subscription_model(credentials, str(body.get("model", "")))
+            return result
         except Exception as exc:
             guard.reraise_if_aborted(exc)
             raise

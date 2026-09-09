@@ -137,9 +137,9 @@ def provider_catalog(
         key_env = env_vars[0] if env_vars else ""
 
         models = [str(m) for m in (info.get("available_models") or [])]
-        if is_current and current_models:
+        if is_current and current_models is not None:
             models = [str(m) for m in current_models]
-        elif pid == "openai":
+        elif pid == "openai" and authenticated and not api_key:
             # The inactive row must use the same auth-specific catalog as a
             # live OpenAI session. Construction only checks local credentials;
             # it neither creates an SDK client nor refreshes OAuth tokens.

@@ -24,6 +24,11 @@ from src.providers.openai_responses import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_subscription_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path))
+
+
 def _credentials(expires_at: float | None = None) -> auth.SubscriptionCredentials:
     return auth.SubscriptionCredentials(
         "access", "refresh", expires_at or time.time() + 3600, "acct-123", "idtok"
@@ -400,10 +405,13 @@ def test_provider_streams_responses_and_builds_chat_response(monkeypatch) -> Non
 
     text_chunks: list[str] = []
     thinking_chunks: list[str] = []
+    credentials = _credentials()
     with patch(
         "src.auth.openai_subscription.get_valid_credentials",
-        return_value=_credentials(),
-    ), patch("httpx.Client", _FakeClient):
+        return_value=credentials,
+    ), patch("httpx.Client", _FakeClient), patch(
+        "src.providers.openai_subscription_models.record_subscription_model",
+    ) as record:
         result = provider.chat_stream_response(
             [
                 {"role": "system", "content": "SYS"},
@@ -421,6 +429,7 @@ def test_provider_streams_responses_and_builds_chat_response(monkeypatch) -> Non
     assert captured["headers"]["chatgpt-account-id"] == "acct-123"
     assert captured["headers"]["originator"] == auth.ORIGINATOR
     body = captured["body"]
+    record.assert_called_once_with(credentials, body["model"])
     assert body["store"] is False and body["stream"] is True
     assert body["include"] == ["reasoning.encrypted_content"]
     assert body["instructions"] == "EXTRA\n\nSYS"
@@ -514,13 +523,16 @@ def test_provider_refreshes_once_on_401(monkeypatch) -> None:
         return_value=_credentials(),
     ), patch(
         "src.auth.openai_subscription.force_refresh", return_value=refreshed,
-    ) as force, patch("httpx.Client", _FakeClient):
+    ) as force, patch("httpx.Client", _FakeClient), patch(
+        "src.providers.openai_subscription_models.record_subscription_model",
+    ) as record:
         result = provider.chat_stream_response([{"role": "user", "content": "hi"}])
 
     assert force.call_count == 1
     assert sent_headers[0]["Authorization"] == "Bearer access"
     assert sent_headers[1]["Authorization"] == "Bearer fresh-access"
     assert result.content == "ok"
+    record.assert_called_once_with(refreshed, provider.model)
 
 
 def test_provider_surfaces_backend_failure_events(monkeypatch) -> None:
@@ -547,12 +559,15 @@ def test_provider_surfaces_backend_failure_events(monkeypatch) -> None:
     with patch(
         "src.auth.openai_subscription.get_valid_credentials",
         return_value=_credentials(),
-    ), patch("httpx.Client", _FakeClient):
+    ), patch("httpx.Client", _FakeClient), patch(
+        "src.providers.openai_subscription_models.record_subscription_model",
+    ) as record:
         try:
             provider.chat_stream_response([{"role": "user", "content": "hi"}])
             raise AssertionError("expected RuntimeError")
         except RuntimeError as exc:
             assert "usage limit reached" in str(exc)
+    record.assert_not_called()
 
 
 def test_abort_mid_stream_raises_and_closes_response(monkeypatch) -> None:
@@ -635,12 +650,37 @@ def test_effort_setting_reaches_reasoning_body(monkeypatch) -> None:
 
 def test_provider_lists_subscription_models(monkeypatch) -> None:
     provider = _subscription_provider(monkeypatch)
+    monkeypatch.setattr(
+        "src.providers.openai_subscription_models.get_subscription_models",
+        lambda: ["gpt-5.6-terra", "gpt-5.6-luna"],
+    )
     models = provider.get_available_models()
-    assert models[:4] == [
-        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-    ]
-    assert "gpt-5.5" in models and "gpt-5.3-codex-spark" in models
-    assert "gpt-4o" not in models and "gpt-5.4-pro" not in models
+    assert models == ["gpt-5.6-terra", "gpt-5.6-luna"]
+
+
+def test_unsupported_subscription_model_refreshes_picker_without_switching(monkeypatch) -> None:
+    import httpx
+    from src.providers.openai_provider import ResponsesHTTPError
+
+    provider = _subscription_provider(monkeypatch)
+    provider.model = "gpt-5.6-sol"
+    response = httpx.Response(400, json={
+        "detail": "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+    })
+    with patch.object(auth, "get_valid_credentials", return_value=_credentials()), patch(
+        "src.providers.openai_subscription_models.get_subscription_models", return_value=["gpt-5.6-terra"],
+    ) as models, patch("httpx.Client") as client, patch(
+        "src.providers.openai_subscription_models.record_subscription_model",
+    ) as record:
+        client.return_value.send.return_value = response
+        with pytest.raises(ResponsesHTTPError, match="Run /model") as exc:
+            provider.chat_stream_response([{"role": "user", "content": "hi"}])
+    assert exc.value.status_code == 400
+    assert provider.model == "gpt-5.6-sol"
+    models.assert_called_once_with(force=True)
+    assert record.call_args.args[1] == "gpt-5.6-sol"
+    assert record.call_args.kwargs == {"available": False}
+    assert client.return_value.send.call_count == 1
 
 
 def test_api_key_wins_over_subscription(monkeypatch) -> None:

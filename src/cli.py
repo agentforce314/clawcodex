@@ -918,17 +918,19 @@ def _handle_openai_subscription_login(console, Prompt):
         console.print(f"\n[red]ChatGPT subscription login failed:[/red] {exc}")
         return 1
 
+    from src.providers.openai_subscription_models import get_subscription_models
     from src.providers.openai_responses import SUBSCRIPTION_MODELS
 
+    models = get_subscription_models(background=False, force=True)
     info = PROVIDER_INFO["openai"]
     set_api_key(
         "openai", api_key="", base_url=info["default_base_url"],
-        default_model=info["default_model"],
+        default_model=(models or SUBSCRIPTION_MODELS)[0],
     )
     set_default_provider("openai")
     console.print("\n[green]✓ ChatGPT subscription connected.[/green]")
     console.print(
-        "[dim]Subscription models: " + ", ".join(SUBSCRIPTION_MODELS) + "[/dim]"
+        "[dim]Subscription models: " + (", ".join(models) or "none available") + "[/dim]"
     )
     import os as _os
     if (_os.environ.get("OPENAI_API_KEY") or "").strip():

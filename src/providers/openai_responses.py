@@ -40,18 +40,11 @@ logger = logging.getLogger(__name__)
 # filter it; Gemini's converter drops unknown block types by construction.
 RESPONSES_ITEM_BLOCK_TYPE = "openai_responses_item"
 
-# Models offered for ChatGPT subscriptions, separate from the API catalog.
-# Current Codex model IDs: https://learn.chatgpt.com/docs/models (2026-09-06).
-# Availability still depends on the user's plan (Spark requires Pro).
+# Conservative fallback while this login's live model catalog is unavailable.
+# New models and plan-specific models must come from account discovery, not
+# the public API catalog or another client's cache.
 SUBSCRIPTION_MODELS = [
-    "gpt-6-astra",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex-spark",
 ]
 
 INCLUDE_ENCRYPTED_REASONING = ["reasoning.encrypted_content"]

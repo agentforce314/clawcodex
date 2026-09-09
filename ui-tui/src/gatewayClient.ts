@@ -50,9 +50,16 @@ const WORKTREE_RPC_TIMEOUT_MS = 600_000
  *  downsamples through Pillow. A timeout here would drop an image the user
  *  watched themselves paste. */
 const IMAGE_RPC_TIMEOUT_MS = 30_000
-// clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
-// sync with the installer (install.sh INSTALLER_VERSION).
-const CLAWCODEX_VERSION = '1.4.0'
+/** Fallback app version for the banner ("clawcodex v{version}").
+ *
+ *  The version normally comes from the backend's `system/init` frame, which
+ *  sources it from `src.__version__` — the same value `clawcodex --version`
+ *  prints. This constant is used ONLY when talking to a backend old enough not
+ *  to send the field, so it is a floor, not the source of truth: it names the
+ *  last release before init carried a version. Do not wire it into the release
+ *  checklist — a hand-maintained copy here is exactly what drifted two
+ *  releases behind (the banner showed v1.4.0 on a v1.6.0 build). */
+const CLAWCODEX_FALLBACK_VERSION = '1.6.0'
 
 /** Command that launches the clawcodex agent-server (set by the Python launcher). */
 function resolveAgentCmd(): string[] {
@@ -2868,10 +2875,15 @@ export class GatewayClient extends EventEmitter {
       reasoning_effort: typeof init.reasoning_effort === 'string' ? init.reasoning_effort : undefined,
       skills: {},
       tools: { '': toolNames },
-      // The app gates "ready" on info.version (useSessionLifecycle:227) and the
+      // The app gates "ready" on info.version (useSessionLifecycle:242) and the
       // banner shows it as "clawcodex v{version}", so this is the app version,
-      // not the wire protocol_version.
-      version: CLAWCODEX_VERSION
+      // not the wire protocol_version. Prefer what the backend reports; the
+      // constant only covers backends predating that field. The empty-string
+      // guard matters twice over: an empty version would render "clawcodex v"
+      // AND stall the session at "starting agent…" forever.
+      version: typeof init.version === 'string' && init.version
+        ? init.version
+        : CLAWCODEX_FALLBACK_VERSION
     } as SessionInfo
   }
 }

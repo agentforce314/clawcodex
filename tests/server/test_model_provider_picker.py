@@ -200,7 +200,11 @@ class TestProviderCatalog:
     def test_inactive_openai_catalog_matches_its_auth_route(
         self, monkeypatch, api_key, base_url, subscription,
     ):
-        from src.providers.openai_responses import SUBSCRIPTION_MODELS
+        discovered = ["gpt-6-astra", "gpt-5.6-terra"]
+        monkeypatch.setattr(
+            "src.providers.openai_subscription_models.get_subscription_models",
+            lambda: list(discovered),
+        )
 
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.setattr("src.providers.resolve_api_key", lambda pid: api_key if pid == "openai" else "")
@@ -216,9 +220,10 @@ class TestProviderCatalog:
         if base_url:
             config_mod.save_config({"providers": {"openai": {"base_url": base_url}}})
         row = next(r for r in provider_catalog(current="deepseek") if r["slug"] == "openai")
-        expected = SUBSCRIPTION_MODELS if subscription else PROVIDER_INFO["openai"]["available_models"]
+        expected = discovered if subscription else PROVIDER_INFO["openai"]["available_models"]
         assert row["models"] == expected
-        assert {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(row["models"])
+        if not subscription:
+            assert {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(row["models"])
         assert ("gpt-4o" in row["models"]) is not subscription
 
     def test_live_gateway_models_are_not_filtered_by_vendor_name(self):
@@ -234,6 +239,24 @@ class TestProviderCatalog:
         rows = provider_catalog(current="anthropic")
 
         assert len(rows) == len(PROVIDER_INFO)
+
+    def test_inactive_openai_subscription_uses_account_catalog(self, monkeypatch):
+        from src.auth import openai_subscription as auth
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        auth.save_credentials(auth.SubscriptionCredentials("token", "refresh", time.time() + 3600, "acct"))
+        monkeypatch.setattr(
+            "src.providers.openai_subscription_models.get_subscription_models",
+            lambda: ["gpt-5.6-terra", "gpt-5.6-luna"],
+        )
+        row = next(r for r in provider_catalog(current="anthropic") if r["slug"] == "openai")
+        assert row["models"] == ["gpt-5.6-terra", "gpt-5.6-luna"]
+        assert row["total_models"] == 2
+
+    def test_empty_current_catalog_does_not_offer_api_models(self):
+        row = next(r for r in provider_catalog(current="openai", current_models=[]) if r["slug"] == "openai")
+        assert row["models"] == []
 
     def test_active_provider_is_authenticated_even_under_an_alias_spelling(
         self, sandbox_config
