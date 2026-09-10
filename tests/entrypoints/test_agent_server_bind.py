@@ -68,3 +68,20 @@ def test_the_default_loopback_bind_is_untouched(monkeypatch) -> None:
 
     with pytest.raises(_Started):
         agent_server_cli.run_agent_server_subcommand([])
+
+
+def test_stdio_is_not_a_bind_and_is_not_refused(monkeypatch) -> None:
+    """`--stdio` serves over this process's pipes and never opens the port.
+
+    `--host` is inert in that mode, so refusing the pair would block a caller
+    that is not exposing anything — and the way around a guard like that is a
+    throwaway token, which is worse than no guard.
+    """
+
+    async def _stop(*_args: object, **_kwargs: object) -> int:
+        raise _Started
+
+    monkeypatch.setattr(agent_server_cli, "_serve_stdio", _stop)
+
+    with pytest.raises(_Started):
+        agent_server_cli.run_agent_server_subcommand(["--stdio", "--host", "0.0.0.0"])

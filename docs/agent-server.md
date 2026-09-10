@@ -71,8 +71,13 @@ agent-server: connect a TUI with  cc://127.0.0.1:8791
 ```
 
 It uses the same provider/credential resolution as headless mode, so configure
-credentials with `clawcodex login` first. The server binds `127.0.0.1` only; use
-`--token` to require a bearer token on `POST /sessions`.
+credentials with `clawcodex login` first.
+
+It binds `127.0.0.1` by default, where `--token` is optional: reaching the port
+already means being on this machine. `--host` can bind it anywhere else, but
+there `--token` is required and the server refuses to start without one —
+`POST /sessions` authenticates only when a token is set, and a session is a
+shell with this machine's filesystem under it.
 
 ### 2. Frontend — the Ink TUI
 

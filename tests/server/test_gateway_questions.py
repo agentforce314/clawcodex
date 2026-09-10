@@ -521,13 +521,22 @@ def test_rewind_reports_a_session_that_did_not_answer() -> None:
 # ── auto session title ────────────────────────────────────────────────────────
 
 
-def _titling_session(tmp_path, titled: bool = False):
-    """A DesktopSession wired just enough to auto-title."""
+def _titling_session(tmp_path, titled: bool = False,
+                     model_title: Any = None):
+    """A DesktopSession wired just enough to auto-title.
+
+    `model_title` is what the session's model answers `generate_title`
+    with; the default `None` is the "no usable reply" case that leaves the
+    heuristic name standing.
+    """
     from src.server.desktop_gateway_methods import DesktopSession
 
     session = DesktopSession.__new__(DesktopSession)
     session.session_id = "s1"
     session.titled = titled
+    # Set in the real `__init__` and read by `_upgrade_title`; without it the
+    # model-written-title path raises AttributeError instead of running.
+    session.user_titled = False
     session._background = set()
     renames: list[dict[str, Any]] = []
     title_queries: list[dict[str, Any]] = []
@@ -545,7 +554,7 @@ def _titling_session(tmp_path, titled: bool = False):
         # made "how many renames happened" unanswerable.
         if subtype == "generate_title":
             title_queries.append(record)
-            return {"ok": True}
+            return {"ok": True, "name": model_title}
         renames.append(record)
         return {"ok": True, "name": params.get("name")}
 
@@ -594,13 +603,71 @@ def test_the_model_written_title_gets_its_own_longer_timeout(tmp_path) -> None:
     assert TITLE_TIMEOUT_S > CONTROL_TIMEOUT_S
 
 
+def test_the_model_written_title_replaces_the_heuristic_one(tmp_path) -> None:
+    """The whole point of the side query: a better name lands second.
+
+    The heuristic name goes out first so nothing renders blank, then the
+    model's answer overwrites it — two `session.title` broadcasts, in that
+    order, and the saved file ends up stamped with the second.
+    """
+    session, renames, events, titles = _titling_session(
+        tmp_path, model_title="Retry button for the composer"
+    )
+
+    heuristic = asyncio.run(
+        session.auto_title("please add a retry button to the composer")
+    )
+
+    assert heuristic == "Add a retry button to the composer"
+    assert [q["subtype"] for q in titles] == ["generate_title"]
+    # Renamed twice, and the model's name is what stands at the end.
+    assert [r["name"] for r in renames] == [heuristic, "Retry button for the composer"]
+    assert [payload["title"] for type_, payload in events
+            if type_ == "session.title"] == [heuristic, "Retry button for the composer"]
+
+
+def test_an_explicit_rename_mid_flight_beats_the_model(tmp_path) -> None:
+    """A name the user chose is not overwritten by a reply that arrives after.
+
+    `user_titled` is checked after the round trip precisely because the user
+    can rename while the model is still writing.
+    """
+    session, renames, _events, _titles = _titling_session(
+        tmp_path, model_title="Retry button for the composer"
+    )
+    session.user_titled = True
+
+    heuristic = asyncio.run(
+        session.auto_title("please add a retry button to the composer")
+    )
+
+    assert [r["name"] for r in renames] == [heuristic]
+
+
+def test_a_model_title_identical_to_the_heuristic_does_not_rename_twice(tmp_path) -> None:
+    """Same words, so the second rename would be a broadcast with no news."""
+    session, renames, _events, _titles = _titling_session(
+        tmp_path, model_title="Add a retry button to the composer"
+    )
+
+    heuristic = asyncio.run(
+        session.auto_title("please add a retry button to the composer")
+    )
+
+    assert [r["name"] for r in renames] == [heuristic]
+
+
 def test_auto_title_leaves_a_named_session_alone(tmp_path) -> None:
     # A resumed session carries the user's own title, and an explicit rename
     # is a decision auto-titling must not undo.
-    session, renames, events, _titles = _titling_session(tmp_path, titled=True)
+    session, renames, events, titles = _titling_session(tmp_path, titled=True)
 
     assert asyncio.run(session.auto_title("something else entirely")) is None
     assert renames == []
+    # Both lists, not just the renames: the model is not asked either. Asking
+    # would bill a round trip to answer a question already settled, and the
+    # reply arriving late is a race against the title the user chose.
+    assert titles == []
     assert events == []
 
 
@@ -618,10 +685,12 @@ def test_auto_title_happens_once_even_if_two_prompts_race(tmp_path) -> None:
 def test_auto_title_skips_a_prompt_it_cannot_name(tmp_path) -> None:
     # "Untitled session" is the heuristic's way of saying it has nothing; it
     # would be a worse title than the blank it replaces.
-    session, renames, _events, _titles = _titling_session(tmp_path)
+    session, renames, _events, titles = _titling_session(tmp_path)
 
     assert asyncio.run(session.auto_title("   ")) is None
     assert renames == []
+    # Nothing to improve on, so nothing to ask about either.
+    assert titles == []
     # …and the session stays open to being named by a later prompt.
     assert session.titled is False
 
