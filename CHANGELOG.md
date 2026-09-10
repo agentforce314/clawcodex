@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web: the reference's session stats strip.** One centred line under the
+  composer — `2 turns · 106 steps | LLM 6m28s · Tool call 23.7s | TTFT avg
+  1.3s · 258 tok/s | Cache hit 99% | Input 11.5M tok · Output 65.9K tok` —
+  replacing the two pills and their dialogs. A group with nothing measured
+  drops out whole. Stored assistant messages now keep each step's token
+  accounting and model (they were saved as `null`), and the session loader
+  forwards them in the live `step.complete` shape, so a resumed session
+  totals its cost exactly instead of hiding the figure; only TTFT and output
+  speed, which the file cannot record, stay off the line.
 - **Web: subagents in the header, and a child view per run.** A session that
   delegates shows **N subagents ▾** beside its title, with a live dot while any
   still run; the list behind it names each delegation with its type, model,

@@ -491,3 +491,54 @@ describe('hydrateStoredTrajectory', () => {
     expect(state.records[0]?.text).toBe('run the sweep')
   })
 })
+
+describe('hydrateStoredTrajectory with recorded usage', () => {
+  const MESSAGES = [
+    { content: 'go', role: 'user', timestamp: '2026-09-09T10:00:00.000Z' },
+    {
+      content: [{ text: 'Done.', type: 'text' }],
+      model: 'deepseek-v4-flash',
+      role: 'assistant',
+      stop_reason: 'end_turn',
+      timestamp: '2026-09-09T10:00:05.000Z',
+      usage: { cache_read: 700, cache_write: 100, calls: 1, input: 200, output: 50, total: 250 },
+    },
+    { content: 'more', role: 'user', timestamp: '2026-09-09T10:01:00.000Z' },
+    {
+      content: [{ text: 'Also done.', type: 'text' }],
+      role: 'assistant',
+      timestamp: '2026-09-09T10:01:02.000Z',
+      // Not a usage record: the four counters are missing.
+      usage: { input_tokens: 5 },
+    },
+  ]
+
+  it('carries the step usage and model into the ledger', () => {
+    const state = hydrateStoredTrajectory(MESSAGES)
+    const steps = state.records.filter(record => record.kind === 'assistant')
+
+    expect(steps[0]?.metrics?.usage).toEqual({
+      cache_read: 700, cache_write: 100, calls: 1, input: 200, output: 50, total: 250,
+    })
+    expect(steps[0]?.metrics?.model).toBe('deepseek-v4-flash')
+    expect(steps[1]?.metrics?.usage).toBeUndefined()
+    expect(steps[1]?.metrics?.model).toBeUndefined()
+  })
+
+  it('totals a resumed run exactly, with speed left unmeasured', () => {
+    const stats = trajectoryStats(hydrateStoredTrajectory(MESSAGES))
+
+    expect(stats).toMatchObject({
+      cacheReadTokens: 700,
+      cacheWriteTokens: 100,
+      llmMs: 7_000,
+      outputTokens: 50,
+      steps: 2,
+      throughput: null,
+      ttftMs: null,
+      turns: 2,
+      uncachedInputTokens: 200,
+    })
+    expect(stats.cacheHitRatio).toBeCloseTo(0.7)
+  })
+})

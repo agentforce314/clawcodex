@@ -195,12 +195,14 @@ than showing a zero. That is why a **resumed** session starts with an empty
 ledger: a replayed transcript carries no timings, and inventing them would be
 worse than the empty state.
 
-The same rule costs a resumed session its **token pill**. A stored transcript
-carries no per-request usage — `session.usage` reports the context window's
-occupancy, not what the run was billed — so the counts cannot be rebuilt, and
-the pill is dropped rather than shown as zeros, which would read as "this run
-was free". The gauge pill stays: turns, steps and durations *are* rebuilt from
-the stored messages.
+The same rule limits what a resumed session's stats line can say. The
+figures under the composer — turns and steps, model time and tool time, TTFT
+and output speed, cache-hit share, input and output tokens — are the ledger's
+own totals, so the line and the Trajectory tab never disagree. A stored
+transcript carries each step's timestamp, model and token accounting, so a
+resumed session totals its cost exactly; what it does not carry is a
+first-token time, so TTFT and output speed are left off the line rather than
+shown as zeros.
 
 One semantic worth knowing: `usage.input` is the cache **miss**, not the whole
 prompt — the backend splits a prompt into what it paid full price for and what
@@ -210,8 +212,8 @@ prompt, which is what the Trajectory shows.
 The **cache-hit rate** divides by a third bucket as well: `cache_write` (tokens
 written into the cache) was processed in full and charged for, so it is a miss.
 The rate is `cache_read / (input + cache_read + cache_write)` — the same sum the
-usage pill's dialog itemises, so the percentage and the counts under it describe
-one arithmetic.
+stats line's input figure sums, so the percentage and the count beside it
+describe one arithmetic.
 
 ## Development
 
@@ -278,8 +280,8 @@ surface-specific roles, with only the aliases moving between themes), the
 three-column concession solver, the single-scrollport conversation column with
 its sticky composer seat and shared width axis, the tool-card family
 (terminal / diff / read / generic), the tabbed right column with its lazy
-workspace tree and paged text reader, and the two-pill session stats with their
-click-open dialogs.
+workspace tree and paged text reader, and the one-line session stats strip
+under the composer.
 
 Not adapted: the DeepSeek branding, the cordis plugin runtime, the client module
 system, and the right column's docking engine — splits, floating panes, drag and

@@ -54,7 +54,7 @@ import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
 import { closeSidebar } from '../sidebar-right/store.ts'
 import { QueueDock } from './QueueDock.tsx'
-import { StatsPills } from './StatsPills.tsx'
+import { StatsLine } from './StatsLine.tsx'
 import { SubagentChip } from './SubagentChip.tsx'
 import { SubagentView } from './SubagentView.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
@@ -440,12 +440,7 @@ export function ConversationRoot() {
           </div>
           <div className={css.footer}>
             {seatPanel}
-            <StatsPills
-              model={transcript.info.model}
-              nano={nano === true}
-              provider={transcript.info.provider}
-              stats={stats}
-            />
+            <StatsLine stats={stats} />
           </div>
         </>
       ) : (
@@ -495,12 +490,7 @@ export function ConversationRoot() {
               <TodoPanel todos={todos} />
               <QueueDock items={queue} onRemove={dequeue} />
               {seatPanel}
-              <StatsPills
-                model={transcript.info.model}
-                nano={nano === true}
-                provider={transcript.info.provider}
-                stats={stats}
-              />
+              <StatsLine stats={stats} />
             </div>
           </>
         )}

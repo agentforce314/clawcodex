@@ -452,3 +452,47 @@ def test_agent_transcript_refuses_bad_ids_and_misses(tmp_path: Path) -> None:
     assert load_agent_transcript(tmp_path, "") is None
     assert load_agent_transcript(tmp_path, "a" * 65) is None
     assert load_agent_transcript(tmp_path, "missing") is None
+
+
+def test_stored_step_usage_and_model_reach_the_client(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import load_session_messages
+
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Done."}],
+            "model": "deepseek-v4-flash",
+            "usage": {
+                "input_tokens": 200, "output_tokens": 50, "reasoning_tokens": 7,
+                "cache_read_input_tokens": 700, "cache_creation_input_tokens": 100,
+            },
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "Again."}], "usage": None, "model": None},
+    ]
+    _write_session(tmp_path, "s2", preview="p", count=3, messages=messages)
+    loaded = load_session_messages(tmp_path, "s2")
+    assert loaded is not None
+    # The live step.complete shape, so the client's ledger reads both alike.
+    assert loaded["messages"][1]["usage"] == {
+        "calls": 1, "input": 200, "output": 50, "total": 250,
+        "reasoning": 7, "cache_read": 700, "cache_write": 100,
+    }
+    assert loaded["messages"][1]["model"] == "deepseek-v4-flash"
+    assert "usage" not in loaded["messages"][2]
+    assert "model" not in loaded["messages"][2]
+
+
+def test_conversation_keeps_a_step_usage_and_model_on_disk() -> None:
+    from src.agent.conversation import Conversation
+
+    conversation = Conversation()
+    conversation.add_message("user", "go")
+    conversation.add_message(
+        "assistant", [{"type": "text", "text": "Done."}],
+        usage={"input_tokens": 3, "output_tokens": 2}, model="deepseek-v4-flash",
+    )
+    stored = conversation.to_dict()["messages"]
+    assert stored[1]["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert stored[1]["model"] == "deepseek-v4-flash"
+    assert "usage" not in stored[0]

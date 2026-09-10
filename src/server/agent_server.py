@@ -5226,10 +5226,15 @@ class _AgentSession:
         def on_message(message: Any) -> None:
             # Persist into the session conversation so the next turn pairs
             # tool_use ↔ tool_result, then ship the SDK envelope to the client.
+            # A step's token accounting and the model that answered ride the
+            # stored message too: they are what lets a resumed session's
+            # stats line and Trajectory tab report the run's cost, not zeros.
             try:
                 self.session.conversation.add_message(
                     message.role, message.content,
                     toolUseResult=_persisted_tool_use_result(message),
+                    usage=getattr(message, "usage", None),
+                    model=getattr(message, "model", None),
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("[agent-server] persist failed")
