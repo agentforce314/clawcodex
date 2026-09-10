@@ -522,7 +522,7 @@ def test_rewind_reports_a_session_that_did_not_answer() -> None:
 
 
 def _titling_session(tmp_path, titled: bool = False,
-                     model_title: Any = None):
+                     model_title: Any = None, during_title_query=None):
     """A DesktopSession wired just enough to auto-title.
 
     `model_title` is what the session's model answers `generate_title`
@@ -554,6 +554,11 @@ def _titling_session(tmp_path, titled: bool = False,
         # made "how many renames happened" unanswerable.
         if subtype == "generate_title":
             title_queries.append(record)
+            # Runs while the model is "writing" — the only way to stage
+            # something that happens DURING the round trip rather than before
+            # it, which is the difference these orderings turn on.
+            if during_title_query is not None:
+                during_title_query()
             return {"ok": True, "name": model_title}
         renames.append(record)
         return {"ok": True, "name": params.get("name")}
@@ -629,18 +634,28 @@ def test_the_model_written_title_replaces_the_heuristic_one(tmp_path) -> None:
 def test_an_explicit_rename_mid_flight_beats_the_model(tmp_path) -> None:
     """A name the user chose is not overwritten by a reply that arrives after.
 
-    `user_titled` is checked after the round trip precisely because the user
-    can rename while the model is still writing.
+    The rename is staged to land *during* the `generate_title` round trip, not
+    before it: reading `user_titled` after the round trip rather than before is
+    the whole point, and a test that sets the flag up front passes either way.
+    With `TITLE_TIMEOUT_S` at 60s the window this guards is a real one.
     """
+    holder: dict[str, Any] = {}
+
+    def _user_renames_it() -> None:
+        holder["session"].user_titled = True
+
     session, renames, _events, _titles = _titling_session(
-        tmp_path, model_title="Retry button for the composer"
+        tmp_path,
+        model_title="Retry button for the composer",
+        during_title_query=_user_renames_it,
     )
-    session.user_titled = True
+    holder["session"] = session
 
     heuristic = asyncio.run(
         session.auto_title("please add a retry button to the composer")
     )
 
+    assert session.user_titled is True
     assert [r["name"] for r in renames] == [heuristic]
 
 
