@@ -342,3 +342,95 @@ def test_step_complete_payload_carries_whichever_facts_exist() -> None:
     assert step_complete_payload({"model": "m"}) == {"model": "m"}
     assert step_complete_payload({}) is None
     assert step_complete_payload({"usage": None, "model": "", "stop_reason": ""}) is None
+
+
+# ─── subagents ───────────────────────────────────────────────────────────────
+
+
+def test_agent_progress_becomes_subagent_progress():
+    from src.server.desktop_gateway_translate import translate_agent_progress
+
+    frame = {
+        "type": "agent_progress",
+        "agent_id": "a1b2c3",
+        "tool_use_id": "call_7",
+        "depth": 0,
+        "name": "dive-core",
+        "description": "Deep dive: core",
+        "subagent_type": "Explore",
+        "model": "deepseek-v4-flash",
+        "activity": "Reading README.md",
+        "tool_use_count": 4,
+        "tokens": 12345,
+        "status": "running",
+    }
+    events = translate_frame(frame)
+    assert events == translate_agent_progress(frame)
+    (type_, payload), = events
+    assert type_ == "subagent.progress"
+    assert payload == {
+        "agent_id": "a1b2c3",
+        "status": "running",
+        "tool_use_id": "call_7",
+        "name": "dive-core",
+        "description": "Deep dive: core",
+        "subagent_type": "Explore",
+        "model": "deepseek-v4-flash",
+        "activity": "Reading README.md",
+        "depth": 0,
+        "tool_count": 4,
+        "tokens": 12345,
+    }
+
+
+def test_terminal_agent_progress_keeps_only_what_it_carries():
+    from src.server.desktop_gateway_translate import translate_agent_progress
+
+    # The terminal emit names no activity and no counts; a None must not
+    # become a field, and a boolean must not pass as a count.
+    (_, payload), = translate_agent_progress({
+        "agent_id": "a1", "status": "completed", "activity": None,
+        "tool_use_count": True, "model": None, "tool_use_id": "call_1",
+    })
+    assert payload == {"agent_id": "a1", "status": "completed", "tool_use_id": "call_1"}
+
+
+def test_agent_progress_without_an_id_is_dropped():
+    assert translate_frame({"type": "agent_progress", "status": "running"}) == []
+
+
+def test_agent_result_envelope_rides_the_completion():
+    from src.server.desktop_gateway_translate import agent_result_meta
+
+    display = {
+        "type": "agent",
+        "agent_id": "a9",
+        "status": "completed",
+        "agent_type": "Explore",
+        "model": "deepseek-v4-flash",
+        "total_duration_ms": 4200,
+        "total_tokens": 9001,
+        "total_tool_use_count": 6,
+    }
+    assert agent_result_meta(display) == {
+        "agent_id": "a9",
+        "status": "completed",
+        "agent_type": "Explore",
+        "model": "deepseek-v4-flash",
+        "duration_ms": 4200,
+        "tokens": 9001,
+        "tool_count": 6,
+    }
+    payload = _complete("Agent", "# Report\n\nfindings", display)
+    assert payload["name"] == "Agent"
+    assert payload["result"]["agent"]["agent_id"] == "a9"
+    assert payload["result"]["output"] == "# Report\n\nfindings"
+
+
+def test_other_display_envelopes_carry_no_agent():
+    from src.server.desktop_gateway_translate import agent_result_meta
+
+    assert agent_result_meta(None) is None
+    assert agent_result_meta({"type": "image", "originalSize": 3}) is None
+    assert agent_result_meta({"type": "agent", "agent_id": ""}) is None
+    assert "agent" not in _complete("Read", "1\tline", {"type": "image", "originalSize": 3})["result"]

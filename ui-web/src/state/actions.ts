@@ -29,6 +29,7 @@ import type {
   SessionResumeResult,
   SlashResult,
   SubagentInterruptResult,
+  SubagentTranscriptResult,
   WorkspaceFileFailure,
   WorkspaceFileResult,
   WorkspaceLevel,
@@ -56,6 +57,7 @@ import {
   $sessionLoading,
   $sessionTitle,
   $storedSessionId,
+  $subagentView,
   $trajectory,
   $transcript,
   $workspace,
@@ -239,6 +241,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   $transcript.set(emptyTranscript())
   $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
+  $subagentView.set(null)
   $sessionTitle.set('')
   $sessionId.set(null)
   $storedSessionId.set(null)
@@ -285,6 +288,7 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
   // below, timestamps included.
   $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
+  $subagentView.set(null)
   $sessionLoading.set(true)
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES, session_id: storedId }
@@ -416,6 +420,7 @@ export async function clearSession(): Promise<void> {
 
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
     $trajectory.set(emptyTrajectory())
+    $subagentView.set(null)
     notice('Conversation cleared.')
   } catch (error) {
     if (isStillCurrent()) notice(errorText(error), 'error')
@@ -675,6 +680,40 @@ export async function interruptSubagent(subagentId: string): Promise<void> {
   }
 
   await fetchDelegationStatus()
+}
+
+/** Show one subagent (a catalog entry's key) in the conversation column. */
+export function openSubagent(key: string): void {
+  $subagentView.set(key)
+}
+
+/** Back to the session the subagent belongs to. */
+export function closeSubagent(): void {
+  $subagentView.set(null)
+}
+
+/**
+ * A subagent's own record, for the child view.
+ *
+ * `found: false` on any failure as well as on a genuine miss: the view has
+ * the prompt and the report either way, and a banner over them would say
+ * less than the rows it hides.
+ */
+export async function fetchSubagentTranscript(agentId: string): Promise<SubagentTranscriptResult> {
+  const missing: SubagentTranscriptResult = { agent_id: agentId, found: false, messages: [] }
+
+  if (agentId === '') return missing
+
+  try {
+    const result = await gateway().request<SubagentTranscriptResult>('subagent.transcript', {
+      agent_id: agentId,
+      session_id: $sessionId.get(),
+    })
+
+    return result.found === true ? result : missing
+  } catch {
+    return missing
+  }
 }
 
 /** The session's plan text, for the plan-review takeover. */

@@ -1,0 +1,159 @@
+/* The header's subagent control: a quiet count (or the child's own name) with
+   the catalog behind it. Anchored like the Menu primitive — the list is a
+   sibling of the trigger, absolutely placed below it — rather than portaled,
+   because the header is never inside a transformed ancestor. */
+
+.root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.trigger,
+.switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  color: var(--cc-alias-label-secondary);
+}
+
+/* The child's name reads as the title it replaces: primary ink, medium weight. */
+.switcher {
+  min-width: 0;
+  max-width: 244px;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.switcherTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger svg,
+.switcher svg {
+  flex: none;
+  transition: transform 120ms ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.activity {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: 10px;
+  height: 10px;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 336px;
+  max-width: min(400px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 140px));
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 16px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 50px;
+  padding: 7px 8px 7px 11px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover,
+.row:focus-visible {
+  background: var(--cc-alias-interactive-bg-hover);
+  outline: none;
+}
+
+.rowDot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 18px;
+}
+
+.rowBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rowLabel,
+.rowSecondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowCurrent .rowLabel {
+  font-weight: 600;
+}
+
+.rowSecondary,
+.rowMetrics {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* Two figures stacked on the right, tabular so a list of them lines up. */
+.rowMetrics {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rowMetrics > :first-child {
+  line-height: 18px;
+}

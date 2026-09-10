@@ -48,18 +48,28 @@ class Conversation:
         *,
         usage: dict[str, Any] | None = None,
         isMeta: bool = False,
+        toolUseResult: Any = None,
     ):
         """``isMeta`` marks injected context (plan-mode / task-reminder
         attachments), not a real prompt. Dropping it here was a real defect:
         the persisted reminder came back ``isMeta=False``, so
         ``_count_prompt_turns`` counted it as a user turn and ``/rewind``
-        treated it as a rewind boundary."""
+        treated it as a rewind boundary.
+
+        ``toolUseResult`` is a tool result's display envelope, kept on the
+        stored user message so it survives a save/resume round trip. Callers
+        pass only what a resumed reader needs — the agent server keeps the
+        Agent tool's (the one link from a stored call to its subagent's
+        transcript) and drops the rest, which are derivable or duplicates."""
         if len(self.messages) >= self.max_history:
             self.messages.pop(0)
 
         normalized_content = _normalize_message_content(content)
         self.messages.append(
-            create_message(role, normalized_content, usage=usage, isMeta=isMeta)
+            create_message(
+                role, normalized_content, usage=usage, isMeta=isMeta,
+                toolUseResult=toolUseResult,
+            )
         )
 
     def add_user_message(self, content: MessageContent):

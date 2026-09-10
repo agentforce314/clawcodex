@@ -898,3 +898,29 @@ def test_real_agent_permission_roundtrip_runs_tool(tmp_path: Path) -> None:
             types = [e["type"] for e in events]
             assert "tool.start" in types
             assert "tool.complete" in types
+
+
+def test_subagent_transcript_reads_the_run_record(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path))
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    (transcripts / "a7.jsonl").write_text(
+        json.dumps({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}) + "\n",
+        encoding="utf-8",
+    )
+    state, _ = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()  # gateway.ready
+        events: list[dict] = []
+        _rpc(ws, 1, "subagent.transcript", {"agent_id": "a7"})
+        reply = _drain_for_response(ws, 1, events)["result"]
+        assert reply["found"] is True
+        assert reply["agent_id"] == "a7"
+        assert reply["message_count"] == 1
+        assert reply["messages"][0]["role"] == "assistant"
+
+        # A miss and a path-shaped id both answer "not found", never an error.
+        for rid, agent_id in ((2, "nope"), (3, "../a7")):
+            _rpc(ws, rid, "subagent.transcript", {"agent_id": agent_id})
+            reply = _drain_for_response(ws, rid, events)["result"]
+            assert reply == {"agent_id": agent_id, "found": False, "messages": [], "message_count": 0}

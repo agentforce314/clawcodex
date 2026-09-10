@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -9,6 +10,26 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MAX_TITLE_LENGTH = 80
+
+# The side query that names a session, sent to the session's OWN provider so
+# it never bills an account the user did not choose for this conversation.
+_TITLE_PROMPT = (
+    "Write a title for a chat that begins with the request below. "
+    "Reply with the title only: three to six words, in the language of the "
+    "request, no quotes, no trailing punctuation.\n\nRequest:\n{text}"
+)
+
+# How much of the first prompt the title query sees. A pasted log or a long
+# spec is summarised from its head; the title is about what was asked.
+_TITLE_INPUT_CHARS = 2000
+
+# Room for the reply. A reasoning model thinks inside this budget before it
+# answers — DeepSeek's thinking mode spent a 48-token cap entirely on thought
+# and returned nothing — so the cap leaves room for a paragraph of reasoning
+# ahead of the six words that come out.
+_TITLE_MAX_TOKENS = 512
+
+_TITLE_LABEL_RE = re.compile(r"^(?:title|标题)\s*[:：]\s*", re.IGNORECASE)
 
 
 def auto_title_from_message(text: str) -> str:
@@ -39,6 +60,56 @@ def auto_title_from_message(text: str) -> str:
         first_line = first_line[:MAX_TITLE_LENGTH - 3].rstrip() + "..."
 
     return first_line or "Untitled session"
+
+
+def clean_generated_title(raw: Any) -> str | None:
+    """The first usable line of a model's title reply, or None.
+
+    Models decorate: quotes, a ``Title:`` label, a trailing period, a
+    preamble line. The title is whatever survives — and nothing, when the
+    reply was empty or only decoration, so the caller keeps its fallback
+    rather than naming a session "".
+    """
+    if not isinstance(raw, str):
+        return None
+    line = next((part.strip() for part in raw.strip().splitlines() if part.strip()), "")
+    line = _TITLE_LABEL_RE.sub("", line)
+    line = line.strip("\"'`“”‘’ ").rstrip(".!。！").strip()
+    line = _TITLE_LABEL_RE.sub("", line).strip("\"'“” ")
+    if not line:
+        return None
+    if len(line) > MAX_TITLE_LENGTH:
+        line = line[:MAX_TITLE_LENGTH - 3].rstrip() + "..."
+    return line
+
+
+async def generate_title_with_provider(
+    provider: Any,
+    text: str,
+    *,
+    timeout_s: float = 30.0,
+) -> str | None:
+    """A short title for a session, written by the session's own model.
+
+    One small non-streaming request through ``provider.chat_async`` — the
+    same provider (and account) the conversation runs on, unlike
+    :func:`generate_llm_title`, which is pinned to Anthropic. Best-effort by
+    contract: no provider, an empty prompt, a timeout, a provider error or an
+    unusable reply all answer None, and the caller keeps the heuristic name
+    it already has.
+    """
+    if provider is None or not isinstance(text, str) or not text.strip():
+        return None
+    body = text.strip()[:_TITLE_INPUT_CHARS]
+    messages = [{"role": "user", "content": _TITLE_PROMPT.format(text=body)}]
+    try:
+        response = await asyncio.wait_for(
+            provider.chat_async(messages, max_tokens=_TITLE_MAX_TOKENS), timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001 — a title is never worth an error
+        logger.debug("provider title generation failed: %s", exc)
+        return None
+    return clean_generated_title(getattr(response, "content", None))
 
 
 async def generate_llm_title(

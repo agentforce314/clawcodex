@@ -335,7 +335,74 @@ def render_tool_result(name: str, text: str, display: Any) -> dict[str, Any]:
     summary = summarize_tool_result(name, text, display)
     if summary:
         result["context"] = summary
+    agent = agent_result_meta(display)
+    if agent is not None:
+        result["agent"] = agent
     return result
+
+
+def agent_result_meta(display: Any) -> dict[str, Any] | None:
+    """The Agent tool's display envelope → the row's ``agent`` facts.
+
+    ``agent_id`` is what links the row to the subagent that ran it (its
+    transcript file, its live progress); the rest are the totals the run
+    reported — how it ended, what it ran on, how long it took and how much
+    it used — which the report text does not carry. None for every other
+    tool, so an ordinary row's result stays exactly what it was.
+    """
+    if not isinstance(display, dict) or display.get("type") != "agent":
+        return None
+    agent_id = display.get("agent_id")
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    meta: dict[str, Any] = {
+        "agent_id": agent_id,
+        "status": str(display.get("status") or "completed"),
+    }
+    for key in ("agent_type", "model"):
+        value = display.get(key)
+        if isinstance(value, str) and value:
+            meta[key] = value
+    for source, key in (
+        ("total_duration_ms", "duration_ms"),
+        ("total_tokens", "tokens"),
+        ("total_tool_use_count", "tool_count"),
+    ):
+        value = display.get(source)
+        if isinstance(value, int) and not isinstance(value, bool):
+            meta[key] = value
+    return meta
+
+
+def translate_agent_progress(frame: dict[str, Any]) -> list[tuple[str, Any]]:
+    """``agent_progress`` frame → one ``subagent.progress`` event.
+
+    The Agent tool emits one of these per subagent message while a
+    delegation runs, and a terminal one when it stops (``status`` other than
+    ``running``). ``tool_use_id`` names the Agent call the run answers, so a
+    client can pin the progress to the row that spawned it; ``agent_id`` is
+    the run's own identity, which the row's result later confirms. A frame
+    without an agent id names nothing and is dropped.
+    """
+    agent_id = str(frame.get("agent_id") or "")
+    if not agent_id:
+        return []
+    payload: dict[str, Any] = {
+        "agent_id": agent_id,
+        "status": str(frame.get("status") or "running"),
+    }
+    for key in ("tool_use_id", "name", "description", "subagent_type", "model", "activity"):
+        value = frame.get(key)
+        if isinstance(value, str) and value:
+            payload[key] = value
+    depth = frame.get("depth")
+    if isinstance(depth, int) and not isinstance(depth, bool):
+        payload["depth"] = depth
+    for source, key in (("tool_use_count", "tool_count"), ("tokens", "tokens")):
+        value = frame.get(source)
+        if isinstance(value, int) and not isinstance(value, bool):
+            payload[key] = value
+    return [("subagent.progress", payload)]
 
 
 # ── frame translators ────────────────────────────────────────────────────────
@@ -523,6 +590,8 @@ def translate_frame(
         return translate_sdk_envelope(frame, tool_names)
     if kind == "result":
         return translate_result(frame)
+    if kind == "agent_progress":
+        return translate_agent_progress(frame)
     if kind == "text":
         # Final rendered text also arrives via `result`; interim standalone
         # text frames seal an interim bubble so the final complete doesn't
@@ -533,6 +602,7 @@ def translate_frame(
 
 
 __all__ = [
+    "agent_result_meta",
     "approval_request_payload",
     "as_text",
     "clean_tool_error",
@@ -543,6 +613,7 @@ __all__ = [
     "step_complete_payload",
     "summarize_tool_result",
     "tool_context",
+    "translate_agent_progress",
     "translate_frame",
     "translate_result",
     "translate_sdk_envelope",

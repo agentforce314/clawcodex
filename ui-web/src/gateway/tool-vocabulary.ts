@@ -16,7 +16,7 @@
  * Keep in step with the Python table; the two are one contract.
  */
 
-import type { ToolResult } from './protocol.ts'
+import type { AgentResultMeta, ToolResult } from './protocol.ts'
 
 const RENDER_TOOL_NAMES: Record<string, string> = {
   askuserquestion: 'clarify',
@@ -87,4 +87,45 @@ export function renderToolResult(name: string, text: string): ToolResult {
   // No dedicated card: the generic path prefers `context`, and `output` feeds
   // the copy affordance.
   return { context: text, output: text }
+}
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+}
+
+/**
+ * A stored Agent display envelope → the `agent` facts a live row carries.
+ *
+ * The agent server persists `{type: "agent", agent_id, status, …}` beside an
+ * Agent call's result; the live gateway turns the same envelope into
+ * `result.agent` (`agent_result_meta`, the Python twin of this). Doing it
+ * here for the stored copy is what makes a resumed Agent row indistinguishable
+ * from the one that streamed. Anything that is not that envelope is ignored.
+ */
+export function agentResultMeta(display: unknown): AgentResultMeta | undefined {
+  if (display === null || typeof display !== 'object') return undefined
+
+  const record = display as Record<string, unknown>
+
+  if (record.type !== 'agent' || typeof record.agent_id !== 'string' || record.agent_id === '') {
+    return undefined
+  }
+
+  const meta: AgentResultMeta = {
+    agent_id: record.agent_id,
+    status: typeof record.status === 'string' && record.status !== '' ? record.status : 'completed',
+  }
+
+  if (typeof record.agent_type === 'string' && record.agent_type !== '') meta.agent_type = record.agent_type
+  if (typeof record.model === 'string' && record.model !== '') meta.model = record.model
+
+  const duration = positiveInt(record.total_duration_ms)
+  const tokens = positiveInt(record.total_tokens)
+  const tools = positiveInt(record.total_tool_use_count)
+
+  if (duration !== undefined) meta.duration_ms = duration
+  if (tokens !== undefined) meta.tokens = tokens
+  if (tools !== undefined) meta.tool_count = tools
+
+  return meta
 }

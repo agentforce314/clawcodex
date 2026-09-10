@@ -48,6 +48,23 @@ export const PlusIcon = (p: IconProps) => (
   </Svg>
 )
 
+/** A delegation: one node handing work down to two. */
+export const AgentIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="5" r="2.5" />
+    <circle cx="6" cy="19" r="2.5" />
+    <circle cx="18" cy="19" r="2.5" />
+    <path d="M12 7.5v4M12 11.5 7 16.5M12 11.5l5 5" />
+  </Svg>
+)
+
+/** Switch between siblings: two chevrons, up and down. */
+export const SwitchIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />
+  </Svg>
+)
+
 export const FolderIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 20a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z" />

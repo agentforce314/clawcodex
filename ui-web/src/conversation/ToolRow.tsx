@@ -1,6 +1,7 @@
 import { memo, useState, type ReactNode } from 'react'
 
 import {
+  AgentIcon,
   FilePenIcon,
   FileTextIcon,
   GlobeIcon,
@@ -11,6 +12,7 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from '../ui/icons.tsx'
+import { Markdown } from '../ui/markdown/Markdown.tsx'
 import { DiffBlock } from '../ui/primitives/DiffBlock.tsx'
 import { DisclosureRow } from '../ui/primitives/DisclosureRow.tsx'
 import { IoCard } from '../ui/primitives/IoCard.tsx'
@@ -19,6 +21,8 @@ import { ReadBlock } from '../ui/primitives/ReadBlock.tsx'
 import { TerminalBlock } from '../ui/primitives/TerminalBlock.tsx'
 import { WebBlock } from '../ui/primitives/WebBlock.tsx'
 import { openFile } from '../sidebar-right/store.ts'
+import { openSubagent } from '../state/actions.ts'
+import { formatRunDuration, type SubagentEntry } from '../state/subagents.ts'
 import type { ToolNode } from '../state/transcript.ts'
 import {
   describeTool,
@@ -36,6 +40,7 @@ import {
 import css from './ToolRow.module.css'
 
 const ICON_COMPONENTS: Record<ToolIconName, (props: { size?: number }) => ReactNode> = {
+  agent: AgentIcon,
   edit: FilePenIcon,
   file: FileTextIcon,
   globe: GlobeIcon,
@@ -45,6 +50,63 @@ const ICON_COMPONENTS: Record<ToolIconName, (props: { size?: number }) => ReactN
   search: SearchIcon,
   terminal: TerminalIcon,
   tool: WrenchIcon,
+}
+
+/**
+ * A delegation's body: what the agent was told, then what it said back.
+ *
+ * The report is markdown — it is the agent's answer, written for a reader
+ * the same way the assistant's prose is — and the prompt sits above it,
+ * folded into a plain block, because it is the only record of the task. The
+ * way into the run itself (its own tool rows) is the button at the end.
+ */
+function AgentBody({ entry, node }: { entry?: SubagentEntry; node: ToolNode }) {
+  const prompt = typeof node.args.prompt === 'string' ? node.args.prompt : ''
+  const report = entry?.report ?? genericBodyText(node)
+
+  return (
+    <div className={css.agentBody}>
+      {prompt !== '' && <OutputBlock className={css.agentPrompt} label="prompt" text={prompt} />}
+      {node.error !== undefined ? (
+        <OutputBlock className={css.agentPrompt} label="error" text={node.error} tone="error" />
+      ) : (
+        report !== '' && (
+          <div className={css.agentReport}>
+            <Markdown text={report} />
+          </div>
+        )
+      )}
+      {entry !== undefined && (
+        <button
+          className={css.agentOpen}
+          onClick={() => {
+            openSubagent(entry.key)
+          }}
+          type="button"
+        >
+          Open this subagent
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** `3 tools · 42s` once settled; what the agent is doing while it runs. */
+function agentTrailing(entry: SubagentEntry | undefined): string {
+  if (entry === undefined) return ''
+
+  if (entry.status === 'running') {
+    const parts = [entry.activity, entry.toolCount === undefined ? undefined : `${entry.toolCount} tools`]
+
+    return parts.filter((part): part is string => part !== undefined && part !== '').join(' · ')
+  }
+
+  const parts = [
+    entry.toolCount === undefined ? undefined : `${entry.toolCount} ${entry.toolCount === 1 ? 'tool' : 'tools'}`,
+    entry.durationMs === undefined ? undefined : formatRunDuration(entry.durationMs),
+  ]
+
+  return parts.filter((part): part is string => part !== undefined).join(' · ')
 }
 
 function TodoBody({ todos }: { todos: TodoEntry[] }) {
@@ -71,6 +133,8 @@ function TodoBody({ todos }: { todos: TodoEntry[] }) {
 }
 
 export interface ToolRowProps {
+  /** For an Agent row: the catalog entry its call became, live figures included. */
+  agent?: SubagentEntry
   node: ToolNode
   workspace?: string
 }
@@ -84,12 +148,13 @@ export interface ToolRowProps {
  * to disclose yet, and reserving space for a card that has not arrived makes
  * the flow jump twice instead of once.
  */
-function ToolRowImpl({ node, workspace }: ToolRowProps) {
+function ToolRowImpl({ agent, node, workspace }: ToolRowProps) {
   const [expanded, setExpanded] = useState(false)
   const view = describeTool(node, workspace)
   const Icon = ICON_COMPONENTS[view.icon]
   const running = node.state === 'running'
   const failed = node.state === 'error'
+  const trailing = view.body === 'agent' ? agentTrailing(agent) : ''
 
   // The checklist card serves two families: TodoWrite carries its list in the
   // ARGUMENTS, the task registry's TaskList in its result JSON.
@@ -106,6 +171,10 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
 
   if (running) {
     body = undefined
+  } else if (view.body === 'agent') {
+    // Settled either way: a failed delegation keeps its shape, with the
+    // failure where the report would be.
+    body = <AgentBody entry={agent} node={node} />
   } else if (failed) {
     // A failed terminal keeps its terminal shape — the error text is what the
     // command printed. Everything else shows the exchange, arguments first:
@@ -216,6 +285,7 @@ function ToolRowImpl({ node, workspace }: ToolRowProps) {
         summary={summary}
         summaryTone={failed ? 'error' : 'default'}
         title={view.title}
+        trailing={trailing === '' ? undefined : <span className={css.trailing}>{trailing}</span>}
       />
     </div>
   )

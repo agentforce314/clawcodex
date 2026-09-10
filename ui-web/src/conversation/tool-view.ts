@@ -13,11 +13,22 @@
  */
 
 import type { ToolResult } from '../gateway/protocol.ts'
+import { isAgentTool } from '../state/subagents.ts'
 import type { ToolNode } from '../state/transcript.ts'
 
-export type ToolBodyKind = 'diff' | 'io' | 'none' | 'output' | 'read' | 'terminal' | 'todo' | 'web'
+export type ToolBodyKind =
+  | 'agent'
+  | 'diff'
+  | 'io'
+  | 'none'
+  | 'output'
+  | 'read'
+  | 'terminal'
+  | 'todo'
+  | 'web'
 
 export type ToolIconName =
+  | 'agent'
   | 'edit'
   | 'file'
   | 'globe'
@@ -371,10 +382,22 @@ function mcpTitle(name: string): string | undefined {
   return parts.join(' · ')
 }
 
+/** `Agent · Deep dive: server core` — what the delegation was for, never its prompt. */
+export function agentSummary(node: ToolNode): string {
+  return str(node.args.description) || str(node.args.name) || firstLine(str(node.args.prompt))
+}
+
 export function describeTool(node: ToolNode, workspace?: string): ToolView {
   const name = node.name
   const args = node.args
   const title = TITLES[name] ?? mcpTitle(name) ?? name
+
+  // A delegation keeps its own shape even when it failed: the row is still
+  // the way into what was asked, and the failure is read in the body.
+  if (isAgentTool(name)) {
+    return { body: 'agent', icon: 'agent', summary: agentSummary(node), title: 'Agent' }
+  }
+
   const icon = ICONS[name] ?? 'tool'
 
   if (node.error !== undefined) {
@@ -385,10 +408,15 @@ export function describeTool(node: ToolNode, workspace?: string): ToolView {
     case 'terminal': {
       const command = str(args.command)
 
+      // The model's own one-line account of the command outranks the command:
+      // "Count API endpoints" reads at a glance where `find . -name '*.ts' |
+      // xargs grep -l router | wc -l` does not, and the command itself is one
+      // click away in the terminal card. The reference client reads the same
+      // way.
       return {
         body: 'terminal',
         icon,
-        summary: command === '' ? str(node.context) : command,
+        summary: str(args.description) || (command === '' ? str(node.context) : command),
         title,
       }
     }

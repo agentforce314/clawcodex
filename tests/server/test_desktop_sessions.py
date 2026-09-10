@@ -386,3 +386,69 @@ def test_desktop_port_guard_detects_running_instance(
 
     # Listener closed — the guard clears.
     assert mod.dev_port_busy(port) is False
+
+
+# ─── subagent records ────────────────────────────────────────────────────────
+
+
+def test_stored_agent_envelope_reaches_the_client(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import load_session_messages
+
+    envelope = {"type": "agent", "agent_id": "a1", "status": "completed", "total_tool_use_count": 2}
+    messages = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "Agent", "input": {}}]},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "report"}],
+            "toolUseResult": envelope,
+        },
+        # A read's envelope (a plain string) is not forwarded: only the Agent's is.
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "c2", "content": "1\tx"}],
+            "toolUseResult": "1\tx",
+        },
+    ]
+    _write_session(tmp_path, "s1", preview="p", count=3, messages=messages)
+    loaded = load_session_messages(tmp_path, "s1")
+    assert loaded is not None
+    assert loaded["messages"][1]["tool_use_result"] == envelope
+    assert "tool_use_result" not in loaded["messages"][2]
+
+
+def test_agent_transcript_loads_in_the_stored_message_shape(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import load_agent_transcript
+
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    lines = [
+        json.dumps({"role": "assistant", "content": [{"type": "text", "text": "Looking."}],
+                    "timestamp": "2026-09-09T19:00:00", "stop_reason": "end_turn"}),
+        json.dumps({"role": "system", "content": "Running tool: Bash", "type": "system"}),
+        "{not json",
+        json.dumps({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c", "content": "ok"}]}),
+    ]
+    (transcripts / "a1b2.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    loaded = load_agent_transcript(transcripts, "a1b2")
+    assert loaded is not None
+    assert loaded["agent_id"] == "a1b2"
+    assert loaded["message_count"] == 3
+    assert loaded["messages"][0] == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Looking."}],
+        "timestamp": "2026-09-09T19:00:00",
+        "stop_reason": "end_turn",
+    }
+    assert loaded["messages"][1]["role"] == "system"
+    assert loaded["messages"][2]["role"] == "user"
+
+
+def test_agent_transcript_refuses_bad_ids_and_misses(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import load_agent_transcript
+
+    (tmp_path / "secret.jsonl").write_text("{}\n", encoding="utf-8")
+    assert load_agent_transcript(tmp_path, "../secret") is None
+    assert load_agent_transcript(tmp_path, "") is None
+    assert load_agent_transcript(tmp_path, "a" * 65) is None
+    assert load_agent_transcript(tmp_path, "missing") is None

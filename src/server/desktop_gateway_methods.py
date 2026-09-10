@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 from starlette.websockets import WebSocket
@@ -38,6 +39,9 @@ from src.server.desktop_serve import DesktopServeState
 logger = logging.getLogger(__name__)
 
 CONTROL_TIMEOUT_S = 30.0
+# A model-written session title: a small request, but on a reasoning model
+# it thinks first, and the heuristic name is on screen meanwhile.
+TITLE_TIMEOUT_S = 60.0
 
 # GUI↔backend contract version. The ClawCodex ladder restarts at 1 (the
 # reference implementation was at 5); bump when the desktop starts requiring
@@ -155,6 +159,10 @@ class DesktopSession:
         # resumed session (it has the user's own title) and after any explicit
         # rename, so auto-titling only ever fills in a blank.
         self.titled = False
+        # Set by an explicit rename. The model-written title that follows the
+        # heuristic one lands later and asynchronously; a name the user typed
+        # in between outranks it.
+        self.user_titled = False
         self.sockets: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
@@ -373,12 +381,15 @@ class DesktopSession:
     async def auto_title(self, text: str) -> str | None:
         """Name an untitled session after its first prompt.
 
-        Uses the heuristic, not ``generate_llm_title``: that one is hardcoded
-        to Anthropic and a fixed Haiku model, so on a session running any other
-        provider it would bill an account the user did not choose to use here —
-        and silently return None wherever that provider is not configured.
-        A first line with the throat-clearing stripped is a good title and
-        costs nothing.
+        Two steps. The heuristic name — the first line with the
+        throat-clearing stripped — lands at once, so the header and the
+        sidebar never show a blank. Then the session's own model is asked for
+        a short title (``generate_title``, a side query on the same provider
+        the conversation runs on), and its answer replaces the heuristic when
+        it arrives — unless the user renamed the session in between, in which
+        case theirs stands. Not ``generate_llm_title``: that one is pinned to
+        Anthropic and a fixed Haiku model, so on any other provider it would
+        bill an account the user did not choose here, or silently fail.
         """
         if self.titled:
             return None
@@ -392,6 +403,12 @@ class DesktopSession:
         # Set before the round-trip: a second prompt arriving while this one is
         # in flight must not start a second rename of the same session.
         self.titled = True
+        await self._apply_title(title)
+        await self._upgrade_title(text, title)
+        return title
+
+    async def _apply_title(self, title: str) -> None:
+        """Rename the live session, stamp the saved file, tell every window."""
         await self.control_query("rename", {"name": title})
         try:
             from src.server.desktop_sessions import update_session_meta
@@ -401,7 +418,24 @@ class DesktopSession:
             logger.debug("auto_title: could not stamp the saved session", exc_info=True)
         await self._broadcast("session.title", {"title": title})
         await self._broadcast("sessions.changed", {})
-        return title
+
+    async def _upgrade_title(self, text: str, fallback: str) -> None:
+        """Replace the heuristic name with one the session's model wrote.
+
+        Best-effort: no reply, an empty one, or the same words the heuristic
+        already chose leave the fallback in place. Checked AFTER the round
+        trip, an explicit rename made while the model was writing wins.
+        """
+        reply = await self.control_query(
+            "generate_title", {"text": text}, timeout=TITLE_TIMEOUT_S,
+        )
+        name = reply.get("name") if isinstance(reply, dict) else None
+        if not isinstance(name, str):
+            return
+        name = name.strip()
+        if not name or name == fallback or self.user_titled:
+            return
+        await self._apply_title(name)
 
     async def submit_prompt(self, text: str) -> None:
         if not self.ready:
@@ -930,6 +964,7 @@ class GatewayConnection:
             "delegation.status": self.delegation_status,
             "delegation.pause": self.delegation_pause,
             "subagent.interrupt": self.subagent_interrupt,
+            "subagent.transcript": self.subagent_transcript,
         }
 
     async def on_open(self) -> None:
@@ -1225,6 +1260,7 @@ class GatewayConnection:
         title = str(params.get("title") or params.get("name") or "").strip()
         session = self._session(params)
         session.titled = True
+        session.user_titled = True
         result = await session.control_query("rename", {"name": title})
         name = (result or {}).get("name") if isinstance(result, dict) else None
         # Also stamp the saved-session file so the sidebar row updates without a
@@ -1487,6 +1523,28 @@ class GatewayConnection:
             "path": str(result.get("plan_file_path") or ""),
             "plan": plan if isinstance(plan, str) else "",
         }
+
+    async def subagent_transcript(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A subagent's full record, for the child view a catalog row opens.
+
+        Read from the sidechain transcript the Agent tool wrote
+        (``~/.clawcodex/transcripts/<agent_id>.jsonl``), in the same message
+        shape ``session.resume`` returns, so the client rehydrates a child
+        exactly as it does its parent. ``found`` is false — with no messages,
+        not an error — when there is no file: a subagent that predates
+        transcripts, or one whose record was cleaned up. The id is validated
+        before it names a path; the transcripts directory is the only root.
+        """
+        from src.server.desktop_sessions import load_agent_transcript
+        from src.utils.clawcodex_dirs import get_transcripts_dir
+
+        agent_id = str(params.get("agent_id") or "")
+        result = await asyncio.to_thread(
+            load_agent_transcript, Path(get_transcripts_dir()), agent_id,
+        )
+        if result is None:
+            return {"agent_id": agent_id, "found": False, "messages": [], "message_count": 0}
+        return {"found": True, **result}
 
     # ── delegation control plane ─────────────────────────────────────────────
     #

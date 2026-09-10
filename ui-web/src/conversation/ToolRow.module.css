@@ -99,3 +99,53 @@
   color: var(--cc-alias-label-tertiary);
   text-decoration: line-through;
 }
+
+/* A delegation's body: the prompt folded above, the report as prose, and the
+   way into the run at the end. Indented under the row like every other card. */
+.agentBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 4px 22px;
+}
+
+.agentPrompt {
+  max-height: 200px;
+}
+
+.agentReport {
+  min-width: 0;
+  padding: 4px 0;
+  color: var(--cc-alias-label-secondary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.agentOpen {
+  align-self: flex-start;
+  padding: 3px 10px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.agentOpen:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-primary);
+}
+
+/* What a delegation is doing (or what it cost), at the row's right edge. */
+.trailing {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--cc-alias-label-caption);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
