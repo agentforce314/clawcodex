@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -68,6 +69,22 @@ READY_FILE_ENV = "CLAWCODEX_DESKTOP_READY_FILE"
 ReadyHook = Callable[[str, int, str], None]
 
 
+_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+
+def is_loopback(host: str) -> bool:
+    """True when ``host`` binds to this machine only."""
+    normalized = (host or "").strip().lower()
+    if normalized in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        # A hostname we cannot classify (a LAN name, a container alias) is not
+        # provably local, so it is treated as remote.
+        return False
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clawcodex serve",
@@ -75,6 +92,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1",
                         help="Bind address (default: 127.0.0.1 — loopback only).")
+    parser.add_argument("--allow-remote", action="store_true", dest="allow_remote",
+                        help="Permit a non-loopback --host. GET / hands out this "
+                             "server's session token unauthenticated, so only do "
+                             "this behind your own auth.")
     parser.add_argument("--port", type=int, default=0,
                         help="Port (default: 0 — OS-assigned, announced on stdout).")
     parser.add_argument("--token", default=None,
@@ -176,11 +197,30 @@ def run_serve_subcommand(argv: list[str], *, on_ready: ReadyHook | None = None) 
         bypass_requested=dangerously or allow_dangerously,
     )
 
+    # `GET /` is unauthenticated by construction — it is the page that *hands
+    # out* the session token, so that the desktop shell and the browser client
+    # can both adopt a running backend (see `server/web_assets.py`). That is
+    # safe exactly as long as this port is reachable from this machine alone,
+    # which the default bind gives and an arbitrary `--host` does not. So a
+    # non-loopback bind is refused unless the caller says they have put their
+    # own authentication in front of it — the same gate `clawcodex web` has
+    # always had, on the command that actually opens the socket.
+    if not is_loopback(args.host) and not args.allow_remote:
+        print(
+            f"serve: refusing to bind {args.host}: GET / hands out this server's "
+            "session token without authentication, which is safe only on a "
+            "loopback bind. Pass --allow-remote if you have your own auth in "
+            "front of it.",
+            file=sys.stderr,
+        )
+        return 2
+
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
     # The desktop is an INTERACTIVE surface with a real user at the window, and
-    # this server is its own loopback, token-gated child — the same trust model
-    # as the TUI launcher spawning its agent-server. So it resolves permissions
+    # this server is its own token-gated child, loopback unless the operator
+    # asked otherwise above — the same trust model as the TUI launcher spawning
+    # its agent-server. So it resolves permissions
     # through the shared interactive resolver (src/cli.py + tui_launcher use it
     # too), which means Full Access by default, exactly like `clawcodex`.
     #

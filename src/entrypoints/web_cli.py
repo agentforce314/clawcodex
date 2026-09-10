@@ -25,7 +25,6 @@ front of it.
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import os
 import socket
 import subprocess
@@ -41,7 +40,6 @@ from pathlib import Path
 DEFAULT_WEB_PORT = 8081
 
 # Hosts that only accept connections originating on this machine.
-_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", ""})
 
 
 def repo_root() -> Path:
@@ -53,17 +51,10 @@ def web_app_dir(root: Path | None = None) -> Path:
     return (root or repo_root()) / "ui-web"
 
 
-def is_loopback(host: str) -> bool:
-    """True when ``host`` binds to this machine only."""
-    normalized = (host or "").strip().lower()
-    if normalized in _LOOPBACK_NAMES:
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        # A hostname we cannot classify (a LAN name, a container alias) is not
-        # provably local, so it is treated as remote.
-        return False
+# Re-exported: `clawcodex serve` owns the predicate now, because it owns the
+# bind. Kept importable here for the callers and tests that already read it
+# from this module.
+from src.entrypoints.serve_cli import is_loopback  # noqa: E402
 
 
 def browser_url(host: str, port: int, token: str) -> str:
@@ -232,6 +223,11 @@ def _serve_argv(args: argparse.Namespace) -> list[str]:
         argv.append("--nano")
     if args.dangerously_skip_permissions:
         argv.append("--dangerously-skip-permissions")
+    # Forwarded, not re-derived: `serve` refuses a non-loopback bind on its own
+    # now, so a `web --allow-remote` that did not pass this along would be
+    # stopped by the child after clearing the parent's identical gate.
+    if args.allow_remote:
+        argv.append("--allow-remote")
     return argv
 
 

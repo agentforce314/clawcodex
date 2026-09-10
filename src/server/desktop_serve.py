@@ -17,9 +17,15 @@ Route surface (all consumed by ``ui-desktop``):
   :mod:`src.server.desktop_gateway`.
 
 Auth: REST accepts the ``X-ClawCodex-Session-Token`` header or a Bearer
-token; the WebSocket accepts ``?token=``. One constant-time comparison,
-loopback binding, no cookies — this is the local token mode of the desktop's
-connection config.
+token; the WebSocket accepts ``?token=``. One constant-time comparison, no
+cookies — the local token mode of the desktop's connection config.
+
+``GET /`` is the exception, and deliberately so: it is the page that *hands
+out* the token, so it cannot require one. The trust model therefore rests on
+the bind being reachable from this machine alone, which both entry points now
+enforce — ``clawcodex serve`` and ``clawcodex web`` each refuse a non-loopback
+``--host`` without ``--allow-remote``, by which the caller takes on putting
+their own authentication in front of it.
 """
 
 from __future__ import annotations
