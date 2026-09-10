@@ -21,6 +21,8 @@ import pytest
 IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 from src.server.desktop_gateway_methods import (
+    CONTROL_TIMEOUT_S,
+    TITLE_TIMEOUT_S,
     DesktopSession,
     _wants_questions,
     question_request_payload,
@@ -528,10 +530,23 @@ def _titling_session(tmp_path, titled: bool = False):
     session.titled = titled
     session._background = set()
     renames: list[dict[str, Any]] = []
+    title_queries: list[dict[str, Any]] = []
     events: list[tuple[str, Any]] = []
 
-    async def _control_query(subtype: str, params: dict[str, Any]) -> Any:
-        renames.append({"subtype": subtype, **params})
+    # Signature mirrors the real `DesktopSession.control_query`, `timeout`
+    # included: a stub that takes fewer arguments than its producer passes only
+    # until the producer starts passing one, and then reports a TypeError the
+    # production path never raises.
+    async def _control_query(subtype: str, params: dict[str, Any],
+                             timeout: float = CONTROL_TIMEOUT_S) -> Any:
+        record = {"subtype": subtype, "timeout": timeout, **params}
+        # Auto-titling makes two different queries: the rename, and the side
+        # query asking the model for a better name. Keeping them in one list
+        # made "how many renames happened" unanswerable.
+        if subtype == "generate_title":
+            title_queries.append(record)
+            return {"ok": True}
+        renames.append(record)
         return {"ok": True, "name": params.get("name")}
 
     async def _broadcast(type_: str, payload: Any = None) -> None:
@@ -544,11 +559,11 @@ def _titling_session(tmp_path, titled: bool = False):
     session.control_query = _control_query  # type: ignore[method-assign]
     session._broadcast = _broadcast  # type: ignore[method-assign]
     session.state = _State()  # type: ignore[assignment]
-    return session, renames, events
+    return session, renames, events, title_queries
 
 
 def test_auto_title_names_an_untitled_session_after_its_first_prompt(tmp_path) -> None:
-    session, renames, events = _titling_session(tmp_path)
+    session, renames, events, _titles = _titling_session(tmp_path)
 
     title = asyncio.run(session.auto_title("please add a retry button to the composer"))
 
@@ -558,10 +573,31 @@ def test_auto_title_names_an_untitled_session_after_its_first_prompt(tmp_path) -
     assert ("session.title", {"title": title}) in events
 
 
+def test_the_model_written_title_gets_its_own_longer_timeout(tmp_path) -> None:
+    """The side query is given longer than an ordinary control round trip.
+
+    A model composing a title takes longer than `set_model` acknowledging one,
+    and on the default the wait would end first — leaving the heuristic name in
+    place with nothing to show it had been cut off. Pinned here because nothing
+    else asked: the stub standing in for `control_query` fell a whole argument
+    behind its producer, and the only symptom was a TypeError in the tests.
+    """
+    session, renames, _events, titles = _titling_session(tmp_path)
+
+    asyncio.run(session.auto_title("please add a retry button to the composer"))
+
+    assert [q["subtype"] for q in titles] == ["generate_title"]
+    assert titles[0]["timeout"] == TITLE_TIMEOUT_S
+    # The rename beside it keeps the ordinary one, so this is a deliberate
+    # difference between two calls rather than a raised global.
+    assert renames[0]["timeout"] == CONTROL_TIMEOUT_S
+    assert TITLE_TIMEOUT_S > CONTROL_TIMEOUT_S
+
+
 def test_auto_title_leaves_a_named_session_alone(tmp_path) -> None:
     # A resumed session carries the user's own title, and an explicit rename
     # is a decision auto-titling must not undo.
-    session, renames, events = _titling_session(tmp_path, titled=True)
+    session, renames, events, _titles = _titling_session(tmp_path, titled=True)
 
     assert asyncio.run(session.auto_title("something else entirely")) is None
     assert renames == []
@@ -571,7 +607,7 @@ def test_auto_title_leaves_a_named_session_alone(tmp_path) -> None:
 def test_auto_title_happens_once_even_if_two_prompts_race(tmp_path) -> None:
     # The flag is set BEFORE the rename round-trip, so a second prompt arriving
     # while the first is in flight cannot start a second rename.
-    session, renames, _ = _titling_session(tmp_path)
+    session, renames, _events, _titles = _titling_session(tmp_path)
 
     asyncio.run(session.auto_title("first prompt"))
     asyncio.run(session.auto_title("second prompt"))
@@ -582,7 +618,7 @@ def test_auto_title_happens_once_even_if_two_prompts_race(tmp_path) -> None:
 def test_auto_title_skips_a_prompt_it_cannot_name(tmp_path) -> None:
     # "Untitled session" is the heuristic's way of saying it has nothing; it
     # would be a worse title than the blank it replaces.
-    session, renames, _ = _titling_session(tmp_path)
+    session, renames, _events, _titles = _titling_session(tmp_path)
 
     assert asyncio.run(session.auto_title("   ")) is None
     assert renames == []
@@ -593,7 +629,7 @@ def test_auto_title_skips_a_prompt_it_cannot_name(tmp_path) -> None:
 def test_auto_title_survives_a_saved_file_it_cannot_stamp(tmp_path) -> None:
     # The runtime rename is the part that matters; a file sync failure must not
     # lose the title the client is about to be told about.
-    session, _renames, events = _titling_session(tmp_path / "does-not-exist")
+    session, _renames, events, _titles = _titling_session(tmp_path / "does-not-exist")
 
     title = asyncio.run(session.auto_title("run the tests"))
 
