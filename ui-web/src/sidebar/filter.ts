@@ -26,6 +26,31 @@ export function termsOf(query: string): string[] {
 }
 
 /**
+ * A session nothing has happened in: no messages, no name, no prompt.
+ *
+ * The backend lists every live runtime session, and "New session" spawns one
+ * before anything is typed — so each press that was never followed by a
+ * prompt used to leave an "Untitled session" row behind for the life of the
+ * server.
+ */
+export function isBlankSession(row: SessionRow): boolean {
+  return (
+    (row.message_count ?? 0) === 0 &&
+    (row.title ?? '').trim() === '' &&
+    (row.preview ?? '').trim() === ''
+  )
+}
+
+/**
+ * The rows worth a line: every session with something in it, plus the blank
+ * ones in `keep` — the session on screen, which the reader is looking at even
+ * while it is still empty.
+ */
+export function visibleSessions(rows: readonly SessionRow[], keep: ReadonlySet<string>): SessionRow[] {
+  return rows.filter(row => !isBlankSession(row) || keep.has(row.id))
+}
+
+/**
  * The tree with every non-matching session removed, and every project, repo
  * and lane that ends up empty removed with it.
  *

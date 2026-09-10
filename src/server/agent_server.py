@@ -769,6 +769,9 @@ class _AgentSession:
             self._save_session()
             self._reply(request_id, {"ok": True, "name": self._session_name or ""})
             return
+        if subtype == "generate_title":
+            self._start_generate_title(request_id, inner.get("text"))
+            return
         if subtype == "resume":
             self._do_resume(request_id, inner.get("session_id"))
             return
@@ -1318,6 +1321,35 @@ class _AgentSession:
             "name": resolved.name,
             "text": f"@{resolved}",
         })
+
+    def _start_generate_title(self, request_id: object, text: object) -> None:
+        """Name the session after its first prompt with a side query on the
+        session's OWN provider, replying with ``{ok, name}`` once it lands.
+
+        Scheduled rather than awaited: control requests are handled inline on
+        the inbound reader, and a model round-trip held there would stall
+        every control behind it — an interrupt included — for as long as the
+        title takes. The reply is empty (``ok: False``) on any failure; the
+        caller keeps whatever name it already has.
+        """
+        prompt = text if isinstance(text, str) else ""
+        provider = self.provider
+
+        async def _run() -> None:
+            name = None
+            try:
+                from src.services.session_title import generate_title_with_provider
+
+                name = await generate_title_with_provider(provider, prompt)
+            except Exception:  # noqa: BLE001 — a title is never worth a failure frame
+                logger.debug("[agent-server] title generation failed", exc_info=True)
+            self._reply(request_id, {"ok": bool(name), "name": name or ""})
+
+        task = asyncio.get_running_loop().create_task(_run())
+        # asyncio holds tasks weakly; without a strong reference the query can
+        # be collected mid-flight and the reply never sent.
+        _TITLE_TASKS.add(task)
+        task.add_done_callback(_TITLE_TASKS.discard)
 
     def _reply(self, request_id: object, response: dict) -> None:
         if not isinstance(request_id, str):
@@ -5195,7 +5227,10 @@ class _AgentSession:
             # Persist into the session conversation so the next turn pairs
             # tool_use ↔ tool_result, then ship the SDK envelope to the client.
             try:
-                self.session.conversation.add_message(message.role, message.content)
+                self.session.conversation.add_message(
+                    message.role, message.content,
+                    toolUseResult=_persisted_tool_use_result(message),
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("[agent-server] persist failed")
             env = _sdk_envelope(message, self.session_id)
@@ -6219,6 +6254,49 @@ def _non_interactive_ask_user(questions: list[dict]) -> dict[str, str]:
     }
 
 
+# In-flight title queries (see ``_start_generate_title``).
+_TITLE_TASKS: "set[asyncio.Task]" = set()
+
+
+def _persisted_tool_use_result(message: Any) -> dict | None:
+    """The slice of a tool result's display envelope worth keeping on disk.
+
+    Only the Agent tool's. Its envelope is the ONE link from a stored
+    ``Agent`` call to the subagent that ran it — ``agent_id`` names the
+    transcript file — and nothing else in the saved conversation carries it.
+    Every other envelope is derivable from the arguments (an edit's diff) or
+    a copy of the tool_result text (a read), so persisting those would only
+    double the file.
+    """
+    display = _display_tool_result(getattr(message, "toolUseResult", None))
+    if isinstance(display, dict) and display.get("type") == "agent":
+        return display
+    return None
+
+
+def _agent_display_envelope(value: dict) -> dict:
+    """Agent tool output → the facts a client needs to place a subagent.
+
+    Everything the model reads (the report) already travels as the
+    tool_result content; this keeps identity and totals: which run wrote
+    which transcript, how it ended, what it ran on and what it cost.
+    """
+    out: dict[str, Any] = {
+        "type": "agent",
+        "agent_id": str(value["agent_id"]),
+        "status": str(value.get("status") or "completed"),
+    }
+    for key in ("agent_type", "model"):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            out[key] = item
+    for key in ("total_duration_ms", "total_tokens", "total_tool_use_count"):
+        item = value.get(key)
+        if isinstance(item, int) and not isinstance(item, bool):
+            out[key] = item
+    return out
+
+
 def _display_tool_result(value: Any) -> dict | None:
     """Trim a rich tool output for the wire (display data only).
 
@@ -6266,6 +6344,16 @@ def _display_tool_result(value: Any) -> dict | None:
                 1 for r in value["results"] if r is not None and not isinstance(r, str)
             ),
         }
+    # The Agent tool's output is self-describing by its keys, not a ``type``:
+    # a run id plus how it ended. ``refused`` spawns carry no id and fall
+    # through to None like every other unrecognised shape.
+    if (
+        "type" not in value
+        and isinstance(value.get("agent_id"), str)
+        and value.get("agent_id")
+        and value.get("status") in ("completed", "interrupted", "async_launched")
+    ):
+        return _agent_display_envelope(value)
     from src.tool_system.tools.ask_user_question import RESULT_TYPE
 
     if value.get("type") == RESULT_TYPE:

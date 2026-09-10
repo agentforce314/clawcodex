@@ -121,6 +121,12 @@ export interface ToolCompletePayload {
 }
 
 export interface ToolResult {
+  /**
+   * An Agent row's link to the subagent that answered it. Present on a live
+   * completion (the server's display envelope) and on a resumed one (the
+   * envelope the agent server persisted), so both render alike.
+   */
+  agent?: AgentResultMeta
   content?: string
   context?: string
   duration_s?: number
@@ -131,6 +137,47 @@ export interface ToolResult {
   output?: string
   path?: string
   result_count?: number
+}
+
+/**
+ * What an Agent call reported about its run, beyond the report text.
+ *
+ * `agent_id` names the run — its live progress and its transcript file — and
+ * the totals are the ones the run counted itself, which the report does not
+ * carry. Mirrors `agent_result_meta` in `desktop_gateway_translate.py`.
+ */
+export interface AgentResultMeta {
+  agent_id: string
+  agent_type?: string
+  duration_ms?: number
+  model?: string
+  /** `completed`, `interrupted`, or `async_launched` for a background spawn. */
+  status: string
+  tokens?: number
+  tool_count?: number
+}
+
+/**
+ * `subagent.progress` — one subagent's latest state, while it runs and once
+ * more when it stops.
+ *
+ * `agent_id` is the run's identity; `tool_use_id`, when present, is the Agent
+ * call the run answers, which is how a row and its progress find each other
+ * before the row's result names the id. A terminal frame carries a `status`
+ * other than `running` and no activity.
+ */
+export interface SubagentProgressPayload {
+  activity?: string
+  agent_id: string
+  depth?: number
+  description?: string
+  model?: string
+  name?: string
+  status?: string
+  subagent_type?: string
+  tokens?: number
+  tool_count?: number
+  tool_use_id?: string
 }
 
 export interface ApprovalRequestPayload {
@@ -177,6 +224,7 @@ export type GatewayEventType =
   | 'session.info'
   | 'session.title'
   | 'sessions.changed'
+  | 'subagent.progress'
   | 'thinking.delta'
   | 'tool.complete'
   | 'step.complete'
@@ -200,6 +248,11 @@ export interface SessionCreateResult {
 export interface StoredMessage {
   content?: unknown
   role?: string
+  /**
+   * The Agent tool's persisted display envelope, beside its `tool_result`
+   * block — the same one a live `tool.complete` carries.
+   */
+  tool_use_result?: unknown
   [key: string]: unknown
 }
 
@@ -210,6 +263,21 @@ export interface SessionResumeResult extends SessionCreateResult {
   resumed?: string
   /** The stored name, so the header keeps the title the sidebar row showed. */
   title?: string
+}
+
+/**
+ * `subagent.transcript` — a subagent's own record, in the stored-message
+ * shape `session.resume` uses, so a child rehydrates like its parent.
+ *
+ * `found` is false, with no messages, when there is no file: a run that
+ * predates transcripts, or one whose record was cleaned up. Not an error —
+ * the row still has the prompt and the report to show.
+ */
+export interface SubagentTranscriptResult {
+  agent_id: string
+  found: boolean
+  message_count?: number
+  messages?: StoredMessage[]
 }
 
 export interface ModelOption {

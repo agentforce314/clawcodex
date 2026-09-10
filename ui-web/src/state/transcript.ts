@@ -22,12 +22,13 @@ import type {
   MessageDeltaPayload,
   QuestionRequestPayload,
   SessionInfoPayload,
+  SubagentProgressPayload,
   ToolCompletePayload,
   ToolResult,
   ToolStartPayload,
   UsagePayload,
 } from '../gateway/protocol.ts'
-import { renderToolName, renderToolResult } from '../gateway/tool-vocabulary.ts'
+import { agentResultMeta, renderToolName, renderToolResult } from '../gateway/tool-vocabulary.ts'
 
 export type ToolState = 'running' | 'done' | 'error'
 
@@ -76,7 +77,45 @@ export interface NoticeNode {
 
 export type TranscriptNode = AssistantNode | NoticeNode | ReasoningNode | ToolNode | UserNode
 
+/**
+ * How a subagent run stands. `running` until its terminal frame; the rest are
+ * the backend's own words for how it stopped. `background` is a run launched
+ * to finish on its own, whose outcome this transcript never hears.
+ */
+export type SubagentStatus =
+  | 'background'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'killed'
+  | 'running'
+
+/**
+ * One subagent as its progress frames describe it — the live half of the
+ * catalog the header counts. The Agent row that spawned it holds the other
+ * half (the prompt, the report); `toolUseId` is how the two are joined
+ * before the row's result names the run.
+ */
+export interface SubagentLive {
+  /** What the agent was last seen doing — a tool name or its description. */
+  activity?: string
+  agentId: string
+  depth?: number
+  description?: string
+  endedAt?: number
+  model?: string
+  name?: string
+  startedAt: number
+  status: SubagentStatus
+  subagentType?: string
+  tokens?: number
+  toolCount?: number
+  toolUseId?: string
+}
+
 export interface TranscriptState {
+  /** Live subagents by agent id, folded from `subagent.progress`. */
+  agents: Record<string, SubagentLive>
   approval?: ApprovalRequestPayload
   info: SessionInfoPayload
   nodes: TranscriptNode[]
@@ -90,7 +129,56 @@ export interface TranscriptState {
 }
 
 export function emptyTranscript(): TranscriptState {
-  return { info: {}, nodes: [], running: false, turnStreamedText: false }
+  return { agents: {}, info: {}, nodes: [], running: false, turnStreamedText: false }
+}
+
+const TERMINAL_STATUSES = new Set<SubagentStatus>(['completed', 'failed', 'interrupted', 'killed'])
+
+/** The backend's status word as one of ours; anything unexpected is still running. */
+function asSubagentStatus(value: unknown): SubagentStatus {
+  return typeof value === 'string' && TERMINAL_STATUSES.has(value as SubagentStatus)
+    ? (value as SubagentStatus)
+    : 'running'
+}
+
+/** Fold one progress frame into the live-agent map. */
+function applySubagentProgress(
+  agents: Record<string, SubagentLive>,
+  payload: SubagentProgressPayload,
+  at: number,
+): Record<string, SubagentLive> {
+  const id = payload.agent_id
+  const previous = agents[id]
+  const status = asSubagentStatus(payload.status)
+  const next: SubagentLive = {
+    ...previous,
+    agentId: id,
+    startedAt: previous?.startedAt ?? at,
+    status,
+  }
+
+  // A frame names only what changed; the terminal one, for instance, carries
+  // no activity or counts, and must not blank the ones the last frame set.
+  if (typeof payload.tool_use_id === 'string' && payload.tool_use_id !== '') {
+    next.toolUseId = payload.tool_use_id
+  }
+  if (typeof payload.description === 'string' && payload.description !== '') {
+    next.description = payload.description
+  }
+  if (typeof payload.name === 'string' && payload.name !== '') next.name = payload.name
+  if (typeof payload.subagent_type === 'string' && payload.subagent_type !== '') {
+    next.subagentType = payload.subagent_type
+  }
+  if (typeof payload.model === 'string' && payload.model !== '') next.model = payload.model
+  if (typeof payload.activity === 'string' && payload.activity !== '') {
+    next.activity = payload.activity
+  }
+  if (typeof payload.depth === 'number') next.depth = payload.depth
+  if (typeof payload.tool_count === 'number') next.toolCount = payload.tool_count
+  if (typeof payload.tokens === 'number') next.tokens = payload.tokens
+  if (status !== 'running') next.endedAt = previous?.endedAt ?? at
+
+  return { ...agents, [id]: next }
 }
 
 let idCounter = 0
@@ -440,6 +528,16 @@ export function applyEvent(state: TranscriptState, event: GatewayEvent): Transcr
       }
     }
 
+    case 'subagent.progress': {
+      const payload = event.payload as SubagentProgressPayload | undefined
+
+      if (payload === undefined || typeof payload.agent_id !== 'string' || payload.agent_id === '') {
+        return state
+      }
+
+      return { ...state, agents: applySubagentProgress(state.agents, payload, Date.now()) }
+    }
+
     case 'approval.request':
       return { ...state, approval: (event.payload ?? {}) as ApprovalRequestPayload }
 
@@ -567,7 +665,12 @@ function blockText(content: unknown): string {
  * resolved on the second, exactly as the live stream does it.
  */
 export function hydrateStoredMessages(
-  messages: readonly { content?: unknown; display_kind?: string; role?: string }[],
+  messages: readonly {
+    content?: unknown
+    display_kind?: string
+    role?: string
+    tool_use_result?: unknown
+  }[],
 ): TranscriptNode[] {
   let nodes: TranscriptNode[] = []
   const toolNames = new Map<string, string>()
@@ -583,6 +686,10 @@ export function hydrateStoredMessages(
       const results = blocks.filter(block => block?.type === 'tool_result')
 
       if (results.length > 0) {
+        // The persisted envelope rides the message, not the block; a stored
+        // tool-result message holds one block, so it names the same call.
+        const agent = agentResultMeta(message.tool_use_result)
+
         for (const block of results) {
           const toolId = String(block.tool_use_id ?? '')
           const text = blockText(block.content)
@@ -591,7 +698,10 @@ export function hydrateStoredMessages(
           nodes = completeTool(nodes, {
             error: block.is_error === true ? text : undefined,
             name: rawName === '' ? undefined : renderToolName(rawName),
-            result: block.is_error === true ? {} : renderToolResult(rawName, text),
+            result:
+              block.is_error === true
+                ? {}
+                : { ...renderToolResult(rawName, text), ...(agent !== undefined && { agent }) },
             tool_id: toolId,
           })
         }

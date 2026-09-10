@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web: subagents in the header, and a child view per run.** A session that
+  delegates shows **N subagents ▾** beside its title, with a live dot while any
+  still run; the list behind it names each delegation with its type, model,
+  state, tokens and duration, and opens the run in the conversation column —
+  its prompt, everything it did as tool rows, and a read-only seat in place of
+  the composer — with the parent's title as the way back. Fed by two sources
+  that used to be dropped on the floor: the Agent tool's per-message progress
+  now reaches the browser as `subagent.progress` (the gateway translated
+  nothing out of `agent_progress` frames before), and the Agent tool's result
+  envelope (`agent_id`, status, model, duration, tokens, tool count) rides the
+  completion as `result.agent` and is persisted beside the stored result, so a
+  resumed session lists its subagents exactly as the live one did.
+- Foreground subagents now keep the same sidechain transcript background ones
+  do (`~/.clawcodex/transcripts/<agent_id>.jsonl`); a new `subagent.transcript`
+  gateway method reads one in the stored-message shape `session.resume` uses.
+- **Model-written session titles.** After the heuristic first-line name lands,
+  the session's own provider is asked for a short title (`generate_title`
+  control) and its answer replaces the heuristic — on any provider, not the
+  Anthropic-only path `generate_llm_title` was pinned to. An explicit rename
+  in the meantime wins.
 - **Agent control plane — live subagent status, pause and interrupt.** A
   session-scoped supervisor now sees every subagent from both spawn paths
   (foreground delegations previously registered nowhere, so nothing could list
@@ -22,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default 32 — a runaway backstop, not a scheduling budget) and
   `CLAWCODEX_MAX_AGENT_DEPTH` (default 3). A refused spawn returns a tool error
   the model can act on rather than failing the turn.
+
+### Changed
+
+- Web: an `Agent` row reads `Agent · <description>`, with the run's activity
+  (running) or `N tools · duration` (done) at its right edge, and a body of
+  prompt, report and a button into the run — it was a generic IN/OUT card.
+- Web: a `Bash` row's summary is the model's one-line description of the
+  command when it gave one, with the command itself in the terminal card; the
+  raw command line was the summary before.
+- Web: the sidebar lists a blank session only while it is the one on screen,
+  as **New session**; every other never-used runtime session is hidden, and
+  project counts count what is shown.
 
 ### Fixed
 

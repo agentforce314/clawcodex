@@ -3,9 +3,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import {
   clearSession,
+  closeSubagent,
   createSession,
   dequeue,
   interrupt,
+  openSubagent,
   renameSession,
   respondApproval,
   fetchPlan,
@@ -31,17 +33,19 @@ import {
   $sessionId,
   $sessionLoading,
   $sessionTitle,
+  $subagentView,
   $trajectory,
   $transcript,
   $workspace,
 } from '../state/store.ts'
 import { AgentsPanel } from '../agents/AgentsPanel.tsx'
+import { subagentCatalog } from '../state/subagents.ts'
 import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
 import { $detailsWidth, openDetails } from '../state/layout.ts'
-import { ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
+import { AgentIcon, ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
 import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
 import { HeroShell } from './HeroShell.tsx'
@@ -51,6 +55,8 @@ import { QuestionComposer } from './QuestionComposer.tsx'
 import { closeSidebar } from '../sidebar-right/store.ts'
 import { QueueDock } from './QueueDock.tsx'
 import { StatsPills } from './StatsPills.tsx'
+import { SubagentChip } from './SubagentChip.tsx'
+import { SubagentView } from './SubagentView.tsx'
 import { TodoPanel } from './TodoPanel.tsx'
 import css from './ConversationRoot.module.css'
 
@@ -86,8 +92,16 @@ export function ConversationRoot() {
   const tab = useStore($conversationTab)
   const trajectory = useStore($trajectory)
   const backendNano = useStore($backendNano)
+  const subagentView = useStore($subagentView)
   const stats = useMemo(() => trajectoryStats(trajectory), [trajectory])
   const todos = useMemo(() => currentTodos(transcript.nodes), [transcript.nodes])
+  const subagents = useMemo(
+    () => subagentCatalog(transcript.nodes, transcript.agents),
+    [transcript.agents, transcript.nodes],
+  )
+  // The child on show, if the key still names one — a cleared conversation
+  // takes its delegations with it, and the view falls back to the session.
+  const child = subagentView === null ? undefined : subagents.find(entry => entry.key === subagentView)
 
   // The session's own truth once session.info reported it, else the backend's
   // process-wide fact (/api/status) — same shape as the approval mode and
@@ -298,28 +312,61 @@ export function ConversationRoot() {
       {!hero && (
         <div className={css.header}>
           <div className={css.titleCluster}>
-            <MessageIcon size={16} />
-            <input
-              aria-label="Session title"
-              className={css.title}
-              onBlur={event => {
-                const value = event.target.value.trim()
-
-                if (value !== '' && value !== sessionTitle) void renameSession(value)
-              }}
-              onChange={event => {
-                $sessionTitle.set(event.target.value)
-              }}
-              onKeyDown={event => {
-                if (event.key === 'Enter') event.currentTarget.blur()
-              }}
-              placeholder="Untitled session"
-              value={sessionTitle}
-            />
-            {workspace !== '' && (
+            {child === undefined ? (
               <>
+                <MessageIcon size={16} />
+                <input
+                  aria-label="Session title"
+                  className={css.title}
+                  onBlur={event => {
+                    const value = event.target.value.trim()
+
+                    if (value !== '' && value !== sessionTitle) void renameSession(value)
+                  }}
+                  onChange={event => {
+                    $sessionTitle.set(event.target.value)
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                  placeholder="Untitled session"
+                  value={sessionTitle}
+                />
+                {/* "N subagents ▾": the delegations this session made, and
+                    the way into each. Absent until there is one. */}
+                {subagents.length > 0 && (
+                  <>
+                    <span className={css.crumbSep}>/</span>
+                    <SubagentChip entries={subagents} onOpen={openSubagent} variant="count" />
+                  </>
+                )}
+                {workspace !== '' && (
+                  <>
+                    <span className={css.crumbSep}>/</span>
+                    <WorkspaceChip variant="crumb" />
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <AgentIcon size={16} />
+                {/* The parent's title is the way back; the child's name is
+                    a switcher among its siblings, as the reference does it. */}
+                <button
+                  className={css.crumbParent}
+                  onClick={closeSubagent}
+                  title="Back to the session"
+                  type="button"
+                >
+                  {sessionTitle === '' ? 'Untitled session' : sessionTitle}
+                </button>
                 <span className={css.crumbSep}>/</span>
-                <WorkspaceChip variant="crumb" />
+                <SubagentChip
+                  currentKey={child.key}
+                  entries={subagents}
+                  onOpen={openSubagent}
+                  variant="switcher"
+                />
               </>
             )}
           </div>
@@ -359,7 +406,7 @@ export function ConversationRoot() {
           </div>
         </div>
       )}
-      {!hero && (
+      {!hero && child === undefined && (
         <div className={css.tabs} role="tablist">
           {(['chat', 'trajectory', 'agents'] as const).map(id => (
             <button
@@ -378,7 +425,11 @@ export function ConversationRoot() {
         </div>
       )}
       {banner}
-      {!hero && tab === 'agents' ? (
+      {!hero && child !== undefined ? (
+        <div className={css.viewBody}>
+          <SubagentView entry={child} workspace={workspace} />
+        </div>
+      ) : !hero && tab === 'agents' ? (
         <div className={css.viewBody}>
           <AgentsPanel />
         </div>
@@ -416,6 +467,7 @@ export function ConversationRoot() {
                 <div className={css.settling}>Loading session…</div>
               ) : (
                 <ChatView
+                  agents={transcript.agents}
                   nodes={transcript.nodes}
                   onEditPrompt={setDraft}
                   onRetry={() => {

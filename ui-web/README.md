@@ -116,6 +116,57 @@ can also start a session and have the agent read the disk with its own tools.
 What it buys is that a column claiming to show the workspace cannot be walked
 out of through `..`.
 
+## Subagents
+
+A session that delegates shows it in the header: **N subagents ▾** beside the
+title, with a live dot while any are still running. The list behind it is one
+row per delegation — what it was asked (the `Agent` call's description), the
+agent type and model it ran on, its state, and what it cost in tokens and
+time. Clicking a row opens the subagent in the conversation column, in the
+session's place: its prompt, then everything it did, rendered with the same
+tool rows the session uses, and a read-only seat where the composer would be.
+The parent's title is the way back, and the child's own name switches among
+its siblings.
+
+Two sources feed that list, and the catalog (`src/state/subagents.ts`) is a
+pure fold over both:
+
+- **The `Agent` tool rows** in the transcript carry the prompt and, once the
+  call settles, the report and the run's own totals. The backend persists the
+  Agent tool's display envelope (`agent_id`, status, model, duration, tokens,
+  tool count) beside the stored result, so a resumed session lists its
+  subagents exactly as the live one did.
+- **`subagent.progress` events** — the Agent tool's per-message progress,
+  translated by the gateway — carry what a run is doing while it runs: its
+  last activity, its tool count so far, and finally how it stopped. A frame
+  names the call it answers (`tool_use_id`), which is how a running row and its
+  progress find each other before the row's result names the run.
+
+A subagent's full record is the sidechain transcript the Agent tool writes as
+the run goes (`~/.clawcodex/transcripts/<agent_id>.jsonl`, for foreground and
+background runs alike), read through `subagent.transcript` and rehydrated with
+the same fold as a resumed session. A run that predates transcripts, or whose
+file was cleaned up, shows its prompt and report alone.
+
+The Agent row itself reads `Agent · <description>` with, at its right edge,
+the run's activity while it runs and `N tools · duration` once it is done; its
+body holds the prompt, the report as prose, and a button into the run.
+
+## Session titles
+
+A session is named the moment its first prompt is sent — the prompt's first
+line, throat-clearing stripped — so neither the header nor the sidebar ever
+shows a blank. Then the session's own model is asked for a short title, and
+its answer replaces the heuristic when it arrives, a few seconds later. The
+side query runs on the same provider the conversation does, never a
+hard-coded one, and a rename typed in the meantime stands. Nothing about the
+title ever reaches the model's context.
+
+The sidebar lists a blank session — one nothing has been typed into — only
+while it is the one on screen, labelled **New session**; the backend keeps
+every runtime session it spawned, and a row per abandoned press of the button
+was a column of nothing.
+
 ## Trajectory
 
 The **Trajectory** tab is the forensic view of the same session: every model

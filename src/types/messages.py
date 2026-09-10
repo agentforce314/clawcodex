@@ -298,10 +298,16 @@ def create_message(
     timestamp: str | None = None,
     isMeta: bool = False,
     usage: dict[str, Any] | None = None,
+    toolUseResult: Any = None,
 ) -> Message:
     ts = timestamp or datetime.now().isoformat()
     if role == "user":
-        return create_user_message(content, isMeta=isMeta, timestamp=ts)
+        # ``toolUseResult`` is the display envelope beside a tool_result
+        # block; only user messages carry one, and only when the caller
+        # chose to persist it (see ``Conversation.add_message``).
+        return create_user_message(
+            content, isMeta=isMeta, timestamp=ts, toolUseResult=toolUseResult,
+        )
     if role == "assistant":
         # ``usage`` is the turn's token accounting (input/output/cache);
         # only assistant messages carry it.

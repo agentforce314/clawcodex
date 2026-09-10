@@ -456,3 +456,110 @@ describe('rewindLastTurn', () => {
     expect(rewindLastTurn(fold([event('error', { message: 'boom' })]))).toBeNull()
   })
 })
+
+describe('subagent progress', () => {
+  it('folds frames into one live record per run', () => {
+    const state = fold([
+      event('subagent.progress', {
+        activity: 'Reading README.md',
+        agent_id: 'a1',
+        description: 'Deep dive: core',
+        model: 'flash',
+        status: 'running',
+        tool_count: 1,
+        tool_use_id: 'call_1',
+      }),
+      event('subagent.progress', { activity: 'Listing src', agent_id: 'a1', status: 'running', tool_count: 2 }),
+    ])
+
+    expect(state.agents.a1).toMatchObject({
+      activity: 'Listing src',
+      agentId: 'a1',
+      description: 'Deep dive: core',
+      model: 'flash',
+      status: 'running',
+      toolCount: 2,
+      toolUseId: 'call_1',
+    })
+    expect(state.agents.a1?.endedAt).toBeUndefined()
+  })
+
+  it('keeps the last activity and counts when the terminal frame carries none', () => {
+    const state = fold([
+      event('subagent.progress', { activity: 'Grep', agent_id: 'a1', status: 'running', tokens: 500, tool_count: 3 }),
+      event('subagent.progress', { agent_id: 'a1', status: 'completed' }),
+    ])
+
+    expect(state.agents.a1).toMatchObject({ activity: 'Grep', status: 'completed', tokens: 500, toolCount: 3 })
+    expect(state.agents.a1?.endedAt).toBeTypeOf('number')
+  })
+
+  it('reads an unknown status as still running, and ignores a frame with no id', () => {
+    const state = fold([
+      event('subagent.progress', { agent_id: 'a1', status: 'mystery' }),
+      event('subagent.progress', { status: 'running' }),
+    ])
+
+    expect(Object.keys(state.agents)).toEqual(['a1'])
+    expect(state.agents.a1?.status).toBe('running')
+  })
+
+  it('does not disturb the flow', () => {
+    const state = fold([
+      event('message.start'),
+      event('message.delta', { text: 'Spawning' }),
+      event('subagent.progress', { agent_id: 'a1', status: 'running' }),
+    ])
+
+    expect(state.nodes).toHaveLength(1)
+    expect(state.running).toBe(true)
+  })
+})
+
+describe('rehydrating delegations', () => {
+  it('attaches the persisted Agent envelope to its row', () => {
+    const nodes = hydrateStoredMessages([
+      { content: 'go', role: 'user' },
+      {
+        content: [{ id: 'c1', input: { description: 'Dive', prompt: 'p' }, name: 'Agent', type: 'tool_use' }],
+        role: 'assistant',
+      },
+      {
+        content: [{ content: '# Report', tool_use_id: 'c1', type: 'tool_result' }],
+        role: 'user',
+        tool_use_result: {
+          agent_id: 'a9',
+          status: 'completed',
+          total_duration_ms: 1200,
+          total_tokens: 33,
+          total_tool_use_count: 4,
+          type: 'agent',
+        },
+      },
+    ])
+
+    const [row] = nodes.filter((node): node is ToolNode => node.kind === 'tool')
+
+    expect(row?.name).toBe('Agent')
+    expect(row?.state).toBe('done')
+    expect(row?.result?.agent).toEqual({
+      agent_id: 'a9',
+      duration_ms: 1200,
+      status: 'completed',
+      tokens: 33,
+      tool_count: 4,
+    })
+    expect(row?.result?.output).toBe('# Report')
+  })
+
+  it('leaves rows without an envelope exactly as before', () => {
+    const nodes = hydrateStoredMessages([
+      { content: [{ id: 'c1', input: { command: 'ls' }, name: 'Bash', type: 'tool_use' }], role: 'assistant' },
+      { content: [{ content: 'a\nb', tool_use_id: 'c1', type: 'tool_result' }], role: 'user', tool_use_result: 'a\nb' },
+    ])
+
+    const [row] = nodes.filter((node): node is ToolNode => node.kind === 'tool')
+
+    expect(row?.result).toEqual({ output: 'a\nb' })
+  })
+})

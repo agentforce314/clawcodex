@@ -122,20 +122,14 @@ def load_session_meta(sessions_dir: Path, session_id: str) -> dict[str, Any]:
     }
 
 
-def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any] | None:
-    """Transcript for one saved session: ``{messages, message_count, title}``.
+def shape_stored_messages(raw: Any) -> list[dict[str, Any]]:
+    """Stored message dicts → the shape the web client rehydrates from.
 
     Messages pass through in their stored shape (string or content-block list)
-    — the renderer already narrows both, live and rehydrated.
+    — the renderer already narrows both, live and rehydrated. Shared by the
+    saved-session loader and the subagent-transcript loader, so a child's
+    record renders exactly like its parent's.
     """
-    safe = _safe_id(session_id)
-    if safe is None:
-        return None
-    data = _read_session_file(sessions_dir / f"{safe}.json")
-    if data is None:
-        return None
-    conversation = data.get("conversation") or {}
-    raw = conversation.get("messages") if isinstance(conversation, dict) else conversation
     messages: list[dict[str, Any]] = []
     for entry in raw or []:
         if not isinstance(entry, dict):
@@ -155,7 +149,65 @@ def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any]
         stop_reason = entry.get("stop_reason")
         if isinstance(stop_reason, str) and stop_reason:
             message["stop_reason"] = stop_reason
+        # The Agent tool's display envelope — the one the agent server chose
+        # to persist — under the same snake_case key the live SDK envelope
+        # uses, so the client reads a resumed Agent row and a live one alike.
+        envelope = entry.get("toolUseResult")
+        if isinstance(envelope, dict) and envelope.get("type") == "agent":
+            message["tool_use_result"] = envelope
         messages.append(message)
+    return messages
+
+
+def _safe_agent_id(agent_id: str) -> str | None:
+    """An agent id that can name a transcript file, or None.
+
+    Ids are ``generate_task_id`` output (``a`` + base36); anything else —
+    a separator, a dot, an empty string — is refused before it touches a
+    path, the same defence the transcript writer applies.
+    """
+    if not isinstance(agent_id, str) or not agent_id or len(agent_id) > 64:
+        return None
+    if not all(c.isalnum() or c in "_-" for c in agent_id):
+        return None
+    return agent_id
+
+
+def load_agent_transcript(transcripts_dir: Path, agent_id: str) -> dict[str, Any] | None:
+    """A subagent's sidechain transcript: ``{agent_id, messages, message_count}``.
+
+    Read from ``<transcripts>/<agent_id>.jsonl``, the file the Agent tool
+    appends every message the subagent produced to. None when the id is
+    unusable or the file is not there — a subagent that ran before
+    transcripts were written, or one whose file was cleaned up.
+    """
+    safe = _safe_agent_id(agent_id)
+    if safe is None:
+        return None
+    path = transcripts_dir / f"{safe}.jsonl"
+    if not path.is_file():
+        return None
+    from src.agent.transcript import TranscriptReader
+
+    raw = [entry for entry in TranscriptReader(path).read_all() if isinstance(entry, dict)]
+    messages = shape_stored_messages(raw)
+    return {"agent_id": safe, "messages": messages, "message_count": len(messages)}
+
+
+def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any] | None:
+    """Transcript for one saved session: ``{messages, message_count, title}``.
+
+    See :func:`shape_stored_messages` for the message shape.
+    """
+    safe = _safe_id(session_id)
+    if safe is None:
+        return None
+    data = _read_session_file(sessions_dir / f"{safe}.json")
+    if data is None:
+        return None
+    conversation = data.get("conversation") or {}
+    raw = conversation.get("messages") if isinstance(conversation, dict) else conversation
+    messages = shape_stored_messages(raw)
     # The stored name, so a resumed session keeps the title it was given —
     # the sidebar reads it from this same file, and a header that disagreed
     # with the row the user just clicked is its own small confusion.

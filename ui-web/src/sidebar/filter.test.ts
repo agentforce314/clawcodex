@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
-import { filterProjects, matches, termsOf } from './filter.ts'
+import { filterProjects, isBlankSession, matches, termsOf, visibleSessions } from './filter.ts'
 
 function row(id: string, title: string, preview = ''): SessionRow {
   return { id, preview, title }
@@ -126,5 +126,30 @@ describe('filterProjects', () => {
 
     expect(projects[0]?.repos[0]?.groups[0]?.sessions).toHaveLength(3)
     expect(projects[0]?.sessionCount).toBe(3)
+  })
+})
+
+describe('isBlankSession', () => {
+  it('is a row with no messages, no name and no prompt', () => {
+    expect(isBlankSession({ id: 'x' })).toBe(true)
+    expect(isBlankSession({ id: 'x', message_count: 0, preview: '  ', title: '' })).toBe(true)
+  })
+
+  it('is not a row with anything in it', () => {
+    expect(isBlankSession({ id: 'x', message_count: 1 })).toBe(false)
+    expect(isBlankSession({ id: 'x', message_count: 0, preview: 'hello' })).toBe(false)
+    expect(isBlankSession({ id: 'x', message_count: 0, title: 'Named' })).toBe(false)
+  })
+})
+
+describe('visibleSessions', () => {
+  it('drops idle blanks and keeps the ones on screen', () => {
+    const rows = [
+      { id: 'full', message_count: 3, preview: 'prompt', title: 'Title' },
+      { id: 'idle', message_count: 0, preview: '', title: '' },
+      { id: 'mine', message_count: 0, preview: '', title: '' },
+    ]
+
+    expect(visibleSessions(rows, new Set(['mine'])).map(item => item.id)).toEqual(['full', 'mine'])
   })
 })

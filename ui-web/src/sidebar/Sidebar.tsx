@@ -27,7 +27,7 @@ import {
   SunIcon,
   XIcon,
 } from '../ui/icons.tsx'
-import { filterProjects } from './filter.ts'
+import { filterProjects, isBlankSession, visibleSessions } from './filter.ts'
 import { absoluteTime, relativeTime } from './recency.ts'
 import css from './Sidebar.module.css'
 
@@ -42,22 +42,48 @@ function sessionLabel(row: SessionRow): string {
 
   const preview = row.preview ?? ''
 
-  return preview.trim() === '' ? 'Untitled session' : preview.slice(0, 80)
+  // A blank row is the one on screen (every other blank one is hidden), and
+  // what is on screen is a new session — say so, not "untitled", which reads
+  // as a conversation that lost its name.
+  return preview.trim() === '' ? 'New session' : preview.slice(0, 80)
 }
 
 function laneCount(project: ProjectNode): number {
   return project.repos.reduce((total, repo) => total + repo.groups.length, 0)
 }
 
+/** The rows a lane shows: its sessions minus the hidden twin and idle blanks. */
+function laneRows(
+  sessions: readonly SessionRow[],
+  hiddenId: string | null,
+  keep: ReadonlySet<string>,
+): SessionRow[] {
+  return visibleSessions(
+    sessions.filter(row => row.id !== hiddenId),
+    keep,
+  )
+}
+
+/** How many rows the project will actually show, for its header count. */
+function visibleCount(project: ProjectNode, hiddenId: string | null, keep: ReadonlySet<string>): number {
+  return project.repos.reduce(
+    (total, repo) =>
+      total + repo.groups.reduce((sum, lane) => sum + laneRows(lane.sessions, hiddenId, keep).length, 0),
+    0,
+  )
+}
+
 interface SessionListProps {
   activeId: string | null
   /** Runtime session id to suppress: a replay's fresh session duplicating a row. */
   hiddenId: string | null
+  /** Blank sessions still worth a row: the one on screen. */
+  keep: ReadonlySet<string>
   liveId: string | null
   project: ProjectNode
 }
 
-function SessionList({ activeId, hiddenId, liveId, project }: SessionListProps) {
+function SessionList({ activeId, hiddenId, keep, liveId, project }: SessionListProps) {
   // Lane headers only earn their line when a repo actually has more than one
   // checkout — a single-worktree project would otherwise show a header that
   // repeats its own name.
@@ -74,7 +100,7 @@ function SessionList({ activeId, hiddenId, liveId, project }: SessionListProps) 
                 {lane.label}
               </div>
             )}
-            {lane.sessions.filter(row => row.id !== hiddenId).map(row => (
+            {laneRows(lane.sessions, hiddenId, keep).map(row => (
               <button
                 className={[css.sessionRow, row.id === activeId ? css.sessionActive : '']
                   .filter(Boolean)
@@ -88,9 +114,12 @@ function SessionList({ activeId, hiddenId, liveId, project }: SessionListProps) 
               >
                 {row.id === liveId && <span className={css.liveDot} />}
                 <span className={css.sessionTitle}>{sessionLabel(row)}</span>
-                <span className={css.sessionMeta} title={absoluteTime(row.last_active)}>
-                  {relativeTime(row.last_active)}
-                </span>
+                {/* A blank row has no last activity worth a stamp. */}
+                {!isBlankSession(row) && (
+                  <span className={css.sessionMeta} title={absoluteTime(row.last_active)}>
+                    {relativeTime(row.last_active)}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -132,6 +161,18 @@ export function Sidebar({ collapsed }: SidebarProps) {
   // for the runtime. They are one conversation — show the row that has the
   // history, and suppress its runtime twin.
   const duplicateLiveId = liveId !== null && liveId !== activeId ? liveId : null
+
+  // Blank sessions are listed only while they are the one on screen; the
+  // backend keeps every runtime session it ever spawned, and a row per
+  // abandoned "New session" press is a column of nothing.
+  const keep = useMemo(() => {
+    const ids = new Set<string>()
+
+    if (liveId !== null) ids.add(liveId)
+    if (activeId !== null) ids.add(activeId)
+
+    return ids
+  }, [activeId, liveId])
 
   const ThemeIcon =
     themePreference === 'light' ? SunIcon : themePreference === 'dark' ? MoonIcon : MonitorIcon
@@ -225,6 +266,11 @@ export function Sidebar({ collapsed }: SidebarProps) {
               // that kept a match is exactly the one the user is looking in,
               // and leaving it collapsed hides the result they searched for.
               const isCollapsed = !searching && collapsedProjects[project.id] === true
+              const count = visibleCount(project, duplicateLiveId, keep)
+
+              // A project whose every session is an idle blank has nothing
+              // to open; the header would announce a count over no rows.
+              if (count === 0) return null
 
               return (
                 <div className={css.project} key={project.id}>
@@ -241,12 +287,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
                   >
                     {isCollapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
                     <span className={css.projectLabel}>{project.label}</span>
-                    <span className={css.projectCount}>{project.sessionCount ?? 0}</span>
+                    <span className={css.projectCount}>{count}</span>
                   </button>
                   {!isCollapsed && (
                     <SessionList
                       activeId={activeId}
                       hiddenId={duplicateLiveId}
+                      keep={keep}
                       liveId={liveId}
                       project={project}
                     />

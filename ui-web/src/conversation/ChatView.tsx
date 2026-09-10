@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
-import type { TranscriptNode } from '../state/transcript.ts'
+import { subagentCatalog, type SubagentEntry } from '../state/subagents.ts'
+import type { SubagentLive, TranscriptNode } from '../state/transcript.ts'
 import { AssistantMessage, NoticeMessage, UserMessage } from './MessageItem.tsx'
 import { ReasoningRow } from './ReasoningRow.tsx'
 import { ToolRow } from './ToolRow.tsx'
 import css from './ChatView.module.css'
 
+const NO_AGENTS: Record<string, SubagentLive> = {}
+
 export interface ChatViewProps {
+  /** Live subagent state, so an Agent row can say what its run is doing. */
+  agents?: Record<string, SubagentLive>
   nodes: TranscriptNode[]
   onEditPrompt?: (text: string) => void
   onRetry?: () => void
@@ -52,6 +57,7 @@ function formatClock(seconds: number): string {
  * still moves the conversation.
  */
 export function ChatView({
+  agents = NO_AGENTS,
   nodes,
   onEditPrompt,
   onRetry,
@@ -60,6 +66,17 @@ export function ChatView({
   workspace,
 }: ChatViewProps) {
   const elapsed = useElapsed(running ? turnStartedAt : undefined)
+
+  // One fold for every Agent row on screen, keyed by the call it came from.
+  const agentEntries = useMemo(() => {
+    const byTool = new Map<string, SubagentEntry>()
+
+    for (const entry of subagentCatalog(nodes, agents)) {
+      if (entry.toolId !== undefined) byTool.set(entry.toolId, entry)
+    }
+
+    return byTool
+  }, [agents, nodes])
 
   // The status line is the only thing marking a turn that has produced nothing
   // yet; once prose or a tool row is streaming, those carry the activity.
@@ -81,7 +98,9 @@ export function ChatView({
               />
             )}
             {node.kind === 'reasoning' && <ReasoningRow node={node} />}
-            {node.kind === 'tool' && <ToolRow node={node} workspace={workspace} />}
+            {node.kind === 'tool' && (
+              <ToolRow agent={agentEntries.get(node.toolId)} node={node} workspace={workspace} />
+            )}
             {node.kind === 'notice' && <NoticeMessage node={node} />}
           </div>
         ))}

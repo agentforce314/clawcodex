@@ -69,6 +69,7 @@ def _emit_terminal_agent_progress(
     subagent_type: Any,
     status: str,
     model: Any = None,
+    tool_use_id: Any = None,
 ) -> None:
     """R5 round-5 (ch13) — emit a TERMINAL ``agent_progress`` so the TUI
     subagent HUD marks the subagent done instead of lingering "running"
@@ -95,6 +96,10 @@ def _emit_terminal_agent_progress(
                 "model": model,
                 "activity": None,
                 "status": status,
+                # The Agent tool_use this run answers, so a client can pin the
+                # progress to the row that spawned it (the web client's
+                # subagent catalog) instead of guessing by description.
+                "tool_use_id": tool_use_id,
             })
     except Exception:  # noqa: BLE001
         logger.debug("terminal subagent progress emit failed", exc_info=True)
@@ -210,6 +215,11 @@ def make_agent_tool(
 
         description = tool_input.get("description", prompt[:50])
         subagent_type = tool_input.get("subagent_type")
+        # Read FIRST, before anything awaits or spawns: the executor stamps
+        # the shared ToolContext with each call's tool_use_id right before
+        # calling, so a later concurrent call can overwrite it. Captured here
+        # it names THIS delegation's row for every progress emit below.
+        tool_use_id = getattr(context, "tool_use_id", None)
         # Coordinator mode ignores the model param — the coordinator prompt
         # says "Do not set the model parameter. Workers need the default
         # model"; this enforces it. Mirrors AgentTool.tsx:252. "Default
@@ -467,6 +477,7 @@ def make_agent_tool(
                         "tool_use_count": _tracker.tool_use_count,
                         "tokens": total_tokens_from_tracker(_tracker),
                         "status": "running",
+                        "tool_use_id": tool_use_id,
                     })
                 except Exception:
                     logger.debug("subagent progress emit failed", exc_info=True)
@@ -542,6 +553,7 @@ def make_agent_tool(
                     agent_type=agent_def.agent_type,
                     agent_name=agent_name,
                     resolved_model=resolved_model,
+                    tool_use_id=tool_use_id,
                 )
             return _run_sync_agent(
                 run_params=run_params,
@@ -552,6 +564,7 @@ def make_agent_tool(
                 description=description,
                 agent_name=agent_name,
                 resolved_model=resolved_model,
+                tool_use_id=tool_use_id,
             )
         except BaseException:
             context.agent_supervisor.release(agent_id)
@@ -567,6 +580,7 @@ def make_agent_tool(
         description: Any = None,
         agent_name: Any = None,
         resolved_model: str | None = None,
+        tool_use_id: Any = None,
     ) -> ToolResult:
         """Run an agent synchronously and return the result."""
         from ..protocol import ToolResult as TR
@@ -580,6 +594,41 @@ def make_agent_tool(
             getattr(run_params.agent_definition, "agent_type", "")
         _hud_desc = description if description is not None else \
             (run_params.prompt or "")[:80]
+
+        # The same sidechain record a background run keeps
+        # (``_launch_async_agent``): the web client's child view reads it to
+        # show what the agent did, not only what it concluded. Appended from
+        # run_agent's per-message hook, ahead of the progress emit already
+        # chained there. Opening it can fail (a read-only home); the run goes
+        # on without a record, and so does an append that fails.
+        from src.agent.transcript import TranscriptWriter, get_agent_transcript_path
+
+        transcript: TranscriptWriter | None = None
+        try:
+            transcript = TranscriptWriter(get_agent_transcript_path(agent_id))
+        except OSError:
+            logger.exception(
+                "transcript open failed for %s; continuing without disk persistence",
+                agent_id,
+            )
+        if transcript is not None:
+            _forward = run_params.on_message
+
+            def _record_then_forward(message: Any) -> None:
+                nonlocal transcript
+                if transcript is not None:
+                    try:
+                        transcript.append(message)
+                    except OSError:
+                        logger.exception(
+                            "transcript append failed for %s; further appends will be skipped",
+                            agent_id,
+                        )
+                        transcript = None
+                if _forward is not None:
+                    _forward(message)
+
+            run_params.on_message = _record_then_forward
 
         try:
             try:
@@ -614,10 +663,12 @@ def make_agent_tool(
             _emit_terminal_agent_progress(
                 run_params.parent_context, agent_id=agent_id, name=_hud_name,
                 description=_hud_desc, subagent_type=agent_type,
-                status="failed", model=resolved_model,
+                status="failed", model=resolved_model, tool_use_id=tool_use_id,
             )
             raise
         finally:
+            if transcript is not None:
+                transcript.close()
             # The worker has genuinely exited by here (the messages are
             # collected and finalize_agent_tool has returned), so this is the
             # earliest honest point to free the slot. Releasing on a status
@@ -636,7 +687,7 @@ def make_agent_tool(
             run_params.parent_context, agent_id=agent_id, name=_hud_name,
             description=_hud_desc, subagent_type=agent_type,
             status="interrupted" if interrupted else "completed",
-            model=resolved_model,
+            model=resolved_model, tool_use_id=tool_use_id,
         )
 
         # An aborted query() RETURNS rather than raising, so finalize_agent_tool
@@ -691,6 +742,7 @@ def make_agent_tool(
         agent_type: str,
         agent_name: str | None = None,
         resolved_model: str | None = None,
+        tool_use_id: Any = None,
     ) -> ToolResult:
         """Launch an agent in the background and return immediately.
 
@@ -872,6 +924,7 @@ def make_agent_tool(
                         context, agent_id=agent_id, name=agent_name,
                         description=description, subagent_type=agent_type,
                         status=_final_status, model=resolved_model,
+                        tool_use_id=tool_use_id,
                     )
                     # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
                     # ``<task-notification>`` envelope. Atomic check-and-
@@ -917,6 +970,7 @@ def make_agent_tool(
                         context, agent_id=agent_id, name=agent_name,
                         description=description, subagent_type=agent_type,
                         status="failed", model=resolved_model,
+                        tool_use_id=tool_use_id,
                     )
                     logger.exception(
                         "Async agent %s (%s) failed",

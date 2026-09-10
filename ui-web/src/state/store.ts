@@ -60,6 +60,16 @@ export type ConversationTab = 'agents' | 'chat' | 'trajectory'
 
 export const $conversationTab = atom<ConversationTab>('chat')
 
+/**
+ * The subagent the conversation column is showing instead of the session —
+ * a catalog entry's key — or null for the session itself.
+ *
+ * A child is a view over the parent's own state (its rows, its progress
+ * frames, its transcript files), not a session of its own: leaving it is a
+ * matter of clearing this, and nothing about the parent moves meanwhile.
+ */
+export const $subagentView = atom<string | null>(null)
+
 export const $projects = atom<ProjectNode[]>([])
 export const $projectsLoading = atom<boolean>(false)
 export const $workspace = atom<string>('')

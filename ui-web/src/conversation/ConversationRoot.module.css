@@ -72,6 +72,29 @@
   font-size: 14px;
 }
 
+/* The parent session's title while a subagent is on show: a crumb that goes
+   back. Tertiary ink, so the child's own name (primary) reads as the title. */
+.crumbParent {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.crumbParent:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+  color: var(--cc-alias-label-secondary);
+}
+
 .crumb {
   min-width: 0;
   overflow: hidden;

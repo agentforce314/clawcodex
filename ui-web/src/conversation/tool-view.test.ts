@@ -105,10 +105,46 @@ describe('describeTool', () => {
   })
 
   it('falls back to an IN/OUT row for an unknown tool', () => {
-    const view = describeTool(tool({ context: 'Explore the repo', name: 'Task', state: 'running' }))
+    const view = describeTool(tool({ context: 'Explore the repo', name: 'Widget', state: 'running' }))
 
-    expect(view).toMatchObject({ body: 'io', icon: 'tool', title: 'Task' })
+    expect(view).toMatchObject({ body: 'io', icon: 'tool', title: 'Widget' })
     expect(view.summary).toBe('Explore the repo')
+  })
+
+  it('gives a delegation its own shape, named by its description', () => {
+    const view = describeTool(
+      tool({
+        args: { description: 'Deep dive: server core', prompt: 'Read everything under server/' },
+        name: 'Agent',
+        state: 'running',
+      }),
+    )
+
+    expect(view).toMatchObject({ body: 'agent', icon: 'agent', title: 'Agent' })
+    expect(view.summary).toBe('Deep dive: server core')
+  })
+
+  it('names a delegation by its prompt when it has no description', () => {
+    const view = describeTool(tool({ args: { prompt: 'Find the tests\nthen run them' }, name: 'Task' }))
+
+    expect(view.summary).toBe('Find the tests')
+  })
+
+  it('keeps the delegation shape when the run failed', () => {
+    const view = describeTool(
+      tool({ args: { description: 'Audit' }, error: 'Error: spawn refused', name: 'Agent', state: 'error' }),
+    )
+
+    expect(view).toMatchObject({ body: 'agent', summary: 'Audit', title: 'Agent' })
+  })
+
+  it('prefers the command description over the command itself', () => {
+    const view = describeTool(
+      tool({ args: { command: 'find . -name "*.ts" | wc -l', description: 'Count TypeScript files' } }),
+    )
+
+    expect(view.summary).toBe('Count TypeScript files')
+    expect(view.body).toBe('terminal')
   })
 
   it('summarises todos as progress plus the live item', () => {
