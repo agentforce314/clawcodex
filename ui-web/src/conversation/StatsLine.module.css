@@ -1,0 +1,26 @@
+/* Session stats under the composer: one centred line of 13/20 tertiary text,
+   on the composer card's own width axis. Block, not flex: text-overflow only
+   elides a block's inline content, so an overlong line ends in … instead of a
+   mid-glyph clip — and the full line rides the title for that case. */
+
+.root {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--cc-composer-card-max-width);
+  margin: 0 auto;
+  padding: 4px var(--cc-composer-side-clearance) 2px;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sep {
+  margin: 0 10px;
+  color: var(--cc-alias-separator-primary);
+}

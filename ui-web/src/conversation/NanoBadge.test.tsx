@@ -1,6 +1,6 @@
 /**
- * The nano chip (backend `--nano`, docs/nano.md) on its three surfaces:
- * the composer row, the stats row under it, and the session tab.
+ * The nano chip (backend `--nano`, docs/nano.md) on its two surfaces: the
+ * composer row and the session tab.
  *
  * The rule under every case: the chip is driven by an explicit `true` and
  * nothing else — a backend that never says nano must never grow a badge.
@@ -12,9 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionTab } from '../sidebar-right/SessionTab.tsx'
 import { $contextUsage, $sessionId, $transcript, $workspace } from '../state/store.ts'
 import { emptyTranscript } from '../state/transcript.ts'
-import type { TrajectoryStats } from '../state/trajectory.ts'
 import { InputBar } from './InputBar.tsx'
-import { StatsPills } from './StatsPills.tsx'
 
 afterEach(() => {
   cleanup()
@@ -65,48 +63,6 @@ describe('InputBar nano chip', () => {
 
     expect(chip.tagName).toBe('SPAN')
     expect(chip.getAttribute('role')).toBeNull()
-  })
-})
-
-const NO_RUN: TrajectoryStats = {
-  cacheHitRatio: null,
-  cacheReadTokens: 0,
-  cacheWriteTokens: 0,
-  inputTokens: 0,
-  llmMs: 0,
-  outputTokens: 0,
-  steps: 0,
-  throughput: null,
-  toolMs: 0,
-  ttftMs: null,
-  turns: 0,
-  uncachedInputTokens: 0,
-}
-
-describe('StatsPills nano chip', () => {
-  it('rides the model segment', () => {
-    render(<StatsPills model="deepseek-v4-flash" nano provider="deepseek" stats={NO_RUN} />)
-
-    const model = screen.getByText('deepseek:deepseek-v4-flash')
-    const chip = screen.getByText('nano')
-
-    // Same segment: whatever narrows the row cannot shed the mode without also
-    // shedding the model it describes (the TUI stats-line contract).
-    expect(model.contains(chip)).toBe(true)
-  })
-
-  it('shows no chip without the flag', () => {
-    render(<StatsPills model="deepseek-v4-flash" provider="deepseek" stats={NO_RUN} />)
-
-    expect(screen.queryByText('nano')).toBeNull()
-  })
-
-  it('shows no chip with no model to describe', () => {
-    // The chip rides the model segment; with nothing to ride it stays off
-    // rather than floating as a lone token in an otherwise empty row.
-    const { container } = render(<StatsPills nano stats={NO_RUN} />)
-
-    expect(container.firstChild).toBeNull()
   })
 })
 

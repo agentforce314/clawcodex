@@ -17,6 +17,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from src.server.desktop_gateway_translate import usage_payload
+
 logger = logging.getLogger(__name__)
 
 # Session ids are uuid-ish/token-ish path segments minted by us; anything else
@@ -149,6 +151,16 @@ def shape_stored_messages(raw: Any) -> list[dict[str, Any]]:
         stop_reason = entry.get("stop_reason")
         if isinstance(stop_reason, str) and stop_reason:
             message["stop_reason"] = stop_reason
+        # A step's token accounting and model, in the SAME shape the live
+        # ``step.complete`` event carries them, so the client's ledger reads a
+        # resumed step and a streamed one alike — and the stats line under the
+        # composer can total a resumed session's cost instead of hiding it.
+        usage = usage_payload(entry.get("usage"))
+        if usage is not None:
+            message["usage"] = usage
+        model = entry.get("model")
+        if isinstance(model, str) and model:
+            message["model"] = model
         # The Agent tool's display envelope — the one the agent server chose
         # to persist — under the same snake_case key the live SDK envelope
         # uses, so the client reads a resumed Agent row and a live one alike.

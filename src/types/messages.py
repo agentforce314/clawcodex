@@ -299,6 +299,7 @@ def create_message(
     isMeta: bool = False,
     usage: dict[str, Any] | None = None,
     toolUseResult: Any = None,
+    model: str | None = None,
 ) -> Message:
     ts = timestamp or datetime.now().isoformat()
     if role == "user":
@@ -309,9 +310,9 @@ def create_message(
             content, isMeta=isMeta, timestamp=ts, toolUseResult=toolUseResult,
         )
     if role == "assistant":
-        # ``usage`` is the turn's token accounting (input/output/cache);
-        # only assistant messages carry it.
-        return create_assistant_message(content, usage=usage)
+        # ``usage`` is the turn's token accounting (input/output/cache) and
+        # ``model`` the one that answered; only assistant messages carry them.
+        return create_assistant_message(content, usage=usage, model=model)
     if role == "system":
         return SystemMessage(content=content, timestamp=ts, isMeta=isMeta)
     return Message(role=role, content=content, timestamp=ts, isMeta=isMeta)

@@ -49,6 +49,7 @@ class Conversation:
         usage: dict[str, Any] | None = None,
         isMeta: bool = False,
         toolUseResult: Any = None,
+        model: str | None = None,
     ):
         """``isMeta`` marks injected context (plan-mode / task-reminder
         attachments), not a real prompt. Dropping it here was a real defect:
@@ -68,7 +69,7 @@ class Conversation:
         self.messages.append(
             create_message(
                 role, normalized_content, usage=usage, isMeta=isMeta,
-                toolUseResult=toolUseResult,
+                toolUseResult=toolUseResult, model=model,
             )
         )
 

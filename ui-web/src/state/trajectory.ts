@@ -426,9 +426,26 @@ interface StoredTrajectoryBlock {
 interface StoredTrajectoryMessage {
   content?: unknown
   display_kind?: string
+  /** The model that answered, when the file recorded it. */
+  model?: string
   role?: string
   stop_reason?: string
   timestamp?: string
+  /** The step's token accounting, in the live `step.complete` shape. */
+  usage?: unknown
+}
+
+/** A usage record with the four counters every one carries. */
+function storedUsage(value: unknown): UsagePayload | undefined {
+  if (value === null || typeof value !== 'object') return undefined
+
+  const record = value as Record<string, unknown>
+
+  for (const key of ['calls', 'input', 'output', 'total']) {
+    if (typeof record[key] !== 'number') return undefined
+  }
+
+  return record as unknown as UsagePayload
 }
 
 function storedBlocks(content: unknown): StoredTrajectoryBlock[] {
@@ -539,6 +556,7 @@ export function hydrateStoredTrajectory(
       .map(block => (block.type === 'thinking' && typeof block.thinking === 'string' ? block.thinking : ''))
       .join('')
     const step = state.stepsThisTurn + 1
+    const usage = storedUsage(message.usage)
     const metrics: StepMetrics = {
       completedAt: at,
       firstTokenAt: null,
@@ -546,6 +564,11 @@ export function hydrateStoredTrajectory(
       ...(typeof message.stop_reason === 'string' && message.stop_reason !== ''
         ? { stopReason: message.stop_reason }
         : {}),
+      ...(typeof message.model === 'string' && message.model !== '' ? { model: message.model } : {}),
+      // What the file recorded of the step's cost. First-token time is still
+      // unknowable, so TTFT and throughput stay unmeasured; the token totals
+      // and the cache-hit share are exact.
+      ...(usage === undefined ? {} : { usage }),
     }
 
     state = pushRecord(state, {
