@@ -148,7 +148,7 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         return AnthropicProvider(api_key="test-key", model=model, **kwargs)
 
     @staticmethod
-    def _deepseek(model="deepseek-v4-pro"):
+    def _deepseek(model="deepseek-flash"):
         from src.providers.deepseek_provider import DeepSeekProvider
 
         return DeepSeekProvider(api_key="test-key", model=model)
@@ -170,19 +170,25 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         )
 
     def test_deepseek_unspecified_uses_flash(self):
-        # Goal ask #2: deepseek-v4-flash is the subagent default.
+        # Goal ask #2: the flash line is the subagent default.
         p = self._deepseek()
-        self.assertEqual(get_agent_model(None, None, p), "deepseek-v4-flash")
+        self.assertEqual(get_agent_model(None, None, p), "deepseek-flash")
 
     def test_deepseek_haiku_tier_uses_flash(self):
         # Previously 'haiku' fell back to inherit → every Explore fan-out
-        # ran (and billed) the v4-pro session model.
-        p = self._deepseek()
-        self.assertEqual(get_agent_model(None, "haiku", p), "deepseek-v4-flash")
+        # ran (and billed) the pro session model.
+        p = self._deepseek(model="deepseek-v4-pro")
+        self.assertEqual(get_agent_model(None, "haiku", p), "deepseek-flash")
 
-    def test_deepseek_opus_tier_uses_pro(self):
-        p = self._deepseek(model="deepseek-v4-flash")
-        self.assertEqual(get_agent_model("opus", None, p), "deepseek-v4-pro")
+    def test_deepseek_opus_tier_also_uses_flash(self):
+        # DeepSeek is a one-model line again: V4.1 Flash beats V4 Pro on the
+        # vendor's own numbers, and from 2026-09-14 a v4-pro request IS a
+        # flash request. So the opus tier must NOT climb back to v4-pro —
+        # that spends up to 4.4x for the same or worse model. The assertion
+        # is load-bearing precisely because it looks like a no-op: it is what
+        # a re-added pro row in ``subagent_tier_models`` would trip.
+        p = self._deepseek(model="deepseek-v4-pro")
+        self.assertEqual(get_agent_model("opus", None, p), "deepseek-flash")
 
     def test_explicit_inherit_still_forces_session_model(self):
         # The Plan/fork agents pin 'inherit' — the provider default must
@@ -193,7 +199,7 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         )
         self.assertEqual(
             get_agent_model("inherit", None, self._deepseek()),
-            "deepseek-v4-pro",
+            "deepseek-flash",
         )
 
     def test_custom_anthropic_endpoint_inherits(self):
@@ -330,7 +336,7 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         # api.deepseek.com on every Explore spawn (hard 400).
         os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "my-bedrock-haiku"
         d = self._deepseek()
-        self.assertEqual(get_agent_model(None, "haiku", d), "deepseek-v4-flash")
+        self.assertEqual(get_agent_model(None, "haiku", d), "deepseek-flash")
 
     def test_known_alias_spellings_never_ship_raw(self):
         # critic r3 — trust_literal must only trust ids NO alias table
@@ -366,7 +372,7 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         # A known alias whose canonical target the session provider does
         # not serve degrades to inherit (never the raw spelling, never a
         # foreign id that would 400 louder).
-        d = self._deepseek()
+        d = self._deepseek(model="deepseek-v4-pro")
         self.assertEqual(
             get_agent_model("claude-haiku", None, d), "deepseek-v4-pro",
         )
@@ -405,10 +411,10 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         )
         self.assertEqual(
             get_agent_model(None, GENERAL_PURPOSE_AGENT.model, d),
-            "deepseek-v4-flash",
+            "deepseek-flash",
         )
         self.assertEqual(
-            get_agent_model(None, EXPLORE_AGENT.model, d), "deepseek-v4-flash",
+            get_agent_model(None, EXPLORE_AGENT.model, d), "deepseek-flash",
         )
 
 

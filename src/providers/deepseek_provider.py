@@ -1,10 +1,13 @@
 """DeepSeek provider implementation.
 
 DeepSeek exposes an OpenAI-compatible API at https://api.deepseek.com.
-Current production models are ``deepseek-v4-pro`` and ``deepseek-v4-flash``;
-the legacy aliases ``deepseek-chat`` / ``deepseek-reasoner`` are being
-deprecated and resolve to the non-thinking / thinking modes of
-``deepseek-v4-flash`` respectively.
+The current line is ``deepseek-flash`` (DeepSeek-V4.1-Flash): 1M context,
+384K max output, thinking on by default, and — unlike every DeepSeek model
+before it — image input. ``deepseek-v4-pro`` is being retired; from
+2026-09-14 the id still resolves but its requests run V4.1 Flash at the Flash
+price. ``deepseek-v4-flash``, ``deepseek-v4-flash-vision-exp``,
+``deepseek-chat`` and ``deepseek-reasoner`` are legacy spellings the API still
+accepts and serves from V4.1 Flash.
 """
 
 from __future__ import annotations
@@ -36,8 +39,8 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     #: (api-docs.deepseek.com/guides/thinking_mode). Thinking is ON by
     #: default at ``high``.
     #:
-    #: The API does not VALIDATE this field — probed 2026-08-03 against
-    #: ``deepseek-v4-flash``, every one of ``low / medium / high / xhigh /
+    #: The API does not VALIDATE this field — probed 2026-08-03 against the
+    #: then-current flash model, every one of ``low / medium / high / xhigh /
     #: max / minimal`` returned 200, and so did a value the docs never list.
     #: So an unsupported level is not an error, it is silently discarded and
     #: the default (``high``) applies. Without the mapping below, ``xhigh``
@@ -59,12 +62,12 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         Args:
             api_key: DeepSeek API key (sk-...)
             base_url: Base URL (optional, defaults to https://api.deepseek.com)
-            model: Default model (default: deepseek-v4-pro)
+            model: Default model (default: deepseek-flash)
         """
         super().__init__(
             api_key,
             base_url or self.DEFAULT_BASE_URL,
-            model or "deepseek-v4-pro",
+            model or "deepseek-flash",
         )
 
     def _create_client(self) -> Any:
@@ -168,16 +171,22 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         return result
 
     def get_available_models(self) -> list[str]:
-        """Return DeepSeek's current production models.
+        """Return the DeepSeek model ids the API accepts, current first.
 
-        ``deepseek-chat`` and ``deepseek-reasoner`` are kept for backward
-        compatibility but DeepSeek has announced they will be deprecated.
+        Only ``deepseek-flash`` names a live model. The rest are ids DeepSeek
+        still routes: ``deepseek-v4-pro`` is being retired onto V4.1 Flash,
+        and the remaining spellings name models that are already gone. They
+        stay listed because a session pinned to one keeps working and the
+        subagent resolver degrades a model missing from this list to inherit —
+        dropping them would silently re-point existing sessions.
         """
         return [
-            # V4 series (current)
+            # Current line
+            "deepseek-flash",
+            # Retiring: routed to V4.1 Flash from 2026-09-14 (still accepted)
             "deepseek-v4-pro",
+            # Legacy spellings (retired models; served by V4.1 Flash)
             "deepseek-v4-flash",
-            # Legacy aliases (being deprecated; map to v4-flash modes)
             "deepseek-chat",
             "deepseek-reasoner",
         ]

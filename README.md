@@ -64,14 +64,14 @@ prefix nearly free, `/eco` shrinks the fresh suffix every turn actually pays for
 
 # Run long agentic coding sessions for *pennies*
 
-### Cache-hit input bills at **`$0.022` / 1M tokens** — about **450× cheaper** than Claude Fable 5 (`$10` / 1M).
+### Cache-hit input bills at **`$0.003` / 1M tokens** — about **3,300× cheaper** than Claude Fable 5 (`$10` / 1M).
 
 ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache covers your whole
 `system + tools + history` span across turns. **The longer you code, the more you save.**
 
-<sub>`deepseek-v4-pro` off-peak, checked 2026-08-25. DeepSeek doubles every rate during peak hours
-(01:00–04:00 and 06:00–10:00 UTC, Mon–Fri) — still ~227× cheaper there. `/cost` follows the
-schedule.</sub>
+<sub>`deepseek-flash` (DeepSeek-V4.1-Flash) off-peak, checked 2026-09-10. DeepSeek doubles every
+rate during peak hours (01:00–04:00 and 06:00–10:00 UTC, Mon–Fri) — still ~1,600× cheaper there.
+`/cost` follows the schedule.</sub>
 
 </div>
 
@@ -151,7 +151,7 @@ The configuration file is saved at `~/.clawcodex/config.json`. Minimal example:
     "deepseek": {
       "api_key": "xxx-xxx",
       "base_url": "https://api.deepseek.com",
-      "default_model": "deepseek-v4-pro"
+      "default_model": "deepseek-flash"
     }
   },
   "env": {
@@ -728,7 +728,7 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
     "deepseek": {
       "api_key": "your-api-key",
       "base_url": "https://api.deepseek.com",
-      "default_model": "deepseek-v4-pro"
+      "default_model": "deepseek-flash"
     }
   },
   "session": {

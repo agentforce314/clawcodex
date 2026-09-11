@@ -50,7 +50,8 @@ def test_is_deepseek_flag_scoped_to_deepseek_provider():
 # Context-window registry
 # --------------------------------------------------------------------------- #
 
-def test_deepseek_v4_context_windows_registered():
+def test_deepseek_context_windows_registered():
+    assert get_context_window_for_model("deepseek-flash") == 1_000_000
     assert get_context_window_for_model("deepseek-v4-pro") == 1_000_000
     assert get_context_window_for_model("deepseek-v4-flash") == 1_000_000
     # DeepSeek's documented ceiling. Was 8_192 — a placeholder that
@@ -64,6 +65,7 @@ def test_deepseek_v4_context_windows_registered():
     # (20_000). Effective input therefore moves 991_808 -> 980_000 only.
     # Pinned so nobody "fixes" a timeout by editing this number: it cannot
     # truncate a response, because it never reaches the request.
+    assert get_model_max_output_tokens("deepseek-flash") == 384_000
     assert get_model_max_output_tokens("deepseek-v4-pro") == 384_000
     assert get_model_max_output_tokens("deepseek-v4-flash") == 384_000
 
@@ -77,6 +79,34 @@ def test_other_providers_context_window_unchanged():
     assert get_context_window_for_model("some-unknown-model") == 200_000
     # Legacy aliases intentionally NOT registered (broad prefix-match risk).
     assert get_context_window_for_model("deepseek-chat") == 200_000
+    assert get_context_window_for_model("deepseek-reasoner") == 200_000
+
+
+def test_deepseek_flash_row_does_not_claim_the_family_prefix():
+    """``deepseek-flash``'s prefix base is the bare family name, so the row
+    opts out of ``get_model_config``'s prefix fallback (``claims_prefix``).
+    Without that, every id above would inherit its 1M window — including the
+    legacy aliases the previous test pins at the default, and OpenRouter's
+    ``deepseek/…`` ids, which decision #1 keeps out of scope.
+    """
+    from src.models.configs import MODEL_CONFIGS, get_model_config
+
+    assert MODEL_CONFIGS["deepseek-flash"].claims_prefix is False
+    assert get_model_config("deepseek-flash").model_id == "deepseek-flash"
+    for other in ("deepseek-chat", "deepseek-reasoner",
+                  "deepseek/deepseek-flash", "deepseek-anything-else"):
+        assert get_model_config(other) is None, other
+
+
+def test_deepseek_flash_is_the_one_deepseek_model_that_sees():
+    """DeepSeek-V4.1-Flash folds in the retired ``*-vision-exp`` line; every
+    other DeepSeek id still 400s on an image content block, which is what the
+    fusion-model path exists for."""
+    from src.models.capabilities import supports_vision
+
+    assert supports_vision("deepseek-flash") is True
+    assert supports_vision("deepseek-v4-pro") is False
+    assert supports_vision("deepseek-v4-flash") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -181,28 +211,32 @@ _PEAK = datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc).timestamp()  # Mon
 def test_deepseek_pricing_registered():
     """Published rates, pinned as absolutes on both sides of the schedule.
 
-    Checked 2026-08-25 against api-docs.deepseek.com/quick_start/pricing/.
+    Checked 2026-09-10 against api-docs.deepseek.com/quick_start/pricing/.
     Pinning absolutes (rather than ratios) is what catches a stale card —
     the pre-2026-08-16 values in issue #904 were internally consistent and
     still 3x low.
+
+    Both instants predate the 2026-09-14 retirement of ``deepseek-v4-pro``
+    onto V4.1 Flash, so the pro card here is still V4 Pro's own; that axis is
+    pinned in ``tests/test_deepseek_peak_pricing.py``.
     """
     from src.services.pricing import get_pricing
 
-    flash = get_pricing("deepseek-v4-flash", request_time=_OFF_PEAK)
+    flash = get_pricing("deepseek-flash", request_time=_OFF_PEAK)
     pro = get_pricing("deepseek-v4-pro", request_time=_OFF_PEAK)
     assert flash is not None and pro is not None
-    assert flash["input"] == 0.22 / 1_000_000
-    assert flash["output"] == 0.66 / 1_000_000
-    assert flash["cache_read"] == 0.007 / 1_000_000
+    assert flash["input"] == 0.15 / 1_000_000
+    assert flash["output"] == 0.6 / 1_000_000
+    assert flash["cache_read"] == 0.003 / 1_000_000
     assert pro["input"] == 0.66 / 1_000_000
     assert pro["output"] == 1.98 / 1_000_000
     assert pro["cache_read"] == 0.022 / 1_000_000
 
-    flash_peak = get_pricing("deepseek-v4-flash", request_time=_PEAK)
+    flash_peak = get_pricing("deepseek-flash", request_time=_PEAK)
     pro_peak = get_pricing("deepseek-v4-pro", request_time=_PEAK)
-    assert flash_peak["input"] == 0.44 / 1_000_000
-    assert flash_peak["output"] == 1.32 / 1_000_000
-    assert flash_peak["cache_read"] == 0.014 / 1_000_000
+    assert flash_peak["input"] == 0.3 / 1_000_000
+    assert flash_peak["output"] == 1.2 / 1_000_000
+    assert flash_peak["cache_read"] == 0.006 / 1_000_000
     assert pro_peak["input"] == 1.32 / 1_000_000
     assert pro_peak["output"] == 3.96 / 1_000_000
     assert pro_peak["cache_read"] == 0.044 / 1_000_000
@@ -215,7 +249,7 @@ def test_deepseek_cache_creation_mirrors_input_on_both_cards():
     from src.services.pricing import get_pricing
 
     for ts in (_OFF_PEAK, _PEAK):
-        for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+        for model in ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"):
             p = get_pricing(model, request_time=ts)
             assert p["cache_creation"] == p["input"]
 
@@ -244,14 +278,14 @@ def test_deepseek_cost_credits_cache_hit_end_to_end():
         prompt_tokens=1_000_000, completion_tokens=0, total_tokens=1_000_000,
         prompt_cache_hit_tokens=900_000, prompt_cache_miss_tokens=100_000,
     ))
-    cost = compute_cost("deepseek-v4-flash", usage, request_time=_OFF_PEAK)
-    expected = 100_000 * 0.22 / 1_000_000 + 900_000 * 0.007 / 1_000_000
+    cost = compute_cost("deepseek-flash", usage, request_time=_OFF_PEAK)
+    expected = 100_000 * 0.15 / 1_000_000 + 900_000 * 0.003 / 1_000_000
     assert abs(cost - expected) < 1e-12
     # ~9x cheaper than pricing the whole prompt as uncached input.
-    full = 1_000_000 * 0.22 / 1_000_000
+    full = 1_000_000 * 0.15 / 1_000_000
     assert cost < full / 5
     # The same response costs exactly twice as much inside a peak window.
-    peak = compute_cost("deepseek-v4-flash", usage, request_time=_PEAK)
+    peak = compute_cost("deepseek-flash", usage, request_time=_PEAK)
     assert abs(peak - 2 * expected) < 1e-12
 
 

@@ -33,8 +33,13 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.2": 1_000_000,
     "glm-5.1": 202_752,
     "glm-4": 128_000,  # legacy GLM-4.x fallback
-    # DeepSeek V4 ships a 1M context window, like glm-5.2 (legacy deepseek-chat/
+    # DeepSeek ships a 1M context window, like glm-5.2 (legacy deepseek-chat/
     # -reasoner are intentionally NOT matched here — see src/models/configs.py).
+    # Two rows, not a bare "deepseek": this table matches by SUBSTRING, so the
+    # family name alone would promote the legacy ids the exclusion above is
+    # about. ``deepseek-flash`` is DeepSeek-V4.1-Flash, which does not contain
+    # the ``deepseek-v4`` substring.
+    "deepseek-flash": 1_000_000,
     "deepseek-v4": 1_000_000,
     # MiniMax model-specific windows must precede the family fallback.
     "minimax-m3": 1_000_000,
