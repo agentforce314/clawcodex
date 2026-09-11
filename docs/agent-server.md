@@ -79,6 +79,16 @@ there `--token` is required and the server refuses to start without one —
 `POST /sessions` authenticates only when a token is set, and a session is a
 shell with this machine's filesystem under it.
 
+What `--token` buys is narrower than it looks, so be clear about it before
+binding wide. Both listeners are plaintext: the bearer token rides an
+`Authorization` header over `http://`, and the per-session token comes back
+inside a `ws://` URL as a query parameter. Anyone positioned to read the
+traffic — not merely to reach the port — can lift either and then create
+sessions as you. So `--token` answers "who may connect", not "who may watch",
+and a remote bind is defensible on a network you trust or behind something
+that terminates TLS in front of it. It is not a configuration to expose to the
+internet on its own.
+
 ### 2. Frontend — the Ink TUI
 
 ```bash
