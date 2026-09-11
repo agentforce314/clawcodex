@@ -127,7 +127,8 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     parser.add_argument("--port", type=int, default=0,
                         help="HTTP port for POST /sessions (default: ephemeral).")
     parser.add_argument("--token", default="",
-                        help="Optional bearer token required on POST /sessions.")
+                        help="Bearer token required on POST /sessions. Optional "
+                             "on a loopback bind, required on any other --host.")
     parser.add_argument("--provider", default=None, help="Provider name override.")
     parser.add_argument("--model", default=None, help="Model override.")
     parser.add_argument(
@@ -188,6 +189,31 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
              "multi-session transport every session in this process is nano.",
     )
     args = parser.parse_args(argv)
+
+    # `POST /sessions` authenticates only when a token was configured
+    # (`server/server.py`: `if self.config.auth_token`), and `--token` is
+    # optional — which is fine on the default loopback bind, where reaching the
+    # port already means being on this machine. Off it, that combination serves
+    # session creation to anyone who can route to the port, and a session is a
+    # shell.
+    #
+    # Remote binding stays supported: this server is written for it (see the
+    # multi-tenant note at the permission resolution below), so the refusal is
+    # narrowed to the one combination that has no defence — reachable from the
+    # network AND unauthenticated — rather than to remote binding itself.
+    # `--stdio` is exempt because it returns below without ever binding: the
+    # transport is this process's own pipes, so `--host` is inert there and
+    # refusing it would only teach callers to pass a throwaway token.
+    from src.entrypoints.serve_cli import is_loopback
+
+    if not args.stdio and not is_loopback(args.host) and not args.token:
+        print(
+            f"agent-server: refusing to bind {args.host} without --token: "
+            "POST /sessions authenticates only when a token is set, so this "
+            "would accept session creation from anyone who can reach the port.",
+            file=sys.stderr,
+        )
+        return 2
 
     # The agent server is the backend for an interactive TUI/direct-connect
     # client even though its own stdin/stdout are pipes.  Do not let the

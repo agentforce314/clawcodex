@@ -293,7 +293,11 @@ class DirectConnectServer:
         if self.config.auth_token:
             authz = request.headers.get('authorization', '')
             expected = f'Bearer {self.config.auth_token}'
-            if authz != expected:
+            # Constant-time: `!=` on str returns at the first differing byte,
+            # which times how much of a guess was right. Compared as bytes
+            # because `compare_digest` rejects non-ASCII str, and this one
+            # comes off the wire.
+            if not secrets.compare_digest(authz.encode(), expected.encode()):
                 writer.write(_build_http_response(
                     status=401, reason='Unauthorized',
                     body=b'{"error":"invalid auth token"}',
