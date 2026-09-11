@@ -279,9 +279,17 @@ Adapted here: the design-token architecture (raw palette → semantic aliases �
 surface-specific roles, with only the aliases moving between themes), the
 three-column concession solver, the single-scrollport conversation column with
 its sticky composer seat and shared width axis, the tool-card family
-(terminal / diff / read / generic), the tabbed right column with its lazy
-workspace tree and paged text reader, and the one-line session stats strip
-under the composer.
+(terminal / diff / read / generic), and the tabbed right column with its lazy
+workspace tree and paged text reader.
+
+Diverged deliberately: the session stats strip under the composer. The
+reference ran an in-page A/B between a one-line strip and a two-pill variant
+with click-open dialogs, kept the pills, and deleted the line. This app has
+the line. It is not what upstream settled on and is not a port of the current
+design — it reads the same figures from the same ledger and drops a group with
+nothing measured, but exact token counts are not reachable from it the way the
+dialogs made them. Anyone re-syncing this column against the reference should
+know the difference is a decision here rather than drift.
 
 Not adapted: the DeepSeek branding, the cordis plugin runtime, the client module
 system, and the right column's docking engine — splits, floating panes, drag and
