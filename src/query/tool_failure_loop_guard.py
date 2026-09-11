@@ -37,6 +37,22 @@ against the old behavior at threshold 3: a homogeneous loop trips at most
 always eventually reached, never suppressed, and ``max_turns`` bounds the
 worst case. Deliberate: a model succeeding a quarter of the time is making
 progress, not looping.
+
+Third divergence (intentional): the generic fallback category (no named
+error pattern matched) is keyed off the TAIL of the tool result, not the
+head. TS and the original Python port both took ``text[:120]``. For Bash
+specifically, tool_result content is stdout + stderr + an exit-code
+sentence in that order, so the head is dominated by the command's own
+stdout (a startup banner, progress output) while the actual differentiator
+-- a traceback's exception line, a compiler's final error -- sits at the
+tail. Observed in practice: three genuinely different bugs in a script
+that prints an identical banner before crashing each time were categorized
+as ONE recurring signature and tripped the guard after attempt 3, even
+though each attempt fixed the prior bug and hit a new one. Taking the tail
+(and preferring a matched ``Traceback (most recent call last):`` block's
+tail when present, since that isolates the exception line from any stderr
+preamble) fixes this without weakening detection of an actually-recurring
+error, since a truly identical failure has an identical tail too.
 """
 from __future__ import annotations
 
@@ -376,8 +392,25 @@ def _normalize_error_category(content: str) -> str:
     if re.search(r"Error writing file", normalized, re.IGNORECASE):
         return "FileWriteError"
 
+    # Generic fallback. Bash results are stdout + stderr + an exit-code
+    # sentence, in that order (bash_tool.py:_assemble_bash_body /
+    # _bash_map_result_to_api), so a long-running command's own stdout
+    # (banner/progress text, often near-identical across genuinely
+    # different failures) sits at the head while the actual differentiator
+    # -- a traceback's exception line, or a compiler's final error -- sits
+    # at the tail, just before the exit-code sentence. Strip that sentence,
+    # then prefer the tail over the head so distinct failures don't get
+    # collapsed into one signature by a shared stdout prefix.
+    without_exit_code = re.sub(
+        r"\s*Command failed with exit code \d+\s*$", "", normalized, flags=re.IGNORECASE
+    )
+    traceback_match = re.search(
+        r"Traceback \(most recent call last\):.*$", without_exit_code, re.IGNORECASE
+    )
+    signal = traceback_match.group(0) if traceback_match else without_exit_code
+
     return (
-        normalized.lower()[:MAX_FALLBACK_CATEGORY_LENGTH] or "unknown error"
+        signal.lower()[-MAX_FALLBACK_CATEGORY_LENGTH:] or "unknown error"
     )
 
 

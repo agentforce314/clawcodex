@@ -250,6 +250,46 @@ class TestCategoryNormalization(unittest.TestCase):
             "PermissionError",
         )
 
+    def test_fallback_prefers_traceback_tail_over_shared_stdout_banner(self):
+        """Two distinct bugs behind an identical stdout banner must not
+        collapse into the same fallback signature (the bug this test
+        guards: the old head-slice made every Bash failure of a script
+        that prints a banner before crashing look identical)."""
+        banner = "Loading MNIST dataset...\n" * 3 + "Starting training run\n"
+        run1 = (
+            banner
+            + "Traceback (most recent call last):\n"
+            + '  File "train.py", line 42, in <module>\n'
+            + "ConcretizationTypeError: Abstract tracer value\n"
+            + "Command failed with exit code 1"
+        )
+        run2 = (
+            banner
+            + "Traceback (most recent call last):\n"
+            + '  File "train.py", line 58, in <module>\n'
+            + "TypeError: unsupported operand type(s)\n"
+            + "Command failed with exit code 1"
+        )
+        self.assertNotEqual(
+            _normalize_error_category(run1), _normalize_error_category(run2)
+        )
+
+    def test_fallback_no_traceback_uses_tail_not_head(self):
+        text = ("x" * 200) + "distinct tail content that must survive"
+        out = _normalize_error_category(text)
+        self.assertTrue(out.endswith("distinct tail content that must survive"))
+
+    def test_fallback_same_traceback_still_matches(self):
+        """A genuinely recurring failure must still be recognized as the
+        same signature -- the fix must not weaken real-loop detection."""
+        text = (
+            "irrelevant preamble\n"
+            "Traceback (most recent call last):\n"
+            "ValueError: same bug every time\n"
+            "Command failed with exit code 1"
+        )
+        self.assertEqual(_normalize_error_category(text), _normalize_error_category(text))
+
 
 class TestPathHandling(unittest.TestCase):
     def test_field_precedence(self):
