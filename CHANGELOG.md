@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DeepSeek-V4.1-Flash (`deepseek-flash`), and the DeepSeek line collapses
+  onto it.** 1M context, 384K max output, thinking on by default — and the
+  first DeepSeek model that accepts an image, folding in the retired
+  `deepseek-v4-flash-vision-exp`, so a screenshot no longer needs a
+  fusion model on this provider. It is now the `deepseek`
+  provider's default and its whole subagent tier table (opus/sonnet/haiku),
+  because DeepSeek says V4.1 Flash "has comprehensively surpassed V4 Pro in
+  performance, cost, speed, and total time" and is retiring Pro onto it.
+  `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-chat` and
+  `deepseek-reasoner` all still resolve, so a pinned session keeps working.
+- **`/cost` follows DeepSeek's re-card and its V4 Pro retirement.** V4.1 Flash
+  is cheaper than the V4 flash line it replaces — **$0.15 / $0.60 per MTok
+  off-peak and $0.003 cache-hit**, against $0.22 / $0.66 / $0.007 — and the
+  retired flash ids are billed at that same card, since DeepSeek serves them
+  from V4.1 Flash. `deepseek-v4-pro` keeps its own card until 2026-09-14
+  12:00 Beijing (04:00 UTC) and prices as Flash from that instant, on top of
+  the existing peak/off-peak schedule. Both axes read the request's
+  timestamp, so re-opening an August session still shows what it actually
+  cost rather than restating it 4.4× low.
+
 - **Web: the reference's session stats strip.** One centred line under the
   composer — `2 turns · 106 steps | LLM 6m28s · Tool call 23.7s | TTFT avg
   1.3s · 258 tok/s | Cache hit 99% | Input 11.5M tok · Output 65.9K tok` —

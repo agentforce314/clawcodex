@@ -5,11 +5,12 @@ of cost state lives in ``src.bootstrap.state`` (via
 ``add_to_total_cost_state`` and friends); this module just computes the
 dollar cost of a usage record.
 
-One exception to "pure", added for DeepSeek's peak/off-peak card: when a
-caller omits ``request_time``, ``get_pricing`` reads the wall clock to decide
-which side of that schedule a request falls on. Every caller that knows the
-real request time should pass it; "now" is only correct because the live path
-prices a response the moment it arrives.
+One exception to "pure", added for DeepSeek's peak/off-peak card and reused
+for its V4 Pro retirement: when a caller omits ``request_time``,
+``get_pricing`` reads the wall clock to decide which side of those schedules a
+request falls on. Every caller that knows the real request time should pass
+it; "now" is only correct because the live path prices a response the moment
+it arrives.
 
 Pricing mirrors ``typescript/src/utils/modelCost.ts``: published Anthropic
 list prices per million tokens for first-party direct calls. Proxies
@@ -83,7 +84,7 @@ _TIER_HAIKU_3 = {
     "cache_creation": 0.30 / 1_000_000,
     "cache_read": 0.03 / 1_000_000,
 }
-# DeepSeek V4 (USD per million tokens) — checked 2026-08-25 against
+# DeepSeek (USD per million tokens) — checked 2026-09-10 against
 # https://api-docs.deepseek.com/quick_start/pricing/
 #
 # DeepSeek's automatic prefix cache bills cache HITS at the low ``cache_read``
@@ -111,20 +112,25 @@ _TIER_HAIKU_3 = {
 # likely to move again, and a promo card that rots into silent
 # under-reporting is the same failure the Luna row below was written about.
 #
-# Not registered: ``deepseek-v4-flash-vision-exp``, which shares the flash
-# card on the vendor's page but has no row in ``models/configs.py`` and is
-# unreachable through the provider (``supports_vision=False``).
+# RE-CARDED 2026-09-10: DeepSeek-V4.1-Flash (``deepseek-flash``) replaced the
+# V4 flash line at a CHEAPER card — 0.15/0.6/0.003 off-peak against the
+# 0.22/0.66/0.007 below it — and the retired ``deepseek-v4-flash`` /
+# ``deepseek-v4-flash-vision-exp`` ids are served by V4.1-Flash and billed at
+# its price, so they share this card rather than keeping the V4 one. The old
+# flash rates are GONE from the vendor page, not merely superseded for new
+# ids; leaving them on the legacy ids would over-report every legacy-id
+# session by ~1.5x on input and 2.3x on cache read.
 _TIER_DEEPSEEK_FLASH_OFF_PEAK = {
-    "input": 0.22 / 1_000_000,
-    "output": 0.66 / 1_000_000,
-    "cache_creation": 0.22 / 1_000_000,
-    "cache_read": 0.007 / 1_000_000,
+    "input": 0.15 / 1_000_000,
+    "output": 0.6 / 1_000_000,
+    "cache_creation": 0.15 / 1_000_000,
+    "cache_read": 0.003 / 1_000_000,
 }
 _TIER_DEEPSEEK_FLASH_PEAK = {
-    "input": 0.44 / 1_000_000,
-    "output": 1.32 / 1_000_000,
-    "cache_creation": 0.44 / 1_000_000,
-    "cache_read": 0.014 / 1_000_000,
+    "input": 0.3 / 1_000_000,
+    "output": 1.2 / 1_000_000,
+    "cache_creation": 0.3 / 1_000_000,
+    "cache_read": 0.006 / 1_000_000,
 }
 _TIER_DEEPSEEK_PRO_OFF_PEAK = {
     "input": 0.66 / 1_000_000,
@@ -144,12 +150,36 @@ _TIER_DEEPSEEK_PRO_PEAK = {
 # states the windows to the hour and says nothing finer, so hour granularity
 # is exact rather than a rounding.
 _DEEPSEEK_PEAK_WINDOWS_UTC: tuple[tuple[int, int], ...] = ((1, 4), (6, 10))
+# When ``deepseek-v4-pro`` stops being its own model. The vendor: "From 12:00
+# Beijing Time on September 14, 2026, and until V4.1 Pro is released in the
+# future, requests to deepseek-v4-pro will all be routed to V4.1 Flash and
+# billed at the V4.1 Flash price." Beijing is UTC+8 year-round (no DST), so
+# 12:00 there is 04:00 UTC.
+#
+# A DATE axis rather than a card edit, because both sides are live: a session
+# priced before the cutover really did run V4 Pro at the pro card, and
+# ``compute_cost`` already carries the request's timestamp for the peak
+# schedule, so re-pricing a stored usage record from last week still gets the
+# card that was in force when it was billed. Flattening pro onto the flash
+# card outright would restate that history 4.4x low; leaving it on the pro
+# card would over-report every request after the cutover by the same factor.
+_DEEPSEEK_V4_PRO_ROUTES_TO_FLASH_AT = datetime(
+    2026, 9, 14, 4, 0, tzinfo=timezone.utc
+).timestamp()
 # Canonical model id -> (off-peak card, peak card).
+#
+# ``deepseek-flash`` is DeepSeek's current line (DeepSeek-V4.1-Flash). The two
+# retired flash ids are listed because the vendor still ACCEPTS them and bills
+# them at the flash price — an unpriced id shows no cost at all, which is the
+# one outcome worse than a stale one.
+_DEEPSEEK_FLASH_CARDS = (
+    _TIER_DEEPSEEK_FLASH_OFF_PEAK,
+    _TIER_DEEPSEEK_FLASH_PEAK,
+)
 _DEEPSEEK_TIERS: dict[str, tuple[dict[str, float], dict[str, float]]] = {
-    "deepseek-v4-flash": (
-        _TIER_DEEPSEEK_FLASH_OFF_PEAK,
-        _TIER_DEEPSEEK_FLASH_PEAK,
-    ),
+    "deepseek-flash": _DEEPSEEK_FLASH_CARDS,
+    "deepseek-v4-flash": _DEEPSEEK_FLASH_CARDS,
+    "deepseek-v4-flash-vision-exp": _DEEPSEEK_FLASH_CARDS,
     "deepseek-v4-pro": (
         _TIER_DEEPSEEK_PRO_OFF_PEAK,
         _TIER_DEEPSEEK_PRO_PEAK,
@@ -321,17 +351,21 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-5": _TIER_5_25,
     "claude-opus-4-1": _TIER_15_75,
     "claude-opus-4-20250514": _TIER_15_75,
-    # DeepSeek V4 (api.deepseek.com). OpenRouter's ``deepseek/…`` ids resolve
+    # DeepSeek (api.deepseek.com). OpenRouter's ``deepseek/…`` ids resolve
     # here too via get_pricing's vendor-prefix strip — consistent with how
     # every proxied model is priced at its upstream rate.
-    # VALUES UNUSED, same as the gpt-5.6-luna rows below: these two entries
-    # are membership gates for ``get_pricing``'s ``model in PRICING`` checks,
+    # VALUES UNUSED, same as the gpt-5.6-luna rows below: these entries are
+    # membership gates for ``get_pricing``'s ``model in PRICING`` checks,
     # and the live card is picked by request time in ``_get_exact_pricing``,
     # which returns before reaching ``PRICING.get(model)``. They point at the
     # off-peak card so that anything reading the table directly (the legacy
     # ``services.cost_tracker`` fallback path) gets the rate that covers 133
-    # of every 168 hours rather than a number picked for tidiness.
+    # of every 168 hours rather than a number picked for tidiness. Keep this
+    # key set identical to ``_DEEPSEEK_TIERS`` — a row present in one and not
+    # the other either prices at the wrong card or does not price at all.
+    "deepseek-flash": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
+    "deepseek-v4-flash-vision-exp": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO_OFF_PEAK,
     "MiniMax-M3": _TIER_MINIMAX_M3_STANDARD,
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
@@ -414,6 +448,22 @@ def is_deepseek_peak(request_time: float | None = None) -> bool:
     )
 
 
+def deepseek_v4_pro_is_routed_to_flash(request_time: float | None = None) -> bool:
+    """True once ``deepseek-v4-pro`` is served and billed as V4.1 Flash.
+
+    ``request_time`` is POSIX epoch seconds; ``None`` means now. DeepSeek is
+    retiring V4 Pro: from 2026-09-14 12:00 Beijing (04:00 UTC) the id stays
+    accepted but every request behind it runs V4.1 Flash at the Flash price.
+
+    Public for the same reason ``is_deepseek_peak`` is — it is the only way to
+    explain why a ``deepseek-v4-pro`` line costs a quarter of what an older
+    one did, without re-deriving the vendor's retirement schedule. It says
+    nothing about ``deepseek-flash``, which was never on the pro card.
+    """
+    ts = time.time() if request_time is None else request_time
+    return ts >= _DEEPSEEK_V4_PRO_ROUTES_TO_FLASH_AT
+
+
 def _get_exact_pricing(
     model: str,
     *,
@@ -437,6 +487,10 @@ def _get_exact_pricing(
     # always resolves to "standard").
     deepseek = _DEEPSEEK_TIERS.get(model)
     if deepseek is not None:
+        if model == "deepseek-v4-pro" and deepseek_v4_pro_is_routed_to_flash(
+            request_time
+        ):
+            deepseek = _DEEPSEEK_FLASH_CARDS
         off_peak, peak = deepseek
         return peak if is_deepseek_peak(request_time) else off_peak
     if model != "MiniMax-M3":
@@ -653,6 +707,7 @@ __all__ = [
     "DEFAULT_PRICING",
     "get_pricing",
     "is_deepseek_peak",
+    "deepseek_v4_pro_is_routed_to_flash",
     "is_known_pricing",
     "compute_cost",
     "compute_session_cost",

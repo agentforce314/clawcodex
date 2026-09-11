@@ -152,22 +152,29 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
     "deepseek": {
         "label": "DeepSeek",
         "default_base_url": "https://api.deepseek.com",
-        "default_model": "deepseek-v4-pro",
-        # Subagent defaults: v4-flash is DeepSeek's fast/cheap line, the
-        # equivalent of the sonnet/haiku work tiers; v4-pro (the session
-        # default above) stays the opus-tier target. Catalog verified live
-        # 2026-08-12 (GET /models returns exactly v4-pro and v4-flash).
-        "subagent_model": "deepseek-v4-flash",
+        "default_model": "deepseek-flash",
+        # Every tier is deepseek-flash (DeepSeek-V4.1-Flash), and that is the
+        # vendor's own arrangement rather than a simplification: DeepSeek says
+        # V4.1 Flash "has comprehensively surpassed V4 Pro in performance,
+        # cost, speed, and total time", and from 2026-09-14 routes every
+        # deepseek-v4-pro request to it, billed at the Flash price. So an
+        # opus-tier row naming v4-pro buys nothing after that date and costs
+        # up to 4.4x more before it. v4-pro stays listed below — it is still
+        # accepted, and a user who pins it keeps working — it just is not what
+        # anything defaults to.
+        "subagent_model": "deepseek-flash",
         "subagent_tier_models": {
-            "opus": "deepseek-v4-pro",
-            "sonnet": "deepseek-v4-flash",
-            "haiku": "deepseek-v4-flash",
+            "opus": "deepseek-flash",
+            "sonnet": "deepseek-flash",
+            "haiku": "deepseek-flash",
         },
         "available_models": [
-            # V4 series (current)
+            # Current line
+            "deepseek-flash",
+            # Retiring: routed to V4.1 Flash from 2026-09-14 (still accepted)
             "deepseek-v4-pro",
+            # Legacy aliases (retired models; served by V4.1 Flash)
             "deepseek-v4-flash",
-            # Legacy aliases (being deprecated; map to v4-flash modes)
             "deepseek-chat",
             "deepseek-reasoner",
         ],

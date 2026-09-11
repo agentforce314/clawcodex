@@ -23,6 +23,15 @@ class ModelConfig:
     cost_output_per_mtok: float = 15.0
     cost_cache_create_per_mtok: float = 3.75
     cost_cache_read_per_mtok: float = 0.30
+    #: Whether this row may be reached by ``get_model_config``'s prefix
+    #: fallback (which claims ``key.rsplit("-", 1)[0]``). Set ``False`` on a
+    #: row whose id has too few segments for that base to be specific — e.g.
+    #: ``deepseek-flash`` claims bare ``deepseek`` and would otherwise swallow
+    #: ``deepseek-chat``, ``deepseek-reasoner`` and OpenRouter's
+    #: ``deepseek/…`` ids. Exact-match lookup ignores this flag, so an
+    #: opted-out row still describes its own id fully; it just stops
+    #: describing everyone else's.
+    claims_prefix: bool = True
 
 
 MODEL_CONFIGS: dict[str, ModelConfig] = {
@@ -252,14 +261,16 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         cost_cache_read_per_mtok=0.03,
     ),
 
-    # DeepSeek V4 series (OpenAI-compatible; api.deepseek.com). Registered so
+    # DeepSeek (OpenAI-compatible; api.deepseek.com). Registered so
     # context-window-aware logic (compaction triggers, token warnings) uses
     # DeepSeek's real ~1M window instead of the 200K default. Keys are the
     # bare model ids used ONLY by the ``deepseek`` provider; OpenRouter's
     # ``deepseek/…`` ids do not prefix-match ``deepseek-v4``, so OpenRouter is
     # intentionally unaffected. Legacy ``deepseek-chat`` / ``deepseek-reasoner``
     # are deliberately NOT registered: their prefix-match base would be the
-    # broad ``deepseek`` and could capture other ids.
+    # broad ``deepseek`` and could capture other ids — which is exactly why the
+    # ``deepseek-flash`` row below carries ``claims_prefix=False`` rather than
+    # being left out.
     #
     # NOTE: ``get_model_config``'s prefix fallback bases these on
     # ``deepseek-v4`` and ``pro`` precedes ``flash``, so a FUTURE
@@ -288,14 +299,36 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # was briefly suspected of truncating long ``effort=max`` responses on
     # terminal-bench 2.1, and it cannot, because it never reaches the wire.
     #
-    # ``supports_vision=False``: the DeepSeek API rejects any non-text
-    # content block outright —
+    # ``supports_vision=False`` on the V4 rows: the DeepSeek API rejected any
+    # non-text content block outright —
     #   400  unknown variant `image_url`, expected `text`
     # — so a pasted screenshot, an ``@image.png`` mention, or a ``Read`` of
-    # an image kills the turn. Probed against api.deepseek.com 2026-07-30.
+    # an image killed the turn. Probed against api.deepseek.com 2026-07-30.
     # A fusion model (``/fusion``, ``providers/fusion_models.py``) is the
-    # way to use images with these: it borrows vision from a second model
+    # way to use images with those: it borrows vision from a second model
     # and hands the base model a text description.
+    #
+    # ``deepseek-flash`` (DeepSeek-V4.1-Flash) is the exception and the reason
+    # to reach for the canonical id: the vendor's capability table marks it
+    # Vision ✓, folding in the separate ``deepseek-v4-flash-vision-exp`` line
+    # it retired. The claim is made for THAT id only — the retired flash ids
+    # are served by the same model, but the table says nothing about them, so
+    # they keep the conservative ``False`` and a user hitting it is told to
+    # switch rather than handed a 400 mid-turn.
+    "deepseek-flash": ModelConfig(
+        model_id="deepseek-flash",
+        display_name="DeepSeek V4.1 Flash",
+        context_window=1_000_000,
+        max_output_tokens=384_000,
+        supports_cache=True,
+        supports_vision=True,
+        # Bare ``deepseek`` would be this row's claimed prefix. See the field's
+        # docstring: without the opt-out it captures ``deepseek-chat``,
+        # ``deepseek-reasoner`` and every ``deepseek/…`` OpenRouter id, the
+        # last of which ``tests/test_deepseek_prefix_cache.py`` pins at the
+        # 200K default.
+        claims_prefix=False,
+    ),
     "deepseek-v4-pro": ModelConfig(
         model_id="deepseek-v4-pro",
         display_name="DeepSeek V4 Pro",
@@ -813,7 +846,9 @@ def get_model_config(model_id: str) -> ModelConfig | None:
     """Get config for a model, or None if unknown.
 
     Exact match, then a prefix fallback for date-variant ids (a row's claimed
-    prefix is its key minus the last ``-``-segment).
+    prefix is its key minus the last ``-``-segment). A row with
+    ``claims_prefix=False`` is skipped by that fallback and reachable only by
+    its exact id.
 
     NOT attempted: stripping a leading ``<vendor>/`` segment so OpenRouter ids
     resolve to their bare row. ``get_pricing`` (services/pricing.py) does
@@ -833,6 +868,8 @@ def get_model_config(model_id: str) -> ModelConfig | None:
         return MODEL_CONFIGS[model_id]
     # Try prefix match (for date-variant models)
     for key, config in MODEL_CONFIGS.items():
+        if not config.claims_prefix:
+            continue
         base = key.rsplit("-", 1)[0]
         if model_id.startswith(base):
             return config
