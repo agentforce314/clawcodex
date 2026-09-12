@@ -291,6 +291,106 @@ class TestCategoryNormalization(unittest.TestCase):
         self.assertEqual(_normalize_error_category(text), _normalize_error_category(text))
 
 
+class TestFallbackCategoryFuzz(unittest.TestCase):
+    """Differential fuzz against the old head-slice behavior (2000 seeded
+    randomized trials), in the spirit of the guard's own per-batch-counting
+    fix: quantify the bug at scale rather than trust one hand-picked example,
+    and bound the fix's downside risk rather than assert it away.
+
+    ``_normalize_error_category`` only diverges from the old
+    ``text.lower()[:MAX_FALLBACK_CATEGORY_LENGTH]`` when the (exit-code-
+    stripped) text is longer than the 120-char window -- shorter text has
+    ``[:120] == [-120:]`` for both slicings, so there is nothing to test
+    there. Both properties below hold that length fixed above the window.
+    """
+
+    SEED = 20260910  # date this fix landed; keeps trials reproducible.
+    TRIALS = 2000
+
+    @staticmethod
+    def _old_fallback_category(text: str) -> str:
+        """The pre-fix behavior this module used to have, reconstructed
+        verbatim for differential comparison (not imported from the module,
+        since the module no longer contains it)."""
+        import re as _re
+
+        normalized = _re.sub(r"\s+", " ", text).strip()
+        normalized = _re.sub(
+            r"</?tool_use_error>", "", normalized, flags=_re.IGNORECASE
+        ).strip()
+        return normalized.lower()[:120] or "unknown error"
+
+    def _random_banner(self, rng: "__import__('random').Random", min_len: int) -> str:
+        words = ["Loading", "dataset", "Initializing", "model", "epoch", "step",
+                  "progress:", "===", "Starting", "run", "batch", "checkpoint"]
+        out = ""
+        while len(out) < min_len:
+            out += rng.choice(words) + " "
+        return out
+
+    def _random_traceback(self, rng: "__import__('random').Random", tag: int) -> str:
+        exceptions = [
+            "ValueError: bad shape", "TypeError: unsupported operand",
+            "KeyError: 'params'", "IndexError: out of bounds",
+            "RuntimeError: device mismatch", "ConcretizationTypeError: tracer",
+        ]
+        return (
+            "Traceback (most recent call last):\n"
+            f'  File "train_{tag}.py", line {rng.randint(1, 999)}, in <module>\n'
+            + rng.choice(exceptions)
+        )
+
+    def test_old_scheme_collides_on_long_shared_banners_new_scheme_resolves_them(self):
+        """At scale: whenever the shared preamble is >= 120 chars, the old
+        head-slice collapses genuinely distinct tracebacks into one category
+        far more often than the new tail-preferring scheme does."""
+        import random
+
+        rng = random.Random(self.SEED)
+        old_collisions = 0
+        new_collisions = 0
+        for _ in range(self.TRIALS):
+            banner = self._random_banner(rng, min_len=rng.randint(120, 400))
+            text1 = banner + self._random_traceback(rng, 1) + "\nCommand failed with exit code 1"
+            text2 = banner + self._random_traceback(rng, 2) + "\nCommand failed with exit code 1"
+            if self._old_fallback_category(text1) == self._old_fallback_category(text2):
+                old_collisions += 1
+            if _normalize_error_category(text1) == _normalize_error_category(text2):
+                new_collisions += 1
+        self.assertGreater(
+            old_collisions, self.TRIALS * 0.9,
+            "sanity check: the old scheme should collide on almost every "
+            "trial here, or this fuzz setup isn't reproducing the bug",
+        )
+        self.assertEqual(
+            new_collisions, 0,
+            "the new scheme must not collapse distinct tracebacks behind a "
+            "long shared banner",
+        )
+
+    def test_identical_tail_is_recognized_regardless_of_random_head_noise(self):
+        """No-regression property: a truly recurring failure (identical
+        traceback tail) must still compare equal under the new scheme no
+        matter what unrelated, randomly-varying stdout noise precedes it --
+        this is the real-loop case the fix must not weaken."""
+        import random
+
+        rng = random.Random(self.SEED + 1)
+        fixed_tail = (
+            "Traceback (most recent call last):\n"
+            '  File "train.py", line 77, in <module>\n'
+            "ValueError: same bug every time\n"
+            "Command failed with exit code 1"
+        )
+        for _ in range(self.TRIALS):
+            head_a = self._random_banner(rng, min_len=rng.randint(0, 500))
+            head_b = self._random_banner(rng, min_len=rng.randint(0, 500))
+            self.assertEqual(
+                _normalize_error_category(head_a + fixed_tail),
+                _normalize_error_category(head_b + fixed_tail),
+            )
+
+
 class TestPathHandling(unittest.TestCase):
     def test_field_precedence(self):
         """guard:301 — file_path, then path, then notebook_path."""
