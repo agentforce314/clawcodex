@@ -14,7 +14,7 @@ const request = vi.fn()
 
 function page(over: Partial<FilePage> = {}): { ok: true } & FilePage {
   return {
-    absolute_path: '/repo/a.ts',
+    absolute_path: '/repo/a.txt',
     bytes: 40,
     eof: true,
     lines: 3,
@@ -26,11 +26,11 @@ function page(over: Partial<FilePage> = {}): { ok: true } & FilePage {
   }
 }
 
-const TAB = 'text:/repo/a.ts'
+const TAB = 'text:/repo/a.txt'
 
 function write(over: Partial<ToolNode> = {}): ToolNode {
   return {
-    args: { path: '/repo/a.ts' },
+    args: { path: '/repo/a.txt' },
     endedAt: 5_000,
     id: 'n1',
     kind: 'tool',
@@ -106,7 +106,7 @@ describe('scrollToLine', () => {
 
 describe('TextPreview', () => {
   it('reads the first page on its first mount', async () => {
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await waitFor(() => {
       expect(screen.getByText('three')).toBeTruthy()
@@ -115,13 +115,13 @@ describe('TextPreview', () => {
   })
 
   it('reads nothing when it comes back to a tab that already has pages', async () => {
-    const { unmount } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { unmount } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await waitFor(() => {
       expect(screen.getByText('three')).toBeTruthy()
     })
     unmount()
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     expect(request).toHaveBeenCalledTimes(1)
   })
@@ -129,7 +129,7 @@ describe('TextPreview', () => {
   it('shows one row per line, so an empty line is one line tall', async () => {
     request.mockResolvedValue(page({ lines: 3, text: 'one\n\nthree' }))
 
-    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { container } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await waitFor(() => {
       expect(container.querySelectorAll('[data-preview-line]')).toHaveLength(3)
@@ -139,7 +139,7 @@ describe('TextPreview', () => {
   it('offers the next page until the file ends', async () => {
     request.mockResolvedValueOnce(page({ eof: false }))
 
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     const more = await screen.findByText('Load more')
 
@@ -151,7 +151,7 @@ describe('TextPreview', () => {
     })
     expect(request).toHaveBeenLastCalledWith('fs.read_file', {
       offset: 4,
-      path: '/repo/a.ts',
+      path: '/repo/a.txt',
       session_id: 's1',
     })
     expect(screen.queryByText('Load more')).toBeNull()
@@ -163,7 +163,7 @@ describe('TextPreview', () => {
       ok: false,
     })
 
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     expect(await screen.findByText('That file is gone. It may have been moved or deleted.'))
       .toBeTruthy()
@@ -177,7 +177,7 @@ describe('TextPreview', () => {
   })
 
   it('wraps by default and unwraps on the toggle', async () => {
-    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { container } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await screen.findByText('three')
 
@@ -192,7 +192,7 @@ describe('TextPreview', () => {
   })
 
   it('announces a file the agent wrote after the page was read, without applying it', async () => {
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
     await screen.findByText('three')
 
     $transcript.set({ ...emptyTranscript(), nodes: [write({ endedAt: Date.now() + 1000 })] })
@@ -216,7 +216,7 @@ describe('TextPreview', () => {
   it('says nothing about a write that happened before the read', async () => {
     $transcript.set({ ...emptyTranscript(), nodes: [write({ endedAt: 1 })] })
 
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
     await screen.findByText('three')
 
     expect(screen.queryByText('The file has changed; this is the older text.')).toBeNull()
@@ -228,7 +228,7 @@ describe('TextPreview', () => {
     // which used to write that 0 over the offset the restore was about to read,
     // returning the reader to the top of every file they reloaded. jsdom does
     // no layout, so the clamp is supplied here; the guard is what is under test.
-    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { container } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await screen.findByText('three')
     setScroll(TAB, 420)
@@ -244,7 +244,7 @@ describe('TextPreview', () => {
         }),
     )
 
-    const reloading = reloadPages(TAB, '/repo/a.ts')
+    const reloading = reloadPages(TAB, '/repo/a.txt')
     const body = container.querySelector('[data-preview-body]') as HTMLElement
 
     await waitFor(() => {
@@ -270,9 +270,9 @@ describe('TextPreview', () => {
     request.mockImplementation(async (_method: string, params: { offset: number }) =>
       page({ eof: false, lines: 3, offset: params.offset, text: 'a\nb\nc' }),
     )
-    openFile('/repo/a.ts', 100_000)
+    openFile('/repo/a.txt', 100_000)
 
-    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { container } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await screen.findByText('Load more')
     await waitFor(() => {
@@ -283,9 +283,9 @@ describe('TextPreview', () => {
   })
 
   it('marks the line a navigation asked for, once', async () => {
-    openFile('/repo/a.ts', 2)
+    openFile('/repo/a.txt', 2)
 
-    const { container } = render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    const { container } = render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await waitFor(() => {
       expect(container.querySelector('[data-preview-line="2"]')?.className).toMatch(/lineTarget/)
@@ -298,9 +298,9 @@ describe('TextPreview', () => {
   it('walks pages until they reach the line it was sent to', async () => {
     // Pages load in order; there is no seek, so a deep line reads forward.
     request.mockResolvedValueOnce(page({ eof: false }))
-    openFile('/repo/a.ts', 5)
+    openFile('/repo/a.txt', 5)
 
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     request.mockResolvedValueOnce(page({ lines: 2, offset: 4, text: 'four\nfive' }))
 
@@ -316,9 +316,9 @@ describe('TextPreview', () => {
     request.mockImplementation(async (_method: string, params: { offset: number }) =>
       page({ eof: false, lines: 3, offset: params.offset, text: 'a\nb\nc' }),
     )
-    openFile('/repo/a.ts', 100_000)
+    openFile('/repo/a.txt', 100_000)
 
-    render(<TextPreview path="/repo/a.ts" tabId={TAB} />)
+    render(<TextPreview path="/repo/a.txt" tabId={TAB} />)
 
     await screen.findByText('Load more')
     await waitFor(() => {
@@ -329,5 +329,142 @@ describe('TextPreview', () => {
       setTimeout(resolve, 50)
     })
     expect(request.mock.calls.length).toBeLessThanOrEqual(5)
+  })
+})
+
+describe('viewers', () => {
+  it('opens Markdown as prose, with plain text one pick away', async () => {
+    openFile('/repo/notes.md')
+    request.mockImplementation(async () => ({
+      absolute_path: '/repo/notes.md',
+      bytes: 8,
+      eof: true,
+      lines: 1,
+      offset: 1,
+      ok: true,
+      text: '# Title',
+      version: 'v1',
+    }))
+
+    const { container } = render(<TextPreview path="/repo/notes.md" tabId="text:/repo/notes.md" />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-preview-markdown] h1')?.textContent).toBe('Title')
+    })
+    expect(screen.queryByLabelText('Wrap lines')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Viewer'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Plain text' }))
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-preview-line="1"]')?.textContent).toBe('# Title\n')
+    })
+  })
+
+  it('opens code behind a line gutter and names the file over its directory', async () => {
+    openFile('/repo/src/app.ts')
+    request.mockImplementation(async () => ({
+      absolute_path: '/repo/src/app.ts',
+      bytes: 20,
+      eof: true,
+      lines: 2,
+      offset: 1,
+      ok: true,
+      text: 'const a = 1\nconst b = 2',
+      version: 'v1',
+    }))
+
+    const { container } = render(<TextPreview path="/repo/src/app.ts" tabId="text:/repo/src/app.ts" />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-preview-code] .line')).toHaveLength(2)
+    })
+    expect(container.querySelector('[data-preview-path]')?.textContent).toBe('/repo/src/app.ts')
+    expect(screen.getByLabelText('Viewer').textContent).toContain('Code')
+  })
+})
+
+describe('whole-file viewers', () => {
+  const objectUrls: string[] = []
+
+  beforeEach(() => {
+    // jsdom has no Blob URLs; the viewers only need one that is a string.
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => {
+        const url = `blob:test/${String(objectUrls.length)}`
+
+        objectUrls.push(url)
+
+        return url
+      }),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  })
+
+  it('shows an HTML document in a script-only sandboxed frame', async () => {
+    openFile('/repo/index.html')
+    request.mockImplementation(async (method: string) => {
+      if (method !== 'fs.read_bytes') throw new Error(`unexpected ${method}`)
+
+      return {
+        absolute_path: '/repo/index.html',
+        bytes: 9,
+        data: btoa('<p>hi</p>'),
+        eof: true,
+        offset: 0,
+        ok: true,
+        version: 'v1',
+      }
+    })
+
+    const { container } = render(<TextPreview path="/repo/index.html" tabId="text:/repo/index.html" />)
+
+    await waitFor(() => {
+      expect(container.querySelector('iframe[data-preview-html]')).not.toBeNull()
+    })
+
+    const frame = container.querySelector('iframe[data-preview-html]')
+
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame?.getAttribute('src')).toMatch(/^blob:/)
+    expect(screen.queryByLabelText('Wrap lines')).toBeNull()
+    expect(screen.queryByText('Load more')).toBeNull()
+    expect(screen.getByLabelText('Viewer').textContent).toContain('HTML')
+  })
+
+  it('shows an image at its own size and offers no other viewer for it', async () => {
+    openFile('/repo/logo.png')
+    request.mockImplementation(async () => ({
+      absolute_path: '/repo/logo.png',
+      bytes: 4,
+      data: btoa('\x89PNG'),
+      eof: true,
+      offset: 0,
+      ok: true,
+      version: 'v1',
+    }))
+
+    const { container } = render(<TextPreview path="/repo/logo.png" tabId="text:/repo/logo.png" />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-preview-image] img')).not.toBeNull()
+    })
+    expect(container.querySelector('[data-preview-image] img')?.getAttribute('src')).toMatch(/^blob:/)
+    expect(screen.queryByLabelText('Viewer')).toBeNull()
+  })
+
+  it('says a whole file is too large in terms of the file', async () => {
+    openFile('/repo/big.pdf')
+    request.mockImplementation(async () => ({
+      error: { code: 'workspace-file/too-large', details: { limit: 32 * 1024 * 1024 }, message: 'x' },
+      ok: false,
+    }))
+
+    render(<TextPreview path="/repo/big.pdf" tabId="text:/repo/big.pdf" />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/That file is too large; the sidebar does not read files above 32 MB\./)).toBeTruthy()
+    })
   })
 })

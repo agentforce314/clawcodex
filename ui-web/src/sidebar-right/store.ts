@@ -23,10 +23,10 @@ import { closeDetails, openDetails } from '../state/layout.ts'
 import { resetTree } from './files-store.ts'
 import { forgetTextTab, resetTextTabs } from './text-store.ts'
 
-export type SidebarTabKind = 'files' | 'session' | 'text'
+export type SidebarTabKind = 'files' | 'guide' | 'session' | 'text'
 
 export interface SidebarTab {
-  /** The file's absolute path for `text`; empty for the two page tabs. */
+  /** The file's absolute path for `text`; empty for the page tabs. */
   address: string
   id: string
   kind: SidebarTabKind
@@ -54,6 +54,12 @@ export const SESSION_TAB: SidebarTab = {
 
 const FILES_TAB: SidebarTab = { address: '', id: 'files:', kind: 'files', title: 'Files' }
 
+/**
+ * The start page: a door to each page the column can show. It is what the
+ * strip's `+` opens, and it gives way to whatever it opens.
+ */
+export const GUIDE_TAB: SidebarTab = { address: '', id: 'guide:', kind: 'guide', title: 'Start' }
+
 export const $tabs = atom<SidebarTab[]>([SESSION_TAB])
 export const $activeTabId = atom<string>(SESSION_TAB.id)
 /** The column covering the whole frame, for reading something long. */
@@ -76,14 +82,32 @@ function focus(id: string): void {
 
 /**
  * Open a page tab (the session facts, the file tree), or focus the open one.
+ *
+ * With `replace`, the page takes the named tab's slot — how the guide gives
+ * way to the page it opened, as the reference's does — and the named tab
+ * closes even when the page was already open elsewhere in the strip.
  */
-export function openPage(kind: 'files' | 'session'): void {
+export function openPage(kind: 'files' | 'session', replace?: string): void {
   const wanted = kind === 'files' ? FILES_TAB : SESSION_TAB
   const tabs = $tabs.get()
+  const at = replace === undefined ? -1 : tabs.findIndex(tab => tab.id === replace)
 
-  if (!tabs.some(tab => tab.id === wanted.id)) $tabs.set([...tabs, wanted])
+  if (!tabs.some(tab => tab.id === wanted.id)) {
+    $tabs.set(at === -1 ? [...tabs, wanted] : tabs.map((tab, index) => (index === at ? wanted : tab)))
+  } else if (at !== -1) {
+    $tabs.set(tabs.filter(tab => tab.id !== replace))
+  }
 
   focus(wanted.id)
+}
+
+/** Open the start page, or focus the one already open. */
+export function openGuide(): void {
+  const tabs = $tabs.get()
+
+  if (!tabs.some(tab => tab.id === GUIDE_TAB.id)) $tabs.set([...tabs, GUIDE_TAB])
+
+  focus(GUIDE_TAB.id)
 }
 
 /**

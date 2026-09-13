@@ -17,8 +17,8 @@
 
 import { map } from 'nanostores'
 
-import type { FilePage, WorkspaceFileFailure } from '../gateway/protocol.ts'
-import { readWorkspaceFile } from '../state/actions.ts'
+import type { FileBytes, FilePage, WorkspaceFileFailure } from '../gateway/protocol.ts'
+import { readWorkspaceBytes, readWorkspaceFile } from '../state/actions.ts'
 
 /** One page's lines, as the backend counted them. */
 export interface TextPage {
@@ -30,9 +30,92 @@ export interface TextPage {
   text: string
 }
 
+/**
+ * How a file is drawn: rendered Markdown, highlighted code with a line gutter,
+ * the bare text, or — for the kinds a page of lines cannot feed — an HTML
+ * document in its own frame, an image, a PDF. The path picks the default; the
+ * reader can switch to plain text, and back, from the header.
+ */
+export type PreviewViewer = 'code' | 'html' | 'image' | 'markdown' | 'pdf' | 'text'
+
+/** The viewers that read the file whole, as bytes, rather than a page at a time. */
+const BYTE_VIEWERS: ReadonlySet<PreviewViewer> = new Set<PreviewViewer>(['html', 'image', 'pdf'])
+
+export function isByteViewer(viewer: PreviewViewer): boolean {
+  return BYTE_VIEWERS.has(viewer)
+}
+
+const HTML_EXTENSIONS = new Set(['htm', 'html'])
+const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'ico', 'jpeg', 'jpg', 'png', 'svg', 'webp'])
+const PDF_EXTENSIONS = new Set(['pdf'])
+
+/** Extensions the code viewer claims; anything else opens as plain text. */
+const CODE_EXTENSIONS = new Set([
+  'bash', 'bat', 'c', 'cc', 'cfg', 'cjs', 'clj', 'cmd', 'conf', 'cpp', 'cs', 'css', 'cts', 'cxx',
+  'dart', 'diff', 'dockerfile', 'env', 'erl', 'ex', 'exs', 'fish', 'go', 'graphql', 'h', 'hcl',
+  'hh', 'hpp', 'hs', 'htm', 'html', 'ini', 'java', 'js', 'json', 'json5', 'jsonc', 'jsx', 'kt',
+  'kts', 'less', 'lua', 'makefile', 'mjs', 'ml', 'mts', 'nim', 'patch', 'php', 'pl', 'proto',
+  'ps1', 'py', 'pyi', 'r', 'rb', 'rs', 'sass', 'scala', 'scss', 'sh', 'sql', 'svelte', 'svg',
+  'swift', 'tf', 'toml', 'ts', 'tsx', 'vb', 'vue', 'xml', 'yaml', 'yml', 'zig', 'zsh',
+])
+
+const MARKDOWN_EXTENSIONS = new Set(['markdown', 'md', 'mdx'])
+
+/**
+ * The extension a viewer is chosen by — the part after the last dot, or the
+ * whole lowercased name for `Dockerfile` and `Makefile`, which are their own
+ * kind without one.
+ */
+export function fileExtension(path: string): string {
+  const name = (path.split(/[/\\]/).filter(Boolean).at(-1) ?? path).toLowerCase()
+  const dot = name.lastIndexOf('.')
+
+  return dot > 0 ? name.slice(dot + 1) : name
+}
+
+/** The viewer a path opens in. */
+export function defaultViewer(path: string): PreviewViewer {
+  const extension = fileExtension(path)
+
+  if (HTML_EXTENSIONS.has(extension)) return 'html'
+  if (IMAGE_EXTENSIONS.has(extension)) return 'image'
+  if (PDF_EXTENSIONS.has(extension)) return 'pdf'
+  if (MARKDOWN_EXTENSIONS.has(extension)) return 'markdown'
+
+  return CODE_EXTENSIONS.has(extension) ? 'code' : 'text'
+}
+
+/**
+ * The viewers a path can be read with: its own, then the text ones that still
+ * make sense — an HTML document or an SVG is also its source, so code and
+ * plain text stand beside the frame; a raster image or a PDF is only itself.
+ * A path with one viewer gets no chooser in the header.
+ */
+export function viewerChoices(path: string): PreviewViewer[] {
+  const own = defaultViewer(path)
+
+  if (own === 'html') return ['html', 'code', 'text']
+  if (own === 'image') return fileExtension(path) === 'svg' ? ['image', 'code', 'text'] : ['image']
+  if (own === 'pdf') return ['pdf']
+
+  return own === 'text' ? ['text'] : [own, 'text']
+}
+
+/** The bytes a base64 window carries. Malformed base64 throws. */
+export function decodeBase64(data: string): Uint8Array {
+  const binary = atob(data)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+
+  return bytes
+}
+
 export interface TextTabState {
   /** The navigation revision this bucket has already jumped for. */
   answered: number
+  /** The whole file, for the byte viewers; absent until one of them asked. */
+  bytes?: Uint8Array
   eof: boolean
   failure?: WorkspaceFileFailure
   loading: boolean
@@ -54,6 +137,7 @@ export interface TextTabState {
   scrollTop: number
   /** The file version every loaded page came from. */
   version: string
+  viewer: PreviewViewer
   wrap: boolean
 }
 
@@ -70,6 +154,7 @@ export function emptyTextTab(path: string): TextTabState {
     readAt: 0,
     scrollTop: 0,
     version: '',
+    viewer: defaultViewer(path),
     wrap: true,
   }
 }
@@ -104,13 +189,15 @@ export function applyPage(
   }
 
   // A first page replaces everything: it is either the start of the walk or a
-  // reload, and in both cases what came before it is gone.
+  // reload, and in both cases what came before it is gone — the bytes too,
+  // when the version moved, so no viewer shows an older file than another.
   const base = offset === 1 ? {} : state.pages
 
   return {
     restart: false,
     state: {
       ...state,
+      ...(moved ? { bytes: undefined } : {}),
       eof: page.eof,
       failure: undefined,
       loading: false,
@@ -206,6 +293,7 @@ export async function reloadPages(tabId: string, path: string): Promise<void> {
   generations.set(tabId, ticker)
   $textTabs.setKey(tabId, {
     ...(current ?? emptyTextTab(path)),
+    bytes: undefined,
     eof: false,
     failure: undefined,
     loading: false,
@@ -216,6 +304,79 @@ export async function reloadPages(tabId: string, path: string): Promise<void> {
   await loadPage(tabId, path, 1)
 }
 
+/**
+ * Read a file whole, for the viewers that need it so. Seeds the bucket on the
+ * first call, as `loadPage` does, and shares its failure line: the pages and
+ * the bytes are two readings of one file, kept in one bucket.
+ */
+export async function loadBytes(tabId: string, path: string): Promise<void> {
+  const existing = $textTabs.get()[tabId]
+
+  if (existing === undefined) $textTabs.setKey(tabId, { ...emptyTextTab(path), loading: true })
+  else if (existing.loading) return
+  else patch(tabId, { failure: undefined, loading: true })
+
+  ticker += 1
+
+  const generation = ticker
+
+  generations.set(tabId, generation)
+
+  const result = await readWorkspaceBytes(path)
+
+  if (generations.get(tabId) !== generation) return
+
+  const current = $textTabs.get()[tabId]
+
+  if (current === undefined) return
+
+  if (!result.ok) {
+    $textTabs.setKey(tabId, { ...current, failure: result.error, loading: false })
+
+    return
+  }
+
+  $textTabs.setKey(tabId, applyBytes(current, result))
+}
+
+/** Fold a settled whole-file read into a bucket. Pure, like `applyPage`. */
+export function applyBytes(state: TextTabState, file: FileBytes): TextTabState {
+  const moved = state.version !== '' && state.version !== file.version
+
+  return {
+    ...state,
+    bytes: decodeBase64(file.data),
+    eof: true,
+    failure: undefined,
+    loading: false,
+    // Pages read from an older version would show another file than the
+    // frame does; a reload of that viewer reads them again.
+    ...(moved ? { pages: {} } : {}),
+    path: file.absolute_path,
+    readAt: Date.now(),
+    version: file.version,
+  }
+}
+
+/** Read the whole file again, dropping the bytes and the pages alike. */
+export async function reloadBytes(tabId: string, path: string): Promise<void> {
+  const current = $textTabs.get()[tabId]
+
+  ticker += 1
+  generations.set(tabId, ticker)
+  $textTabs.setKey(tabId, {
+    ...(current ?? emptyTextTab(path)),
+    bytes: undefined,
+    eof: false,
+    failure: undefined,
+    loading: false,
+    pages: {},
+    version: '',
+  })
+
+  await loadBytes(tabId, path)
+}
+
 export function setScroll(tabId: string, scrollTop: number): void {
   patch(tabId, { scrollTop })
 }
@@ -224,6 +385,10 @@ export function toggleWrap(tabId: string): void {
   const current = $textTabs.get()[tabId]
 
   if (current !== undefined) patch(tabId, { wrap: !current.wrap })
+}
+
+export function setViewer(tabId: string, viewer: PreviewViewer): void {
+  patch(tabId, { viewer })
 }
 
 /** Record that a navigation has been jumped for, so a remount does not re-jump. */

@@ -65,14 +65,21 @@ describe('SidebarRight', () => {
     expect(screen.getByText('Files touched')).toBeTruthy()
   })
 
-  it('opens the workspace tree from the strip', async () => {
+  it('opens the workspace tree through the start page, which then gives way', async () => {
     render(<SidebarRight />)
 
-    fireEvent.click(screen.getByLabelText('Workspace files'))
+    fireEvent.click(screen.getByLabelText('New tab'))
+
+    expect(screen.getByRole('tab', { name: 'Start' }).getAttribute('aria-selected')).toBe('true')
+    // One start page at a time: the add control leaves the strip while it is open.
+    expect(screen.queryByLabelText('New tab')).toBeNull()
+
+    fireEvent.click(screen.getByText('Workspace files'))
 
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: 'Files' }).getAttribute('aria-selected')).toBe('true')
     })
+    expect(screen.queryByRole('tab', { name: 'Start' })).toBeNull()
   })
 
   it('draws a chip per open file and switches between them', async () => {

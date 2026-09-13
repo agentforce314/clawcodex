@@ -45,14 +45,14 @@ import { trajectoryStats } from '../state/trajectory.ts'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
 import { $detailsWidth, openDetails } from '../state/layout.ts'
-import { AgentIcon, ArrowDownIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
+import { AgentIcon, ArrowDownIcon, FolderIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
 import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
 import { HeroShell } from './HeroShell.tsx'
 import { InputBar } from './InputBar.tsx'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import { QuestionComposer } from './QuestionComposer.tsx'
-import { closeSidebar } from '../sidebar-right/store.ts'
+import { closeSidebar, openPage } from '../sidebar-right/store.ts'
 import { QueueDock } from './QueueDock.tsx'
 import { StatsLine } from './StatsLine.tsx'
 import { SubagentChip } from './SubagentChip.tsx'
@@ -382,6 +382,22 @@ export function ConversationRoot() {
             >
               <MessageIcon size={16} />
             </button>
+            {/* The workspace tree, one click from the header — the way the
+                reference's "Open workspace in Files" sits beside its sidebar
+                toggle. Absent without a workspace to list. */}
+            {workspace !== '' && (
+              <button
+                aria-label="Open workspace in Files"
+                className={css.iconButton}
+                onClick={() => {
+                  openPage('files')
+                }}
+                title="Open workspace in Files"
+                type="button"
+              >
+                <FolderIcon size={16} />
+              </button>
+            )}
             <button
               className={css.iconButton}
               onClick={() => {

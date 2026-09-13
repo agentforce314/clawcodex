@@ -7,6 +7,7 @@ symlink that points out of the tree.
 
 from __future__ import annotations
 
+import base64
 import os
 
 import pytest
@@ -17,7 +18,9 @@ from src.server.desktop_workspace_files import (
     MAX_ENTRIES,
     MAX_LINES,
     list_dir,
+    read_bytes,
     read_file,
+    read_related,
 )
 
 
@@ -513,3 +516,100 @@ def test_the_reads_are_reachable_over_the_socket(tmp_path):
     assert refused["error"]["code"] == "workspace-file/outside-workspace"
     assert elsewhere["error"]["code"] == "workspace-file/outside-workspace"
     assert listed_elsewhere["error"]["code"] == "workspace-file/outside-workspace"
+
+
+# ── read_bytes ───────────────────────────────────────────────────────────────
+
+
+def test_reads_a_whole_file_as_base64(workspace):
+    payload = b"\x89PNG\r\n\x1a\n\x00rest"
+    (workspace / "logo.png").write_bytes(payload)
+
+    result = read_bytes(str(workspace), "logo.png")
+
+    assert result["ok"] is True
+    assert base64.b64decode(result["data"]) == payload
+    assert result["bytes"] == len(payload)
+    assert result["offset"] == 0
+    assert result["eof"] is True
+    assert result["absolute_path"] == str((workspace / "logo.png").resolve())
+
+
+def test_a_whole_file_over_the_cap_is_refused_with_its_limit(workspace, monkeypatch):
+    monkeypatch.setattr(workspace_files, "MAX_FILE_BYTES", 8)
+    (workspace / "big.bin").write_bytes(b"x" * 9)
+
+    result = read_bytes(str(workspace), "big.bin")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "workspace-file/too-large"
+    assert result["error"]["details"]["limit"] == 8
+
+
+def test_a_file_of_exactly_the_cap_is_read_whole(workspace, monkeypatch):
+    monkeypatch.setattr(workspace_files, "MAX_FILE_BYTES", 8)
+    (workspace / "fits.bin").write_bytes(b"x" * 8)
+
+    result = read_bytes(str(workspace), "fits.bin")
+
+    assert result["ok"] is True
+    assert base64.b64decode(result["data"]) == b"x" * 8
+
+
+def test_a_missing_or_non_regular_file_has_no_bytes(workspace):
+    assert read_bytes(str(workspace), "gone.png")["error"]["code"] == "workspace-file/not-found"
+
+    (workspace / "dir").mkdir()
+
+    assert read_bytes(str(workspace), "dir")["error"]["code"] == "workspace-file/not-regular-file"
+
+
+def test_bytes_are_confined_to_the_workspace_too(workspace, tmp_path):
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"x")
+
+    assert read_bytes(str(workspace), str(outside))["error"]["code"] == "workspace-file/outside-workspace"
+
+
+# ── read_related ─────────────────────────────────────────────────────────────
+
+
+def test_a_related_file_is_read_beside_its_document(workspace):
+    (workspace / "site" / "css").mkdir(parents=True)
+    (workspace / "site" / "index.html").write_text("<html>")
+    (workspace / "site" / "css" / "app.css").write_text("body{}")
+
+    result = read_related(str(workspace), "site/index.html", "css/app.css")
+
+    assert result["ok"] is True
+    assert base64.b64decode(result["data"]) == b"body{}"
+    assert result["absolute_path"] == str((workspace / "site" / "css" / "app.css").resolve())
+
+
+def test_a_related_file_may_climb_within_the_workspace(workspace):
+    (workspace / "site").mkdir()
+    (workspace / "site" / "index.html").write_text("<html>")
+    (workspace / "shared.js").write_text("1")
+
+    result = read_related(str(workspace), "site/index.html", "../shared.js")
+
+    assert result["ok"] is True
+    assert base64.b64decode(result["data"]) == b"1"
+
+
+def test_a_related_path_stays_inside_the_workspace(workspace, tmp_path):
+    (workspace / "index.html").write_text("<html>")
+    (tmp_path / "secret.css").write_text("x")
+
+    result = read_related(str(workspace), "index.html", "../secret.css")
+
+    assert result["error"]["code"] == "workspace-file/outside-workspace"
+
+
+@pytest.mark.parametrize("bad", ["/etc/hosts", "https://example.com/a.css", "", "a\x00b"])
+def test_a_related_path_must_be_relative(workspace, bad):
+    (workspace / "index.html").write_text("<html>")
+
+    result = read_related(str(workspace), "index.html", bad)
+
+    assert result["error"]["code"] == "workspace-file/bad-relative-path"

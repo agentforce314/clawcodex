@@ -4,7 +4,11 @@
  * One surface per window, holding the session facts, the workspace tree, and a
  * tab per file the conversation opened. The strip is the only chrome — a type's
  * own controls (wrap, reload) belong in its body, not up here beside the
- * column's.
+ * column's. Each chip leads with its kind: the folder for the tree, the file's
+ * own type icon for a file, the compass for the start page.
+ *
+ * The strip's `+` opens the start page, drawn only while the column holds
+ * none: a door to each page, the way the reference's add control works.
  *
  * Fullscreen takes the whole frame rather than widening the column: a file worth
  * reading is worth reading at full width, and the conversation is still one
@@ -13,8 +17,10 @@
 
 import { useStore } from '@nanostores/react'
 
-import { CollapseIcon, ExpandIcon, FolderIcon, LayersIcon, XIcon } from '../ui/icons.tsx'
+import { CollapseIcon, CompassIcon, ExpandIcon, LayersIcon, PlusIcon, XIcon } from '../ui/icons.tsx'
+import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
 import { FilesTree } from './FilesTree.tsx'
+import { GuideTab } from './GuideTab.tsx'
 import { SessionTab } from './SessionTab.tsx'
 import { TextPreview } from './TextPreview.tsx'
 import {
@@ -24,7 +30,7 @@ import {
   closeSidebar,
   closeTab,
   focusTab,
-  openPage,
+  openGuide,
   toggleFullscreen,
   type SidebarTab,
 } from './store.ts'
@@ -33,8 +39,18 @@ import css from './SidebarRight.module.css'
 function TabBody({ tab }: { tab: SidebarTab }) {
   if (tab.kind === 'session') return <SessionTab />
   if (tab.kind === 'files') return <FilesTree />
+  if (tab.kind === 'guide') return <GuideTab tabId={tab.id} />
 
   return <TextPreview path={tab.address} tabId={tab.id} />
+}
+
+/** The chip's leading glyph: what kind of thing the tab holds. */
+function ChipIcon({ tab }: { tab: SidebarTab }) {
+  if (tab.kind === 'session') return <LayersIcon size={14} />
+  if (tab.kind === 'files') return <FileTypeIcon kind="folder" size={14} />
+  if (tab.kind === 'guide') return <CompassIcon size={14} />
+
+  return <FileTypeIcon path={tab.address} size={14} />
 }
 
 export function SidebarRight() {
@@ -43,6 +59,7 @@ export function SidebarRight() {
   const fullscreen = useStore($fullscreen)
 
   const active = tabs.find(tab => tab.id === activeId) ?? tabs[0]
+  const hasGuide = tabs.some(tab => tab.kind === 'guide')
 
   return (
     <div className={css.root} data-fullscreen={fullscreen ? '' : undefined}>
@@ -68,7 +85,10 @@ export function SidebarRight() {
                 title={tab.address === '' ? tab.title : tab.address}
                 type="button"
               >
-                {tab.title}
+                <span aria-hidden="true" className={css.chipIcon}>
+                  <ChipIcon tab={tab} />
+                </span>
+                <span className={css.chipLabel}>{tab.title}</span>
               </button>
               {/* The session tab is the column's floor: closing the last tab
                   would leave a strip around nothing, so it stays. */}
@@ -87,29 +107,18 @@ export function SidebarRight() {
             </div>
           ))}
         </div>
+        {!hasGuide && (
+          <button
+            aria-label="New tab"
+            className={css.tool}
+            onClick={openGuide}
+            title="New tab"
+            type="button"
+          >
+            <PlusIcon size={16} />
+          </button>
+        )}
         <span className={css.fill} />
-        <button
-          aria-label="Workspace files"
-          className={css.tool}
-          onClick={() => {
-            openPage('files')
-          }}
-          title="Workspace files"
-          type="button"
-        >
-          <FolderIcon size={16} />
-        </button>
-        <button
-          aria-label="Session details"
-          className={css.tool}
-          onClick={() => {
-            openPage('session')
-          }}
-          title="Session details"
-          type="button"
-        >
-          <LayersIcon size={16} />
-        </button>
         <button
           aria-label={fullscreen ? 'Leave full screen' : 'Full screen'}
           aria-pressed={fullscreen}

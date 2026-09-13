@@ -58,11 +58,43 @@ Two structural rules hold throughout:
   dock cards; the input card is exactly that plus 32px, at every viewport. The
   relation is declared once, on the conversation root.
 
+## The composer
+
+The `+` button and a typed `/` open the same menu. With nothing typed it
+lists an **Add** section (the image picker, plan, goal) and a **Commands**
+section, each in usage order; every row carries a glyph, a title, the command
+name beside a title that differs from it (`Output style` / `output-style`), and
+the catalog's own description right-aligned, so the titles read as one column.
+A typed query ranks every row by a case-insensitive ordered subsequence of the
+name or the title, prefix hits first — `/ol` finds `Output style` before
+`Model` — the way the reference's `/` menu does. The menu is capped at the
+design height or the space above the card, whichever is less, and a fade at
+its foot says there is more below.
+
+What a pick does depends on the row. The image row opens the picker. A
+command that takes an argument claims the draft as `/name ` — or as
+`/name <the text already typed>` when the launcher opened over a sentence, so
+"fix the bug" and Plan read `/plan fix the bug`. A bare command runs at once,
+as it would on Enter. The rows and their arrangement are a pure function
+(`src/conversation/command-menu.ts`); the composer decides what a pick does.
+
+A sent message shows an `@path` mention as a chip carrying the file's type
+icon and name, and a click opens the file in the right column, read against
+the session's workspace. A folder mention keeps the chip but not the click.
+
 ## The right column
 
 The right column is a small docking surface rather than one fixed panel. It
 opens on **Session** — the facts about this run, the files it touched, the tools
-it leaned on — and grows a tab for anything else you point it at:
+it leaned on — and grows a tab for anything else you point it at. Each chip
+leads with its kind: the folder for the tree, the file's own type icon for a
+file, the compass for the start page.
+
+- **Start** is what the strip's `+` opens, drawn only while the column holds
+  none: a muted compass over one capsule per page, each with a line on what it
+  opens. Picking a capsule opens that page in the start page's slot, so the
+  guide gives way to what it opened. The header's folder button opens the tree
+  directly, as the reference's *Open workspace in Files* does.
 
 - **Files** lists the workspace one directory level at a time, fetched the first
   time you open a level and kept afterwards, so collapsing and reopening costs
@@ -76,9 +108,18 @@ it leaned on — and grows a tab for anything else you point it at:
   directories-first — that needs every child's type, which is the stat-per-child
   the cut exists to avoid. So over the cap the cut can still fall a few names
   from where the displayed list ends.
-- **A file** opens as its own tab, read a page at a time (`fs.read_file`, 5000
-  lines per page), with **Load more** at the end of the loaded text until the
-  file ends. A `read` row in the conversation hands its 1-based `offset` along,
+- **A file** opens as its own tab, drawn by the viewer its path picks —
+  Markdown rendered as prose, code highlighted behind a line gutter, an HTML
+  document in a frame of its own, an image at its own size, a PDF through the
+  browser's viewer, anything else as bare text — with the text viewers one
+  pick away in the header's chooser where they still make sense (an HTML
+  document or an SVG is also its source; a raster image or a PDF is only
+  itself), and back. The header names the file over its directory in the
+  quieter ink, and only the directory gives way when the row is short. The
+  text viewers read a page at a time (`fs.read_file`, 5000 lines per page),
+  with **Load more** at the end of the loaded text until the file ends; the
+  frame, the image and the PDF read the file whole (`fs.read_bytes`, capped at
+  32 MB, the reference's own full-file limit). A `read` row in the conversation hands its 1-based `offset` along,
   so the file opens where the agent was looking — walking forward at most five
   pages, because each page is a round trip whose backend re-reads the lines
   before it. Five pages of 5000 is how far a jump reaches; past that it lands on
@@ -87,6 +128,22 @@ it leaned on — and grows a tab for anything else you point it at:
   A page is also capped at 2 MB, and a page over that is **refused** rather than
   truncated: a file whose first line is bigger than the cap (a minified bundle,
   a one-line JSON dump) therefore cannot be shown here at all.
+
+The HTML frame is `sandbox="allow-scripts"` and never `allow-same-origin`:
+scripts run, but on an opaque origin that can reach neither this app nor the
+gateway. That origin cannot load resource URLs the parent creates either, so
+the stylesheets and classic scripts the document declares by relative path
+are read up front through `fs.read_related` — the backend joins the
+document's directory, and the client never names an asset by an absolute
+path — and handed to the frame inside a bootstrap document that rebuilds them
+as Blob URLs of its own. The limits are the reference's: 4 MB per asset, 32 MB
+per package, 64 assets. Module imports, CSS `url()` and `@import`, images and
+runtime fetches are left to the browser, which cannot resolve a relative one
+from a Blob document, so they stay blank rather than being fetched through the
+gateway; a `<base href>` hands every resolution to the browser and packs
+nothing. Every read behind these viewers is confined to the workspace like
+the paged one — a related file outside it is refused, where the reference
+allows it.
 
 A tab's identity is its path, so opening the same file twice reveals the tab it
 is already in (and jumps again) rather than stacking duplicates. Full screen
@@ -107,8 +164,8 @@ does the agent merely *reading* a file that something else changed raise the
 notice, as it does upstream: there, the read observes a new version through the
 resource; here it observes nothing the client can see.
 
-Both reads are confined to the session's workspace root, symlinks resolved
-(`src/server/desktop_workspace_files.py`). The client names the *session*, never
+All four reads are confined to the session's workspace root, symlinks
+resolved (`src/server/desktop_workspace_files.py`). The client names the *session*, never
 the root: the backend derives the boundary, because one the client can move is
 not a boundary. It is honesty rather than a security boundary, under every
 binding: one token gates the whole socket, so anyone who can call these methods
@@ -279,10 +336,17 @@ Adapted here: the design-token architecture (raw palette → semantic aliases �
 surface-specific roles, with only the aliases moving between themes), the
 three-column concession solver, the single-scrollport conversation column with
 its sticky composer seat and shared width axis, the tool-card family
-(terminal / diff / read / generic), and the tabbed right column with its lazy
-workspace tree and paged text reader.
+(terminal / diff / read / generic), the tabbed right column with its lazy
+workspace tree, start page, file-type icons and paged reader with its
+Markdown / code / plain-text viewers, the composer's sectioned command menu
+behind the `+` button and the `/` trigger, the file-reference chips in sent
+messages, and the scrollbar's rebindable rail geometry.
 
-Diverged deliberately: the session stats strip under the composer. The
+Diverged deliberately: the PDF viewer, which is the browser's own rather
+than the reference's bundled PDF.js pages — a viewer every Chromium and Firefox
+already has costs no bundle, at the price of the reference's lazy per-page
+rendering and its tab-local zoom. And the session stats strip under the
+composer. The
 reference ran an in-page A/B between a one-line strip and a two-pill variant
 with click-open dialogs, kept the pills, and deleted the line. This app has
 the line. It is not what upstream settled on and is not a port of the current

@@ -521,6 +521,23 @@ export interface FilePage {
   version: string
 }
 
+/**
+ * `fs.read_bytes` and `fs.read_related` — a whole file's bytes, for the
+ * viewers a page of lines cannot feed (an image, a PDF, an HTML document and
+ * the assets it declares). Always one window: `offset` 0 and `eof` true.
+ */
+export interface FileBytes {
+  absolute_path: string
+  /** The whole file's size. */
+  bytes: number
+  /** The file's bytes, base64-encoded. */
+  data: string
+  eof: boolean
+  offset: number
+  /** Changes whenever the file does. */
+  version: string
+}
+
 /** One child of a listed directory. */
 export interface WorkspaceEntry {
   name: string

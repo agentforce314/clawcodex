@@ -18,6 +18,7 @@ import type {
   DelegationStatusResult,
   DirectoryListing,
   EffortOptionsResult,
+  FileBytes,
   FilePage,
   FileSearchResult,
   GatewayEvent,
@@ -837,6 +838,41 @@ export async function readWorkspaceFile(
     return await gateway().request<WorkspaceFileResult<FilePage>>('fs.read_file', {
       offset,
       path,
+      session_id: $sessionId.get(),
+    })
+  } catch (error) {
+    return unavailable(error)
+  }
+}
+
+/**
+ * A whole workspace file as bytes: what the image, PDF and HTML previews need,
+ * since a picture has no page to read it by.
+ */
+export async function readWorkspaceBytes(path: string): Promise<WorkspaceFileResult<FileBytes>> {
+  try {
+    return await gateway().request<WorkspaceFileResult<FileBytes>>('fs.read_bytes', {
+      path,
+      session_id: $sessionId.get(),
+    })
+  } catch (error) {
+    return unavailable(error)
+  }
+}
+
+/**
+ * A file named relative to another — the stylesheet or script an HTML document
+ * declares beside itself. The backend joins the document's directory, so the
+ * client never names the asset by an absolute path.
+ */
+export async function readWorkspaceRelated(
+  path: string,
+  relativePath: string,
+): Promise<WorkspaceFileResult<FileBytes>> {
+  try {
+    return await gateway().request<WorkspaceFileResult<FileBytes>>('fs.read_related', {
+      path,
+      relative_path: relativePath,
       session_id: $sessionId.get(),
     })
   } catch (error) {

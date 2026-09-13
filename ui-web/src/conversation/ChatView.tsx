@@ -41,12 +41,20 @@ function useElapsed(startedAt: number | undefined): number {
   return Math.max(0, Math.round((now - startedAt) / 1000))
 }
 
-function formatClock(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
+/**
+ * The running turn's clock: seconds, then minutes and seconds past a minute,
+ * then hours as well past an hour, the smaller units zero-padded so the label
+ * keeps its width as it ticks.
+ */
+export function formatClock(seconds: number): string {
+  if (seconds < 60) return `${String(seconds)}s`
 
-  const minutes = Math.floor(seconds / 60)
+  const minutes = Math.floor(seconds / 60) % 60
+  const rest = String(seconds % 60).padStart(2, '0')
 
-  return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
+  if (seconds < 3600) return `${String(minutes)}m ${rest}s`
+
+  return `${String(Math.floor(seconds / 3600))}h ${String(minutes).padStart(2, '0')}m ${rest}s`
 }
 
 /**

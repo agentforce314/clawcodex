@@ -343,3 +343,112 @@ export const DatabaseIcon = (p: IconProps) => (
     <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
   </Svg>
 )
+
+/*
+ * Composer-menu glyphs. One per command family the menu lists, on the same
+ * 24-unit stroke grid as everything above so a row of them reads as one set.
+ */
+
+export const ImageIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect height="18" rx="2" ry="2" width="18" x="3" y="3" />
+    <circle cx="9" cy="9" r="2" />
+    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+  </Svg>
+)
+
+/** A goal: concentric rings. */
+export const TargetIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <circle cx="12" cy="12" r="6" />
+    <circle cx="12" cy="12" r="2" />
+  </Svg>
+)
+
+/** Compaction: two arrows folding toward a centre line. */
+export const CompactIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 22v-6M12 8V2M4 12H2M10 12H8M16 12h-2M22 12h-2" />
+    <path d="m15 19-3-3-3 3M15 5l-3 3-3-3" />
+  </Svg>
+)
+
+export const TrashIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 6h18" />
+    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    <path d="M10 11v6M14 11v6" />
+  </Svg>
+)
+
+/** Rewind: an arrow curling back to the left. */
+export const UndoIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11" />
+  </Svg>
+)
+
+export const CoinsIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M18.09 10.37A6 6 0 1 1 10.34 18" />
+    <path d="M7 6h1v4" />
+    <path d="m16.71 13.88.7.71-2.82 2.82" />
+  </Svg>
+)
+
+/** Effort: a bolt. */
+export const ZapIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
+  </Svg>
+)
+
+/** A model: the sparkle the model chip family uses. */
+export const SparklesIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+    <path d="M20 3v4M22 5h-4M4 17v2M5 18H3" />
+  </Svg>
+)
+
+export const LeafIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z" />
+    <path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" />
+  </Svg>
+)
+
+export const BookIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 7v14" />
+    <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+  </Svg>
+)
+
+/** A slash command with no glyph of its own: a slash in a square. */
+export const SlashSquareIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect height="18" rx="2" width="18" x="3" y="3" />
+    <path d="m9 15 6-6" />
+  </Svg>
+)
+
+/** The guide's placeholder cube: an isometric box. */
+export const CubeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m21 16-9 5-9-5V8l9-5 9 5z" />
+    <path d="m3 8 9 5 9-5M12 13v8" />
+  </Svg>
+)
+
+/** A compass: the guide page's mark. */
+export const CompassIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z" />
+  </Svg>
+)

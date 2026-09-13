@@ -41,11 +41,14 @@ either ``{"ok": True, ...}`` or ``{"ok": False, "error": {"code", "message"}}``,
 with codes borrowed from the reference client's ``workspace-file/*`` vocabulary
 so the two front ends can say the same sentences.
 
-Reads are paged by line, never whole: a file has no bound, and a page does.
+Text reads are paged by line, never whole: a file has no bound, and a page does.
+The byte reads behind the image, PDF and HTML previews are whole — a picture has
+no page — and bounded by ``MAX_FILE_BYTES`` instead.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import stat as stat_module
@@ -64,6 +67,10 @@ MAX_LINES = 5000
 # ...and one page's bytes, independently: 2000 lines of minified JavaScript is
 # not a page anybody wants delivered over a socket that also carries the turn.
 MAX_BYTES = 2 * 1024 * 1024
+# The whole-file cap of the byte reads: what an image, a PDF or an HTML
+# document may weigh before the sidebar refuses to fetch it entire. The
+# reference service's own full-file default.
+MAX_FILE_BYTES = 32 * 1024 * 1024
 # Children returned for one directory level before the tail is cut. The
 # reference service's own default; the tail it cuts is the alphabetical tail,
 # because the level is ordered before it is cut (see `list_dir`).
@@ -280,6 +287,99 @@ def read_file(
     }
 
 
+def read_bytes(root: str, path: str) -> dict[str, Any]:
+    """A whole file's bytes, base64-encoded, for the viewers that need the file entire.
+
+    An image, a PDF or an HTML document has no page to read it by, so this is
+    the one read that returns a file whole — which is why it is the one read
+    with a whole-file cap. ``bytes`` is the size the file was stat'd at;
+    ``offset`` and ``eof`` are carried so the shape matches the reference
+    client's byte window, of which this is always the only one.
+    """
+    resolved = _resolve(root, path)
+    if isinstance(resolved, dict):
+        return resolved
+    _, target = resolved
+
+    try:
+        stat = target.stat()
+    except FileNotFoundError:
+        return _failure("not-found", "That file is gone. It may have been moved or deleted.")
+    except OSError as exc:
+        return _failure("unavailable", f"cannot read {target}: {exc}")
+
+    if not stat_module.S_ISREG(stat.st_mode):
+        return _failure(
+            "not-regular-file", "That is not a regular file, so it has no bytes to show."
+        )
+
+    too_large = _failure(
+        "too-large",
+        "That file is too large; the sidebar does not read files above the limit.",
+        limit=MAX_FILE_BYTES,
+    )
+    if stat.st_size > MAX_FILE_BYTES:
+        return too_large
+
+    try:
+        with target.open("rb") as handle:
+            # Re-stat the open handle, as `read_file` does: the version has to
+            # describe the bytes actually returned.
+            stat = os.fstat(handle.fileno())
+            # One byte past the cap: a file that grew between the stat and the
+            # open is caught by what was read rather than by what was reported.
+            data = handle.read(MAX_FILE_BYTES + 1)
+    except PermissionError:
+        return _failure("unavailable", f"permission denied: {target}")
+    except OSError as exc:
+        return _failure("unavailable", f"cannot read {target}: {exc}")
+
+    if len(data) > MAX_FILE_BYTES:
+        return too_large
+
+    return {
+        "ok": True,
+        "absolute_path": str(target),
+        "version": _version(stat),
+        "bytes": stat.st_size,
+        "offset": 0,
+        "data": base64.b64encode(data).decode("ascii"),
+        "eof": True,
+    }
+
+
+def read_related(root: str, path: str, relative: str) -> dict[str, Any]:
+    """A file named relative to another file's directory, whole.
+
+    What an HTML document's own ``<link href="css/app.css">`` or
+    ``<script src="app.js">`` names: the client hands over the document and
+    the attribute, and the directory is joined here so the client never
+    states an absolute path for the asset. Only a relative filesystem path is
+    accepted — not an absolute one, not a URL — and the joined path is then
+    read like any other, confined to the workspace like any other. The
+    reference service lets a related file live outside the workspace; this
+    module's one rule holds for it too.
+    """
+    normalized = (relative or "").replace("\\", "/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[a-z][a-z\d+.-]*:", normalized, re.IGNORECASE)
+        or "\x00" in normalized
+    ):
+        return _failure(
+            "bad-relative-path",
+            "A related file is named relative to its document, not by an absolute path or a URL.",
+        )
+
+    resolved = _resolve(root, path)
+    if isinstance(resolved, dict):
+        return resolved
+    _, base = resolved
+
+    return read_bytes(root, str(base.parent / normalized))
+
+
 def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     """One directory level under the workspace root: its direct children.
 
@@ -366,4 +466,13 @@ def list_dir(root: str, path: str | None = None) -> dict[str, Any]:
     }
 
 
-__all__ = ["MAX_BYTES", "MAX_ENTRIES", "MAX_LINES", "list_dir", "read_file"]
+__all__ = [
+    "MAX_BYTES",
+    "MAX_ENTRIES",
+    "MAX_FILE_BYTES",
+    "MAX_LINES",
+    "list_dir",
+    "read_bytes",
+    "read_file",
+    "read_related",
+]

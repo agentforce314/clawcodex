@@ -1,0 +1,33 @@
+/* A file reference in a sent message: the chip family's ink over the bubble's
+   own text metrics, so a line with a chip in it is no taller than one without. */
+.chip {
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+  max-width: 100%;
+  padding: 0 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-alias-state-business-primary);
+  font: inherit;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.icon {
+  flex: none;
+  align-self: center;
+}
+
+/* A file opens on a click; the dotted underline is the prose file-link's. */
+.openable {
+  cursor: pointer;
+}
+
+.openable:hover,
+.openable:focus-visible {
+  background: var(--cc-alias-state-business-tertiary);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
