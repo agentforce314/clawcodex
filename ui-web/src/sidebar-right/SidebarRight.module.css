@@ -78,17 +78,33 @@
 }
 
 .chipTitle {
+  display: flex;
+  gap: 5px;
+  align-items: center;
   min-width: 0;
   height: 100%;
-  padding: 0 4px 0 10px;
+  padding: 0 4px 0 8px;
   overflow: hidden;
   border: none;
   background: transparent;
   color: inherit;
   font: inherit;
+  cursor: pointer;
+}
+
+/* The kind before the name: the folder, the file's type sheet, the compass —
+   on the chip's own ink where the glyph draws with currentColor. */
+.chipIcon {
+  display: inline-flex;
+  flex: none;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.chipLabel {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .chipClose {

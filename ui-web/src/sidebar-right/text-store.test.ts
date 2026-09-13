@@ -6,8 +6,12 @@ import { setGatewayClient } from '../state/actions.ts'
 import { $sessionId, $workspace } from '../state/store.ts'
 import {
   $textTabs,
+  applyBytes,
   applyPage,
+  decodeBase64,
+  defaultViewer,
   emptyTextTab,
+  loadBytes,
   lastLineLoaded,
   linesOf,
   loadedPages,
@@ -17,6 +21,7 @@ import {
   resetTextTabs,
   setScroll,
   toggleWrap,
+  viewerChoices,
 } from './text-store.ts'
 
 const request = vi.fn()
@@ -285,5 +290,76 @@ describe('per-tab reading state', () => {
     setScroll('gone', 10)
 
     expect($textTabs.get().gone).toBeUndefined()
+  })
+})
+
+describe('viewers', () => {
+  it('picks a viewer by the path and offers the text ones where they still make sense', () => {
+    expect(defaultViewer('/repo/index.html')).toBe('html')
+    expect(defaultViewer('/repo/logo.png')).toBe('image')
+    expect(defaultViewer('/repo/paper.pdf')).toBe('pdf')
+    expect(defaultViewer('/repo/README.md')).toBe('markdown')
+    expect(defaultViewer('/repo/app.ts')).toBe('code')
+    expect(defaultViewer('/repo/notes')).toBe('text')
+
+    expect(viewerChoices('/repo/index.html')).toEqual(['html', 'code', 'text'])
+    expect(viewerChoices('/repo/logo.png')).toEqual(['image'])
+    expect(viewerChoices('/repo/icon.svg')).toEqual(['image', 'code', 'text'])
+    expect(viewerChoices('/repo/paper.pdf')).toEqual(['pdf'])
+    expect(viewerChoices('/repo/notes')).toEqual(['text'])
+  })
+})
+
+describe('loadBytes', () => {
+  it('seeds a bucket and reads the file whole', async () => {
+    request.mockResolvedValueOnce({
+      absolute_path: '/repo/logo.png',
+      bytes: 3,
+      data: btoa('abc'),
+      eof: true,
+      offset: 0,
+      ok: true,
+      version: 'v1',
+    })
+
+    await loadBytes('t', '/repo/logo.png')
+
+    const state = $textTabs.get().t
+
+    expect(request).toHaveBeenCalledWith('fs.read_bytes', { path: '/repo/logo.png', session_id: 's1' })
+    expect(state?.viewer).toBe('image')
+    expect(Array.from(state?.bytes ?? [])).toEqual([97, 98, 99])
+    expect(state?.version).toBe('v1')
+    expect(state?.eof).toBe(true)
+    expect(state?.readAt).toBeGreaterThan(0)
+  })
+
+  it('keeps the failure in the bucket rather than throwing', async () => {
+    request.mockResolvedValueOnce({
+      error: { code: 'workspace-file/too-large', details: { limit: 8 }, message: 'too big' },
+      ok: false,
+    })
+
+    await loadBytes('t', '/repo/big.pdf')
+
+    expect($textTabs.get().t?.failure?.code).toBe('workspace-file/too-large')
+    expect($textTabs.get().t?.bytes).toBeUndefined()
+  })
+
+  it('drops pages read from an older version when the bytes are newer', () => {
+    const state = { ...emptyTextTab('/repo/a.html'), pages: { 1: { lines: 1, text: 'old' } }, version: 'v1' }
+
+    const next = applyBytes(state, {
+      absolute_path: '/repo/a.html',
+      bytes: 1,
+      data: btoa('x'),
+      eof: true,
+      offset: 0,
+      version: 'v2',
+    })
+
+    expect(next.pages).toEqual({})
+    expect(next.version).toBe('v2')
+    expect(decodeBase64(btoa('x'))[0]).toBe(120)
   })
 })

@@ -947,6 +947,8 @@ class GatewayConnection:
             "fs.list_directory": self.fs_list_directory,
             "fs.list_dir": self.fs_list_dir,
             "fs.read_file": self.fs_read_file,
+            "fs.read_bytes": self.fs_read_bytes,
+            "fs.read_related": self.fs_read_related,
             "fs.search_files": self.fs_search_files,
             "image.attach": self.image_attach,
             "plan.get": self.plan_get,
@@ -1888,6 +1890,37 @@ class GatewayConnection:
             str(params.get("path") or ""),
             offset=_positive_int(params.get("offset"), 1),
             limit=None if limit is None else _positive_int(limit, 1),
+        )
+
+    async def fs_read_bytes(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A whole workspace file as bytes, for the sidebar's image, PDF and
+        HTML previews — the viewers a page of lines cannot feed. Confined and
+        capped in ``desktop_workspace_files``; off the event loop like every
+        other filesystem call here.
+        """
+        import asyncio as _asyncio
+
+        from src.server.desktop_workspace_files import read_bytes
+
+        return await _asyncio.to_thread(
+            read_bytes, self._workspace_root(params), str(params.get("path") or "")
+        )
+
+    async def fs_read_related(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A file named relative to another workspace file: the stylesheet or
+        script an HTML document declares beside itself. The document's
+        directory is joined server-side, so the client never names the asset
+        by an absolute path.
+        """
+        import asyncio as _asyncio
+
+        from src.server.desktop_workspace_files import read_related
+
+        return await _asyncio.to_thread(
+            read_related,
+            self._workspace_root(params),
+            str(params.get("path") or ""),
+            str(params.get("relative_path") or ""),
         )
 
     async def fs_list_dir(self, params: dict[str, Any]) -> dict[str, Any]:

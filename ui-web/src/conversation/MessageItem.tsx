@@ -1,9 +1,13 @@
-import { memo } from 'react'
+import { useStore } from '@nanostores/react'
+import { memo, useMemo } from 'react'
 
+import { openFile } from '../sidebar-right/store.ts'
+import { $workspace } from '../state/store.ts'
 import { AlertIcon, InfoIcon } from '../ui/icons.tsx'
 import { CopyButton } from '../ui/primitives/CopyButton.tsx'
 import { Markdown } from '../ui/markdown/Markdown.tsx'
 import type { AssistantNode, NoticeNode, UserNode } from '../state/transcript.ts'
+import { projectUserText } from './user-text.tsx'
 import css from './MessageItem.module.css'
 
 /*
@@ -16,11 +20,19 @@ import css from './MessageItem.module.css'
  */
 
 function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: string) => void }) {
+  const workspace = useStore($workspace)
+  // Plain text, not markdown: this is what the user typed, and rendering it
+  // as markdown would silently rewrite their own words. The one decoration is
+  // an @file mention, which becomes a chip that opens the file beside the
+  // conversation.
+  const content = useMemo(
+    () => projectUserText(node.text, { onOpen: openFile, workspace }),
+    [node.text, workspace],
+  )
+
   return (
     <div className={css.userRow}>
-      {/* Plain text, not markdown: this is what the user typed, and rendering
-          it as markdown would silently rewrite their own words. */}
-      <div className={css.bubble}>{node.text}</div>
+      <div className={css.bubble}>{content}</div>
       <div className={css.actions}>
         <CopyButton className={css.action} text={node.text} />
         {onEdit !== undefined && (

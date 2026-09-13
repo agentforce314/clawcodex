@@ -83,3 +83,20 @@
   background: none;
   font: inherit;
 }
+
+/* Opt-in gutter: the number is ::before content, so a copy of the source never
+   carries it. Counts shiki's own .line spans, and the plain fallback's. */
+.lineNumbers code {
+  counter-reset: line;
+}
+
+.lineNumbers :global(.line)::before {
+  display: inline-block;
+  width: var(--cc-code-block-gutter, 3ch);
+  margin-right: 1.5em;
+  color: var(--cc-alias-label-caption);
+  text-align: right;
+  content: counter(line);
+  counter-increment: line;
+  user-select: none;
+}

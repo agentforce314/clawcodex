@@ -9,7 +9,9 @@ import {
   basename,
   closeTab,
   focusTab,
+  GUIDE_TAB,
   openFile,
+  openGuide,
   openPage,
   resetSidebar,
   SESSION_TAB,
@@ -156,5 +158,40 @@ describe('the column', () => {
     expect($activeTabId.get()).toBe(SESSION_TAB.id)
     expect($navigation.get()).toEqual({})
     expect($fullscreen.get()).toBe(false)
+  })
+})
+
+describe('the start page', () => {
+  it('opens once and focuses on a second ask', () => {
+    openGuide()
+    openGuide()
+
+    expect($tabs.get().filter(tab => tab.kind === 'guide')).toHaveLength(1)
+    expect($activeTabId.get()).toBe(GUIDE_TAB.id)
+  })
+
+  it('gives way to the page it opens, in its own slot', () => {
+    openGuide()
+    openPage('files', GUIDE_TAB.id)
+
+    expect($tabs.get().map(tab => tab.kind)).toEqual(['session', 'files'])
+    expect($activeTabId.get()).toBe('files:')
+  })
+
+  it('closes when the page it opens is already in the strip', () => {
+    openPage('files')
+    openGuide()
+    openPage('files', GUIDE_TAB.id)
+
+    expect($tabs.get().map(tab => tab.kind)).toEqual(['session', 'files'])
+    expect($activeTabId.get()).toBe('files:')
+  })
+
+  it('opens the session facts from the start page and closes itself', () => {
+    openGuide()
+    openPage('session', GUIDE_TAB.id)
+
+    expect($tabs.get()).toEqual([SESSION_TAB])
+    expect($activeTabId.get()).toBe(SESSION_TAB.id)
   })
 })

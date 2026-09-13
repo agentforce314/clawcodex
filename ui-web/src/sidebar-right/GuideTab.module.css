@@ -1,0 +1,98 @@
+/* The capsules form one centred column at a 14px gap, lifted above the body's
+   middle by the spacer below. The minimum height centres a short guide while
+   a taller one grows into the pane's scroller. */
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 0 24px;
+  overflow: auto;
+}
+
+/* The lift, as a share of the pane's height: the column rises 5% of the pane,
+   and a short pane gives it up before the capsules clip. */
+.guide::after {
+  content: '';
+  flex: 0 1 10%;
+}
+
+/* The compass above the capsules, at 56px on watermark ink — not a control.
+   Pinned to the pure-grey ramp because the label aliases ride the bluish ink
+   ramp, whose cast shows at this size. Its margin over the column's gap holds
+   the first capsule 30px below it. */
+.hero {
+  display: flex;
+  margin-bottom: 16px;
+  color: var(--cc-static-neutral-200);
+}
+
+:global([data-theme='dark']) .hero {
+  color: var(--cc-static-neutral-700);
+}
+
+/* A filled pill, 380px wide by default, its icon and text anchored at the
+   left inset; `max-width: 100%` shrinks it inside the column's own 24px
+   insets, so a narrow pane still keeps that gutter. Long text ellipsizes
+   inside rather than widening it. */
+.entry {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  box-sizing: border-box;
+  width: 380px;
+  max-width: 100%;
+  min-height: 56px;
+  padding: 14px 20px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 24px;
+  background: var(--cc-alias-bg-layer-1);
+  color: var(--cc-alias-label-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+/* A fixed 26px box — the glyph's size — so every capsule's words start at the
+   same left edge while glyphs differ. */
+.entryIcon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: var(--cc-alias-label-secondary);
+}
+
+.entryText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.entryTitle {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* One line under the title on the quieter ink; it ellipsizes like the title. */
+.entryDescription {
+  overflow: hidden;
+  color: var(--cc-alias-label-caption);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -7,6 +8,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
 } from 'react'
 
 import type {
@@ -16,7 +18,7 @@ import type {
 } from '../gateway/protocol.ts'
 import { attachImage, searchFiles } from '../state/actions.ts'
 import { $commands, $notice } from '../state/store.ts'
-import { ArrowUpIcon, PlusIcon, StopIcon, XIcon } from '../ui/icons.tsx'
+import { ArrowUpIcon, PlusIcon, SlashSquareIcon, StopIcon, XIcon } from '../ui/icons.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
 import {
   insertPlaceholder,
@@ -24,6 +26,7 @@ import {
   removePlaceholder,
   type Attachment,
 } from './attachments.ts'
+import { aliasOf, bareName, menuRows, rankRows, sectionRows, type MenuRow } from './command-menu.ts'
 import { applyMention, mentionAt, type MentionToken } from './mentions.ts'
 import { EffortSelect } from './EffortSelect.tsx'
 import { ModelSelect } from './ModelSelect.tsx'
@@ -53,8 +56,28 @@ export interface InputBarProps {
   usage: ContextUsageResult | null
 }
 
-/** Slash rows shown at once; more are reachable by typing, not scrolling. */
-const MAX_SUGGESTIONS = 40
+/** The menu's design height: fits the two headings and a dozen rows. */
+const MENU_MAX_HEIGHT = 400
+
+/** Clearance the menu keeps from the top of the window when it is clamped. */
+const MENU_SAFE_MARGIN = 12
+
+/** DOM id of one option row (the `aria-activedescendant` target). */
+function optionId(index: number): string {
+  return `cc-command-option-${String(index)}`
+}
+
+/** The command being typed: the draft is one exactly while a slash opens it and no argument has begun. */
+function typedCommand(draft: string): string | null {
+  const trimmed = draft.trimStart()
+
+  return trimmed.startsWith('/') && !/\s/.test(trimmed) ? trimmed.slice(1) : null
+}
+
+/** Keeps the click on a menu row or the launcher from stealing focus off the textarea. */
+function keepFocus(event: MouseEvent): void {
+  event.preventDefault()
+}
 
 /**
  * The composer.
@@ -62,6 +85,11 @@ const MAX_SUGGESTIONS = 40
  * One card in two positions: centred in the empty state, docked at the bottom
  * of the transcript once a conversation exists. The transition between them is
  * a position move of the same component, never a different control.
+ *
+ * The `+` button and a typed `/` open the same menu: an Add section (the image
+ * picker, plan, goal) and a Commands section in usage order, each row with a
+ * glyph, a title and the catalog's description. Picking a command that takes
+ * an argument claims the draft as `/name `; picking a bare one runs it.
  */
 export function InputBar({
   approvalMode,
@@ -85,6 +113,7 @@ export function InputBar({
   const commands = useStore($commands)
   const notice = useStore($notice)
   const textarea = useRef<HTMLTextAreaElement | null>(null)
+  const card = useRef<HTMLDivElement | null>(null)
   const [highlight, setHighlight] = useState(0)
 
   // Auto-grow: the textarea is always exactly as tall as its content, and the
@@ -96,21 +125,79 @@ export function InputBar({
     if (element === null) return
 
     element.style.height = 'auto'
-    element.style.height = `${element.scrollHeight}px`
+    element.style.height = `${String(element.scrollHeight)}px`
   }, [draft, hero])
 
-  const suggestions = useMemo(() => {
-    const trimmed = draft.trimStart()
+  // The launcher: the `+` opened the menu with nothing typed. It closes on a
+  // pick, on Escape, on a pointer outside the card, and on the next keystroke.
+  const [launcher, setLauncher] = useState(false)
+  const rows = useMemo(() => menuRows(commands, vision), [commands, vision])
+  const typed = useMemo(() => typedCommand(draft), [draft])
 
-    // Only while the draft IS a command — a slash inside a sentence is text.
-    if (!trimmed.startsWith('/') || /\s/.test(trimmed)) return []
+  const menu = useMemo<MenuRow[] | null>(() => {
+    if (typed !== null) {
+      const matched = typed === '' ? sectionRows(rows) : rankRows(rows, typed)
 
-    const needle = trimmed.toLowerCase()
+      return matched.length > 0 ? matched : null
+    }
 
-    return commands
-      .filter(command => command.name.toLowerCase().startsWith(needle))
-      .slice(0, MAX_SUGGESTIONS)
-  }, [commands, draft])
+    return launcher ? sectionRows(rows) : null
+  }, [launcher, rows, typed])
+
+  useEffect(() => {
+    if (!launcher) return
+
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && card.current?.contains(event.target) === true) return
+
+      setLauncher(false)
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+    }
+  }, [launcher])
+
+  // The menu is bottom-anchored above the card, so its cap is the smaller of
+  // the design height and the space above the card, re-measured while open.
+  const [menuMaxHeight, setMenuMaxHeight] = useState(MENU_MAX_HEIGHT)
+
+  useLayoutEffect(() => {
+    if (menu === null) return
+
+    const measure = (): void => {
+      const top = card.current?.getBoundingClientRect().top ?? MENU_MAX_HEIGHT
+      const room = Math.floor(top - 4 - MENU_SAFE_MARGIN)
+
+      setMenuMaxHeight(Math.max(88, Math.min(MENU_MAX_HEIGHT, room)))
+    }
+
+    measure()
+    window.addEventListener('resize', measure)
+
+    return () => {
+      window.removeEventListener('resize', measure)
+    }
+  }, [menu])
+
+  // A gradient at the foot of the list says there is more below it, and goes
+  // once the last row is in view.
+  const menuViewport = useRef<HTMLDivElement | null>(null)
+  const [overflowBelow, setOverflowBelow] = useState(false)
+
+  const updateOverflow = useCallback(() => {
+    const viewport = menuViewport.current
+
+    setOverflowBelow(
+      viewport !== null && viewport.scrollTop + viewport.clientHeight < viewport.scrollHeight - 1,
+    )
+  }, [])
+
+  useLayoutEffect(() => {
+    updateOverflow()
+  }, [menu, menuMaxHeight, updateOverflow])
 
   // The @ mention being typed, tracked from the CARET: unlike a slash command,
   // a mention can sit anywhere in the draft and a message can hold several.
@@ -150,15 +237,19 @@ export function InputBar({
 
   useEffect(() => {
     setHighlight(0)
-  }, [suggestions.length, files.length])
+  }, [menu, files.length])
 
-  const accept = useCallback(
-    (name: string) => {
-      onDraftChange(`${name} `)
-      textarea.current?.focus()
-    },
-    [onDraftChange],
-  )
+  // Focus stays in the textarea (combobox pattern), so the browser never
+  // scrolls the active option into view on keyboard moves — do it here.
+  useEffect(() => {
+    if (menu === null) return
+
+    const element = document.getElementById(optionId(highlight))
+
+    if (element !== null && typeof element.scrollIntoView === 'function') {
+      element.scrollIntoView({ block: 'nearest' })
+    }
+  }, [highlight, menu])
 
   // Every image the session has accepted this composer session. What actually
   // SENDS is whatever the draft still claims — see attachments.ts.
@@ -221,6 +312,43 @@ export function InputBar({
     [draft, onDraftChange],
   )
 
+  /**
+   * What a pick does. The image row opens the picker. A command that takes an
+   * argument claims the draft — `/name `, or `/name <the text already typed>`
+   * when the launcher opened over a sentence, so "fix the bug" + Plan reads
+   * `/plan fix the bug`. A bare command runs at once, as it would on Enter.
+   */
+  const accept = useCallback(
+    (row: MenuRow) => {
+      setLauncher(false)
+
+      const typing = typed !== null
+
+      if (row.action === 'image') {
+        if (typing) onDraftChange('')
+
+        picker.current?.click()
+
+        return
+      }
+
+      if (row.hint !== undefined) {
+        const rest = typing ? '' : draft.trim()
+
+        onDraftChange(rest === '' ? `${row.name} ` : `${row.name} ${rest}`)
+        textarea.current?.focus()
+
+        return
+      }
+
+      if (typing) onDraftChange('')
+
+      onSubmit(row.name)
+      textarea.current?.focus()
+    },
+    [draft, onDraftChange, onSubmit, typed],
+  )
+
   const acceptFile = useCallback(
     (path: string) => {
       if (mention === null) return
@@ -250,6 +378,7 @@ export function InputBar({
 
     if (text === '') return
 
+    setLauncher(false)
     onSubmit(text)
     onDraftChange('')
   }, [draft, onDraftChange, onSubmit])
@@ -296,27 +425,27 @@ export function InputBar({
         }
       }
 
-      if (suggestions.length > 0) {
+      if (menu !== null) {
         if (event.key === 'ArrowDown') {
           event.preventDefault()
-          setHighlight(value => (value + 1) % suggestions.length)
+          setHighlight(value => (value + 1) % menu.length)
 
           return
         }
 
         if (event.key === 'ArrowUp') {
           event.preventDefault()
-          setHighlight(value => (value - 1 + suggestions.length) % suggestions.length)
+          setHighlight(value => (value - 1 + menu.length) % menu.length)
 
           return
         }
 
         if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
-          const choice = suggestions[highlight]
+          const choice = menu[highlight]
 
-          if (choice !== undefined) {
+          if (choice !== undefined && !event.nativeEvent.isComposing) {
             event.preventDefault()
-            accept(choice.name)
+            accept(choice)
 
             return
           }
@@ -324,7 +453,11 @@ export function InputBar({
 
         if (event.key === 'Escape') {
           event.preventDefault()
-          onDraftChange('')
+
+          // The launcher closes and leaves the draft alone; a half-typed
+          // command is cleared, because the slash was the whole draft.
+          if (launcher && typed === null) setLauncher(false)
+          else onDraftChange('')
 
           return
         }
@@ -337,7 +470,7 @@ export function InputBar({
         submit()
       }
     },
-    [accept, acceptFile, files, highlight, mention, onDraftChange, submit, suggestions],
+    [accept, acceptFile, files, highlight, launcher, mention, menu, onDraftChange, submit, typed],
   )
 
   return (
@@ -352,7 +485,7 @@ export function InputBar({
           {notice.text}
         </div>
       )}
-      <div className={css.card}>
+      <div className={css.card} ref={card}>
         {mention !== null && files.length > 0 && (
           <div className={css.popover} role="listbox">
             {files.map((path, index) => (
@@ -374,28 +507,71 @@ export function InputBar({
             ))}
           </div>
         )}
-        {suggestions.length > 0 && (
-          <div className={css.popover} role="listbox">
-            {suggestions.map((command, index) => (
-              <button
-                className={css.option}
-                data-active={index === highlight ? '' : undefined}
-                key={command.name}
-                onClick={() => {
-                  accept(command.name)
-                }}
-                onPointerEnter={() => {
-                  setHighlight(index)
-                }}
-                type="button"
-              >
-                <span className={css.optionName}>{command.name}</span>
-                {command.hint !== undefined && (
-                  <span className={css.optionHint}>{command.hint}</span>
-                )}
-                <span className={css.optionDescription}>{command.description}</span>
-              </button>
-            ))}
+        {menu !== null && !(mention !== null && files.length > 0) && (
+          <div
+            className={css.menu}
+            data-command-menu=""
+            data-overflow-below={overflowBelow ? '' : undefined}
+            style={{ maxHeight: menuMaxHeight }}
+          >
+            <div
+              aria-activedescendant={optionId(highlight)}
+              aria-label="Commands"
+              className={css.menuViewport}
+              onScroll={updateOverflow}
+              ref={menuViewport}
+              role="listbox"
+            >
+              {menu.map((row, index) => {
+                const alias = aliasOf(row)
+                const Icon = row.icon ?? SlashSquareIcon
+                const active = index === highlight
+
+                return (
+                  <Fragment key={row.name}>
+                    {row.section !== undefined && row.section !== menu[index - 1]?.section && (
+                      <div className={css.menuSection} role="presentation">
+                        {row.section}
+                      </div>
+                    )}
+                    <button
+                      aria-selected={active}
+                      className={css.menuItem}
+                      data-active={active ? '' : undefined}
+                      id={optionId(index)}
+                      // mousedown, not click: the textarea keeps focus, and the
+                      // pick runs before any blur-driven teardown.
+                      onMouseDown={event => {
+                        event.preventDefault()
+                        accept(row)
+                      }}
+                      // mousemove, not mouseenter: real pointer motion moves the
+                      // highlight; keyboard scrolling rows under a resting
+                      // pointer must not steal it back.
+                      onMouseMove={
+                        active
+                          ? undefined
+                          : () => {
+                              setHighlight(index)
+                            }
+                      }
+                      role="option"
+                      type="button"
+                    >
+                      <span aria-hidden className={css.menuIcon}>
+                        <Icon size={16} />
+                      </span>
+                      <span className={css.menuTitle}>{row.label ?? bareName(row.name)}</span>
+                      {alias !== undefined && <span className={css.menuAlias}>{alias}</span>}
+                      {row.hint !== undefined && <span className={css.menuHint}>{row.hint}</span>}
+                      {row.description !== undefined && (
+                        <span className={css.menuDescription}>{row.description}</span>
+                      )}
+                    </button>
+                  </Fragment>
+                )
+              })}
+            </div>
           </div>
         )}
         {shown.length > 0 && (
@@ -471,6 +647,9 @@ export function InputBar({
               void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
             }}
             onChange={event => {
+              // Typing takes over from the launcher: the draft now says what
+              // the menu should show, or that it should not be open.
+              setLauncher(false)
               onDraftChange(event.target.value)
               syncMention(event.target)
             }}
@@ -481,7 +660,13 @@ export function InputBar({
             onSelect={event => {
               syncMention(event.currentTarget)
             }}
-            placeholder={running ? 'Queue a follow-up…' : 'Ask ClawCodex to build something…'}
+            placeholder={
+              running
+                ? 'Queue a follow-up…'
+                : hero
+                  ? 'Describe what you want to build, / commands, @ files'
+                  : 'Message ClawCodex, / commands, @ files'
+            }
             ref={textarea}
             rows={hero ? 2 : 1}
             spellCheck={false}
@@ -491,34 +676,36 @@ export function InputBar({
         <div className={css.row}>
           <div className={css.modes}>
             {vision && (
-              <>
-            <input
-              accept="image/*"
-              className={css.hiddenPicker}
-              onChange={event => {
-                const file = event.target.files?.[0]
+              <input
+                accept="image/*"
+                className={css.hiddenPicker}
+                onChange={event => {
+                  const file = event.target.files?.[0]
 
-                if (file !== undefined) void attach(file, file.name)
-                // Clear it, or picking the same file twice is inert.
-                event.target.value = ''
-              }}
-              ref={picker}
-              tabIndex={-1}
-              type="file"
-            />
+                  if (file !== undefined) void attach(file, file.name)
+                  // Clear it, or picking the same file twice is inert.
+                  event.target.value = ''
+                }}
+                ref={picker}
+                tabIndex={-1}
+                type="file"
+              />
+            )}
             <button
-              aria-label="Attach an image"
-              className={css.attachButton}
+              aria-expanded={launcher}
+              aria-haspopup="listbox"
+              aria-label="Add files or run commands"
+              className={css.add}
               onClick={() => {
-                picker.current?.click()
+                setLauncher(open => !open)
+                textarea.current?.focus()
               }}
-              title="Attach an image"
+              onMouseDown={keepFocus}
+              title="Add files or run commands"
               type="button"
             >
               <PlusIcon size={14} />
             </button>
-              </>
-            )}
             <PermissionSelect
               // Passed through undefined until session.info reports a mode:
               // PermissionSelect displays the Full Access default but still

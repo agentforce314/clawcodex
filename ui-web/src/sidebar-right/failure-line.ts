@@ -19,16 +19,23 @@ export function humanBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-export function fileFailureLine(failure: WorkspaceFileFailure): string {
+/**
+ * @param whole - the read was of the file entire (an image, a PDF, an HTML
+ * document), so a size refusal is about the file rather than a page of it.
+ */
+export function fileFailureLine(failure: WorkspaceFileFailure, whole = false): string {
   switch (failure.code) {
     case 'workspace-file/not-found':
       return 'That file is gone. It may have been moved or deleted.'
     case 'workspace-file/outside-workspace':
       return 'That file is outside the workspace, so the sidebar will not read it.'
-    case 'workspace-file/too-large':
-      return `That page is too large; the sidebar does not read pages above ${humanBytes(
-        failure.details?.limit ?? 0,
-      )}.`
+    case 'workspace-file/too-large': {
+      const limit = humanBytes(failure.details?.limit ?? 0)
+
+      return whole
+        ? `That file is too large; the sidebar does not read files above ${limit}.`
+        : `That page is too large; the sidebar does not read pages above ${limit}.`
+    }
     case 'workspace-file/not-text':
       return 'That is not a text file, so it cannot be shown here.'
     case 'workspace-file/not-regular-file':

@@ -185,7 +185,147 @@
   white-space: nowrap;
 }
 
-/* Slash popover: floats above the card, anchored to its top edge. */
+/* The command menu: what the `+` button and a typed `/` both open. Floats
+   above the card, edge to edge with it; the design height fits the two
+   headings and a dozen rows, and the inline max-height clamps it to the space
+   above the card. */
+.menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  max-height: 400px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 20px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+  /* Elevated surface: the thumb takes the l2 pair. A 10px draggable rail
+     carries a quiet 4px thumb, inset from the card's rounded ends. */
+  --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
+  --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+  --cc-scrollbar-width: 10px;
+  --cc-scrollbar-thumb-border: 3px;
+  --cc-scrollbar-track-margin: 12px;
+}
+
+/* The hint covers content, not the scrollbar rail, and disappears once the
+   viewport reaches the final row. */
+.menu[data-overflow-below]::after {
+  content: '';
+  position: absolute;
+  right: 14px;
+  bottom: 4px;
+  left: 4px;
+  height: 16px;
+  background: linear-gradient(to bottom, transparent, var(--cc-specific-menu));
+  pointer-events: none;
+}
+
+.menuViewport {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.menuSection {
+  flex: none;
+  min-height: 26px;
+  padding: 6px 10px 2px;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.menuSection:not(:first-child) {
+  margin-top: 4px;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cc-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* One shared highlight: pointer motion parks it here through the hover
+   handler, so there is no separate :hover tint competing with the keyboard's. */
+.menuItem[data-active] {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.menuIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.menuTitle {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The command name beside a title that differs from it, in the description's
+   ink so the row reads title first. */
+.menuAlias {
+  flex: none;
+  max-width: 20%;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The argument a command takes, as the catalog spells it — clipped, so a
+   long grammar never pushes the description off its right edge. */
+.menuHint {
+  flex: 0 1 auto;
+  max-width: 24%;
+  overflow: hidden;
+  color: var(--cc-alias-label-caption);
+  font-family: var(--cc-font-family-code);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Right-aligned so every description ends at the same edge and the titles
+   read as one left column. */
+.menuDescription {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* File-mention popover: floats above the card, anchored to its top edge. */
 .popover {
   position: absolute;
   bottom: calc(100% + 8px);
@@ -226,13 +366,6 @@
 
 .optionName {
   flex: none;
-  font-family: var(--cc-font-family-code);
-  font-size: 12px;
-}
-
-.optionHint {
-  flex: none;
-  color: var(--cc-alias-label-caption);
   font-family: var(--cc-font-family-code);
   font-size: 12px;
 }
@@ -310,24 +443,30 @@
   line-height: 14px;
 }
 
-.attachButton {
-  display: flex;
+/* The launcher: a filled 28px circle at the head of the control row, the one
+   control there that is not a chip. */
+.add {
+  display: grid;
+  place-items: center;
   flex: none;
-  align-items: center;
-  justify-content: center;
   width: 28px;
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--cc-alias-label-tertiary);
+  border-radius: 999px;
+  background: var(--cc-specific-selector);
+  color: var(--cc-alias-label-primary);
   cursor: pointer;
 }
 
-.attachButton:hover {
-  background: var(--cc-alias-interactive-bg-hover);
-  color: var(--cc-alias-label-primary);
+.add:hover:not(:disabled),
+.add[aria-expanded='true'] {
+  background: var(--cc-alias-interactive-bg-hover-solid);
+}
+
+.add:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .hiddenPicker {

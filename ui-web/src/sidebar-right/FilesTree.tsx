@@ -15,7 +15,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
 import { $workspace } from '../state/store.ts'
-import { FileTextIcon, FolderIcon, FolderOpenIcon, RefreshIcon } from '../ui/icons.tsx'
+import { FolderIcon, FolderOpenIcon, RefreshIcon } from '../ui/icons.tsx'
+import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
 import { directoryFailureLine } from './failure-line.ts'
 import {
   $filesTree,
@@ -106,7 +107,7 @@ function Level({ path, tree }: { path: string; tree: FilesTreeState }) {
                 }}
                 type="button"
               >
-                <FileTextIcon size={14} />
+                <FileTypeIcon path={child} size={14} />
                 <span className={css.name}>{entry.name}</span>
               </button>
             </li>
