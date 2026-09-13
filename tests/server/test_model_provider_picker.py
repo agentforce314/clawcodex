@@ -36,6 +36,9 @@ class _StubSession:
     def __init__(self, provider_name: str = "anthropic", models=None, fusion=None, effort=None):
         self.provider_name = provider_name
         self.provider = SimpleNamespace(model="claude-opus-5")
+        # A --http-shaped session: switches apply but are never saved as the
+        # user's default (``_persist_model_choice`` reads this flag first).
+        self.config = SimpleNamespace(persist_preferences=False)
         # The session's live /effort level; step 3 preselects it.
         self._effort = effort
         self._models = list(models or [])
@@ -51,7 +54,7 @@ class _StubSession:
         ``get_settings`` does."""
         return self._fusion
 
-    def _do_set_fusion_model(self, request_id: object, model: object) -> bool:
+    def _do_set_fusion_model(self, request_id: object, model: object, **_: object) -> bool:
         """Not a fusion model, so _do_set_model falls through to the ordinary
         provider-compare path these tests exercise. Selecting a fusion model
         is its own control flow with its own coverage."""
@@ -728,6 +731,10 @@ class TestCrossProviderSignal:
 
         assert sess.last["ok"] is True
         assert sess.last["provider"] == "anthropic"
+        # A --http-shaped session says so: the client words its transcript
+        # line on this key, and "saved as your default" over a switch that
+        # was not would be a lie.
+        assert sess.last["persisted"] is False
 
     def test_an_alias_spelling_is_not_a_cross_provider_switch(self):
         """A session launched as ``--provider glm`` keeps that spelling while

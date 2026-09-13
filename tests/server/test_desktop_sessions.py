@@ -141,6 +141,32 @@ def test_model_info_reports_defaults(
     assert body == {"provider": "anthropic", "model": "claude-fable-5"}
 
 
+def test_model_info_reports_the_persisted_picker_choice(
+    rest: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model picked in any client is saved as the default for new sessions
+    (settings.model + model_provider); the desktop's composer and Settings →
+    Model read this endpoint, so it must report that choice over the
+    provider's configured default — the same precedence the spawn applies."""
+    from src.settings.settings import invalidate_settings_cache, persist_model_choice
+
+    monkeypatch.setattr(
+        "src.config.get_provider_config",
+        lambda n: {"default_model": "claude-fable-5"},
+    )
+    persist_model_choice("claude-opus-5", "anthropic")
+    try:
+        body = rest.get("/api/model/info", headers=AUTH).json()
+        assert body == {"provider": "anthropic", "model": "claude-opus-5"}
+        # …and the pair moved default_provider with it: a pick from another
+        # provider would otherwise never be read back.
+        from src.config import get_default_provider
+
+        assert get_default_provider() == "anthropic"
+    finally:
+        invalidate_settings_cache()
+
+
 def test_settings_panel_rest_routes(
     rest: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -261,7 +261,12 @@ export interface ConfigSetResponse {
   /** permission_mode only: the mode the server actually applied. */
   mode?: string
   ok?: boolean
-  /** permission_mode only: whether the choice was written to settings.json. */
+  /**
+   * permission_mode, model and effort: whether the choice was written to the
+   * user's settings as the default for new sessions. Absent from older
+   * backends, which never said either way — callers word their confirmation
+   * on the three states, not on a boolean.
+   */
   persisted?: boolean
   /**
    * model only: the provider the session ended up on. A cross-provider

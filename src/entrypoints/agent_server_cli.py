@@ -340,9 +340,14 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     # a hand-run standalone). single_session unlocks the process-global
     # side effects in _build_runtime (post-trust env apply, context-cache
     # prefetch) that the multi-session --http transport must not perform.
+    # persist_preferences lets that client's /model and /effort picks be
+    # saved as the host user's default for new sessions — the client IS the
+    # host user here, unlike a --http peer.
     import dataclasses as _dc
 
-    agent_config = _dc.replace(agent_config, single_session=True)
+    agent_config = _dc.replace(
+        agent_config, single_session=True, persist_preferences=True,
+    )
     index_path = Path.home() / ".clawcodex" / "server-sessions.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     manager = SessionManager(workspace=workspace, index_path=index_path)

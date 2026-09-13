@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A model or effort pick is saved as your default for new sessions, on
+  every interface.** Choosing a model in the TUI's `/model` picker, the web
+  client's model chip, or the desktop's model menu — and choosing an effort
+  level beside it — now writes the choice to your settings, so the next
+  session on the CLI, the web client and the desktop all start on it, and
+  the surface says so: `Set model to deepseek-flash and saved as your
+  default for new sessions`, matching Claude Code's `/model`. Before this
+  the TUI persisted the model silently while labelling the picker
+  "persist: session", effort never persisted anywhere, and the web and
+  desktop pickers were deliberately session-scoped — so a pick made in one
+  place had to be re-made in every other. A pick from another provider
+  moves `default_provider` too (the persisted pair was otherwise never read
+  back), and the welcome-screen chip and `/api/model/info` now report the
+  saved choice rather than the provider's configured default. The typed
+  `/model <id> --session` form keeps a switch to this session only; the
+  picker's `^g` global/session toggle is gone. Persisting happens only on
+  the host user's own transports — the TUI's stdio child and `clawcodex
+  serve`'s desktop/web sessions — never from a `--http` peer, which gets
+  `persisted: false` and a session-scoped switch.
+
 ### Added
 
 - **DeepSeek-V4.1-Flash (`deepseek-flash`), and the DeepSeek line collapses

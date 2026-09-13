@@ -480,60 +480,96 @@ class DesktopSession:
             return None
 
     async def apply_model(self, model: str, provider: str | None,
-                          allow_switch: bool = True) -> dict[str, Any]:
+                          allow_switch: bool = True, *,
+                          persist: bool = True) -> dict[str, Any]:
         """set_model with the picker's cross-provider retry.
 
         set_model refuses to point the live provider at another provider's
         model id (that needs set_provider's registry rebuild). The picker
         selects provider-then-model, so on ``provider_mismatch`` switch the
         provider first, then re-apply the model — mirroring the TUI client.
+
+        ``persist`` (the default) also saves the pick as the user's default
+        for new sessions — the agent-server writes it and answers
+        ``persisted``; ``False`` is the ``--session`` scope, forwarded on
+        both controls so a cross-provider switch is session-only as a whole.
         """
         params: dict[str, Any] = {"model": model}
         if provider:
             params["provider"] = provider
+        if not persist:
+            params["persist"] = False
         result = await self.control_query("set_model", params)
         if not isinstance(result, dict):
             return {"ok": True, "value": model, "indeterminate": True}
         if result.get("ok") is False:
             if result.get("provider_mismatch") and provider and allow_switch:
-                switched = await self.control_query("set_provider", {"provider": provider})
+                switch_params: dict[str, Any] = {"provider": provider}
+                if not persist:
+                    switch_params["persist"] = False
+                switched = await self.control_query("set_provider", switch_params)
                 if isinstance(switched, dict) and switched.get("ok") is not False:
-                    return await self.apply_model(model, None, allow_switch=False)
+                    return await self.apply_model(
+                        model, None, allow_switch=False, persist=persist,
+                    )
                 err = (switched or {}).get("error") if isinstance(switched, dict) else None
                 return {"ok": False, "error": err or f"could not switch to provider '{provider}'"}
             return {"ok": False, "error": result.get("error") or "could not set model"}
-        return {"ok": True, "value": result.get("model") or model,
-                "warning": result.get("warning")}
+        reply: dict[str, Any] = {
+            "ok": True,
+            "value": result.get("model") or model,
+            "warning": result.get("warning"),
+        }
+        # Echoed only when the agent said: an older agent that answers
+        # without it must read as "unknown" client-side, never as "not
+        # saved" — the client words its confirmation on this key.
+        if isinstance(result.get("persisted"), bool):
+            reply["persisted"] = result["persisted"]
+        if result.get("provider"):
+            reply["provider"] = result["provider"]
+        return reply
 
     async def _config_set_model(self, value: Any) -> dict[str, Any]:
         """Parse the renderer's model string and apply it.
 
-        The composer sends ``"<model> --provider <p> --session"`` (the TUI's
-        ``/model`` grammar); scope flags are informational here — this
-        transport applies to the live session either way.
+        The composer sends ``"<model> [--provider <p>] [--session]"`` (the
+        TUI's ``/model`` grammar). The pick is saved as the user's default
+        for new sessions unless ``--session`` (or its older spelling
+        ``--tui-session``) scopes it to this session; ``--global`` is the
+        legacy spelling of the default and is accepted as a no-op.
         """
         tokens = str(value or "").split()
         provider: str | None = None
         parts: list[str] = []
+        persist = True
         i = 0
         while i < len(tokens):
             tok = tokens[i]
             if tok == "--provider":
                 i += 1
                 provider = tokens[i] if i < len(tokens) else None
-            elif tok in ("--global", "--session", "--tui-session"):
+            elif tok in ("--session", "--tui-session"):
+                persist = False
+            elif tok == "--global":
                 pass
             else:
                 parts.append(tok)
             i += 1
-        return await self.apply_model(" ".join(parts), provider)
+        return await self.apply_model(" ".join(parts), provider, persist=persist)
 
-    async def config_set(self, key: str, value: Any, persist: bool = False) -> dict[str, Any]:
+    async def config_set(self, key: str, value: Any, persist: bool | None = None) -> dict[str, Any]:
         """Route a settings write to the matching agent control.
 
         Display-only prefs the backend doesn't own (skin, statusbar, …) have
         no control and succeed locally in the renderer, so an unknown key is a
         silent ok here rather than an error.
+
+        ``persist`` is the caller's scope request, and each key owns its
+        default: ``permission_mode`` persists only on an explicit True (a
+        level choice, never shift-tab cycling), while ``effort``/``reasoning``
+        persist unless told ``False`` — a level pick is the user's default for
+        new sessions, the same rule as ``model`` (whose scope rides in its
+        value grammar instead).
         """
         if key == "approvals.mode":
             # Safety panel / `/approvals`: manual|smart|off → a permission mode.
@@ -549,7 +585,7 @@ class DesktopSession:
                     "error": res.get("error")}
         if key == "permission_mode":
             reply = await self.control_query("set_permission_mode",
-                                             {"mode": value, "persist": persist})
+                                             {"mode": value, "persist": bool(persist)})
             res = reply if isinstance(reply, dict) else {}
             return {
                 "error": res.get("error"),
@@ -569,7 +605,31 @@ class DesktopSession:
             ok = isinstance(reply, dict) and reply.get("ok") is True
             return {"ok": True, "value": str(value)} if ok else {"ok": False}
         if key in ("effort", "reasoning"):
-            await self.send_control("set_effort", {"effort": value})
+            # Round-tripped, not fire-and-forget: the reply carries the level
+            # the agent actually took and whether it was saved as the default
+            # for new sessions, and the chip's confirmation is worded on both.
+            effort_params: dict[str, Any] = {"effort": value}
+            if persist is False:
+                effort_params["persist"] = False
+            reply = await self.control_query("set_effort", effort_params)
+            await self.publish_session_info()
+            if not isinstance(reply, dict):
+                return {"ok": True, "value": value, "indeterminate": True}
+            if reply.get("ok") is False:
+                return {"ok": False, "error": reply.get("error") or "could not set effort"}
+            level = reply.get("effort")
+            result = {
+                "ok": True,
+                # The agent reports a cleared level as "default"; the chips
+                # spell that rung "auto", which is also what the caller sent.
+                "value": "auto" if level == "default" else (level or value),
+            }
+            if isinstance(reply.get("persisted"), bool):
+                result["persisted"] = reply["persisted"]
+            for extra in ("note", "ultracode"):
+                if reply.get(extra) is not None:
+                    result[extra] = reply[extra]
+            return result
         elif key == "provider":
             await self.send_control("set_provider", {"provider": value})
         elif key == "thinking":
@@ -843,11 +903,14 @@ def _catalog_from_config() -> dict[str, Any]:
     provider = None
     models: list[str] = []
     try:
-        from src.config import get_default_provider, get_provider_config
+        from src.config import get_default_provider
+        from src.settings.settings import resolve_default_model
 
         provider = get_default_provider()
-        cfg = get_provider_config(provider) or {}
-        default_model = cfg.get("default_model")
+        # What the next session will actually run on: the persisted /model
+        # pick for this provider (saved by any picker), else the provider's
+        # configured default — the same precedence _build_runtime applies.
+        default_model = resolve_default_model(provider)
         if default_model:
             models = [default_model]
     except Exception:  # noqa: BLE001 — degrade to an unmarked catalog
@@ -1433,7 +1496,7 @@ class GatewayConnection:
             return {"ok": False, "error": "provider slug required"}
 
         def _write() -> dict[str, Any]:
-            from src.config import get_provider_config, load_config, set_default_provider
+            from src.config import load_config, set_default_provider
             from src.providers import PROVIDER_INFO, canonical_provider_name
 
             pid = canonical_provider_name(slug)
@@ -1450,7 +1513,9 @@ class GatewayConnection:
             # client can move an unused session onto the new default rather
             # than leave it advertising the provider just replaced.
             try:
-                model = str((get_provider_config(pid) or {}).get("default_model") or "")
+                from src.settings.settings import resolve_default_model
+
+                model = resolve_default_model(pid)
             except Exception:  # noqa: BLE001 — the write already succeeded
                 model = ""
             return {"ok": True, "default": pid, "model": model}
@@ -1807,10 +1872,14 @@ class GatewayConnection:
 
     async def config_set_rpc(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._session(params)
+        persist = params.get("persist")
         return await session.config_set(
             str(params.get("key") or ""),
             params.get("value"),
-            persist=bool(params.get("persist")),
+            # Tri-state: absent means "the key's own default", so a client
+            # that never sends it gets model/effort persisted and
+            # permission_mode transient — see config_set.
+            persist=persist if isinstance(persist, bool) else None,
         )
 
     async def _live_catalog(self, params: dict[str, Any]) -> dict[str, Any]:

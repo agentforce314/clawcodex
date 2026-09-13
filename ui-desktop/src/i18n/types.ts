@@ -2014,6 +2014,7 @@ export interface Translations {
       editModels: string
       refreshModels: string
       fast: string
+      scopeNote: string
     }
     modelOptions: {
       noOptions: string

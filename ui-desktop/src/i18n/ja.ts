@@ -2251,7 +2251,8 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
-      fast: '高速'
+      fast: '高速',
+      scopeNote: '選択したモデルと推論レベルは、CLI を含む新しいセッションの既定値になります'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

@@ -270,6 +270,12 @@ def run_serve_subcommand(argv: list[str], *, on_ready: ReadyHook | None = None) 
         # it), so a session created with its own provider/model is still nano.
         nano=bool(args.nano),
         max_turns=args.max_turns,
+        # The gateway's sessions are the host user's own (the desktop app and
+        # the web client authenticate with this launch's token and act as
+        # that user, the same way PUT /api/config already rewrites their
+        # config), so a model/effort pick here is saved as their default for
+        # new sessions — including the CLI's. Rides every per-session copy.
+        persist_preferences=True,
     )
 
     try:

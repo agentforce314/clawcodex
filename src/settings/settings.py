@@ -132,6 +132,80 @@ def get_persisted_model(provider_name: str, *, provider_is_explicit: bool = Fals
     return model if persisted_provider == provider_name else ""
 
 
+def resolve_default_model(
+    provider_name: str, *, provider_is_explicit: bool = False
+) -> str:
+    """The model a NEW session on ``provider_name`` starts on, or ``""``.
+
+    One rule for every surface that has to say "what will the next session
+    run on" before that session exists — the web welcome screen's model chip
+    (``model.options`` without a session), the desktop's ``/api/model/info``,
+    ``provider.set_default``'s echo — so they agree with what
+    ``_build_runtime`` will actually do:
+
+        persisted /model choice for this provider  >  the provider's
+        configured ``default_model``  >  ``""``
+
+    The persisted term is :func:`get_persisted_model` (with its
+    provider-match guard and fusion resolution); the provider default is the
+    same ``providers.<name>.default_model`` the runtime falls back to. Never
+    raises — an unknown provider or an unreadable config yields ``""``.
+    """
+    persisted = get_persisted_model(
+        provider_name, provider_is_explicit=provider_is_explicit
+    )
+    if persisted:
+        return persisted
+    try:
+        from src.config import get_provider_config
+
+        return str((get_provider_config(provider_name) or {}).get("default_model") or "")
+    except Exception:  # noqa: BLE001 — unknown provider / unreadable config
+        logger.debug("default model lookup failed for %r", provider_name, exc_info=True)
+        return ""
+
+
+def persist_model_choice(model: str, provider: str) -> None:
+    """Save ``(model, provider)`` as the user's default for NEW sessions.
+
+    The write side of :func:`get_persisted_model`, reached from every model
+    picker (the TUI's ``/model``, the web and desktop model chips) through the
+    agent-server's ``set_model`` control. Three keys land in one atomic
+    read-modify-write of the global config:
+
+    * ``settings.model`` / ``settings.model_provider`` — the persisted pair
+      the read side resolves (TS parity: ``/model`` in Claude Code writes
+      ``settings.model`` and reports "saved as your default for new
+      sessions");
+    * ``default_provider`` — so a pick from ANOTHER provider becomes the
+      default too. Without it the pair is written but never read back:
+      ``get_persisted_model`` is asked about the still-configured default
+      provider, the guard sees a mismatch, and the next session silently
+      starts on the old provider's model. A model is only meaningful with
+      the provider that serves it, so "make this my default" has to mean
+      both halves.
+
+    Through the shared manager, fresh-read (``load_global_for_write``) so a
+    write made by another process is not reverted, and the settings cache is
+    invalidated so the very next ``get_settings()`` sees the pair. Raises on
+    failure — callers decide whether that is fatal (the agent-server reports
+    ``persisted: False`` and keeps the in-memory switch).
+    """
+    from src import config as cfg_mod
+
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global_for_write()
+    section = cfg.get("settings")
+    if not isinstance(section, dict):
+        section = {}
+    section["model"] = model
+    section["model_provider"] = provider
+    cfg["settings"] = section
+    cfg["default_provider"] = provider
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
 def update_local_settings(
     updates: dict[str, Any], *, cwd: str | Path | None = None,
 ) -> bool:

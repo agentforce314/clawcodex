@@ -1273,7 +1273,7 @@ def test_set_model_persists_the_session_file_immediately() -> None:
         def _reply(self, rid: object, payload: object) -> None:
             self.last = payload
 
-        def _do_set_fusion_model(self, rid: object, model: str) -> bool:
+        def _do_set_fusion_model(self, rid: object, model: str, **_: object) -> bool:
             return False
 
         def _available_models(self) -> list[str]:
@@ -1313,7 +1313,7 @@ def test_set_model_does_not_mint_a_file_for_an_untouched_session() -> None:
         def _reply(self, rid: object, payload: object) -> None:
             self.last = payload
 
-        def _do_set_fusion_model(self, rid: object, model: str) -> bool:
+        def _do_set_fusion_model(self, rid: object, model: str, **_: object) -> bool:
             return False
 
         def _available_models(self) -> list[str]:

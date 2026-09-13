@@ -35,7 +35,7 @@ describe('startPromptLiveSession', () => {
           params: { key: 'model', session_id: 'abc123', value: 'kimi-k2.6 --provider ollama-cloud' }
         }
       ],
-      ['sys', 'model → kimi-k2.6'],
+      ['sys', 'Set model to kimi-k2.6'],
       ['warn', { value: 'kimi-k2.6', warning: '' }],
       ['model-switched', { result: { value: 'kimi-k2.6', warning: '' }, value: 'kimi-k2.6' }],
       ['dispatch', 'Build the thing']

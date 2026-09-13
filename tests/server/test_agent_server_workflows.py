@@ -143,7 +143,10 @@ async def test_set_effort_levels_and_ultracode_roundtrip(tmp_path):
 
         # A real level exits ultracode mode.
         r = await _control(handle, gen, "e2", {"subtype": "set_effort", "effort": "high"})
-        assert r == {"ok": True, "effort": "high", "ultracode": False}
+        # ``persisted`` is False here: the harness spawns a --http-shaped
+        # session (no persist_preferences), so the level applies to this
+        # session and is not saved as the default for new ones.
+        assert r == {"ok": True, "effort": "high", "ultracode": False, "persisted": False}
         assert not is_ultracode_session()
         assert sess._effort == "high"
 
@@ -154,7 +157,7 @@ async def test_set_effort_levels_and_ultracode_roundtrip(tmp_path):
 
         # Explicit auto clears the level (and would exit ultracode mode).
         r = await _control(handle, gen, "e4", {"subtype": "set_effort", "effort": "auto"})
-        assert r == {"ok": True, "effort": "default", "ultracode": False}
+        assert r == {"ok": True, "effort": "default", "ultracode": False, "persisted": False}
         assert sess._effort is None
 
         # Unknown value → error, nothing mutated.
@@ -179,7 +182,7 @@ async def test_set_effort_accepts_the_full_claude_ladder(tmp_path):
             r = await _control(
                 handle, gen, f"l{i}", {"subtype": "set_effort", "effort": level}
             )
-            assert r == {"ok": True, "effort": level, "ultracode": False}, level
+            assert r == {"ok": True, "effort": level, "ultracode": False, "persisted": False}, level
             assert sess._effort == level, level
 
         # The error text must enumerate what is actually accepted, so a

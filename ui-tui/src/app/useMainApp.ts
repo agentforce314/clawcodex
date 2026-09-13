@@ -16,7 +16,7 @@ import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice } from '../domain/messages.js'
-import { infoAfterModelSwitch, modelPickerCommands } from '../domain/modelSwitch.js'
+import { infoAfterModelSwitch, modelPickerCommands, modelSwitchNotice } from '../domain/modelSwitch.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
@@ -149,7 +149,7 @@ export async function startPromptLiveSession({
       return sid
     }
 
-    sys(`model → ${result.value}`)
+    sys(modelSwitchNotice(result.value, result.persisted))
     maybeWarn(result)
     onModelSwitched?.(result.value, result)
   }

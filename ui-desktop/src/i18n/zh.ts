@@ -2595,7 +2595,8 @@ export const zh: Translations = {
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
-      fast: '快速'
+      fast: '快速',
+      scopeNote: '所选模型和推理强度将成为新会话的默认设置，包括命令行'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',

@@ -73,7 +73,8 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       }
 
       // A null session id is the profile-global model-options key. Never patch
-      // the live session key here: only config.set --session may change it.
+      // the live session key here: only a config.set on that session may
+      // change it.
       updateModelOptionsCache(null, provider, model, false)
     },
     [updateModelOptionsCache]
@@ -156,9 +157,10 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // Returns whether the switch succeeded so callers can await it before applying
   // follow-up changes. The composer model is plain UI state: with no live
   // session it's just stored (and shipped on the next session.create); with one
-  // it's scoped to that session via config.set. It NEVER writes the profile
-  // default — that lives in Settings → Model — so picking a model here can't
-  // silently mutate global config.
+  // it's applied to that session via config.set — and the gateway ALSO saves
+  // the pick as the user's default for new sessions (the same settings the
+  // CLI and TUI read), which is why the menu says so under its rows. A
+  // switch that must stay session-scoped appends `--session` to the value.
   //
   // `selection.sessionId` targets a specific surface (tile). When omitted, the
   // primary `$activeSessionId` is used (overlay / legacy callers). A tile
@@ -210,7 +212,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         const result = await requestGateway<{ deferred?: boolean }>('config.set', {
           session_id: liveSessionId,
           key: 'model',
-          value: `${selection.model} --provider ${selection.provider} --session`
+          value: `${selection.model} --provider ${selection.provider}`
         })
 
         // A pick made DURING a turn is queued by the gateway and applied at the

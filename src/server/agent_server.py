@@ -155,6 +155,17 @@ class AgentServerConfig:
     # the multi-session --http transport, where sessions carry
     # client-supplied cwds and over-strict is the safe direction.
     single_session: bool = False
+    # Whether ``/model`` and ``/effort`` picks arriving over the wire may be
+    # written to the HOST user's settings as the default for new sessions.
+    # True when the client on the other end is that user's own UI — the Ink
+    # TUI's stdio child (agent_server_cli --stdio) and every session the
+    # desktop/web gateway spawns (serve_cli) — and False on the DirectConnect
+    # ``--http`` transport, where a remote client must not rewrite the host's
+    # defaults (the same population ``_may_persist_mode`` bounds). Distinct
+    # from ``single_session`` because the gateway is multi-session yet still
+    # the user's own, and from ``bypass_selectable`` because a locked-down
+    # or root session should still be able to remember its model.
+    persist_preferences: bool = False
 
 
 @dataclass
@@ -583,10 +594,20 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "mode": new_mode})
             return
         if subtype == "set_model":
-            self._do_set_model(request_id, inner.get("model"), inner.get("provider"))
+            # ``persist`` defaults ON: a pick is the user's default for new
+            # sessions unless the client says "this session only"
+            # (``/model <id> --session``). Strict ``is not False`` so an
+            # older client that sends nothing keeps today's persisting shape.
+            self._do_set_model(
+                request_id, inner.get("model"), inner.get("provider"),
+                persist=inner.get("persist") is not False,
+            )
             return
         if subtype == "set_provider":
-            self._do_set_provider(request_id, inner.get("provider"))
+            self._do_set_provider(
+                request_id, inner.get("provider"),
+                persist=inner.get("persist") is not False,
+            )
             return
         if subtype == "list_model_providers":
             self._do_list_model_providers(request_id)
@@ -685,7 +706,10 @@ class _AgentSession:
                 self._reply(request_id, {"ok": False, "error": str(exc)})
             return
         if subtype == "set_effort":
-            self._do_set_effort(request_id, inner.get("effort"))
+            self._do_set_effort(
+                request_id, inner.get("effort"),
+                persist=inner.get("persist") is not False,
+            )
             return
         if subtype == "attach_image":
             await self._do_attach_image(
@@ -1561,14 +1585,25 @@ class _AgentSession:
         except Exception:  # noqa: BLE001 — knowledge must never break a turn
             logger.debug("[agent-server] knowledge record failed", exc_info=True)
 
-    def _do_set_model(self, request_id: object, model: object, provider: object = None) -> None:
+    def _do_set_model(
+        self, request_id: object, model: object, provider: object = None,
+        *, persist: bool = True,
+    ) -> None:
         """Switch the active model (the /model picker + typed /model). Replies
-        {ok, model, warning?} — the TUI's ConfigSetResponse contract needs the
-        resulting model echoed back as proof the switch happened; a bare ack
-        reads as failure client-side. ``provider`` (when sent) must match the
-        session's provider: cross-provider switches need the full registry
-        rebuild that set_provider does, so refusing here beats silently
-        pointing the current provider at a foreign model id."""
+        {ok, model, provider, persisted, warning?} — the TUI's
+        ConfigSetResponse contract needs the resulting model echoed back as
+        proof the switch happened; a bare ack reads as failure client-side.
+        ``provider`` (when sent) must match the session's provider:
+        cross-provider switches need the full registry rebuild that
+        set_provider does, so refusing here beats silently pointing the
+        current provider at a foreign model id.
+
+        ``persist`` (default True) also saves the pick as the user's default
+        for new sessions — see :func:`_persist_model_choice`; ``persisted``
+        in the reply says whether that write happened, so the client can
+        print "saved as your default for new sessions" only when it is
+        true. ``persist=False`` is the ``--session`` escape hatch: the
+        switch applies to this session and nothing is written."""
         if not isinstance(model, str) or not model.strip():
             self._reply(request_id, {"ok": False, "error": "missing model"})
             return
@@ -1581,7 +1616,7 @@ class _AgentSession:
         # activating one swaps the whole provider rather than poking
         # ``.model``: it carries its own base provider + model, and the
         # vision wrapper has to be installed around it.
-        if self._do_set_fusion_model(request_id, model):
+        if self._do_set_fusion_model(request_id, model, persist=persist):
             return
         # Canonicalized on BOTH sides: a session launched as ``--provider glm``
         # keeps that spelling in ``provider_name`` while the picker's rows
@@ -1648,9 +1683,16 @@ class _AgentSession:
             self._reply(request_id, {"ok": False, "error": f"model switch failed: {exc}"})
             return
         # ch03 round-4 GAP A: on_change mirrors the choice into bootstrap and
-        # persists (model, model_provider) to user settings — /model survives
-        # restarts.
-        _dispatch_app_state(self, main_loop_model=model)
+        # (on the stdio transport, where the store exists) persists the
+        # (model, model_provider) pair. ``_persist_model_choice`` is the
+        # transport-independent write that also moves ``default_provider``;
+        # both are skipped for a ``--session`` switch, which leaves the
+        # store's mirror stale — it has no production reader, and a
+        # session-only pick must not touch the user's settings at all.
+        persisted = False
+        if persist:
+            _dispatch_app_state(self, main_loop_model=model)
+            persisted = _persist_model_choice(self, model)
         # Persist the choice to the session file NOW, not at the next turn
         # end: a user who switches and then quits without another turn would
         # otherwise resume onto the model they switched away from. Guarded on
@@ -1669,6 +1711,7 @@ class _AgentSession:
             "ok": True,
             "model": getattr(self.provider, "model", model),
             "provider": self.provider_name,
+            "persisted": persisted,
         }
         known = self._available_models()
         if known and model not in known:
@@ -1678,7 +1721,9 @@ class _AgentSession:
             )
         self._reply(request_id, response)
 
-    def _do_set_fusion_model(self, request_id: object, model: str) -> bool:
+    def _do_set_fusion_model(
+        self, request_id: object, model: str, *, persist: bool = True,
+    ) -> bool:
         """Activate ``model`` if it names a fusion model. Returns whether handled.
 
         Returns True (having replied) when ``model`` matched a saved fusion
@@ -1739,11 +1784,12 @@ class _AgentSession:
                     return True
 
             fused = build_fusion_provider(fusion)
-            self._install_provider(
+            persisted = self._install_provider(
                 fused, fusion.base.provider, fusion.base.model,
                 # Persist the NAME the user selected, so a restart restores
                 # the fusion model rather than the bare base model.
                 persist_model=fusion.name,
+                persist=persist,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] fusion model switch failed")
@@ -1762,12 +1808,21 @@ class _AgentSession:
             "fusion_base": fusion.base.selector,
             "fusion_vision": fusion.vision.selector,
             "provider": fusion.base.provider,
+            "persisted": persisted,
         })
         return True
 
-    def _do_set_provider(self, request_id: object, name: object) -> None:
+    def _do_set_provider(
+        self, request_id: object, name: object, *, persist: bool = True,
+    ) -> None:
         """Switch the LLM provider mid-session (the original's /provider). Rebuilds
-        the provider + tool registry but keeps the conversation. Idle-only."""
+        the provider + tool registry but keeps the conversation. Idle-only.
+
+        ``persist`` saves the landing (provider, default model) pair as the
+        user's default for new sessions, the same way ``set_model`` does —
+        the /model picker's cross-provider path is set_provider followed by
+        set_model, and a typed ``/provider x`` on its own should be just as
+        durable as picking x's default model would have been."""
         with self._lock:
             active = self._current_abort is not None
         if active:
@@ -1788,8 +1843,10 @@ class _AgentSession:
             provider_cls = get_provider_class(name)
             model = provider_cfg.get("default_model")
             provider = provider_cls(api_key=api_key, base_url=provider_cfg.get("base_url"), model=model)
-            self._install_provider(provider, name, model)
-            self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
+            persisted = self._install_provider(provider, name, model, persist=persist)
+            self._reply(request_id, {
+                "ok": True, "provider": name, "model": model or "", "persisted": persisted,
+            })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
@@ -2126,9 +2183,13 @@ class _AgentSession:
 
     def _install_provider(
         self, provider: Any, name: str, model: str | None,
-        *, persist_model: str | None = None,
-    ) -> None:
+        *, persist_model: str | None = None, persist: bool = True,
+    ) -> bool:
         """Adopt ``provider`` as the session's provider, rebuilding the registry.
+
+        Returns whether the pick was written to the user's settings as the
+        default for new sessions (``persist`` requested it AND this session
+        may write preferences — see :func:`_persist_model_choice`).
 
         Extracted from :meth:`_do_set_provider` so the fusion-model branch of
         :meth:`_do_set_model` performs an IDENTICAL swap — a fusion model
@@ -2195,8 +2256,12 @@ class _AgentSession:
         # ch03 round-4 GAP A: keep the persisted (model, model_provider)
         # pair coherent across a provider switch — the supplier reads
         # self.provider_name, updated above, so on_change persists the
-        # new pairing.
-        _dispatch_app_state(self, main_loop_model=persist_model or model)
+        # new pairing. Skipped entirely for a session-only switch (see
+        # _do_set_model for why the stale mirror is acceptable).
+        persisted = False
+        if persist:
+            _dispatch_app_state(self, main_loop_model=persist_model or model)
+            persisted = _persist_model_choice(self, persist_model or model)
         # INTEG-1 warm-on-activation (the refreshStartupDiscoveryForActiveRoute
         # analog, discoveryService.ts:415): one non-blocking
         # get_available_models call kicks the single-flight background
@@ -2210,6 +2275,7 @@ class _AgentSession:
                 warm()
         except Exception:  # noqa: BLE001 — warm is best-effort
             logger.debug("[agent-server] discovery warm failed", exc_info=True)
+        return persisted
 
     def _mcp_server_infos(self) -> list[Any] | None:
         """The connected MCP servers' info objects (name + instructions) for
@@ -2530,14 +2596,23 @@ class _AgentSession:
         """
         return self.provider, (self._effort or None)
 
-    def _do_set_effort(self, request_id: object, effort: object) -> None:
+    def _do_set_effort(
+        self, request_id: object, effort: object, *, persist: bool = True,
+    ) -> None:
         """``/effort`` backend: reasoning levels plus the ``ultracode``
         workflow auto-orchestration mode (mirrors ``effort_command.py``).
 
         No/empty arg ⇒ read-only report (the old picker's Esc-is-a-no-op).
         ``ultracode`` enables session mode and leaves the reasoning level
         untouched; real levels and ``auto``/``unset`` exit ultracode mode
-        (spec: "reset with /effort high")."""
+        (spec: "reset with /effort high").
+
+        A real level or ``auto`` is ALSO saved as the user's default for new
+        sessions (``settings.effort``, the same key ``effort_command.py``
+        and the wire-boundary fallback in ``resolve_thinking_effort`` read)
+        when ``persist`` is requested and this session may write
+        preferences; ``persisted`` in the reply says whether it was.
+        ``ultracode`` is a session mode, never persisted."""
         try:
             from src.workflow.gating import is_workflows_enabled
             from src.workflow.ultracode import is_ultracode_session, set_ultracode_session
@@ -2590,12 +2665,18 @@ class _AgentSession:
             if a in ("auto", "unset"):
                 self._effort = None
                 set_ultracode_session(False)
-                self._reply(request_id, {"ok": True, "effort": "default", "ultracode": False})
+                self._reply(request_id, {
+                    "ok": True, "effort": "default", "ultracode": False,
+                    "persisted": _persist_effort_choice(self, None) if persist else False,
+                })
                 return
             if a in levels:
                 self._effort = a
                 set_ultracode_session(False)  # a real level exits ultracode mode
-                reply = {"ok": True, "effort": a, "ultracode": False}
+                reply = {
+                    "ok": True, "effort": a, "ultracode": False,
+                    "persisted": _persist_effort_choice(self, a) if persist else False,
+                }
                 # Effort rides INSIDE the extended-thinking block on the
                 # Anthropic path (query.py gates the whole thing on
                 # ``extended_thinking is not False``), so /thinking off
@@ -5714,6 +5795,17 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
 
         profile_checkpoint("agent_server_build_runtime_start")
 
+        # Whether this session belongs to the host user's own UI, and so may
+        # READ the persisted ``/model`` + ``/effort`` defaults: the stdio TUI
+        # child (single_session) and the desktop/web gateway's sessions
+        # (persist_preferences — the same flag that lets them WRITE those
+        # defaults, so the pair is read exactly where it can be set). A
+        # DirectConnect --http client session is neither. Computed once
+        # here because the effort seed below and the model restore further
+        # down both key off it.
+        cfg = sess.config
+        own_sessions = bool(cfg.single_session or cfg.persist_preferences)
+
         # ``--effort`` seeds the session's /effort level, so the launch flag
         # reaches the INTERACTIVE path too (it used to be plumbed only into
         # HeadlessOptions, so `clawcodex --model X --effort xhigh` without
@@ -5749,6 +5841,24 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                     raw_effort,
                     [v for v in VALID_EFFORT_VALUES if v],
                 )
+            elif own_sessions:
+                # No explicit level: seed from the persisted ``/effort``
+                # default (settings.effort). The wire boundary
+                # (resolve_thinking_effort) already falls back to that key
+                # when the session carries no level, so this changes
+                # nothing on the request — it makes the init frame's badge,
+                # ``effort_options.current`` and the pickers' preselection
+                # say the level that is actually being sent, instead of
+                # "auto" over a request that is not. Same gate as the
+                # persisted model read above, for the same reason.
+                try:
+                    from src.settings.settings import get_settings
+
+                    saved = (get_settings().effort or "").strip().lower()
+                except Exception:  # noqa: BLE001 — settings must never break startup
+                    saved = ""
+                if saved and saved in VALID_EFFORT_VALUES:
+                    sess._effort = saved
 
         # ch02 round-4 WI-1 — one persisted-trust verdict for this
         # session's cwd, evaluated BEFORE any config read: get_merged's
@@ -5804,8 +5914,6 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                              exc_info=True)
         profile_checkpoint("agent_server_trust_prefetch_done")
 
-        cfg = sess.config
-
         # Sandbox HARD GATE (C8): TS's failIfUnavailable is a REFUSE-TO-START
         # at the entrypoints (print.ts:600 / REPL.tsx:2362 "refusing to start
         # without a working sandbox"), NOT a per-command refusal. The port has
@@ -5835,10 +5943,12 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         from src.settings.settings import get_persisted_model
 
         #
-        # single_session ONLY, deliberately. The persisted choice lives in
-        # the HOST's user settings, and the old post-construction restore
-        # sat inside the ``if cfg.single_session:`` block below — so reading
-        # it here unguarded would newly apply the server operator's model to
+        # The host user's own sessions ONLY, deliberately: the stdio TUI
+        # child (single_session) and the desktop/web gateway's sessions
+        # (persist_preferences — the same flag that lets those sessions
+        # WRITE the choice, so the pair is read exactly where it can be
+        # set). The persisted choice lives in the HOST's user settings, and
+        # reading it unguarded would apply the server operator's model to
         # every client session on the multi-session --http transport. Same
         # shape as the bypass-availability refusal further down ("would let
         # the server host's own settings unlock bypass for every client
@@ -5848,7 +5958,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             get_persisted_model(
                 provider_name, provider_is_explicit=bool(cfg.provider_name)
             )
-            if cfg.single_session
+            if own_sessions
             else ""
         )
 
@@ -6824,6 +6934,52 @@ def _dispatch_app_state(sess: "_AgentSession", **changes: Any) -> None:
         store.set_state(lambda prev: replace_state(prev, **changes))
     except Exception:  # noqa: BLE001
         logger.debug("[agent-server] app-state dispatch failed", exc_info=True)
+
+
+def _may_persist_preferences(sess: "_AgentSession") -> bool:
+    """Whether a wire request on ``sess`` may write the HOST user's
+    ``/model`` + ``/effort`` defaults: ``config.persist_preferences`` — the
+    user's own UIs (the stdio TUI child, the desktop/web gateway's sessions)
+    may, a DirectConnect ``--http`` client may not. ``getattr``-tolerant like
+    :func:`_dispatch_app_state`: a session without a config cannot persist."""
+    return bool(getattr(getattr(sess, "config", None), "persist_preferences", False))
+
+
+def _persist_model_choice(sess: "_AgentSession", model: str) -> bool:
+    """Save ``model`` (on ``sess``'s provider) as the default for new
+    sessions; returns whether it was written.
+
+    Uses THIS session's ``provider_name`` rather than the app-state store's
+    process-global provider supplier, which on a multi-session gateway names
+    whichever session registered last. Never raises: a failed write is
+    reported as ``False`` and the in-memory switch stands.
+    """
+    if not _may_persist_preferences(sess):
+        return False
+    try:
+        from src.settings.settings import persist_model_choice
+
+        persist_model_choice(model, sess.provider_name)
+        return True
+    except Exception:  # noqa: BLE001 — a failed write must not fail the switch
+        logger.debug("[agent-server] model choice persist failed", exc_info=True)
+        return False
+
+
+def _persist_effort_choice(sess: "_AgentSession", level: str | None) -> bool:
+    """Save ``level`` (``None`` = auto) as ``settings.effort``, the default
+    for new sessions; returns whether it was written. Same gate and
+    never-raises contract as :func:`_persist_model_choice`."""
+    if not _may_persist_preferences(sess):
+        return False
+    try:
+        from src.config import set_effort
+
+        set_effort(level)
+        return True
+    except Exception:  # noqa: BLE001 — a failed write must not fail the set
+        logger.debug("[agent-server] effort persist failed", exc_info=True)
+        return False
 
 
 def _current_logo_color() -> str | None:

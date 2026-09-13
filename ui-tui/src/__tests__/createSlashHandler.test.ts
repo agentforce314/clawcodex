@@ -227,13 +227,16 @@ describe('createSlashHandler', () => {
     expect(getUiState().info?.profile_name).toBe('anthropic')
   })
 
-  it('honors TUI picker session scope without adding --global', async () => {
+  it('passes a session-scoped /model value through verbatim for the gateway to parse', async () => {
+    // `--session` (and its older `--tui-session` spelling) is the gateway's
+    // grammar — it turns into `persist: false` on the control. Stripping it
+    // here would silently promote a one-session switch to the saved default.
     patchUiState({ sid: 'sid-abc' })
 
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
-        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+        rpc: vi.fn(() => Promise.resolve({ persisted: false, value: 'anthropic/claude-sonnet-4.6' }))
       }
     })
 
@@ -244,7 +247,11 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: `anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`
+    })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Set model to anthropic/claude-sonnet-4.6 for this session')
     })
   })
 
@@ -258,6 +265,25 @@ describe('createSlashHandler', () => {
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'
+    })
+  })
+
+  it('says a switch was saved as the default for new sessions only when the backend confirms it', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ persisted: true, provider: 'deepseek', value: 'deepseek-flash' }))
+      }
+    })
+
+    createSlashHandler(ctx)('/model deepseek-flash --provider deepseek')
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'Set model to deepseek-flash and saved as your default for new sessions'
+      )
     })
   })
 
@@ -985,8 +1011,9 @@ describe('createSlashHandler', () => {
   // The /model picker dispatches `/model …` then `/effort …` synchronously in
   // one tick. A single shared flight counter made the second dispatch mark the
   // first as superseded, so the `/model` reply — which folds provider+model
-  // into ui.info and prints `model → …` — was dropped and the stats line kept
-  // describing the previous session while the backend had already switched.
+  // into ui.info and prints the "Set model to …" line — was dropped and the
+  // stats line kept describing the previous session while the backend had
+  // already switched.
   it('still applies a /model switch when another command is dispatched in the same tick', async () => {
     patchUiState({
       info: { model: 'claude-opus-5', profile_name: 'anthropic', skills: {}, tools: {} },
@@ -1010,7 +1037,7 @@ describe('createSlashHandler', () => {
       expect(getUiState().info).toMatchObject({ model: 'deepseek-v4-flash', profile_name: 'deepseek' })
     })
 
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('model → deepseek-v4-flash')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('Set model to deepseek-v4-flash')
   })
 
   it('still supersedes an older dispatch of the SAME command', async () => {
@@ -1033,7 +1060,7 @@ describe('createSlashHandler', () => {
       expect(getUiState().info).toMatchObject({ model: 'deepseek-v4-plus' })
     })
 
-    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('model → deepseek-v4-flash')
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('Set model to deepseek-v4-flash')
   })
 })
 

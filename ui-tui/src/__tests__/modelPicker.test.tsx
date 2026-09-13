@@ -12,7 +12,7 @@ import { renderSync } from '@clawcodex/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ModelPicker } from '../components/modelPicker.js'
+import { ModelPicker, SCOPE_NOTE } from '../components/modelPicker.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -327,5 +327,32 @@ describe('ModelPicker step 3 — effort', () => {
     expect(onSelect).toHaveBeenCalledWith(expect.stringContaining('claude-opus-5'), undefined)
     expect(requests).not.toContain('model.effort_options')
     app.unmount()
+  })
+})
+
+describe('ModelPicker scope', () => {
+  it('emits the bare "<model> --provider <slug>" value — a pick is the saved default, not a session toggle', async () => {
+    // There used to be a ^g toggle that appended `--global` or `--tui-session`
+    // and a "persist: session" footer — while the backend saved every switch
+    // regardless. Now the value carries no scope flag at all and the backend's
+    // reply decides the transcript wording; `/model <id> --session` is the
+    // typed escape hatch for a one-session switch.
+    const p = mount()
+    await toEffortStage(p)
+
+    expect(p.onSelect).toHaveBeenCalledWith('claude-opus-5 --provider anthropic', undefined)
+    p.unmount()
+  })
+
+  it('says under the lists that a pick becomes the default for new sessions', async () => {
+    const p = mount()
+    await delay(30)
+
+    expect(p.frame()).toContain(SCOPE_NOTE)
+    expect(p.frame()).not.toContain('persist:')
+
+    await p.press(ENTER) // provider → model
+    expect(p.frame()).toContain(SCOPE_NOTE)
+    p.unmount()
   })
 })

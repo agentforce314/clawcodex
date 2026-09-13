@@ -463,26 +463,43 @@ describe('GatewayClient NDJSON adapter', () => {
   // ── config.set model (the /model picker + typed /model) ───────────────────
 
   it('parses the picker model grammar and answers with the switched value', async () => {
-    // The picker emits "<model> --provider <slug> [--global|--tui-session]";
-    // the gateway owns parsing it (hermes contract). The flags must never
-    // reach the backend as part of the model id.
+    // The picker emits "<model> --provider <slug>"; the gateway owns parsing
+    // it. `--global` is the legacy spelling of the default (save as the
+    // default for new sessions) and, like every flag, must never reach the
+    // backend as part of the model id — nor as a `persist` key, whose
+    // absence IS the backend's default.
     const p = gw.request('config.set', { key: 'model', value: 'deepseek-v4-pro --provider deepseek --global' })
-    await replyToControl('set_model', { model: 'deepseek-v4-pro', ok: true })
-    await expect(p).resolves.toEqual({ value: 'deepseek-v4-pro' })
+    await replyToControl('set_model', { model: 'deepseek-v4-pro', ok: true, persisted: true })
+    await expect(p).resolves.toEqual({ persisted: true, value: 'deepseek-v4-pro' })
 
     const req = seen.find(f => f.request?.subtype === 'set_model')!.request
     expect(req.model).toBe('deepseek-v4-pro')
     expect(req.provider).toBe('deepseek')
+    expect('persist' in req).toBe(false)
   })
 
   it('sends a bare typed /model value without a provider param', async () => {
+    // `--tui-session` is the older spelling of `--session`: this session
+    // only, so the control carries persist:false.
     const p = gw.request('config.set', { key: 'model', value: 'x-model --tui-session' })
-    await replyToControl('set_model', { model: 'x-model', ok: true })
-    await expect(p).resolves.toEqual({ value: 'x-model' })
+    await replyToControl('set_model', { model: 'x-model', ok: true, persisted: false })
+    await expect(p).resolves.toEqual({ persisted: false, value: 'x-model' })
 
     const req = seen.find(f => f.request?.subtype === 'set_model')!.request
     expect(req.model).toBe('x-model')
     expect('provider' in req).toBe(false)
+    expect(req.persist).toBe(false)
+  })
+
+  it('turns --session into persist:false and leaves an unsaid verdict unsaid', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'y-model --provider openai --session' })
+    // An older backend that never reports `persisted` — the result must not
+    // invent one either way.
+    await replyToControl('set_model', { model: 'y-model', ok: true })
+    await expect(p).resolves.toEqual({ value: 'y-model' })
+
+    const req = seen.find(f => f.request?.subtype === 'set_model')!.request
+    expect(req).toMatchObject({ model: 'y-model', persist: false, provider: 'openai' })
   })
 
   it('passes the backend model-switch warning through to the caller', async () => {

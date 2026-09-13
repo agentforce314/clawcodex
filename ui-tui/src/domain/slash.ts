@@ -1,4 +1,9 @@
-/** Appended to `/model` args from the TUI picker for session scope; stripped in `session` slash before `config.set`. */
+/**
+ * The older spelling of `/model … --session` (a switch scoped to this session,
+ * not saved as the default for new sessions). The picker no longer emits it —
+ * a picker selection always becomes the default — but a typed value carrying
+ * it still parses, so the gateway treats both spellings alike.
+ */
 export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 
 export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)

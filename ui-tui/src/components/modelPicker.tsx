@@ -2,7 +2,6 @@ import { Box, Text, useInput, useStdout } from '@clawcodex/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { EffortOptionsResponse, ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
@@ -24,20 +23,19 @@ type Stage = 'provider' | 'key' | 'model' | 'effort' | 'disconnect'
  */
 const AUTO_EFFORT = 'auto'
 
-export function ModelPicker({
-  allowEffortStep = true,
-  allowPersistGlobal = true,
-  gw,
-  onCancel,
-  onSelect,
-  sessionId,
-  t
-}: ModelPickerProps) {
+/**
+ * Shown under the provider and model lists. A picker selection is written to
+ * the user's settings as the default for new sessions — including the CLI
+ * and the web/desktop clients, which read the same file — so the overlay has
+ * to admit its real scope rather than read like a per-session toggle.
+ */
+export const SCOPE_NOTE = 'Saved as your default for new sessions'
+
+export function ModelPicker({ allowEffortStep = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
-  const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
   const [stage, setStage] = useState<Stage>('provider')
@@ -143,8 +141,10 @@ export function ModelPicker({
     }
   }, [models.length, modelIdx])
 
-  const buildModelValue = (slug: string, model: string) =>
-    `${model} --provider ${slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
+  // No scope flag: a picker selection is the user's default for new sessions
+  // (the backend persists it and says so in the transcript line). The typed
+  // `/model <id> --session` form is the escape hatch for a one-session switch.
+  const buildModelValue = (slug: string, model: string) => `${model} --provider ${slug}`
 
   // One exit point for the whole flow, so the switch is dispatched exactly
   // once whether step 3 ran, was skipped, or failed to load.
@@ -438,9 +438,8 @@ export function ModelPicker({
       return
     }
 
-    // Step 3 has no filter, and its model value (with the persist flag baked
-    // in) was built on the way in — so a ^g toggle here would silently do
-    // nothing. Everything below this line belongs to the two list stages.
+    // Step 3 has no filter. Everything below this line belongs to the two
+    // list stages.
     if (stage === 'effort') {
       return
     }
@@ -458,15 +457,6 @@ export function ModelPicker({
     if (key.ctrl && ch === 'u') {
       setFilter('')
       setSel(0)
-
-      return
-    }
-
-    // Persist-global toggle moved to Ctrl+G so 'g' can be typed into the
-    // filter. With Ctrl held, @clawcodex/ink reports `ch` as the key name ('g'),
-    // not the raw control byte (see input-event.ts: input = ctrl ? name : seq).
-    if (allowPersistGlobal && key.ctrl && ch === 'g') {
-      setPersistGlobal(v => !v)
 
       return
     }
@@ -748,8 +738,7 @@ export function ModelPicker({
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-          {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+          {SCOPE_NOTE}
         </Text>
         <OverlayHint t={t}>↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close</OverlayHint>
       </Box>
@@ -816,8 +805,7 @@ export function ModelPicker({
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-        {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+        {SCOPE_NOTE}
       </Text>
       <OverlayHint t={t}>
         {models.length ? '↑/↓ select · Enter switch · Esc clear/back · q close' : 'Esc back · q close'}
@@ -834,7 +822,6 @@ interface ModelPickerProps {
    * not offering it.
    */
   allowEffortStep?: boolean
-  allowPersistGlobal?: boolean
   gw: GatewayClient
   onCancel: () => void
   /** `effort` is the step-3 choice, omitted for `auto` and for models with no ladder. */
