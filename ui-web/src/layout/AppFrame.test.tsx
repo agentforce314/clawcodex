@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $detailsWidth, $sidebarWidth } from '../state/layout.ts'
+import { $columnDrag, $detailsOpen, $detailsWidth, $sidebarWidth } from '../state/layout.ts'
 import { AppFrame } from './AppFrame.tsx'
 
 /** jsdom has no pointer capture; the handle only needs the calls to exist. */
@@ -36,17 +36,36 @@ afterEach(() => {
 })
 
 describe('the details drag handle', () => {
-  it('marks the frame while held and clears it on the release', () => {
+  it('marks the frame while held, publishes the drag, and clears both on the release', () => {
     const { container } = renderFrame()
     const handle = container.querySelector('[data-side="details"]') as HTMLElement
 
     fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1 })
 
     expect(container.firstElementChild?.hasAttribute('data-dragging')).toBe(true)
+    expect($columnDrag.get()).toBe(true)
 
     fireEvent.pointerUp(handle, { clientX: 860, pointerId: 1 })
 
     expect(container.firstElementChild?.hasAttribute('data-dragging')).toBe(false)
+    expect($columnDrag.get()).toBe(false)
+  })
+
+  it('tells open from closed without a word about the width', () => {
+    // The store most of the app subscribes to changes only when the column
+    // opens or closes, never on a pixel of a drag.
+    const seen: boolean[] = []
+    const off = $detailsOpen.subscribe(open => {
+      seen.push(open)
+    })
+
+    $detailsWidth.set(420)
+    $detailsWidth.set(480)
+    $detailsWidth.set(0)
+    $detailsWidth.set(360)
+    off()
+
+    expect(seen).toEqual([true, false, true])
   })
 
   it('ends the drag when the capture is lost, so a swallowed release cannot leave the column glued to the pointer', () => {

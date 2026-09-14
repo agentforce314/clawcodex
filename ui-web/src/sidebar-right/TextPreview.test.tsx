@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { GatewayClient } from '../gateway/client.ts'
 import type { FilePage } from '../gateway/protocol.ts'
 import { setGatewayClient } from '../state/actions.ts'
+import { $columnDrag } from '../state/layout.ts'
 import { $sessionId, $transcript, $workspace } from '../state/store.ts'
 import { emptyTranscript, type ToolNode } from '../state/transcript.ts'
 import { $textTabs, reloadPages, resetTextTabs, setScroll } from './text-store.ts'
@@ -431,6 +432,17 @@ describe('whole-file viewers', () => {
     expect(screen.queryByLabelText('Wrap lines')).toBeNull()
     expect(screen.queryByText('Load more')).toBeNull()
     expect(screen.getByLabelText('Viewer').textContent).toContain('HTML')
+
+    // While a column handle is held the frame keeps the width it had (jsdom
+    // measures it as zero), and takes the column's again on the release.
+    act(() => {
+      $columnDrag.set(true)
+    })
+    expect((frame as HTMLElement).style.width).toBe('0px')
+    act(() => {
+      $columnDrag.set(false)
+    })
+    expect((frame as HTMLElement).style.width).toBe('')
   })
 
   it('shows an image at its own size and offers no other viewer for it', async () => {
