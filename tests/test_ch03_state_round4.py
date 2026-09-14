@@ -78,7 +78,10 @@ class _ServerHarness(unittest.TestCase):
         _reset_all()
         self._tmp.cleanup()
 
-    def _build(self, *, model: str | None = None, single_session: bool = True):
+    def _build(
+        self, *, model: str | None = None, single_session: bool = True,
+        persist_preferences: bool | None = None, effort: str | None = None,
+    ):
         from src.server.agent_server import (
             AgentServerConfig,
             _AgentSession,
@@ -91,7 +94,14 @@ class _ServerHarness(unittest.TestCase):
             config=AgentServerConfig(
                 provider_name="ollama",
                 model=model,
+                effort=effort,
                 single_session=single_session,
+                # The stdio transport sets both; a test that wants the
+                # gateway shape (multi-session, still the user's own) passes
+                # single_session=False, persist_preferences=True.
+                persist_preferences=(
+                    single_session if persist_preferences is None else persist_preferences
+                ),
             ),
             loop=MagicMock(),
             out_queue=MagicMock(),
@@ -395,3 +405,114 @@ class TestEstimatedCostOnSubscription(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPreferencePersistence(_ServerHarness):
+    """A /model or /effort pick is saved as the default for new sessions on
+    the host user's own transports, reported as ``persisted``, and read back
+    when the next session is built — on the stdio TUI child AND on the
+    desktop/web gateway's sessions (persist_preferences without
+    single_session). A --http-shaped session gets neither."""
+
+    def _global(self) -> dict:
+        return json.loads(self.global_path.read_text(encoding="utf-8"))
+
+    def _control(self, sess, rid: str, request: dict) -> dict:
+        replies: list = []
+        original = sess._reply
+
+        def capture(request_id, payload):
+            replies.append((request_id, payload))
+            return original(request_id, payload)
+
+        sess._reply = capture
+        asyncio.run(sess._handle_control_request({"request_id": rid, "request": request}))
+        sess._reply = original
+        return replies[-1][1]
+
+    def test_set_model_reports_persisted_and_moves_the_default_provider(self) -> None:
+        sess = self._build()
+        reply = self._control(sess, "r1", {"subtype": "set_model", "model": "chosen-model"})
+        self.assertTrue(reply["ok"])
+        self.assertIs(reply["persisted"], True)
+        section = self._settings_section()
+        self.assertEqual(section.get("model"), "chosen-model")
+        self.assertEqual(section.get("model_provider"), "ollama")
+        # The provider half of the pair is the default too — the read side
+        # asks about the default provider, so without this a pick from a
+        # non-default provider would be written and never restored.
+        self.assertEqual(self._global().get("default_provider"), "ollama")
+
+    def test_session_scoped_switch_writes_nothing(self) -> None:
+        sess = self._build()
+        reply = self._control(
+            sess, "r1", {"subtype": "set_model", "model": "one-off", "persist": False},
+        )
+        self.assertTrue(reply["ok"])
+        self.assertIs(reply["persisted"], False)
+        self.assertEqual(sess.provider.model, "one-off")
+        self.assertIsNone(self._settings_section().get("model"))
+        self.assertNotIn("default_provider", self._global())
+
+    def test_gateway_shaped_session_persists_and_restores(self) -> None:
+        # Multi-session (no app-state store), still the user's own.
+        sess = self._build(single_session=False, persist_preferences=True)
+        self.assertIsNone(sess.app_state_store)
+        reply = self._control(sess, "r1", {"subtype": "set_model", "model": "gateway-pick"})
+        self.assertIs(reply["persisted"], True)
+        self.assertEqual(self._settings_section().get("model"), "gateway-pick")
+        # The next gateway session starts on it, like a stdio one would.
+        again = self._build(single_session=False, persist_preferences=True)
+        self.assertEqual(again.provider.model, "gateway-pick")
+
+    def test_http_shaped_session_neither_writes_nor_reads(self) -> None:
+        self.global_path.write_text(json.dumps({
+            "settings": {"model": "persisted-model", "model_provider": "ollama"},
+        }), encoding="utf-8")
+        from src.settings.settings import invalidate_settings_cache
+
+        invalidate_settings_cache()
+        sess = self._build(single_session=False, persist_preferences=False)
+        self.assertNotEqual(sess.provider.model, "persisted-model")
+        reply = self._control(sess, "r1", {"subtype": "set_model", "model": "remote-pick"})
+        self.assertTrue(reply["ok"])
+        self.assertIs(reply["persisted"], False)
+        self.assertEqual(self._settings_section().get("model"), "persisted-model")
+
+    def test_set_effort_persists_levels_and_auto(self) -> None:
+        sess = self._build()
+        reply = self._control(sess, "e1", {"subtype": "set_effort", "effort": "high"})
+        self.assertEqual(reply["effort"], "high")
+        self.assertIs(reply["persisted"], True)
+        self.assertEqual(self._settings_section().get("effort"), "high")
+        # auto clears the persisted level (written as "" for round-trip
+        # fidelity with the schema default) and is itself reported saved.
+        reply = self._control(sess, "e2", {"subtype": "set_effort", "effort": "auto"})
+        self.assertEqual(reply["effort"], "default")
+        self.assertIs(reply["persisted"], True)
+        self.assertEqual(self._settings_section().get("effort"), "")
+
+    def test_set_effort_session_scope_and_ultracode_never_persist(self) -> None:
+        sess = self._build()
+        reply = self._control(
+            sess, "e1", {"subtype": "set_effort", "effort": "max", "persist": False},
+        )
+        self.assertEqual(reply["effort"], "max")
+        self.assertIs(reply["persisted"], False)
+        self.assertEqual(sess._effort, "max")
+        self.assertIsNone(self._settings_section().get("effort"))
+
+    def test_new_session_starts_on_the_persisted_effort(self) -> None:
+        sess = self._build()
+        self._control(sess, "e1", {"subtype": "set_effort", "effort": "xhigh"})
+        # The badge, effort_options.current and the pickers' preselection
+        # all read _effort; the wire already fell back to settings.effort,
+        # so seeding makes the display agree with the request.
+        again = self._build()
+        self.assertEqual(again._effort, "xhigh")
+        # An explicit --effort still wins over the persisted default…
+        explicit = self._build(effort="low")
+        self.assertEqual(explicit._effort, "low")
+        # …and a --http-shaped session does not read the host's default.
+        remote = self._build(single_session=False, persist_preferences=False)
+        self.assertIsNone(remote._effort)

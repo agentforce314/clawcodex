@@ -21,6 +21,7 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
+import { effortChangeNotice } from './domain/modelSwitch.js'
 import type {
   CostSnapshot,
   CronSnapshot,
@@ -865,6 +866,15 @@ const WORKFLOW_CMDS_TTL_MS = 3_000
  *  selection, so a burst of skills.manage RPCs rides one backend disk scan. */
 const SKILLS_TTL_MS = 3_000
 
+/** What `config.set{model}` answers: the ConfigSetResponse subset the /model command reads. */
+interface ModelSwitchResult {
+  /** Whether the pick was saved as the default for new sessions; absent from older backends. */
+  persisted?: boolean
+  provider?: string
+  value: string
+  warning?: string
+}
+
 export class GatewayClient extends EventEmitter {
   private buffered: GatewayEvent[] = []
   private logs: string[] = []
@@ -1632,17 +1642,22 @@ export class GatewayClient extends EventEmitter {
     })
   }
 
-  // config.set{model} carries the hermes /model grammar —
-  // "<model> [--provider <slug>] [--global|--tui-session]" — verbatim from the
-  // picker/slash layer; parsing it is the gateway's job. The callers require a
+  // config.set{model} carries the /model grammar —
+  // "<model> [--provider <slug>] [--session]" — verbatim from the picker/slash
+  // layer; parsing it is the gateway's job. The callers require a
   // ConfigSetResponse `value` on success (its absence is what "error: invalid
   // response: model switch" reports), so this must round-trip the control
-  // rather than fire-and-forget. Scope flags are dropped: the backend persists
-  // every switch (agent_server set_model → app-state on_change).
-  private setModel(raw: string): Promise<{ provider?: string; value: string; warning?: string }> {
+  // rather than fire-and-forget.
+  //
+  // Scope: the backend saves every switch as the user's default for new
+  // sessions unless told `persist: false`, which is what `--session` (and its
+  // older spelling `--tui-session`) means. `--global` is the legacy spelling
+  // of the default and parses as a no-op.
+  private setModel(raw: string): Promise<ModelSwitchResult> {
     const tokens = raw.trim().split(/\s+/).filter(Boolean)
     const modelParts: string[] = []
     let provider: string | undefined
+    let persist = true
 
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i]!
@@ -1653,7 +1668,13 @@ export class GatewayClient extends EventEmitter {
         continue
       }
 
-      if (tok === '--global' || tok === '--tui-session') {
+      if (tok === '--session' || tok === '--tui-session') {
+        persist = false
+
+        continue
+      }
+
+      if (tok === '--global') {
         continue
       }
 
@@ -1662,7 +1683,7 @@ export class GatewayClient extends EventEmitter {
 
     const model = modelParts.join(' ')
 
-    return this.applyModel(model, provider)
+    return this.applyModel(model, provider, persist)
   }
 
   // `set_model` deliberately refuses to point the live provider at another
@@ -1670,13 +1691,19 @@ export class GatewayClient extends EventEmitter {
   // only `set_provider` performs. The /model picker selects exactly that way
   // (step 1 a provider, step 2 one of its models), so on the backend's
   // `provider_mismatch` signal we do the switch first and re-apply the model.
-  // `allowSwitch` guards the retry against recursing.
+  // `allowSwitch` guards the retry against recursing. `persist` rides both
+  // controls, so a session-only switch is session-only as a whole.
   private applyModel(
     model: string,
     provider: string | undefined,
+    persist = true,
     allowSwitch = true
-  ): Promise<{ provider?: string; value: string; warning?: string }> {
-    return this.controlQuery('set_model', { model, ...(provider ? { provider } : {}) }).then((r: any) => {
+  ): Promise<ModelSwitchResult> {
+    // Sent only when false: absent means "the backend's default" (persist),
+    // which is also what older backends that never read the key do.
+    const scope = persist ? {} : { persist: false }
+
+    return this.controlQuery('set_model', { model, ...(provider ? { provider } : {}), ...scope }).then((r: any) => {
       if (r == null) {
         // Tagged: a silent backend may still have APPLIED the model, so the
         // cross-provider retry below must not "roll back" over it.
@@ -1687,7 +1714,7 @@ export class GatewayClient extends EventEmitter {
 
       if (r.ok === false) {
         if (r.provider_mismatch === true && provider && allowSwitch) {
-          return this.controlQuery('set_provider', { provider }).then((sr: any) => {
+          return this.controlQuery('set_provider', { provider, ...scope }).then((sr: any) => {
             if (sr == null) {
               throw new Error('provider switch: no response from backend')
             }
@@ -1705,7 +1732,7 @@ export class GatewayClient extends EventEmitter {
             // happened" while the session quietly sits on a different
             // provider AND a different model. Roll back to where we came
             // from (the mismatch reply names it) and say what actually stuck.
-            return this.applyModel(model, provider, false)
+            return this.applyModel(model, provider, persist, false)
               // The retry lands on the NEW provider, so its reply names it.
               // Fall back to the one we just switched to for older backends
               // that echo no provider: set_provider returning ok is proof of
@@ -1751,10 +1778,13 @@ export class GatewayClient extends EventEmitter {
       // `provider`, without echoing it at all. Omit the key in that case so
       // callers can tell "unchanged/unknown" (keep the current label) from a
       // real move, rather than blanking a provider that is still correct.
+      // `persisted` likewise: only a backend that said whether the pick was
+      // saved as the default for new sessions gets the transcript to say so.
       return {
         value: typeof r.model === 'string' && r.model ? r.model : model,
         ...(typeof r.provider === 'string' && r.provider ? { provider: r.provider } : {}),
-        ...(typeof r.warning === 'string' && r.warning ? { warning: r.warning } : {})
+        ...(typeof r.warning === 'string' && r.warning ? { warning: r.warning } : {}),
+        ...(typeof r.persisted === 'boolean' ? { persisted: r.persisted } : {})
       }
     })
   }
@@ -1933,11 +1963,21 @@ export class GatewayClient extends EventEmitter {
           this.publish({ payload: this.sessionInfo, session_id: this.sessionId, type: 'session.info' })
         }
 
+        // A bare /effort is a read-only report; only a change is worded on
+        // whether it was saved as the default for new sessions.
+        if (!arg) {
+          return out(`Effort: ${r?.effort ?? '(unchanged)'}.`)
+        }
+
         // `note` carries a caveat the level alone doesn't convey — today:
         // extended thinking is off, which discards effort entirely.
-        const note = typeof r?.note === 'string' && r.note ? ` ${r.note}` : ''
+        const note = typeof r?.note === 'string' && r.note ? r.note : ''
+        // The backend spells a cleared level "default"; the pickers call that
+        // rung "auto", which is also what the user typed.
+        const level = r?.effort === 'default' ? 'auto' : String(r?.effort ?? arg)
+        const persisted = typeof r?.persisted === 'boolean' ? r.persisted : undefined
 
-        return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.${note}`)
+        return out(effortChangeNotice(level, persisted, note))
       }
 
       // `/permissions` (formerly `/mode`) is a LOCAL slash command

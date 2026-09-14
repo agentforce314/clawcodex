@@ -14,11 +14,12 @@ import { GatewayClient } from '../gateway/client.ts'
 import {
   clearSession,
   createSession,
+  dequeue,
   resumeSession,
   setDefaultProvider,
-  setModel,
-  dequeue,
+  setEffort,
   setGatewayClient,
+  setModel,
   start,
   submitPrompt,
 } from './actions.ts'
@@ -321,6 +322,65 @@ describe('createSession', () => {
       model: 'deepseek-v4-flash',
       provider: 'deepseek',
     })
+  })
+
+  it('says a switch was saved as the default for new sessions on the gateway’s word', async () => {
+    // The gateway persists a pick to the user's settings (the TUI's and the
+    // desktop's too) and echoes `persisted`; the notice must follow that
+    // verdict rather than claim it for a switch the transport could not save.
+    const gateway = await connect()
+
+    await createSession()
+    await settle()
+
+    gateway.results['config.set'] = { ok: true, persisted: true, value: 'deepseek-flash' }
+    await setModel('deepseek-flash', 'deepseek')
+    await settle()
+
+    expect(gateway.sent.find(frame => frame.method === 'config.set')?.params).toMatchObject({
+      key: 'model',
+      value: 'deepseek-flash --provider deepseek',
+    })
+    expect($notice.get()).toMatchObject({
+      text: 'Set model to deepseek-flash and saved as your default for new sessions',
+      tone: 'info',
+    })
+
+    gateway.results['config.set'] = { ok: true, persisted: false, value: 'deepseek-flash' }
+    await setModel('deepseek-flash', 'deepseek')
+    await settle()
+
+    expect($notice.get().text).toBe('Set model to deepseek-flash for this session')
+
+    // An older gateway that never says: claim neither.
+    gateway.results['config.set'] = { ok: true, value: 'deepseek-flash' }
+    await setModel('deepseek-flash', 'deepseek')
+    await settle()
+
+    expect($notice.get().text).toBe('Model: deepseek-flash')
+  })
+
+  it('words an effort change the same way', async () => {
+    const gateway = await connect()
+
+    await createSession()
+    await settle()
+
+    gateway.results['config.set'] = { ok: true, persisted: true, value: 'high' }
+    await setEffort('high')
+    await settle()
+
+    expect(gateway.sent.find(frame => frame.method === 'config.set')?.params).toMatchObject({
+      key: 'effort',
+      value: 'high',
+    })
+    expect($notice.get().text).toBe('Set effort level to high and saved as your default for new sessions')
+
+    gateway.results['config.set'] = { ok: true, persisted: false, value: 'auto' }
+    await setEffort('auto')
+    await settle()
+
+    expect($notice.get().text).toBe('Set effort level to auto for this session')
   })
 
   it('lets an explicit option win over the picked model', async () => {

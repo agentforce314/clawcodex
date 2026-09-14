@@ -65,6 +65,18 @@ def _rpc(ws, rid, method, params):
     ws.send_text(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
 
 
+def _last_control(agent: "FakeAgent", subtype: str) -> dict:
+    """The most recent ``subtype`` control the gateway sent this agent (a
+    switch is followed by the ``get_settings`` of the session.info republish,
+    so the LAST inbound frame is rarely the one under test)."""
+    frames = [
+        f["request"] for f in agent.inbound
+        if f.get("type") == "control_request" and (f.get("request") or {}).get("subtype") == subtype
+    ]
+    assert frames, f"no {subtype} control reached the agent"
+    return frames[-1]
+
+
 # ─── fake-agent tier ─────────────────────────────────────────────────────────
 
 
@@ -79,6 +91,11 @@ class FakeAgent:
         self.provider = "fakeprov"
         self.permission_mode = "bypassPermissions"
         self.recap = True
+        self.effort: str | None = None
+        # What the real agent answers on an own-user transport: the pick was
+        # saved as the default for new sessions. Tests flip it to model a
+        # session that may not write the host's settings.
+        self.persist_preferences = True
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -92,7 +109,26 @@ class FakeAgent:
                 # Record the switch so get_settings reports the new state.
                 self.model = request.get("model") or self.model
                 self.provider = request.get("provider") or self.provider
-                reply = {"ok": True, "model": self.model}
+                reply = {
+                    "ok": True, "model": self.model, "provider": self.provider,
+                    "persisted": self.persist_preferences and request.get("persist") is not False,
+                }
+            elif subtype == "set_effort":
+                level = request.get("effort")
+                if level in ("auto", "unset"):
+                    self.effort = None
+                    reply = {
+                        "ok": True, "effort": "default", "ultracode": False,
+                        "persisted": self.persist_preferences and request.get("persist") is not False,
+                    }
+                elif level in ("low", "medium", "high", "xhigh", "max"):
+                    self.effort = level
+                    reply = {
+                        "ok": True, "effort": level, "ultracode": False,
+                        "persisted": self.persist_preferences and request.get("persist") is not False,
+                    }
+                else:
+                    reply = {"ok": False, "error": f"invalid effort '{level}'"}
             elif subtype == "set_permission_mode":
                 self.permission_mode = request.get("mode") or self.permission_mode
                 reply = {"ok": True, "mode": self.permission_mode, "persisted": True}
@@ -123,6 +159,7 @@ class FakeAgent:
                     "provider": self.provider,
                     "permission_mode": self.permission_mode,
                     "recap": self.recap,
+                    "reasoning_effort": self.effort,
                 }
             if reply is not None:
                 await self.queue.put(
@@ -617,6 +654,13 @@ def test_model_switch_publishes_session_info(tmp_path: Path) -> None:
         })
         result = _drain_for_response(ws, 2, events)["result"]
         assert result["ok"] is True
+        # ``--session`` is the caller's "this session only": forwarded to the
+        # agent as persist=False, which it echoes back as not saved.
+        assert result["persisted"] is False
+        assert _last_control(agents[0], "set_model") == {
+            "subtype": "set_model", "model": "new-model", "provider": "newprov",
+            "persist": False,
+        }
 
         # A session.info carrying the NEW model+provider must have been pushed.
         infos = [e for e in events if e["type"] == "session.info"]
@@ -924,3 +968,82 @@ def test_subagent_transcript_reads_the_run_record(tmp_path: Path, monkeypatch) -
             _rpc(ws, rid, "subagent.transcript", {"agent_id": agent_id})
             reply = _drain_for_response(ws, rid, events)["result"]
             assert reply == {"agent_id": agent_id, "found": False, "messages": [], "message_count": 0}
+
+
+def test_model_switch_is_saved_as_the_default_unless_scoped(tmp_path: Path) -> None:
+    """A picker selection (no scope flag) is the user's default for new
+    sessions: the gateway sends no ``persist`` (the agent's default is to
+    save) and echoes the agent's ``persisted`` verdict, which the web and
+    desktop clients word their confirmation on."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {"cwd": "/tmp"})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        _rpc(ws, 2, "config.set", {
+            "session_id": sid, "key": "model", "value": "new-model --provider fakeprov",
+        })
+        result = _drain_for_response(ws, 2, events)["result"]
+        assert result["ok"] is True
+        assert result["value"] == "new-model"
+        assert result["persisted"] is True
+        assert "persist" not in _last_control(agents[0], "set_model")
+
+        # The legacy ``--global`` spelling means the same as no flag.
+        _rpc(ws, 3, "config.set", {
+            "session_id": sid, "key": "model", "value": "other-model --global",
+        })
+        result = _drain_for_response(ws, 3, events)["result"]
+        assert result["value"] == "other-model" and result["persisted"] is True
+
+        # A transport that may not write the host's settings says so, and the
+        # gateway passes that through rather than inventing a verdict.
+        agents[0].persist_preferences = False
+        _rpc(ws, 4, "config.set", {
+            "session_id": sid, "key": "model", "value": "third-model",
+        })
+        assert _drain_for_response(ws, 4, events)["result"]["persisted"] is False
+
+
+def test_effort_change_round_trips_and_reports_persisted(tmp_path: Path) -> None:
+    """``config.set{effort}`` used to be fire-and-forget (``{ok: true}`` before
+    the agent had even looked at the value). The chips need the level the
+    agent actually took and whether it became the default for new sessions,
+    and the session.info republish must carry the new level."""
+    state, agents = _fake_state(tmp_path)
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {"cwd": "/tmp"})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+
+        events.clear()
+        _rpc(ws, 2, "config.set", {"session_id": sid, "key": "effort", "value": "high"})
+        result = _drain_for_response(ws, 2, events)["result"]
+        assert result == {"ok": True, "value": "high", "persisted": True, "ultracode": False}
+        infos = [e for e in events if e["type"] == "session.info"]
+        assert infos and infos[-1]["payload"]["reasoning_effort"] == "high"
+
+        # ``auto`` clears the level; the agent spells that "default", the
+        # chips spell it "auto", and the gateway translates.
+        _rpc(ws, 3, "config.set", {"session_id": sid, "key": "reasoning", "value": "auto"})
+        result = _drain_for_response(ws, 3, events)["result"]
+        assert result["ok"] is True and result["value"] == "auto"
+        assert result["persisted"] is True
+
+        # An explicit persist=False is the session-only scope.
+        _rpc(ws, 4, "config.set", {
+            "session_id": sid, "key": "effort", "value": "low", "persist": False,
+        })
+        result = _drain_for_response(ws, 4, events)["result"]
+        assert result["value"] == "low" and result["persisted"] is False
+        assert _last_control(agents[0], "set_effort") == {
+            "subtype": "set_effort", "effort": "low", "persist": False,
+        }
+
+        # A rejected level is an error, not a silent ok.
+        _rpc(ws, 5, "config.set", {"session_id": sid, "key": "effort", "value": "bogus"})
+        result = _drain_for_response(ws, 5, events)["result"]
+        assert result["ok"] is False and "invalid effort" in result["error"]

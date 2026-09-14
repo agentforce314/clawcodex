@@ -209,7 +209,9 @@ export const draftModelArgFromPickerValue = (value: string) => {
   const kept: string[] = []
 
   for (const part of parts) {
-    if (part === TUI_SESSION_MODEL_FLAG || part === '--global') {
+    // Scope flags describe how a LIVE switch persists; a draft for a session
+    // that does not exist yet has no scope, so any of them is dropped.
+    if (part === TUI_SESSION_MODEL_FLAG || part === '--session' || part === '--global') {
       continue
     }
 
@@ -664,7 +666,6 @@ export function ActiveSessionSwitcher({
         // A draft for a not-yet-started session: the model is carried in the
         // prompt's --model arg, and there is no session to set an effort on.
         allowEffortStep={false}
-        allowPersistGlobal={false}
         gw={gw}
         onCancel={() => setPickingModel(false)}
         onSelect={value => {

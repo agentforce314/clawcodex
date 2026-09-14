@@ -115,8 +115,18 @@ clients refuse a mismatched major.
   protocol_version), `stream_event` (token deltas), `assistant`, `user`
   (tool results), `result` (usage/num_turns), `control_request{can_use_tool}`.
 - **client → server:** `user` (prompt), `control_response` (permission reply),
-  `control_request{interrupt | set_permission_mode | set_model | get_settings |
-  get_context_usage}`.
+  `control_request{interrupt | set_permission_mode | set_model | set_provider |
+  set_effort | get_settings | get_context_usage}`.
+
+`set_model`, `set_provider` and `set_effort` take an optional `persist`
+(default `true`): the pick is also saved as the user's default for new
+sessions — `settings.model` + `settings.model_provider` + `default_provider`
+for a model, `settings.effort` for an effort level — and the reply carries
+`persisted` saying whether that write happened. It happens only on the host
+user's own transports (the `--stdio` child the TUI spawns, and the sessions
+`clawcodex serve` creates for the desktop and web clients); a `--http` peer
+gets `persisted: false` and a session-scoped switch. `persist: false` is the
+client's `--session` scope: apply to this session, write nothing.
 
 A permission ask is a synchronous round-trip: the server's permission handler
 (run on a worker thread so it never blocks the WS loop) emits a

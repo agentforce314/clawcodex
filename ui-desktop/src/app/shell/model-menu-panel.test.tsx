@@ -70,6 +70,18 @@ function renderPanel(onSelectModel = vi.fn()) {
   return { onSelectModel, content }
 }
 
+describe('ModelMenuPanel scope', () => {
+  it('says a pick reaches past this window', async () => {
+    // Selecting a model or an effort level writes the user's settings — the
+    // same file the CLI and TUI read — so new sessions everywhere start on
+    // it. A composer dropdown reads like a local toggle, so the menu has to
+    // admit its real scope (the approval-mode menu's precedent).
+    const { content } = renderPanel()
+
+    expect(await content.findByText(/default for new sessions, including the CLI/i)).toBeTruthy()
+  })
+})
+
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
     const { content, onSelectModel } = renderPanel()

@@ -39,6 +39,48 @@ export function infoAfterModelSwitch(
 }
 
 /**
+ * The transcript line for a completed model switch.
+ *
+ * Worded on the backend's `persisted` verdict rather than on what was asked
+ * for: the pick is written to the user's settings as the default for new
+ * sessions — including the CLI and the web/desktop clients — and a line that
+ * claimed that over a session-only switch (`--session`, or a transport that
+ * may not write the host's settings) would be a lie in the other direction.
+ * `undefined` is an older backend that never said, so the line says neither.
+ */
+export function modelSwitchNotice(model: string, persisted?: boolean): string {
+  if (persisted === true) {
+    return `Set model to ${model} and saved as your default for new sessions`
+  }
+
+  if (persisted === false) {
+    return `Set model to ${model} for this session`
+  }
+
+  return `Set model to ${model}`
+}
+
+/**
+ * The transcript line for a completed /effort change, same three-way wording
+ * as `modelSwitchNotice`. `level` is the rung the backend reports ("auto"
+ * once its "default" spelling has been translated), `note` a caveat the level
+ * alone does not convey (today: extended thinking is off, which discards it).
+ */
+export function effortChangeNotice(level: string, persisted?: boolean, note = ''): string {
+  const suffix = note ? ` ${note}` : ''
+
+  if (persisted === true) {
+    return `Set effort level to ${level} and saved as your default for new sessions.${suffix}`
+  }
+
+  if (persisted === false) {
+    return `Set effort level to ${level} for this session.${suffix}`
+  }
+
+  return `Effort: ${level}.${suffix}`
+}
+
+/**
  * The slash commands a /model picker selection expands to, in dispatch order.
  *
  * The picker's three steps land on two independent settings, so each half

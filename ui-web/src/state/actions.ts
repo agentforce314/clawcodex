@@ -1297,18 +1297,55 @@ export async function setEffort(effort: string): Promise<void> {
   $effort.set({ ...$effort.get(), current: effort })
 
   try {
-    const result = await gateway().request<{ error?: string; ok?: boolean; value?: string }>(
-      'config.set',
-      { key: 'effort', session_id: sessionId, value: effort },
-    )
+    const result = await gateway().request<ConfigSetResult>('config.set', {
+      key: 'effort',
+      session_id: sessionId,
+      value: effort,
+    })
 
     if (result.ok === false) notice(result.error ?? 'Could not change effort', 'error')
-    else notice(`Effort: ${result.value ?? effort}`)
+    else notice(effortChangeNotice(result.value ?? effort, result.persisted))
   } catch (error) {
     notice(errorText(error), 'error')
   }
 
   await refreshEffort()
+}
+
+/** What `config.set` answers for a model or effort write. */
+interface ConfigSetResult {
+  error?: string
+  ok?: boolean
+  /**
+   * Whether the pick was also saved as the default for new sessions. The
+   * gateway echoes it only when the agent said, so an older backend that
+   * never did reads as "unknown" — and the notice then claims neither.
+   */
+  persisted?: boolean
+  value?: string
+}
+
+/**
+ * The notice for a completed model switch, worded on the backend's verdict:
+ * a pick is written to the user's settings as the default for new sessions —
+ * the TUI's and the desktop's too, which read the same file — so the chip has
+ * to say so, and must not say so over a switch the transport could not save.
+ */
+export function modelSwitchNotice(model: string, persisted?: boolean): string {
+  if (persisted === true) return `Set model to ${model} and saved as your default for new sessions`
+
+  if (persisted === false) return `Set model to ${model} for this session`
+
+  return `Model: ${model}`
+}
+
+/** Same three-way wording for an effort change; `level` is the rung as the chip spells it. */
+export function effortChangeNotice(level: string, persisted?: boolean): string {
+  if (persisted === true) return `Set effort level to ${level} and saved as your default for new sessions`
+
+  if (persisted === false) return `Set effort level to ${level} for this session`
+
+  return `Effort: ${level}`
 }
 
 /** Switch the session's model; false when the agent refused it. */
@@ -1324,19 +1361,22 @@ export async function setModel(model: string, provider?: string): Promise<boolea
     return true
   }
 
+  // No scope flag: the gateway saves the pick as the default for new sessions
+  // and reports `persisted`, which is what the notice is worded on.
   const value = provider === undefined ? model : `${model} --provider ${provider}`
   let ok = true
 
   try {
-    const result = await gateway().request<{ error?: string; ok?: boolean; value?: string }>(
-      'config.set',
-      { session_id: sessionId, key: 'model', value },
-    )
+    const result = await gateway().request<ConfigSetResult>('config.set', {
+      session_id: sessionId,
+      key: 'model',
+      value,
+    })
 
     if (result.ok === false) {
       ok = false
       notice(result.error ?? 'Could not switch model', 'error')
-    } else notice(`Model: ${result.value ?? model}`)
+    } else notice(modelSwitchNotice(result.value ?? model, result.persisted))
   } catch (error) {
     ok = false
     notice(errorText(error), 'error')

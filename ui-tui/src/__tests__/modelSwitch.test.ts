@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { infoAfterModelSwitch, modelPickerCommands } from '../domain/modelSwitch.js'
+import { effortChangeNotice, infoAfterModelSwitch, modelPickerCommands, modelSwitchNotice } from '../domain/modelSwitch.js'
 import type { SessionInfo } from '../types.js'
 
 const base = (): SessionInfo => ({
@@ -76,5 +76,37 @@ describe('modelPickerCommands', () => {
     // model has no ladder" both mean "don't set one", not "reset to default".
     expect(modelPickerCommands(value)).toEqual([`/model ${value}`])
     expect(modelPickerCommands(value, '')).toEqual([`/model ${value}`])
+  })
+})
+
+describe('modelSwitchNotice', () => {
+  it('claims the saved default only on the backend’s word', () => {
+    // The pick is written to the user's settings as the default for new
+    // sessions — but only where the transport may write them, and never for
+    // a `--session` switch. The line follows the verdict, not the request.
+    expect(modelSwitchNotice('deepseek-flash', true)).toBe(
+      'Set model to deepseek-flash and saved as your default for new sessions'
+    )
+    expect(modelSwitchNotice('deepseek-flash', false)).toBe('Set model to deepseek-flash for this session')
+  })
+
+  it('says neither for an older backend that never reported', () => {
+    expect(modelSwitchNotice('deepseek-flash')).toBe('Set model to deepseek-flash')
+  })
+})
+
+describe('effortChangeNotice', () => {
+  it('mirrors the model wording and keeps the thinking-off caveat', () => {
+    expect(effortChangeNotice('high', true)).toBe(
+      'Set effort level to high and saved as your default for new sessions.'
+    )
+    expect(effortChangeNotice('auto', false)).toBe('Set effort level to auto for this session.')
+    expect(effortChangeNotice('max', true, 'Extended thinking is off.')).toBe(
+      'Set effort level to max and saved as your default for new sessions. Extended thinking is off.'
+    )
+  })
+
+  it('falls back to the plain report when the backend did not say', () => {
+    expect(effortChangeNotice('high')).toBe('Effort: high.')
   })
 })

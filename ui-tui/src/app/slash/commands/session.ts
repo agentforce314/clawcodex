@@ -1,6 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
-import { infoAfterModelSwitch } from '../../../domain/modelSwitch.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
+import { infoAfterModelSwitch, modelSwitchNotice } from '../../../domain/modelSwitch.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -21,25 +20,6 @@ import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
-
-const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
-const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
-
-const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
-
-const modelValueForConfigSet = (arg: string) => {
-  const trimmed = arg.trim()
-
-  if (!trimmed) {
-    return trimmed
-  }
-
-  if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return stripTuiSessionFlag(trimmed)
-  }
-
-  return trimmed
-}
 
 export const sessionCommands: SlashCommand[] = [
   {
@@ -66,8 +46,8 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    argumentHint: '[<model> [--provider <slug>]]',
-    help: 'change or show model',
+    argumentHint: '[<model> [--provider <slug>] [--session]]',
+    help: 'change model (saved as your default for new sessions; --session for this session only)',
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {
@@ -80,11 +60,15 @@ export const sessionCommands: SlashCommand[] = [
 
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
+          // The value goes through verbatim — "<model> [--provider <slug>]
+          // [--session]" is the gateway's grammar to parse; `--session`
+          // scopes the switch to this session instead of saving it as the
+          // default for new sessions.
           .rpc<ConfigSetResponse>('config.set', {
             confirm_expensive_model: confirmExpensiveModel,
             key: 'model',
             session_id: ctx.sid,
-            value: modelValueForConfigSet(arg)
+            value: arg.trim()
           })
           .then(
             ctx.guarded<ConfigSetResponse>(r => {
@@ -107,7 +91,7 @@ export const sessionCommands: SlashCommand[] = [
                 return ctx.transcript.sys('error: invalid response: model switch')
               }
 
-              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.transcript.sys(modelSwitchNotice(r.value, r.persisted))
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({

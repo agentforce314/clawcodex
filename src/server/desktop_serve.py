@@ -307,13 +307,17 @@ def build_app(state: DesktopServeState) -> Starlette:
     async def model_info(request: Request) -> Response:
         if not _token_ok(state, _rest_token(request)):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        from src.config import get_default_provider, get_provider_config
+        from src.config import get_default_provider
+        from src.settings.settings import resolve_default_model
 
         try:
             provider = get_default_provider()
-            cfg = get_provider_config(provider) or {}
+            # The model the NEXT session starts on: a persisted picker choice
+            # outranks the provider's configured default, exactly as it does
+            # at spawn — so the desktop's composer and Settings → Model read
+            # back what the user last picked.
             return JSONResponse(
-                {"provider": provider, "model": cfg.get("default_model")}
+                {"provider": provider, "model": resolve_default_model(provider) or None}
             )
         except Exception:  # noqa: BLE001 — inspection endpoint, degrade soft
             return JSONResponse({"provider": None, "model": None})
@@ -332,11 +336,12 @@ def build_app(state: DesktopServeState) -> Starlette:
         # Auxiliary task-model assignments aren't wired to a control yet; the
         # panel reads `main` and an (empty) task list and renders "using the
         # main model for everything", which is the true state.
-        from src.config import get_default_provider, get_provider_config
+        from src.config import get_default_provider
+        from src.settings.settings import resolve_default_model
 
         try:
             provider = get_default_provider()
-            model = (get_provider_config(provider) or {}).get("default_model")
+            model = resolve_default_model(provider) or None
         except Exception:  # noqa: BLE001
             provider, model = None, None
         return JSONResponse({"main": {"model": model, "provider": provider}, "tasks": []})
@@ -499,7 +504,8 @@ def build_app(state: DesktopServeState) -> Starlette:
         )
 
     def _default_profile_info() -> dict[str, Any]:
-        from src.config import get_default_provider, get_provider_config, load_config
+        from src.config import get_default_provider, load_config
+        from src.settings.settings import resolve_default_model
         from src.utils.clawcodex_dirs import get_user_config_dir
         from src.skills.loader import get_all_skills
 
@@ -508,7 +514,7 @@ def build_app(state: DesktopServeState) -> Starlette:
         skill_count = 0
         try:
             provider = get_default_provider()
-            model = (get_provider_config(provider) or {}).get("default_model")
+            model = resolve_default_model(provider) or None
             has_env = bool((load_config() or {}).get("env"))
             skill_count = len(get_all_skills())
         except Exception:  # noqa: BLE001 — profile card degrades soft

@@ -219,7 +219,7 @@ describe('useModelControls', () => {
     })
   })
 
-  it('routes active-session picker changes through config.set with an explicit session-scoped provider', async () => {
+  it('routes active-session picker changes through config.set as the saved default (no --session scope)', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
@@ -236,7 +236,7 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic --session'
+      value: 'claude-sonnet-4.6 --provider anthropic'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
@@ -333,7 +333,7 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'BeastMode --provider moa --session'
+      value: 'BeastMode --provider moa'
     })
   })
 
@@ -547,7 +547,7 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'tile-runtime',
       key: 'model',
-      value: 'tile-model --provider anthropic --session'
+      value: 'tile-model --provider anthropic'
     })
     // Primary footer untouched — the busy primary must not absorb a tile pick.
     expect($currentModel.get()).toBe('primary/model')

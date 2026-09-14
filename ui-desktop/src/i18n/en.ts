@@ -2414,7 +2414,8 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
-      fast: 'Fast'
+      fast: 'Fast',
+      scopeNote: 'Model and effort picks become your default for new sessions, including the CLI'
     },
     modelOptions: {
       noOptions: 'No options for this model',

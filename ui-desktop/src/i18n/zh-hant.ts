@@ -2174,7 +2174,8 @@ export const zhHant = defineLocale({
       noModels: '找不到模型',
       editModels: '編輯模型…',
       refreshModels: '重新整理模型',
-      fast: '快速'
+      fast: '快速',
+      scopeNote: '所選模型與推理強度將成為新工作階段的預設值，包括命令列'
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',

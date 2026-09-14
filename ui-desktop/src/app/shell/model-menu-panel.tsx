@@ -223,17 +223,26 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     <ModelCatalogMenu
       controller={controller}
       footer={
-        <DropdownMenuItem
-          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-          disabled={refreshing}
-          onSelect={event => {
-            event.preventDefault()
-            void refreshModels()
-          }}
-        >
-          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-          {copy.refreshModels}
-        </DropdownMenuItem>
+        <>
+          {/* Picking a model or an effort level here writes the user's
+              settings — the same file the CLI and TUI read — so new sessions
+              everywhere start on it. Persisting is deliberate (a pick made
+              once should not have to be re-made every session), but a
+              composer dropdown gives no hint that it reaches past this
+              window, so say so — the approval-mode menu's precedent. */}
+          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{copy.scopeNote}</p>
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            disabled={refreshing}
+            onSelect={event => {
+              event.preventDefault()
+              void refreshModels()
+            }}
+          >
+            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {copy.refreshModels}
+          </DropdownMenuItem>
+        </>
       }
       gateway={gateway}
       includeMoa
