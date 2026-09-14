@@ -9,6 +9,7 @@ import {
 } from 'react'
 
 import {
+  $columnDrag,
   $detailsWidth,
   $narrowExpanded,
   $sidebarWidth,
@@ -194,18 +195,24 @@ export function AppFrame({ conversation, details, sidebar }: AppFrameProps) {
   const detailsBase = useRef(0)
   const [dragging, setDragging] = useState(false)
 
+  // The drag state is published for the rest of the app: an embedded
+  // document freezes its width for the gesture rather than re-laying itself
+  // out at every pixel.
   const onDragEnd = useCallback(() => {
     setDragging(false)
+    $columnDrag.set(false)
   }, [])
 
   const onSidebarStart = useCallback(() => {
     sidebarBase.current = colsRef.current.sidebar
     setDragging(true)
+    $columnDrag.set(true)
   }, [])
 
   const onDetailsStart = useCallback(() => {
     detailsBase.current = colsRef.current.details
     setDragging(true)
+    $columnDrag.set(true)
   }, [])
 
   const onSidebarDrag = useCallback((dx: number) => {

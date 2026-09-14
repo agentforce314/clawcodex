@@ -14,7 +14,7 @@
  * `closeDetails` — full screen has to come down with it.
  */
 
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import {
   clampWidth,
@@ -59,6 +59,14 @@ const initial = read()
 
 export const $sidebarWidth = atom<number>(initial.sidebar)
 export const $detailsWidth = atom<number>(initial.details)
+/**
+ * Whether the right column is open — what most of the app actually wants to
+ * know. Subscribing to the width itself would re-render a subscriber on every
+ * pixel of a drag; this only changes when the column opens or closes.
+ */
+export const $detailsOpen = computed($detailsWidth, width => width > 0)
+/** True while a column handle is held: the frame's drag state, for the rest of the app to read. */
+export const $columnDrag = atom<boolean>(false)
 /** Manual re-expand override while the viewport is under the breakpoint. */
 export const $narrowExpanded = atom<boolean>(false)
 export const $narrow = atom<boolean>(false)
@@ -74,9 +82,21 @@ function persist(): void {
   }
 }
 
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Persist once the writes settle: a drag writes a width per frame, and the storage need not hear every one. */
+function persistSoon(): void {
+  if (persistTimer !== null) clearTimeout(persistTimer)
+
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    persist()
+  }, 200)
+}
+
 export function setSidebarWidth(px: number): void {
   $sidebarWidth.set(clampWidth(px, SIDEBAR_MIN, SIDEBAR_MAX))
-  persist()
+  persistSoon()
 }
 
 /** The frame's width when a caller has not measured one: the window's. */
@@ -91,7 +111,7 @@ function frameWidth(): number {
  */
 export function setDetailsWidth(px: number, viewport = frameWidth()): void {
   $detailsWidth.set(clampWidth(px, DETAILS_MIN, detailsMax(viewport)))
-  persist()
+  persistSoon()
 }
 
 export function toggleSidebar(): void {

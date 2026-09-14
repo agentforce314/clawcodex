@@ -9,12 +9,39 @@
  * Chromium and Firefox has and which costs no bundle.
  */
 
-import { useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { readWorkspaceRelated } from '../state/actions.ts'
+import { $columnDrag } from '../state/layout.ts'
 import { createHtmlDocument, packHtml, referencePath, type ReadRelative } from './html-pack.ts'
 import { decodeBase64, fileExtension } from './text-store.ts'
 import css from './TextPreview.module.css'
+
+/**
+ * Hold an embedded document at its width for the length of a column drag.
+ *
+ * A frame follows its column's width, and an embedded document lays itself
+ * out again at every pixel of it — a page of wide tables can take longer per
+ * pixel than a frame lasts, which is what made a drag over one feel glued to
+ * the pointer. While a handle is held the element keeps the width it had;
+ * the column clips or leaves a gap beside it, and the release lays it out
+ * once, at the final width.
+ */
+function useFrozenWidth<T extends HTMLElement>(): { current: T | null } {
+  const ref = useRef<T | null>(null)
+  const dragging = useStore($columnDrag)
+
+  useLayoutEffect(() => {
+    const element = ref.current
+
+    if (element === null) return
+
+    element.style.width = dragging ? `${String(element.getBoundingClientRect().width)}px` : ''
+  }, [dragging])
+
+  return ref
+}
 
 /** A Blob URL for `data`, revoked when the data changes or the owner unmounts. */
 function useObjectUrl(data: Uint8Array, type: string): string | null {
@@ -96,6 +123,7 @@ export function ImagePreview({ data, path }: { data: Uint8Array; path: string })
 /** The PDF, through the browser's own viewer. */
 export function PdfPreview({ data, path }: { data: Uint8Array; path: string }) {
   const url = useObjectUrl(data, 'application/pdf')
+  const frame = useFrozenWidth<HTMLObjectElement>()
 
   if (url === null) return <p className={css.viewerStatus}>Preparing the preview…</p>
 
@@ -107,6 +135,7 @@ export function PdfPreview({ data, path }: { data: Uint8Array; path: string }) {
       className={css.frame}
       data={url}
       data-preview-pdf=""
+      ref={frame}
       type="application/pdf"
     >
       <p className={css.viewerStatus}>The browser could not display this PDF.</p>
@@ -123,6 +152,7 @@ type FrameState = { data: Uint8Array; url: string | null }
  */
 export function HtmlPreview({ data, path }: { data: Uint8Array; path: string }) {
   const [frame, setFrame] = useState<FrameState | null>(null)
+  const element = useFrozenWidth<HTMLIFrameElement>()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -174,6 +204,7 @@ export function HtmlPreview({ data, path }: { data: Uint8Array; path: string }) 
       className={css.frame}
       data-preview-html=""
       key={frame.url}
+      ref={element}
       // Scripts run; the origin stays opaque, so they reach neither this app
       // nor the gateway. Never `allow-same-origin`.
       sandbox="allow-scripts"

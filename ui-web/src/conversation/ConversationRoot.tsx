@@ -43,7 +43,7 @@ import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
 import { WorkspaceChip } from '../workspace/WorkspaceChip.tsx'
 import { TrajectoryView } from '../trajectory/TrajectoryView.tsx'
-import { $detailsWidth, openDetails } from '../state/layout.ts'
+import { $detailsOpen, openDetails } from '../state/layout.ts'
 import { AgentIcon, ArrowDownIcon, FolderIcon, LayersIcon, MessageIcon, PlusIcon } from '../ui/icons.tsx'
 import { ApprovalPanel } from './ApprovalPanel.tsx'
 import { ChatView } from './ChatView.tsx'
@@ -84,7 +84,7 @@ export function ConversationRoot() {
   const queue = useStore($queue)
   const connection = useStore($connection)
   const commands = useStore($commands)
-  const detailsWidth = useStore($detailsWidth)
+  const detailsOpen = useStore($detailsOpen)
   const pendingApproval = useStore($pendingApprovalMode)
   const pendingModel = useStore($pendingModel)
   const loading = useStore($sessionLoading)
@@ -400,7 +400,7 @@ export function ConversationRoot() {
             <button
               className={css.iconButton}
               onClick={() => {
-                if (detailsWidth === 0) openDetails()
+                if (!detailsOpen) openDetails()
                 else closeSidebar()
               }}
               title="Sidebar (⌘I)"

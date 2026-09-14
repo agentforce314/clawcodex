@@ -8,7 +8,7 @@ import { closeSidebar, resetSidebar } from './sidebar-right/store.ts'
 import { AppFrame } from './layout/AppFrame.tsx'
 import { Sidebar } from './sidebar/Sidebar.tsx'
 import { createSession, start } from './state/actions.ts'
-import { $detailsWidth, openDetails, toggleSidebar } from './state/layout.ts'
+import { $detailsOpen, $detailsWidth, openDetails, toggleSidebar } from './state/layout.ts'
 import { $bootError, $bootPhase, $sessionId, $workspace } from './state/store.ts'
 import { installTheme } from './state/theme.ts'
 import { Button } from './ui/primitives/Button.tsx'
@@ -55,7 +55,7 @@ function BootScreen({ error }: { error: string }) {
 export function App() {
   const phase = useStore($bootPhase)
   const error = useStore($bootError)
-  const detailsWidth = useStore($detailsWidth)
+  const detailsOpen = useStore($detailsOpen)
   const sessionId = useStore($sessionId)
   const workspace = useStore($workspace)
 
@@ -118,7 +118,7 @@ export function App() {
     <>
       <AppFrame
         conversation={<ConversationRoot />}
-        details={detailsWidth === 0 ? null : <SidebarRight />}
+        details={detailsOpen ? <SidebarRight /> : null}
         sidebar={state => <Sidebar collapsed={state.collapsed} />}
       />
       {/* Outside the frame: it covers the whole app, including the sidebar
