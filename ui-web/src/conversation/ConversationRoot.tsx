@@ -38,7 +38,6 @@ import {
   $transcript,
   $workspace,
 } from '../state/store.ts'
-import { AgentsPanel } from '../agents/AgentsPanel.tsx'
 import { subagentCatalog } from '../state/subagents.ts'
 import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
@@ -72,7 +71,7 @@ const STICK_THRESHOLD = 96
  * before the first message, docked composer after), which are the same
  * components in two positions rather than two screens.
  */
-const TAB_LABELS = { agents: 'Agents', chat: 'Chat', trajectory: 'Trajectory' } as const
+const TAB_LABELS = { chat: 'Chat', trajectory: 'Trajectory' } as const
 
 export function ConversationRoot() {
   const transcript = useStore($transcript)
@@ -424,7 +423,7 @@ export function ConversationRoot() {
       )}
       {!hero && child === undefined && (
         <div className={css.tabs} role="tablist">
-          {(['chat', 'trajectory', 'agents'] as const).map(id => (
+          {(['chat', 'trajectory'] as const).map(id => (
             <button
               aria-selected={tab === id}
               className={[css.tab, tab === id ? css.tabActive : ''].filter(Boolean).join(' ')}
@@ -444,10 +443,6 @@ export function ConversationRoot() {
       {!hero && child !== undefined ? (
         <div className={css.viewBody}>
           <SubagentView entry={child} workspace={workspace} />
-        </div>
-      ) : !hero && tab === 'agents' ? (
-        <div className={css.viewBody}>
-          <AgentsPanel />
         </div>
       ) : !hero && tab === 'trajectory' ? (
         <>

@@ -209,6 +209,13 @@ The Agent row itself reads `Agent · <description>` with, at its right edge,
 the run's activity while it runs and `N tools · duration` once it is done; its
 body holds the prompt, the report as prose, and a button into the run.
 
+The catalog is also where a run is stopped. A running row carries **Stop**,
+the child view's seat carries the same, and the list's foot says how many
+are running against the session's cap beside a **Pause spawning** switch.
+The reference gives Stop to a continuable child's composer; here the runs are
+one-shot, so their controls live with the catalog rather than in a tab of
+their own beside it — one surface for the subagents, not two.
+
 ## Session titles
 
 A session is named the moment its first prompt is sent — the prompt's first

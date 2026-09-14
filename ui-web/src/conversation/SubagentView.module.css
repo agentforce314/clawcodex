@@ -75,11 +75,12 @@
   );
 }
 
-/* The seat the composer would take, holding the reason there is none. */
+/* The seat the composer would take, holding the reason there is none — and,
+   while the run is going, the one control it has. */
 .readOnly {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 12px;
   box-sizing: border-box;
   width: 100%;
   max-width: var(--cc-composer-card-max-width);
@@ -101,4 +102,34 @@
   color: var(--cc-alias-label-tertiary);
   font-size: 12px;
   line-height: 18px;
+}
+
+.readOnlyText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stop {
+  flex: none;
+  padding: 5px 14px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.stop:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+}
+
+.stop:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

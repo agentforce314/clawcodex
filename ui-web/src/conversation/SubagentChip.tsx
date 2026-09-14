@@ -1,5 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
+import { fetchDelegationStatus, interruptSubagent, setDelegationPaused } from '../state/actions.ts'
+import { $delegation } from '../state/store.ts'
 import { formatTokens } from '../state/trajectory.ts'
 import {
   describeStatus,
@@ -22,6 +25,9 @@ export interface SubagentChipProps {
    */
   variant: 'count' | 'switcher'
 }
+
+/** How often the open list re-reads the supervisor: the cap and the pause state. */
+const POLL_MS = 2_000
 
 function dotState(entry: SubagentEntry): RunState {
   switch (entry.status) {
@@ -54,13 +60,20 @@ function countLabel(total: number, running: number): string {
  * The header's subagent control: how many there are, with the list behind it.
  *
  * Reads the catalog the conversation state folds (`subagentCatalog`); it
- * neither polls nor holds agents of its own. Rendered on the session title as
- * a count, and on a child's title as a switcher between siblings — the same
- * list, the two ways the reference client offers it.
+ * neither polls for rows nor holds agents of its own. Rendered on the session
+ * title as a count, and on a child's title as a switcher between siblings —
+ * the same list, the two ways the reference client offers it.
+ *
+ * It is also the one place a run is stopped: a running row carries Stop, and
+ * the foot says how many are running against the session's cap, with the
+ * switch that pauses new spawns. The reference puts Stop on a continuable
+ * child's composer; here the runs are one-shot, so their controls live with
+ * the catalog rather than in a tab of their own beside it.
  */
 export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentChipProps) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement | null>(null)
+  const delegation = useStore($delegation)
   const { running, total } = subagentCounts(entries)
   const current = currentKey === undefined || currentKey === null
     ? undefined
@@ -82,6 +95,23 @@ export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentC
     }
   }, [open])
 
+  // The supervisor's snapshot — the cap, whether spawning is paused — is read
+  // while the list is open, and only then: the rows themselves are live from
+  // the transcript's own events.
+  useEffect(() => {
+    if (!open) return
+
+    void fetchDelegationStatus()
+
+    const timer = setInterval(() => {
+      void fetchDelegationStatus()
+    }, POLL_MS)
+
+    return () => {
+      clearInterval(timer)
+    }
+  }, [open])
+
   // A session with no delegations has nothing to count; the switcher, once
   // there is a child to show, always has at least that child.
   if (total === 0 && variant === 'count') return null
@@ -92,6 +122,9 @@ export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentC
       setOpen(false)
     }
   }
+
+  const paused = delegation?.paused === true
+  const cap = delegation?.max_concurrent_children
 
   return (
     <span className={css.root} onKeyDown={onKeyDown} ref={root}>
@@ -134,35 +167,83 @@ export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentC
             const tokens = entry.tokens === undefined ? undefined : `${formatTokens(entry.tokens)} tok`
             const duration =
               entry.durationMs === undefined ? undefined : formatRunDuration(entry.durationMs)
+            const stoppable = entry.status === 'running'
 
             return (
-              <button
+              <div
                 aria-selected={selected}
                 className={[css.row, selected ? css.rowCurrent : ''].filter(Boolean).join(' ')}
                 key={entry.key}
-                onClick={() => {
-                  setOpen(false)
-                  onOpen(entry.key)
-                }}
                 role="option"
-                type="button"
               >
-                <span className={css.rowDot}>
-                  <StateDot label={describeStatus(entry.status)} state={dotState(entry)} />
-                </span>
-                <span className={css.rowBody}>
-                  <span className={css.rowLabel}>{entry.label}</span>
-                  {secondary !== '' && <span className={css.rowSecondary}>{secondary}</span>}
-                </span>
-                {(tokens !== undefined || duration !== undefined) && (
-                  <span className={css.rowMetrics}>
-                    {tokens !== undefined && <span>{tokens}</span>}
-                    {duration !== undefined && <span>{duration}</span>}
+                <button
+                  className={css.rowOpen}
+                  onClick={() => {
+                    setOpen(false)
+                    onOpen(entry.key)
+                  }}
+                  type="button"
+                >
+                  <span className={css.rowDot}>
+                    <StateDot label={describeStatus(entry.status)} state={dotState(entry)} />
                   </span>
+                  <span className={css.rowBody}>
+                    <span className={css.rowLabel}>{entry.label}</span>
+                    {secondary !== '' && <span className={css.rowSecondary}>{secondary}</span>}
+                  </span>
+                  {(tokens !== undefined || duration !== undefined) && (
+                    <span className={css.rowMetrics}>
+                      {tokens !== undefined && <span>{tokens}</span>}
+                      {duration !== undefined && <span>{duration}</span>}
+                    </span>
+                  )}
+                </button>
+                {stoppable && (
+                  <button
+                    aria-label={`Stop ${entry.label}`}
+                    className={css.rowStop}
+                    // A run names itself in its first progress frame; until
+                    // then there is no id to interrupt.
+                    disabled={entry.agentId === undefined}
+                    onClick={() => {
+                      if (entry.agentId !== undefined) void interruptSubagent(entry.agentId)
+                    }}
+                    title={
+                      entry.agentId === undefined
+                        ? 'This run has not reported its id yet'
+                        : 'Interrupt this agent'
+                    }
+                    type="button"
+                  >
+                    Stop
+                  </button>
                 )}
-              </button>
+              </div>
             )
           })}
+          <div className={css.foot}>
+            <span className={css.footCount}>
+              {running} running
+              {/* A missing cap is unknown, not zero — "of 0" would read as a
+                  session that can never delegate. */}
+              {typeof cap === 'number' ? ` of ${cap}` : ''}
+            </span>
+            <button
+              aria-pressed={paused}
+              className={[css.pause, paused ? css.pauseOn : ''].filter(Boolean).join(' ')}
+              onClick={() => {
+                void setDelegationPaused(!paused)
+              }}
+              title={
+                paused
+                  ? 'Allow this session to spawn new agents again'
+                  : 'Stop this session spawning new agents; running ones continue'
+              }
+              type="button"
+            >
+              {paused ? 'Spawning paused' : 'Pause spawning'}
+            </button>
+          </div>
         </div>
       )}
     </span>
