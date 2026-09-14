@@ -34,6 +34,9 @@ interface DragHandleProps {
  */
 function DragHandle({ left, onDrag, onEnd, onStart, side }: DragHandleProps) {
   const [dragging, setDragging] = useState(false)
+  // The gesture's own flag, beside the rendered one: the release and the lost
+  // capture it triggers both try to end the drag, and only the first may.
+  const active = useRef(false)
   const origin = useRef(0)
   const latest = useRef(0)
   const frame = useRef<number | null>(null)
@@ -45,6 +48,7 @@ function DragHandle({ left, onDrag, onEnd, onStart, side }: DragHandleProps) {
     event.currentTarget.setPointerCapture(event.pointerId)
     origin.current = event.clientX
     latest.current = event.clientX
+    active.current = true
     callbacks.current.onStart()
     setDragging(true)
   }, [])
@@ -59,10 +63,14 @@ function DragHandle({ left, onDrag, onEnd, onStart, side }: DragHandleProps) {
     })
   }, [])
 
-  const onPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+  // The gesture ends on the release, and equally on anything that takes the
+  // capture away first — the browser cancelling the pointer, the window losing
+  // focus, a release swallowed elsewhere — so a drag can never outlive the
+  // press that started it.
+  const end = useCallback(() => {
+    if (!active.current) return
 
-    event.currentTarget.releasePointerCapture(event.pointerId)
+    active.current = false
 
     if (frame.current !== null) {
       cancelAnimationFrame(frame.current)
@@ -74,11 +82,33 @@ function DragHandle({ left, onDrag, onEnd, onStart, side }: DragHandleProps) {
     callbacks.current.onEnd()
   }, [])
 
+  const onPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+
+      event.currentTarget.releasePointerCapture(event.pointerId)
+      end()
+    },
+    [end],
+  )
+
+  useEffect(() => {
+    if (!dragging) return
+
+    window.addEventListener('blur', end)
+
+    return () => {
+      window.removeEventListener('blur', end)
+    }
+  }, [dragging, end])
+
   return (
     <div
       className={css.handle}
       data-dragging={dragging ? '' : undefined}
       data-side={side}
+      onLostPointerCapture={end}
+      onPointerCancel={onPointerUp}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
