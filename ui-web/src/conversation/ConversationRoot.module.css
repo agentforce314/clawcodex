@@ -45,8 +45,11 @@
   min-width: 0;
 }
 
+/* The title is what gives way in a narrow header — down to a few characters,
+   never to nothing — so the chips beside it keep their words. */
 .title {
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 64px;
   max-width: 420px;
   padding: 4px 8px;
   border: 1px solid transparent;

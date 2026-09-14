@@ -5,11 +5,13 @@
    otherwise cut the list off. The header is never inside a transformed
    ancestor, which is what lets fixed placement follow the chip. */
 
+/* Never shrinks: the count is short, and a chip squeezed below its words
+   would draw them over the crumb beside it. The title gives way instead. */
 .root {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
-  min-width: 0;
 }
 
 .trigger,
