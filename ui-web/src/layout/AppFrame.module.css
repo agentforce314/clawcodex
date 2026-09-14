@@ -12,7 +12,20 @@
 /* Dragging writes widths at pointer cadence; easing them would detach the
    column edge from the handle. */
 .frame[data-dragging] {
+  cursor: col-resize;
+  user-select: none;
   transition: none;
+}
+
+/* While a handle is held, nothing under the pointer may take it: an embedded
+   document — the HTML preview's frame, a PDF — would otherwise swallow the
+   moves and the release, leaving the handle captured and the column glued to
+   a pointer that is no longer pressed. The columns go inert for the gesture;
+   the handle itself stays live. */
+.frame[data-dragging] .sidebarCol,
+.frame[data-dragging] .centerCol,
+.frame[data-dragging] .detailsCol {
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
