@@ -88,12 +88,29 @@
   --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
 }
 
+/* One delegation: the row opens the child, and a running one carries its
+   own Stop beside that, as a sibling rather than a nested control. */
 .row {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  border-radius: 8px;
+}
+
+.row:hover,
+.row:focus-within {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.rowOpen {
+  display: flex;
+  flex: 1;
   align-items: flex-start;
   gap: 8px;
   box-sizing: border-box;
-  width: 100%;
+  min-width: 0;
   min-height: 50px;
   padding: 7px 8px 7px 11px;
   border: none;
@@ -106,10 +123,31 @@
   cursor: pointer;
 }
 
-.row:hover,
-.row:focus-visible {
-  background: var(--cc-alias-interactive-bg-hover);
+.rowOpen:focus-visible {
   outline: none;
+}
+
+.rowStop {
+  flex: none;
+  margin-right: 8px;
+  padding: 2px 9px;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.rowStop:hover:not(:disabled) {
+  background: var(--cc-alias-interactive-bg-hover-danger);
+}
+
+.rowStop:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .rowDot {
@@ -156,4 +194,46 @@
 
 .rowMetrics > :first-child {
   line-height: 18px;
+}
+
+/* The list's foot: how many are running against the cap, and the switch that
+   pauses new spawns. Sticky, so a long list keeps its controls in reach. */
+.foot {
+  position: sticky;
+  bottom: -4px;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px -4px -4px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--cc-alias-border-l1);
+  background: var(--cc-specific-menu);
+}
+
+.footCount {
+  color: var(--cc-alias-label-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pause {
+  padding: 3px 10px;
+  border: 1px solid var(--cc-alias-border-l1);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.pause:hover {
+  color: var(--cc-alias-label-primary);
+}
+
+.pauseOn {
+  border-color: var(--cc-alias-border-l2);
+  color: var(--cc-alias-label-primary);
 }

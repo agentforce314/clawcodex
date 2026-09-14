@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { fetchSubagentTranscript } from '../state/actions.ts'
+import { fetchSubagentTranscript, interruptSubagent } from '../state/actions.ts'
 import { describeStatus, formatRunDuration, type SubagentEntry } from '../state/subagents.ts'
 import { formatTokens } from '../state/trajectory.ts'
 import { hydrateStoredMessages, type TranscriptNode } from '../state/transcript.ts'
@@ -34,7 +34,9 @@ export interface SubagentViewProps {
  * final read is the whole story.
  *
  * Read-only by construction. A one-shot delegation takes no follow-ups — the
- * way to steer it is the parent's composer, one click back.
+ * way to steer it is the parent's composer, one click back. What the seat
+ * does offer, while the run is going, is Stop: the independent interrupt the
+ * reference gives a child's composer.
  */
 export function SubagentView({ entry, workspace }: SubagentViewProps) {
   const [record, setRecord] = useState<RecordState>({ nodes: [], state: 'idle' })
@@ -132,10 +134,29 @@ export function SubagentView({ entry, workspace }: SubagentViewProps) {
       </div>
       <div className={css.foot}>
         <div className={css.readOnly}>
-          <span className={css.readOnlyTitle}>This subagent is read-only.</span>
-          <span className={css.readOnlyBody}>
-            A delegated run takes no follow-ups; to steer it, write to the session it belongs to.
-          </span>
+          <div className={css.readOnlyText}>
+            <span className={css.readOnlyTitle}>
+              {running ? 'This subagent is running.' : 'This subagent is read-only.'}
+            </span>
+            <span className={css.readOnlyBody}>
+              {running
+                ? 'A delegated run takes no follow-ups; stop it here, or steer it from the session it belongs to.'
+                : 'A delegated run takes no follow-ups; to steer it, write to the session it belongs to.'}
+            </span>
+          </div>
+          {running && (
+            <button
+              className={css.stop}
+              disabled={agentId === ''}
+              onClick={() => {
+                void interruptSubagent(agentId)
+              }}
+              title={agentId === '' ? 'This run has not reported its id yet' : 'Interrupt this agent'}
+              type="button"
+            >
+              Stop
+            </button>
+          )}
         </div>
       </div>
     </div>

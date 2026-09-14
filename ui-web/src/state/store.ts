@@ -56,7 +56,7 @@ export const $sessionLoading = atom<boolean>(false)
 export const $trajectory = atom<TrajectoryState>(emptyTrajectory())
 
 /** Which view the conversation column is showing. */
-export type ConversationTab = 'agents' | 'chat' | 'trajectory'
+export type ConversationTab = 'chat' | 'trajectory'
 
 export const $conversationTab = atom<ConversationTab>('chat')
 
