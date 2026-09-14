@@ -1,7 +1,9 @@
 /* The header's subagent control: a quiet count (or the child's own name) with
-   the catalog behind it. Anchored like the Menu primitive — the list is a
-   sibling of the trigger, absolutely placed below it — rather than portaled,
-   because the header is never inside a transformed ancestor. */
+   the catalog behind it. The list is a sibling of the trigger but fixed to the
+   viewport, placed by the chip (SubagentChip.tsx): the conversation column
+   clips its overflow, and a column narrowed for a wide right sidebar would
+   otherwise cut the list off. The header is never inside a transformed
+   ancestor, which is what lets fixed placement follow the chip. */
 
 .root {
   position: relative;
@@ -23,6 +25,7 @@
   color: var(--cc-alias-label-tertiary);
   font-size: 12px;
   line-height: 18px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -68,15 +71,14 @@
 }
 
 .menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  /* top and left are set inline, measured from the chip on open. */
+  position: fixed;
   z-index: 100;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   width: 336px;
-  max-width: min(400px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   max-height: min(560px, calc(100vh - 140px));
   padding: 4px;
   overflow-y: auto;

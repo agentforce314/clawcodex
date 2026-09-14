@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import { fetchDelegationStatus, interruptSubagent, setDelegationPaused } from '../state/actions.ts'
 import { $delegation } from '../state/store.ts'
@@ -28,6 +28,10 @@ export interface SubagentChipProps {
 
 /** How often the open list re-reads the supervisor: the cap and the pause state. */
 const POLL_MS = 2_000
+
+/** The list's width, and the least it keeps from the viewport's edges. */
+const MENU_WIDTH = 336
+const MENU_INSET = 16
 
 function dotState(entry: SubagentEntry): RunState {
   switch (entry.status) {
@@ -74,6 +78,35 @@ export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentC
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement | null>(null)
   const delegation = useStore($delegation)
+  // The list is fixed to the viewport rather than hung off the chip: the
+  // conversation column clips what overflows it, and a narrow column would
+  // cut the list's right edge off. Placed under the chip, and pulled left
+  // when the chip sits too close to the viewport's edge for the width.
+  const [place, setPlace] = useState<{ left: number; top: number } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+
+    const measure = (): void => {
+      const rect = root.current?.getBoundingClientRect()
+
+      if (rect === undefined) return
+
+      const width = Math.min(MENU_WIDTH, window.innerWidth - 2 * MENU_INSET)
+
+      setPlace({
+        left: Math.max(MENU_INSET, Math.min(rect.left, window.innerWidth - MENU_INSET - width)),
+        top: rect.bottom + 4,
+      })
+    }
+
+    measure()
+    window.addEventListener('resize', measure)
+
+    return () => {
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
   const { running, total } = subagentCounts(entries)
   const current = currentKey === undefined || currentKey === null
     ? undefined
@@ -159,8 +192,13 @@ export function SubagentChip({ currentKey, entries, onOpen, variant }: SubagentC
           </>
         )}
       </button>
-      {open && (
-        <div aria-label="Subagents" className={css.menu} role="listbox">
+      {open && place !== null && (
+        <div
+          aria-label="Subagents"
+          className={css.menu}
+          role="listbox"
+          style={{ left: place.left, top: place.top }}
+        >
           {entries.map(entry => {
             const selected = entry.key === currentKey
             const secondary = secondaryLine(entry)
