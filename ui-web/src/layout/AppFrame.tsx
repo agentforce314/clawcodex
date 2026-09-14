@@ -182,8 +182,13 @@ export function AppFrame({ conversation, details, sidebar }: AppFrameProps) {
     setSidebarWidth(sidebarBase.current + dx)
   }, [])
 
+  // The frame's own width goes along: the right column's ceiling is a share
+  // of it, and the window can be wider than this box.
+  const viewportRef = useRef(viewport)
+  viewportRef.current = viewport
+
   const onDetailsDrag = useCallback((dx: number) => {
-    setDetailsWidth(detailsBase.current - dx)
+    setDetailsWidth(detailsBase.current - dx, viewportRef.current)
   }, [])
 
   return (

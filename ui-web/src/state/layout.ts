@@ -18,8 +18,9 @@ import { atom } from 'nanostores'
 
 import {
   clampWidth,
-  DETAILS_MAX,
   DETAILS_MIN,
+  detailsDefault,
+  detailsMax,
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -78,8 +79,18 @@ export function setSidebarWidth(px: number): void {
   persist()
 }
 
-export function setDetailsWidth(px: number): void {
-  $detailsWidth.set(clampWidth(px, DETAILS_MIN, DETAILS_MAX))
+/** The frame's width when a caller has not measured one: the window's. */
+function frameWidth(): number {
+  return typeof window === 'undefined' ? 1280 : window.innerWidth
+}
+
+/**
+ * The right column's ceiling is a share of the frame rather than a number, so
+ * the clamp needs the frame's width; the drag passes the one it measured, and
+ * a caller without one takes the window's.
+ */
+export function setDetailsWidth(px: number, viewport = frameWidth()): void {
+  $detailsWidth.set(clampWidth(px, DETAILS_MIN, detailsMax(viewport)))
   persist()
 }
 
@@ -97,8 +108,9 @@ export function toggleSidebar(): void {
   persist()
 }
 
-export function openDetails(): void {
-  if ($detailsWidth.get() === 0) setDetailsWidth(360)
+/** Open the right column at its first-open share of the frame; an open one keeps its width. */
+export function openDetails(viewport = frameWidth()): void {
+  if ($detailsWidth.get() === 0) setDetailsWidth(detailsDefault(viewport), viewport)
 }
 
 export function closeDetails(): void {
