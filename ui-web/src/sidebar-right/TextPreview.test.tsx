@@ -442,7 +442,10 @@ describe('whole-file viewers', () => {
     act(() => {
       $columnDrag.set(false)
     })
-    expect((frame as HTMLElement).style.width).toBe('')
+    // The thaw follows the release by a frame, so the release paints first.
+    await waitFor(() => {
+      expect((frame as HTMLElement).style.width).toBe('')
+    })
   })
 
   it('shows an image at its own size and offers no other viewer for it', async () => {

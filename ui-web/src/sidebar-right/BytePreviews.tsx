@@ -37,7 +37,22 @@ function useFrozenWidth<T extends HTMLElement>(): { current: T | null } {
 
     if (element === null) return
 
-    element.style.width = dragging ? `${String(element.getBoundingClientRect().width)}px` : ''
+    if (dragging) {
+      element.style.width = `${String(element.getBoundingClientRect().width)}px`
+
+      return
+    }
+
+    // Thawed one frame after the release, not with it: the release's own
+    // paint — the cursor back to normal, the handle at rest — goes out first,
+    // and the document's one re-layout at the final width follows it.
+    const thaw = requestAnimationFrame(() => {
+      element.style.width = ''
+    })
+
+    return () => {
+      cancelAnimationFrame(thaw)
+    }
   }, [dragging])
 
   return ref
