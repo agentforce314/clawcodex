@@ -31,6 +31,7 @@ import {
   $queue,
   $sessionId,
   $sessionLoading,
+  $storedSessionId,
   $transcript,
 } from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
@@ -41,6 +42,8 @@ class FakeGateway {
 
   sent: { id: string; method: string; params: Record<string, unknown> }[] = []
   results: Record<string, unknown> = {}
+  /** Per-call answers, consumed in order before `results` is consulted. */
+  sequences: Record<string, unknown[]> = {}
   failing = new Set<string>()
 
   private readonly heldReplies = new Map<string, unknown[]>()
@@ -77,9 +80,13 @@ class FakeGateway {
     }
     this.sent.push(frame)
 
+    const queued = this.sequences[frame.method]
     const reply = this.failing.has(frame.method)
       ? { error: { message: `${frame.method} refused` }, id: frame.id }
-      : { id: frame.id, result: this.results[frame.method] ?? {} }
+      : {
+          id: frame.id,
+          result: queued !== undefined && queued.length > 0 ? queued.shift() : (this.results[frame.method] ?? {}),
+        }
 
     const held = this.heldReplies.get(frame.method)
 
@@ -126,11 +133,24 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 8; i += 1) await Promise.resolve()
 }
 
+const DEFAULT_RESULTS: Record<string, unknown> = {
+  'commands.catalog': { pairs: [['/clear', 'Clear the conversation']] },
+  'model.options': { model: 'deepseek-v4-pro', provider: 'deepseek' },
+  'projects.tree': { projects: [] },
+  'session.create': { info: { model: 'deepseek-v4-pro' }, session_id: 'S1' },
+  'session.usage': {},
+}
+
 async function connect(results: Record<string, unknown> = {}): Promise<FakeGateway> {
   const client = new GatewayClient({
     connectTimeoutMs: 1000,
     requestTimeoutMs: 1000,
-    socketFactory: () => new FakeGateway() as unknown as WebSocket,
+    // The table is in place before the first request goes out: boot itself
+    // asks (the catalogs, and a remembered session), not only the tests.
+    socketFactory: () =>
+      Object.assign(new FakeGateway(), {
+        results: { ...DEFAULT_RESULTS, ...results },
+      }) as unknown as WebSocket,
   })
   setGatewayClient(client)
 
@@ -140,15 +160,6 @@ async function connect(results: Record<string, unknown> = {}): Promise<FakeGatew
   const gateway = FakeGateway.current
 
   if (gateway === null) throw new Error('no socket was opened')
-
-  gateway.results = {
-    'commands.catalog': { pairs: [['/clear', 'Clear the conversation']] },
-    'model.options': { model: 'deepseek-v4-pro', provider: 'deepseek' },
-    'projects.tree': { projects: [] },
-    'session.create': { info: { model: 'deepseek-v4-pro' }, session_id: 'S1' },
-    'session.usage': {},
-    ...results,
-  }
 
   await startup
   await settle()
@@ -161,6 +172,7 @@ beforeEach(() => {
   window.__CLAWCODEX_SESSION_TOKEN__ = 'test-token'
   $transcript.set(emptyTranscript())
   $sessionId.set(null)
+  $storedSessionId.set(null)
   $providers.set({})
   $pendingModel.set(null)
   $models.set({})
@@ -593,5 +605,117 @@ describe('a new session and the previous one', () => {
     expect(creates).toHaveLength(2)
     expect(creates[0]?.params).toMatchObject({ model: 'deepseek-v4-flash', provider: 'deepseek' })
     expect(creates[1]?.params).not.toHaveProperty('model')
+  })
+})
+
+describe('the remembered session', () => {
+  const MEMORY = 'clawcodex.web.session'
+
+  it('remembers the session it is on, and lands back on it at the next boot', async () => {
+    await connect()
+    await submitPrompt('hello there')
+    await settle()
+
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'S1', stored: 'S1' })
+
+    // A reload: fresh stores, the same browser storage, the runtime still up.
+    setGatewayClient(null)
+    $sessionId.set(null)
+    $transcript.set(emptyTranscript())
+
+    const gateway = await connect({
+      'session.resume': {
+        messages: [{ content: [{ text: 'hello there', type: 'text' }], role: 'user' }],
+        session_id: 'S1',
+        stored_session_id: 'S1',
+      },
+    })
+
+    const resume = gateway.sent.find(frame => frame.method === 'session.resume')
+
+    expect(resume?.params).toMatchObject({ session_id: 'S1' })
+    expect($sessionId.get()).toBe('S1')
+    expect($transcript.get().nodes.length).toBeGreaterThan(0)
+  })
+
+  it('falls back to the row a resumed runtime came from when that runtime never saved', async () => {
+    window.localStorage.setItem(MEMORY, JSON.stringify({ live: 'R', stored: 'X' }))
+
+    // The first resume answers with a blank runtime, the second with the
+    // stored row replayed.
+    const client = new GatewayClient({
+      connectTimeoutMs: 1000,
+      requestTimeoutMs: 1000,
+      socketFactory: () =>
+        Object.assign(new FakeGateway(), {
+          results: { ...DEFAULT_RESULTS },
+          sequences: {
+            'session.resume': [
+              { messages: [], session_id: 'R2', stored_session_id: 'R' },
+              {
+                messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+                session_id: 'R3',
+                stored_session_id: 'X',
+              },
+            ],
+          },
+        }) as unknown as WebSocket,
+    })
+    setGatewayClient(client)
+
+    await start()
+    await settle()
+
+    const gateway = FakeGateway.current
+
+    if (gateway === null) throw new Error('no socket was opened')
+
+    const resumes = gateway.sent.filter(frame => frame.method === 'session.resume')
+
+    // The runtime first, then — no record behind it — the stored row; the
+    // blank runtime the first attempt spawned is closed.
+    expect(resumes.map(frame => frame.params.session_id)).toEqual(['R', 'X'])
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({ session_id: 'R2' })
+    expect($sessionId.get()).toBe('R3')
+    expect($storedSessionId.get()).toBe('X')
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R3', stored: 'X' })
+  })
+
+  it('keeps the sidebar on the row the conversation belongs to after re-attaching', async () => {
+    window.localStorage.setItem(MEMORY, JSON.stringify({ live: 'R', stored: 'X' }))
+
+    await connect({
+      'session.resume': {
+        messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+        session_id: 'R',
+        stored_session_id: 'R',
+      },
+    })
+
+    expect($sessionId.get()).toBe('R')
+    expect($storedSessionId.get()).toBe('X')
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R', stored: 'X' })
+  })
+
+  it('forgets a session the backend no longer knows, without a notice', async () => {
+    window.localStorage.setItem(MEMORY, JSON.stringify({ live: 'gone', stored: 'gone' }))
+
+    const client = new GatewayClient({
+      connectTimeoutMs: 1000,
+      requestTimeoutMs: 1000,
+      socketFactory: () =>
+        Object.assign(new FakeGateway(), {
+          failing: new Set(['session.resume']),
+          results: { ...DEFAULT_RESULTS },
+        }) as unknown as WebSocket,
+    })
+    setGatewayClient(client)
+
+    await start()
+    await settle()
+
+    expect($sessionId.get()).toBeNull()
+    expect(window.localStorage.getItem(MEMORY)).toBeNull()
+    expect($notice.get().text).toBe('')
   })
 })

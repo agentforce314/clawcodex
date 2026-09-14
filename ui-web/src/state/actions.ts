@@ -111,6 +111,102 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/* ── the remembered session ─────────────────────────────────────────────── */
+
+const SESSION_MEMORY_KEY = 'clawcodex.web.session'
+
+/**
+ * The session this window was on, kept across a reload.
+ *
+ * `live` is the runtime the window was attached to and `stored` the row the
+ * sidebar shows for it — the same id for a session created here, different
+ * for one resumed from a row, because a resume spawns a fresh runtime that
+ * replays the stored one and saves its later turns under its own id. A
+ * reload resumes `live`: while the backend still has that runtime the reply
+ * is the very same session, its running turn included, and once it is gone
+ * the runtime's own record — the complete one — is replayed into a new one.
+ */
+export interface RememberedSession {
+  cwd?: string
+  live: string
+  stored: string
+}
+
+export function rememberSession(memory: RememberedSession | null): void {
+  try {
+    if (memory === null) window.localStorage.removeItem(SESSION_MEMORY_KEY)
+    else window.localStorage.setItem(SESSION_MEMORY_KEY, JSON.stringify(memory))
+  } catch {
+    /* private mode: the session holds for this page load */
+  }
+}
+
+export function recallSession(): RememberedSession | null {
+  try {
+    const raw = window.localStorage.getItem(SESSION_MEMORY_KEY)
+
+    if (raw === null) return null
+
+    const parsed = JSON.parse(raw) as Partial<RememberedSession>
+
+    if (typeof parsed.live !== 'string' || parsed.live === '') return null
+
+    return {
+      live: parsed.live,
+      stored: typeof parsed.stored === 'string' && parsed.stored !== '' ? parsed.stored : parsed.live,
+      ...(typeof parsed.cwd === 'string' && parsed.cwd !== '' ? { cwd: parsed.cwd } : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Land back on the session this window was on before the reload.
+ *
+ * Nothing is announced when the backend no longer knows it: the hero is the
+ * honest place to land, and the memory is dropped so the next reload does not
+ * ask again. A runtime that never saved — nothing was typed after resuming a
+ * row — has no record of its own, so the row it came from is replayed
+ * instead, and the blank runtime the first attempt spawned is closed.
+ */
+async function restoreSession(): Promise<void> {
+  const remembered = recallSession()
+
+  if (remembered === null || $sessionId.get() !== null) return
+
+  let result = await resumeSessionCore(remembered.live, remembered.cwd, true)
+
+  if (
+    result !== null &&
+    (result.messages?.length ?? 0) === 0 &&
+    remembered.stored !== remembered.live
+  ) {
+    const blank = result.session_id
+
+    result = await resumeSessionCore(remembered.stored, remembered.cwd, true)
+
+    if (result !== null && result.session_id !== blank) {
+      try {
+        await gateway().request('session.close', { session_id: blank })
+      } catch {
+        /* a runtime nothing was ever typed into; the backend reaps it */
+      }
+    }
+  }
+
+  if (result === null) {
+    rememberSession(null)
+
+    return
+  }
+
+  // The row the sidebar highlights is the conversation's, not the runtime's:
+  // re-attaching to a live runtime reports the runtime as its own stored id.
+  $storedSessionId.set(remembered.stored === remembered.live ? $storedSessionId.get() : remembered.stored)
+  rememberSession({ ...remembered, live: result.session_id })
+}
+
 /* ── boot ────────────────────────────────────────────────────────────────── */
 
 export async function start(): Promise<void> {
@@ -151,6 +247,10 @@ export async function start(): Promise<void> {
     refreshModels(),
     refreshCommands(),
   ])
+
+  // Last, and after the catalogs: a resumed session's info repaints the chrome
+  // the catalogs seeded, and a reload should land where the window was.
+  await restoreSession()
 }
 
 /**
@@ -283,6 +383,20 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 }
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
+  await resumeSessionCore(storedId, cwd, false)
+}
+
+/**
+ * The resume itself. `quiet` skips the failure notice, for a restore on boot
+ * where "could not resume" would be about a session the reader never asked
+ * for.
+ * @returns the backend's reply, or null when the resume failed.
+ */
+async function resumeSessionCore(
+  storedId: string,
+  cwd: string | undefined,
+  quiet: boolean,
+): Promise<SessionResumeResult | null> {
   beginSessionNavigation()
   $transcript.set(emptyTranscript())
   // Cleared while the replay is in flight; the stored messages rebuild it
@@ -316,8 +430,12 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
       // instead of "nothing recorded".
       $trajectory.set(hydrateStoredTrajectory(result.messages))
     }
+
+    return result
   } catch (error) {
-    notice(`Could not resume that session: ${errorText(error)}`, 'error')
+    if (!quiet) notice(`Could not resume that session: ${errorText(error)}`, 'error')
+
+    return null
   } finally {
     $sessionLoading.set(false)
   }
@@ -326,6 +444,11 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
 function adoptSession(result: SessionResumeResult): void {
   $sessionId.set(result.session_id)
   $storedSessionId.set(result.stored_session_id ?? result.session_id)
+  rememberSession({
+    live: result.session_id,
+    stored: result.stored_session_id ?? result.session_id,
+    ...(result.info?.cwd === undefined || result.info.cwd === '' ? {} : { cwd: result.info.cwd }),
+  })
   // The welcome-screen pick was for the session that now exists — created
   // with it, or superseded by a resume. Left standing, it would ride every
   // LATER create too, which is the previous-session inheritance again.

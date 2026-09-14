@@ -224,6 +224,21 @@ while it is the one on screen, labelled **New session**; the backend keeps
 every runtime session it spawned, and a row per abandoned press of the button
 was a column of nothing.
 
+## The session across a reload
+
+A reload lands back on the session the window was on. The client remembers
+the runtime it was attached to and the row the sidebar showed for it (the
+same id for a session created here; different for one resumed from a row,
+since a resume spawns a fresh runtime that replays the stored one and saves
+its later turns under its own id). On boot it resumes the *runtime*: while
+the backend still has it, the reply is the very same session, its running
+turn included; once it is gone, the runtime's own record — the complete one —
+is replayed into a new runtime. A runtime that never saved, because nothing
+was typed after resuming a row, has no record, so the row it came from is
+replayed instead and the blank runtime the first attempt spawned is closed.
+A session the backend no longer knows is forgotten without a notice: the
+hero is the honest place to land.
+
 ## Trajectory
 
 The **Trajectory** tab is the forensic view of the same session: every model
