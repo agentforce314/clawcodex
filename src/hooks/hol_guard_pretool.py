@@ -9,7 +9,7 @@ BLOCK_EXIT = 2
 TIMEOUT_SECONDS = 10.0
 
 
-def _command_from_input(payload: Any) -> str | None:
+def _command_context(payload: Any) -> tuple[str, str | None] | None:
     if not isinstance(payload, dict):
         return None
     if payload.get("hook_event") != "PreToolUse":
@@ -22,10 +22,13 @@ def _command_from_input(payload: Any) -> str | None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         return None
-    return command
+    cwd = tool_input.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not cwd.strip()):
+        return None
+    return command, cwd
 
 
-def _guard_allows(command: str) -> tuple[bool, str]:
+def _guard_allows(command: str, cwd: str | None = None) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["hol-guard", "command", "test", command, "--json"],
@@ -33,11 +36,16 @@ def _guard_allows(command: str) -> tuple[bool, str]:
             text=True,
             timeout=TIMEOUT_SECONDS,
             check=False,
+            cwd=cwd,
         )
     except FileNotFoundError:
         return False, "guard_unavailable"
     except subprocess.TimeoutExpired:
         return False, "guard_timeout"
+    except OSError:
+        return False, "guard_error"
+    except UnicodeError:
+        return False, "guard_invalid_output"
 
     if result.returncode != 0:
         return False, "guard_error"
@@ -58,10 +66,11 @@ def _guard_allows(command: str) -> tuple[bool, str]:
 
 
 def evaluate(payload: Any) -> tuple[bool, str]:
-    command = _command_from_input(payload)
-    if command is None:
+    context = _command_context(payload)
+    if context is None:
         return False, "guard_invalid_input"
-    return _guard_allows(command)
+    command, cwd = context
+    return _guard_allows(command, cwd)
 
 
 def main() -> int:
