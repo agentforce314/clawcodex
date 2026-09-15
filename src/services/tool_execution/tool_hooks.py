@@ -149,9 +149,6 @@ async def run_pre_tool_use_hooks(
             if result.get("message"):
                 yield {"type": "message", "message": {"message": result["message"]}}
 
-            # ``abort_controller`` is non-optional on ``ToolContext``;
-            # the truthiness guard used to paper over the field-is-None
-            # hazard class.
             if tool_use_context.abort_controller.signal.aborted:
                 yield {
                     "type": "message",
@@ -196,7 +193,7 @@ async def run_post_tool_use_hooks(
                 yield {
                     "message": create_attachment_message({
                         "type": "hook_blocking_error",
-                        "hook_name": f"PostToolUseFailure:{tool.name}",
+                        "hook_name": f"PostToolUse:{tool.name}",
                         "tool_use_id": tool_use_id,
                         "hook_event": "PostToolUse",
                         "blocking_error": result["blocking_error"],
@@ -325,11 +322,6 @@ async def resolve_hook_permission_decision(
                     "behavior": "deny",
                     "message": f"Permission handler failed for {tool.name}",
                 }
-        # FAIL CLOSED. TS cannot express a missing handler (canUseTool is a
-        # required field, query.ts:191), and the production lane's
-        # handlerless ask path denies the same way (handler.py:42-51) — an
-        # allow here would make every tool call permitted the moment a
-        # future caller forgets to wire can_use_tool.
         return {
             "behavior": "deny",
             "message": (
@@ -426,18 +418,10 @@ async def resolve_hook_permission_decision(
                 return decision
             if hasattr(decision, "behavior"):
                 return {"behavior": decision.behavior, "message": getattr(decision, "message", None)}
-            # critic M1 — unrecognized decision shape → fail CLOSED (deny),
-            # matching the no-hook branch's philosophy (:314-319). This
-            # branch used to fall through to allow.
             logger.debug("can_use_tool returned unrecognized shape in ask path")
         except Exception as e:
             logger.debug("can_use_tool error in ask path: %s", e)
 
-    # critic M1 — the hook-'ask' branch fails CLOSED on any adapter
-    # exception, a missing adapter, or an unrecognized shape. Previously
-    # this returned {"behavior": "allow"} — a fail-OPEN asymmetric with the
-    # no-hook branch (which denies on all three). TS also fails closed here
-    # (a throwing canUseTool propagates and aborts the tool call).
     return {
         "behavior": "deny",
         "message": f"Permission resolution failed for {tool.name}",
