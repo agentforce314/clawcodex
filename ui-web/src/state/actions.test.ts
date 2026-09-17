@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { GatewayClient } from '../gateway/client.ts'
 import {
+  attachImage,
   clearSession,
   createSession,
   dequeue,
@@ -259,6 +260,69 @@ describe('submitPrompt', () => {
     await settle()
 
     expect(gateway.methods()).not.toContain('session.create')
+  })
+})
+
+describe('sent image previews', () => {
+  it('carries accepted image bytes into the user row while keeping the wire prompt intact', async () => {
+    const gateway = await connect({ 'image.attach': { attached: true, id: 2 } })
+    await createSession()
+    expect(await attachImage(new Blob(['image'], { type: 'image/png' }), 'shot.png')).toBe(2)
+
+    await submitPrompt('[Image #2] describe this')
+
+    expect($transcript.get().nodes[0]).toMatchObject({
+      text: '[Image #2] describe this',
+      images: [{ name: 'shot.png', placeholder: '[Image #2]', url: 'data:image/png;base64,aW1hZ2U=' }],
+    })
+    expect(gateway.sent.find(frame => frame.method === 'prompt.submit')?.params.text)
+      .toBe('[Image #2] describe this')
+  })
+
+  it('does not render an image after its chip was removed, including in later turns', async () => {
+    const gateway = await connect({ 'image.attach': { attached: true, id: 2 } })
+    await createSession()
+    await attachImage(new Blob(['image'], { type: 'image/png' }), 'shot.png')
+    await submitPrompt('no attachment')
+    expect($transcript.get().nodes[0]).not.toHaveProperty('images')
+
+    gateway.emit('message.complete', { status: 'ok' }, 'S1')
+    await settle()
+    await submitPrompt('[Image #2] just a text reference')
+    expect($transcript.get().nodes.at(-1)).not.toHaveProperty('images')
+  })
+
+  it('keeps preview bytes while an attached prompt waits for the running turn', async () => {
+    const gateway = await connect({ 'image.attach': { attached: true, id: 3 } })
+    await submitPrompt('first question')
+    await attachImage(new Blob(['image'], { type: 'image/png' }), 'queued.png')
+    await submitPrompt('[Image #3] next question')
+    expect($transcript.get().nodes).toHaveLength(1)
+
+    gateway.emit('message.complete', { status: 'ok' }, 'S1')
+    await settle()
+    expect($transcript.get().nodes.at(-1)).toMatchObject({
+      text: '[Image #3] next question', images: [{ name: 'queued.png' }],
+    })
+  })
+
+  it('clears pending previews with the session', async () => {
+    await connect({ 'image.attach': { attached: true, id: 2 } })
+    await createSession()
+    await attachImage(new Blob(['image'], { type: 'image/png' }), 'shot.png')
+    await clearSession()
+    await submitPrompt('[Image #2] just a text reference')
+    expect($transcript.get().nodes[0]).not.toHaveProperty('images')
+  })
+
+  it('does not carry an attachment into another session', async () => {
+    const gateway = await connect({ 'image.attach': { attached: true, id: 2 } })
+    await createSession()
+    await attachImage(new Blob(['image'], { type: 'image/png' }), 'shot.png')
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    await submitPrompt('[Image #2] just a text reference')
+    expect($transcript.get().nodes[0]).not.toHaveProperty('images')
   })
 })
 

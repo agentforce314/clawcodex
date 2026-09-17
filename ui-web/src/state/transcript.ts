@@ -32,9 +32,17 @@ import { agentResultMeta, renderToolName, renderToolResult } from '../gateway/to
 
 export type ToolState = 'running' | 'done' | 'error'
 
+export interface UserImage {
+  name: string
+  /** The prompt marker, when known; bytes are independent of composer Blob URLs. */
+  placeholder?: string
+  url: string
+}
+
 export interface UserNode {
   at: number
   id: string
+  images?: UserImage[]
   kind: 'user'
   text: string
 }
@@ -271,12 +279,16 @@ function mergeUsage(current: UsagePayload | undefined, incoming: UsagePayload): 
 }
 
 /** Append a user bubble — a local action, not a gateway event. */
-export function appendUserMessage(state: TranscriptState, text: string): TranscriptState {
+export function appendUserMessage(
+  state: TranscriptState,
+  text: string,
+  images: UserImage[] = [],
+): TranscriptState {
   return {
     ...state,
     nodes: [
       ...sealOpen(state.nodes),
-      { at: Date.now(), id: nextId('user'), kind: 'user', text },
+      { at: Date.now(), id: nextId('user'), kind: 'user', text, ...(images.length > 0 && { images }) },
     ],
   }
 }
@@ -634,10 +646,44 @@ interface StoredBlock {
   input?: Record<string, unknown>
   is_error?: boolean
   name?: string
+  source?: { data?: unknown; media_type?: unknown; type?: string; url?: unknown }
   text?: string
   thinking?: string
   tool_use_id?: string
   type?: string
+}
+
+/** Image blocks are already saved with the conversation, including their bytes. */
+function storedUserImages(blocks: StoredBlock[], text: string): UserImage[] {
+  const placeholders = [...new Set(text.match(/\[Image #\d+\]/g) ?? [])]
+  let imageIndex = 0
+  const images: UserImage[] = []
+
+  for (const block of blocks) {
+    if (block?.type !== 'image') continue
+
+    const placeholder = placeholders[imageIndex]
+    imageIndex += 1
+    const source = block.source
+    let url: string | undefined
+
+    if (
+      source?.type === 'base64' && typeof source.data === 'string' && source.data !== '' &&
+      typeof source.media_type === 'string' && /^image\/[\w.+-]+$/.test(source.media_type)
+    ) {
+      url = `data:${source.media_type};base64,${source.data}`
+    } else if (
+      source?.type === 'url' && typeof source.url === 'string' && /^https?:\/\//i.test(source.url)
+    ) {
+      url = source.url
+    }
+
+    if (url !== undefined) {
+      images.push({ name: placeholder?.slice(1, -1) ?? `Attached image ${imageIndex}`, placeholder, url })
+    }
+  }
+
+  return images
 }
 
 function blockText(content: unknown): string {
@@ -709,11 +755,20 @@ export function hydrateStoredMessages(
         continue
       }
 
-      const text = blockText(content)
+      const images = storedUserImages(blocks, blockText(content))
+      // The backend appends coordinate/source metadata as separate text blocks.
+      // It guides the model; it is not part of the user's caption.
+      const text = blockText(images.length === 0 ? content : blocks.filter(block =>
+        !(block?.type === 'text' && typeof block.text === 'string' &&
+          /^\[Image(?:: (?:source:|original \d+x\d+)| source:)[\s\S]*\]$/.test(block.text)),
+      ))
 
-      if (text.trim() === '') continue
+      if (text.trim() === '' && images.length === 0) continue
 
-      nodes = [...sealOpen(nodes), { at: 0, id: nextId('user'), kind: 'user', text }]
+      nodes = [
+        ...sealOpen(nodes),
+        { at: 0, id: nextId('user'), kind: 'user', text, ...(images.length > 0 && { images }) },
+      ]
       continue
     }
 

@@ -254,6 +254,7 @@ export function InputBar({
   // Every image the session has accepted this composer session. What actually
   // SENDS is whatever the draft still claims — see attachments.ts.
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const attachmentUrls = useRef(new Set<string>())
   const picker = useRef<HTMLInputElement | null>(null)
 
   const shown = useMemo(() => liveAttachments(draft, attachments), [attachments, draft])
@@ -262,9 +263,10 @@ export function InputBar({
   // paste a lot of screenshots.
   useEffect(
     () => () => {
-      for (const item of attachments) URL.revokeObjectURL(item.url)
+      for (const url of attachmentUrls.current) URL.revokeObjectURL(url)
+      attachmentUrls.current.clear()
     },
-    [attachments],
+    [],
   )
 
   const attach = useCallback(
@@ -277,7 +279,9 @@ export function InputBar({
       const caret = element === null ? draft.length : element.selectionStart
       const next = insertPlaceholder(draft, caret, id)
 
-      setAttachments(current => [...current, { id, name, url: URL.createObjectURL(file) }])
+      const url = URL.createObjectURL(file)
+      attachmentUrls.current.add(url)
+      setAttachments(current => [...current, { id, name, url }])
       onDraftChange(next.text)
 
       requestAnimationFrame(() => {
@@ -381,6 +385,11 @@ export function InputBar({
     setLauncher(false)
     onSubmit(text)
     onDraftChange('')
+    if (!text.startsWith('/')) {
+      for (const url of attachmentUrls.current) URL.revokeObjectURL(url)
+      attachmentUrls.current.clear()
+      setAttachments([])
+    }
   }, [draft, onDraftChange, onSubmit])
 
   const onKeyDown = useCallback(

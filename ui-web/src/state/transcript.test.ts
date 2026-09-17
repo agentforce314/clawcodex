@@ -321,6 +321,40 @@ describe('local actions', () => {
 })
 
 describe('rehydration', () => {
+  it('keeps image-only messages from stored content blocks', () => {
+    const nodes = hydrateStoredMessages([{
+      role: 'user',
+      content: [{ type: 'image', source: { type: 'base64', media_type: 'image/webp', data: 'aW1hZ2U=' } }],
+    }])
+
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0]).toMatchObject({
+      kind: 'user', text: '', images: [{ name: 'Attached image 1', url: 'data:image/webp;base64,aW1hZ2U=' }],
+    })
+  })
+
+  it('handles URL images and leaves missing or malformed attachments as text', () => {
+    const nodes = hydrateStoredMessages([{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
+        { type: 'image', source: { type: 'url', url: 'javascript:alert(1)' } },
+        { type: 'image', source: { type: 'base64', data: 'no-media-type' } },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+        { type: 'image' },
+        null,
+        { type: 'text', text: '[Image #1] [Image #2] describe these' },
+      ],
+    }])
+
+    expect(nodes[0]).toMatchObject({
+      kind: 'user', text: '[Image #1] [Image #2] describe these',
+      images: [{ placeholder: '[Image #1]', url: 'https://example.com/image.png' }],
+    })
+    if (nodes[0]?.kind !== 'user') throw new Error('missing user message')
+    expect(nodes[0].images).toHaveLength(1)
+  })
+
   it('rebuilds prose, thinking and tool rows from a stored transcript', () => {
     const nodes = hydrateStoredMessages([
       { content: 'do the thing', role: 'user' },

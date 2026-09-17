@@ -7,7 +7,7 @@ import { AlertIcon, InfoIcon } from '../ui/icons.tsx'
 import { CopyButton } from '../ui/primitives/CopyButton.tsx'
 import { Markdown } from '../ui/markdown/Markdown.tsx'
 import type { AssistantNode, NoticeNode, UserNode } from '../state/transcript.ts'
-import { projectUserText } from './user-text.tsx'
+import { projectUserText, userMessageCaption } from './user-text.tsx'
 import css from './MessageItem.module.css'
 
 /*
@@ -21,18 +21,32 @@ import css from './MessageItem.module.css'
 
 function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: string) => void }) {
   const workspace = useStore($workspace)
+  const caption = userMessageCaption(node.text, node.images)
   // Plain text, not markdown: this is what the user typed, and rendering it
   // as markdown would silently rewrite their own words. The one decoration is
   // an @file mention, which becomes a chip that opens the file beside the
   // conversation.
   const content = useMemo(
-    () => projectUserText(node.text, { onOpen: openFile, workspace }),
-    [node.text, workspace],
+    () => projectUserText(caption, { onOpen: openFile, workspace }),
+    [caption, workspace],
   )
 
   return (
     <div className={css.userRow}>
-      <div className={css.bubble}>{content}</div>
+      {node.images !== undefined && node.images.length > 0 && (
+        <div className={css.images}>
+          {node.images.map((image, index) => (
+            <img
+              alt={image.name}
+              className={css.image}
+              key={index}
+              src={image.url}
+              title={image.placeholder ?? image.name}
+            />
+          ))}
+        </div>
+      )}
+      {caption.trim() !== '' && <div className={css.bubble}>{content}</div>}
       <div className={css.actions}>
         <CopyButton className={css.action} text={node.text} />
         {onEdit !== undefined && (

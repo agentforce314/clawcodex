@@ -70,6 +70,7 @@ import {
   recordPrompt,
 } from './trajectory.ts'
 import { updatesFor } from '../conversation/PlanReviewPanel.tsx'
+import { liveAttachments, placeholderFor, type Attachment } from '../conversation/attachments.ts'
 import {
   appendUserMessage,
   applyEvent,
@@ -86,6 +87,9 @@ let client: GatewayClient | null = null
 // advances it immediately, so a late reply from the conversation being left
 // cannot overwrite the transcript or status line of the one being opened.
 let sessionNavigationEpoch = 0
+// The backend owns sending images; keep their bytes here only for the local
+// user row, including prompts waiting in the queue. Drained with the prompt.
+let pendingImages: Attachment[] = []
 
 export function gateway(): GatewayClient {
   if (client === null) throw new Error('gateway not started')
@@ -96,6 +100,7 @@ export function gateway(): GatewayClient {
 /** Test seam: install a client with an injected socket factory. */
 export function setGatewayClient(next: GatewayClient | null): void {
   client = next
+  pendingImages = []
 }
 
 function notice(text: string, tone: 'error' | 'info' = 'info'): void {
@@ -104,6 +109,7 @@ function notice(text: string, tone: 'error' | 'info' = 'info'): void {
 
 function beginSessionNavigation(): void {
   sessionNavigationEpoch += 1
+  pendingImages = []
   notice('')
 }
 
@@ -542,6 +548,7 @@ export async function clearSession(): Promise<void> {
 
     if (!isStillCurrent()) return
 
+    pendingImages = []
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
     $trajectory.set(emptyTrajectory())
     $subagentView.set(null)
@@ -620,7 +627,11 @@ async function send(text: string): Promise<void> {
 
   if (sessionId === null) return
 
-  $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text)))
+  const images = liveAttachments(text, pendingImages).map(({ id, name, url }) => ({
+    name, placeholder: placeholderFor(id), url,
+  }))
+  pendingImages = []
+  $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text, images)))
   $trajectory.set(recordPrompt($trajectory.get(), text))
   notice('')
 
@@ -1062,6 +1073,7 @@ export async function searchFiles(query: string, limit = 12): Promise<string[]> 
  */
 export async function attachImage(file: Blob, name: string): Promise<number | null> {
   const sessionId = $sessionId.get()
+  const navigationEpoch = sessionNavigationEpoch
 
   if (sessionId === null) {
     notice('Start a session before attaching an image.', 'error')
@@ -1070,11 +1082,15 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
   }
 
   try {
-    const data = await blobToBase64(file)
+    const url = await blobToDataUrl(file)
+    if (sessionNavigationEpoch !== navigationEpoch || $sessionId.get() !== sessionId) return null
+    const data = url.slice(url.indexOf(',') + 1)
     const result = await gateway().request<{ attached?: boolean; error?: string; id?: number }>(
       'image.attach',
       { data, name, session_id: sessionId },
     )
+
+    if (sessionNavigationEpoch !== navigationEpoch || $sessionId.get() !== sessionId) return null
 
     if (result.attached !== true || typeof result.id !== 'number') {
       notice(result.error ?? 'Could not attach that image', 'error')
@@ -1082,6 +1098,7 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
       return null
     }
 
+    pendingImages.push({ id: result.id, name, url })
     return result.id
   } catch (error) {
     notice(errorText(error), 'error')
@@ -1090,8 +1107,8 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
   }
 }
 
-/** Blob to bare base64 (FileReader hands back a data: URL). */
-async function blobToBase64(blob: Blob): Promise<string> {
+/** A durable preview URL, also used to supply the backend's bare base64. */
+async function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
 
@@ -1100,7 +1117,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
     }
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
-      resolve(result.slice(result.indexOf(',') + 1))
+      resolve(result)
     }
     reader.readAsDataURL(blob)
   })

@@ -13,7 +13,7 @@ export interface Attachment {
   /** The number the backend assigned; the `[Image #N]` in the text. */
   id: number
   name: string
-  /** Object URL for the thumbnail, revoked when the attachment goes. */
+  /** Preview URL; the composer revokes its own object URLs when the attachment goes. */
   url: string
 }
 
