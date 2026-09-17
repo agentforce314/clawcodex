@@ -161,9 +161,12 @@ def _vision_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult
     # Local imports: this tool sits in the static registry and we don't want
     # every boot path to wake providers/config. Same reasoning as advisor.py.
     from src.providers.vision_config import load_vision_config
+    from src.tool_system.tool_search import tool_supports_model
 
+    model = getattr(getattr(context, "_active_provider", None), "model", "") or ""
+    native_vision = not tool_supports_model("vision_analyze", model)
     cfg = load_vision_config()
-    if cfg is None:
+    if cfg is None and not native_vision:
         # Defence in depth: ``is_enabled`` should have kept this tool out of
         # the schema, but registry dispatch looks tools up by NAME and
         # bypasses that gate entirely (see AdvisorTool's note).
@@ -183,6 +186,17 @@ def _vision_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult
         return loaded
     source, resolved_path = loaded
 
+    # A stale conversation may still call the tool after a model switch.
+    # Return pixels to the active model, like Read, without a second LLM call.
+    if native_vision:
+        return ToolResult(
+            name="vision_analyze",
+            output={"type": "image", "file": {
+                "base64": source["data"], "type": source["media_type"],
+            }},
+        )
+
+    assert cfg is not None
     prompt = _BASE_PROMPT
     if cfg.prompt:
         prompt = f"{prompt}\n\nAdditional instructions: {cfg.prompt}"
@@ -330,10 +344,9 @@ def _vision_enabled() -> bool:
     """Gate for the advertised tool schema. Defaults OFF.
 
     Off by default because this spends money at a SECOND vendor — the same
-    reasoning that makes ``advisor_enabled`` opt-in. ``is_enabled`` takes no
-    arguments, so it cannot consult the active provider; a settings/config
-    read is the only thing available here, and it is the right gate anyway
-    (a configured vision model is useful to a vision-capable main model too).
+    reasoning that makes ``advisor_enabled`` opt-in. This config gate takes
+    no context; request assembly and ToolSearch also hide the tool when the
+    active model reads images directly.
     """
     try:
         from src.providers.vision_config import vision_is_configured
@@ -341,6 +354,12 @@ def _vision_enabled() -> bool:
         return vision_is_configured()
     except Exception:  # noqa: BLE001 — a broken config hides the tool
         return False
+
+
+def _map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
+    from .read import _read_map_result_to_api
+
+    return _read_map_result_to_api(output, tool_use_id)
 
 
 VisionAnalyzeTool: Tool = build_tool(
@@ -368,6 +387,7 @@ VisionAnalyzeTool: Tool = build_tool(
         "additionalProperties": True,
     },
     call=_vision_call,
+    map_result_to_api=_map_result_to_api,
     prompt=(
         "Ask a vision-capable model about a local image and get a text answer.\n\n"
         "Use this when you need to see an image but your own model cannot, or "

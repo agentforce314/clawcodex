@@ -1659,8 +1659,9 @@ class GatewayConnection:
 
         The agent's ``attach_image`` control reads a path off the machine it
         runs on, which a browser cannot produce. So the bytes come over the
-        socket and land in a temp file the control then reads — the agent side
-        stays exactly as the TUI uses it.
+        socket and land in a temp file. The control preserves the original in
+        session storage before replying, so source metadata points to an image
+        tools can still read after the upload file is removed.
 
         ``placeholder: True`` is deliberate. It tells the agent this client
         renders an ``[Image #N]`` chip in the prompt text, which makes the chip
@@ -1704,11 +1705,11 @@ class GatewayConnection:
             with os.fdopen(handle, "wb") as fh:
                 fh.write(blob)
             result = await session.control_query(
-                "attach_image", {"path": path, "placeholder": True}
+                "attach_image", {"path": path, "placeholder": True, "persist_source": True}
             )
         finally:
-            # The control reads the file into memory, so the copy on disk is
-            # dead the moment it returns — including when it failed.
+            # Only the upload copy is temporary: the control has preserved an
+            # accepted image in the session's readable artifact directory.
             try:
                 os.unlink(path)
             except OSError:

@@ -68,6 +68,106 @@ def _fake_image(
     )
 
 
+def test_browser_upload_keeps_a_readable_original_after_temp_cleanup(tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.permissions.types import ToolPermissionContext
+    from src.server.desktop_gateway_methods import GatewayConnection
+    from src.tool_system.context import ToolContext
+    from src.tool_system.tools.vision_analyze import _load_image
+
+    artifact_dir = tmp_path / "session-artifacts"
+    monkeypatch.setattr(
+        "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
+        lambda context: artifact_dir,
+    )
+    sess, emitted = _session(str(tmp_path / "workspace"))
+    sess.tool_context = ToolContext(
+        workspace_root=tmp_path / "workspace",
+        permission_context=ToolPermissionContext(mode="default"),
+    )
+    uploaded_paths = []
+
+    async def control(subtype, args):
+        assert subtype == "attach_image"
+        uploaded_paths.append(Path(args["path"]))
+        await sess._do_attach_image(
+            "upload", args["path"], expects_placeholder=args["placeholder"],
+            persist_source=args["persist_source"],
+        )
+        return _reply_of(emitted)
+
+    connection = GatewayConnection.__new__(GatewayConnection)
+    connection._session = lambda params: SimpleNamespace(
+        init_info={"model": "claude-sonnet-4-6"}, control_query=control,
+    )
+    original = _png(2400, 1400)
+    result = asyncio.run(connection.image_attach({
+        "data": base64.b64encode(original).decode(), "name": "shot.png",
+    }))
+
+    assert result["attached"] is True
+    assert not uploaded_paths[0].exists()
+    image = sess._pending_images[0][1]
+    saved = Path(image.source_path)
+    assert saved.parent == artifact_dir / "attachments"
+    assert saved.read_bytes() == original
+    assert image.dimensions.display_width < image.dimensions.original_width
+    assert sess.tool_context.ensure_readable_path(saved) == saved
+    assert isinstance(_load_image(str(saved), sess.tool_context), tuple)
+
+    blocks = sess._drain_pending_images("[Image #1] what this image is about?")
+    assert blocks[0]["type"] == "image"
+    assert blocks[1]["text"] == "[Image #1] what this image is about?"
+    assert str(saved) in blocks[-1]["text"]
+    assert str(uploaded_paths[0]) not in blocks[-1]["text"]
+
+
+def test_refused_upload_does_not_leave_a_saved_original(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
+        lambda context: tmp_path / "artifacts",
+    )
+    source = tmp_path / "shot.png"
+    source.write_bytes(_png())
+    sess, emitted = _session(str(tmp_path))
+    for _ in range(sess.MAX_PENDING_IMAGES):
+        _queue(sess, _fake_image())
+
+    asyncio.run(sess._do_attach_image("full", str(source), persist_source=True))
+
+    assert "error" in _reply_of(emitted)
+    assert list((tmp_path / "artifacts" / "attachments").iterdir()) == []
+    assert source.exists()
+
+
+def test_failed_image_persistence_does_not_accept_the_upload(tmp_path, monkeypatch):
+    source = tmp_path / "shot.png"
+    source.write_bytes(_png())
+    sess, emitted = _session(str(tmp_path))
+    monkeypatch.setattr(
+        "src.utils.image_paste.persist_image_source",
+        mock.Mock(side_effect=OSError("disk full")),
+    )
+    asyncio.run(sess._do_attach_image("failed", str(source), persist_source=True))
+
+    assert "could not save image" in _reply_of(emitted)["error"]
+    assert sess._pending_images == []
+
+
+def test_persisted_original_is_never_silently_truncated(tmp_path, monkeypatch):
+    import pytest
+    from src.utils.image_paste import persist_image_source
+
+    source = tmp_path / "shot.png"
+    source.write_bytes(_png())
+    monkeypatch.setattr("src.utils.image_processor.IMAGE_READ_SAFETY_CAP", 8)
+    with pytest.raises(ValueError, match="size limit"):
+        persist_image_source(_fake_image(source=str(source)), tmp_path / "saved")
+    assert not (tmp_path / "saved").exists()
+
+
 class TestDrainPendingImages(unittest.TestCase):
     def test_no_pending_leaves_a_plain_string_alone(self) -> None:
         """The text-only path must not be turned into a block list."""

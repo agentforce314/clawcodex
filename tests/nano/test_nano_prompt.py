@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from src.nano.prompt import (
     build_nano_prompt_blocks,
     build_nano_prompt_text,
@@ -105,6 +107,19 @@ def test_build_effective_system_prompt_nano_branch(
     assert "running non-interactively" in joined
     for marker in _MAXIMAL_MARKERS:
         assert marker not in joined
+
+
+@pytest.mark.parametrize("model,visible", [("claude-sonnet-4-6", False), ("deepseek-v4-pro", True)])
+def test_nano_prompt_only_lists_vision_tool_for_text_models(
+    no_skills, no_project_context, tmp_path, model, visible,
+):
+    set_nano_mode(True)
+    tool_context = SimpleNamespace(cwd=tmp_path, workspace_root=tmp_path)
+    blocks = build_effective_system_prompt(
+        "", tool_context, provider=SimpleNamespace(model=model),
+        nano_tool_names=("Read", "Bash", "vision_analyze"),
+    )
+    assert ("- vision_analyze:" in "\n".join(block["text"] for block in blocks)) is visible
 
 
 def test_default_path_unchanged_when_nano_off(no_skills, tmp_path):
