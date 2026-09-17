@@ -715,6 +715,7 @@ class _AgentSession:
             await self._do_attach_image(
                 request_id, inner.get("path"),
                 expects_placeholder=bool(inner.get("placeholder")),
+                persist_source=inner.get("persist_source") is True,
             )
             return
         if subtype == "clipboard_image":
@@ -1211,7 +1212,7 @@ class _AgentSession:
         remainder: str = "",
         extra: dict | None = None,
         expects_placeholder: bool = False,
-    ) -> None:
+    ) -> bool:
         """Queue ``image`` and reply in the client's ImageAttachResponse shape.
 
         ``id``/``count`` carry the number behind the client's ``[Image #N]`` chip.
@@ -1227,7 +1228,7 @@ class _AgentSession:
             # drop" and the cap message never reaches the user — the paste
             # silently inserts the path as text instead.
             self._reply(request_id, {**(extra or {}), **self._too_many_images_error()})
-            return
+            return False
         name = Path(image.source_path).name if image.source_path else "clipboard image"
         self._reply(request_id, {
             "attached": True,
@@ -1239,9 +1240,11 @@ class _AgentSession:
             **dimensions_to_wire(image.dimensions),
             **(extra or {}),
         })
+        return True
 
     async def _do_attach_image(
-        self, request_id: object, raw_path: object, *, expects_placeholder: bool = False
+        self, request_id: object, raw_path: object, *, expects_placeholder: bool = False,
+        persist_source: bool = False,
     ) -> None:
         """``/image <path>`` and the dropped-path paste route."""
         from src.utils.image_paste import as_image_file_path, try_read_image_from_path
@@ -1267,7 +1270,21 @@ class _AgentSession:
         if image is None:
             self._reply(request_id, {"error": f"could not read image: {text}"})
             return
-        self._attach_image(request_id, image, expects_placeholder=expects_placeholder)
+        if persist_source:
+            from src.services.tool_execution.tool_result_persistence import resolve_tool_results_dir
+            from src.utils.image_paste import persist_image_source
+
+            try:
+                image = await asyncio.to_thread(
+                    persist_image_source, image,
+                    resolve_tool_results_dir(self.tool_context) / "attachments",
+                )
+            except Exception as exc:  # noqa: BLE001 — report failed storage before accepting
+                self._reply(request_id, {"error": f"could not save image: {exc}"})
+                return
+        accepted = self._attach_image(request_id, image, expects_placeholder=expects_placeholder)
+        if not accepted and persist_source and image.source_path:
+            Path(image.source_path).unlink(missing_ok=True)
 
     async def _do_clipboard_image(
         self, request_id: object, *, expects_placeholder: bool = False

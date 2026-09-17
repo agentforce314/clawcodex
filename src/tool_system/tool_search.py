@@ -338,6 +338,19 @@ def extract_discovered_tool_names(messages: list[Any]) -> set[str]:
 # Tool filtering for API calls
 # ---------------------------------------------------------------------------
 
+def tool_supports_model(tool_name: str, model: str) -> bool:
+    """Native vision models inspect images themselves, without a second model.
+
+    Fusion providers report their text-only base model here, so they retain
+    the optional tool for targeted follow-up questions.
+    """
+    if tool_name != "vision_analyze" or not model:
+        return True
+    from src.models.capabilities import supports_vision
+
+    return not supports_vision(model)
+
+
 def filter_tools_for_request(
     tools: Tools,
     model: str,
@@ -351,6 +364,7 @@ def filter_tools_for_request(
 
     Returns the filtered tools list.
     """
+    tools = [tool for tool in tools if tool_supports_model(tool.name, model)]
     if not is_tool_search_enabled_optimistic():
         return tools
 

@@ -251,6 +251,13 @@ def build_effective_system_prompt(
 
     if is_nano_mode():
         from src.nano.prompt import build_nano_prompt_blocks
+        from src.tool_system.tool_search import tool_supports_model
+
+        if nano_tool_names is not None:
+            model = getattr(provider, "model", "") or ""
+            nano_tool_names = tuple(
+                name for name in nano_tool_names if tool_supports_model(name, model)
+            )
 
         return build_nano_prompt_blocks(
             cwd=cwd,

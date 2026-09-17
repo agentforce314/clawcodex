@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .image_processor import (
@@ -90,6 +90,31 @@ class PastedImage:
     @property
     def token_estimate(self) -> int:
         return estimate_image_tokens_from_base64_length(len(self.base64))
+
+
+def persist_image_source(image: PastedImage, directory: Path) -> PastedImage:
+    """Keep an uploaded original for later Read/vision calls and saved history.
+
+    The gateway's upload file is temporary. Keep the original resolution,
+    rather than the downsampled API bytes, so a later crop can recover detail.
+    """
+    from .image_processor import IMAGE_READ_SAFETY_CAP, read_file_bytes
+
+    if not image.source_path:
+        raise ValueError("uploaded image has no source file")
+    source = Path(image.source_path)
+    data = read_file_bytes(source, IMAGE_READ_SAFETY_CAP + 1)
+    if len(data) > IMAGE_READ_SAFETY_CAP:
+        raise ValueError("uploaded image exceeds the original-file size limit")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, saved = tempfile.mkstemp(prefix="image-", suffix=source.suffix, dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+    except BaseException:
+        Path(saved).unlink(missing_ok=True)
+        raise
+    return replace(image, source_path=str(Path(saved).resolve()))
 
 
 def _screenshot_path() -> Path:

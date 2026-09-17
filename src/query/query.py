@@ -1019,6 +1019,7 @@ async def _call_model_sync(
         TOOL_SEARCH_BETA_HEADER_1P,
         filter_tools_for_request,
         is_deferred_tool,
+        tool_supports_model,
     )
 
     provider_model = getattr(provider, "model", None) or ""
@@ -1027,6 +1028,7 @@ async def _call_model_sync(
         tool.name
         for tool in tools
         if is_deferred_tool(tool)
+        and tool_supports_model(tool.name, provider_model)
         and (
             not callable(getattr(tool, "is_enabled", None))
             or tool.is_enabled()

@@ -774,6 +774,7 @@ def test_attach_asks_for_the_placeholder_contract() -> None:
     _result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64})
 
     assert seen[0]["placeholder"] is True
+    assert seen[0]["persist_source"] is True
 
 
 def test_attach_accepts_the_data_url_a_browser_paste_produces() -> None:
@@ -783,11 +784,11 @@ def test_attach_accepts_the_data_url_a_browser_paste_produces() -> None:
     assert seen[0]["_body"].startswith(b"\x89PNG")
 
 
-def test_attach_removes_the_temp_file_afterwards() -> None:
+def test_attach_removes_only_the_upload_temp_file_afterwards() -> None:
     _result, seen = _attach(OK_REPLY, {"data": ONE_PIXEL_B64})
 
-    # The control reads the file into memory, so the copy on disk is dead the
-    # moment it returns.
+    # The agent was asked to persist its own source before this upload copy
+    # is deleted. The integration test exercises that control, too.
     assert not os.path.exists(seen[0]["path"])
 
 

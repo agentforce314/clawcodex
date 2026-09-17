@@ -7,6 +7,7 @@ from ..context import ToolContext
 from ..errors import ToolInputError
 from ..protocol import ToolResult
 from ..registry import ToolRegistry
+from ..tool_search import tool_supports_model
 
 
 def _map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
@@ -31,22 +32,22 @@ def _map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
 
 
 def make_tool_search_tool(registry: ToolRegistry) -> Tool:
-    def _is_available_tool(tool: Tool | None) -> bool:
+    def _is_available_tool(tool: Tool | None, model: str = "") -> bool:
         """Only advertise tools that can be present on the next request."""
         if tool is None:
             return False
         try:
-            return bool(tool.is_enabled())
+            return bool(tool.is_enabled()) and tool_supports_model(tool.name, model)
         except Exception:
             # A broken runtime gate must not produce a reference whose schema
             # the request builder will subsequently omit.
             return False
 
-    def _deferred_count() -> int:
+    def _deferred_count(model: str) -> int:
         return sum(
             1
             for tool in registry.list_tools()
-            if (tool.should_defer or tool.is_mcp) and _is_available_tool(tool)
+            if (tool.should_defer or tool.is_mcp) and _is_available_tool(tool, model)
         )
 
     def _tool_search_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -59,22 +60,23 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
 
         q = query.strip()
         lowered = q.lower()
+        model = getattr(getattr(context, "_active_provider", None), "model", "") or ""
         if lowered.startswith("select:"):
             name = q.split(":", 1)[1].strip()
             tool = registry.get(name)
-            matches = [tool.name] if _is_available_tool(tool) else []
+            matches = [tool.name] if _is_available_tool(tool, model) else []
             return ToolResult(
                 name="ToolSearch",
                 output={
                     "matches": matches,
                     "query": query,
-                    "total_deferred_tools": _deferred_count(),
+                    "total_deferred_tools": _deferred_count(model),
                 },
             )
 
         scored: list[tuple[int, str]] = []
         for t in registry.list_tools():
-            if not _is_available_tool(t):
+            if not _is_available_tool(t, model):
                 continue
             hay = f"{t.name}\n{t.prompt()}".lower()
             if lowered in t.name.lower():
@@ -88,7 +90,7 @@ def make_tool_search_tool(registry: ToolRegistry) -> Tool:
             output={
                 "matches": matches,
                 "query": query,
-                "total_deferred_tools": _deferred_count(),
+                "total_deferred_tools": _deferred_count(model),
             },
         )
 
