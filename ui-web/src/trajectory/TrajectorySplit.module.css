@@ -1,0 +1,44 @@
+.root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.details {
+  position: relative;
+  display: flex;
+  flex: none;
+  min-width: 0;
+}
+
+.handle {
+  position: absolute;
+  inset: 0 auto 0 -4px;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.handle::after {
+  content: '';
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+}
+
+.handle:hover::after,
+.handle:focus-visible::after,
+.root[data-dragging] .handle::after {
+  background: var(--cc-alias-state-business-primary);
+}
+
+.handle:focus-visible {
+  outline: none;
+}
+
+.root[data-dragging] {
+  cursor: col-resize;
+  user-select: none;
+}

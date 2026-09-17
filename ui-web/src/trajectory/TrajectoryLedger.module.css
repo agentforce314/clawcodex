@@ -4,6 +4,7 @@
    single-line content that ellipsises rather than wrapping. */
 .root {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   background: var(--cc-alias-bg-layer-1);

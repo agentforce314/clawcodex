@@ -5,6 +5,7 @@ import { foldModel, visibleRecords } from './fold.ts'
 import { deriveTimeline, timelineFocus, type TimeRange } from './timeline.ts'
 import { TrajectoryDetails } from './TrajectoryDetails.tsx'
 import { TrajectoryLedger } from './TrajectoryLedger.tsx'
+import { TrajectorySplit } from './TrajectorySplit.tsx'
 import { TrajectoryTimeline } from './TrajectoryTimeline.tsx'
 import { TrajectoryToolbar } from './TrajectoryToolbar.tsx'
 import css from './TrajectoryView.module.css'
@@ -131,7 +132,9 @@ export function TrajectoryView({ trajectory }: TrajectoryViewProps) {
         range={range}
         selectedIndex={selected}
       />
-      <div className={css.panes}>
+      <TrajectorySplit details={selectedRecord === undefined ? null : (
+        <TrajectoryDetails onClose={() => setSelected(null)} record={selectedRecord} />
+      )}>
         <TrajectoryLedger
           focusIndexes={focusIndexes}
           foldCounts={folds.counts}
@@ -143,15 +146,7 @@ export function TrajectoryView({ trajectory }: TrajectoryViewProps) {
           selectedIndex={selected}
           turnStarts={folds.turnStarts}
         />
-        {selectedRecord !== undefined && (
-          <TrajectoryDetails
-            onClose={() => {
-              setSelected(null)
-            }}
-            record={selectedRecord}
-          />
-        )}
-      </div>
+      </TrajectorySplit>
     </div>
   )
 }
