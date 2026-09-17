@@ -6,6 +6,25 @@
   gap: 6px;
 }
 
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: min(525px, 82%);
+}
+
+.image {
+  display: block;
+  max-width: min(320px, 100%);
+  max-height: 280px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: 1px solid var(--cc-alias-border-l3);
+  border-radius: 12px;
+}
+
 .bubble {
   /* 525px inside the 748 column keeps a short message from spanning the full
      width; the percentage keeps narrow windows sane. */
