@@ -4,7 +4,7 @@
 .root {
   display: flex;
   flex-direction: column;
-  width: 320px;
+  flex: 1;
   min-width: 0;
   border-left: 1px solid var(--cc-alias-border-l2);
   background: var(--cc-alias-bg-base);

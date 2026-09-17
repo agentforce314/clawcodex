@@ -5,6 +5,8 @@
  * `layout/columns.ts` turns them into the widths a frame actually paints, and
  * an auto-collapse never writes back here — which is what lets a re-widened
  * window restore exactly what the user last dragged.
+ * The trajectory inspector fits its preference inside the conversation in
+ * `trajectory/TrajectorySplit.tsx`.
  *
  * `details` is the RIGHT COLUMN, which now holds the tabbed sidebar
  * (`sidebar-right/`) rather than the single details panel it was named for.
@@ -31,7 +33,10 @@ const STORAGE_KEY = 'clawcodex.web.layout'
 interface StoredLayout {
   details: number
   sidebar: number
+  trajectoryDetails: number
 }
+
+export const TRAJECTORY_DETAILS_DEFAULT = 320
 
 function read(): StoredLayout {
   try {
@@ -43,6 +48,10 @@ function read(): StoredLayout {
       return {
         details: typeof parsed.details === 'number' ? parsed.details : 0,
         sidebar: typeof parsed.sidebar === 'number' ? parsed.sidebar : SIDEBAR_DEFAULT,
+        trajectoryDetails:
+          typeof parsed.trajectoryDetails === 'number' && Number.isFinite(parsed.trajectoryDetails)
+            ? Math.max(240, parsed.trajectoryDetails)
+            : TRAJECTORY_DETAILS_DEFAULT,
       }
     }
   } catch {
@@ -52,13 +61,14 @@ function read(): StoredLayout {
   // Sidebar open at its resting width, details closed — the shape a first-run
   // window should have. Zero means CLOSED for both, so the sidebar's default
   // has to be its width, not zero.
-  return { details: 0, sidebar: SIDEBAR_DEFAULT }
+  return { details: 0, sidebar: SIDEBAR_DEFAULT, trajectoryDetails: TRAJECTORY_DETAILS_DEFAULT }
 }
 
 const initial = read()
 
 export const $sidebarWidth = atom<number>(initial.sidebar)
 export const $detailsWidth = atom<number>(initial.details)
+export const $trajectoryDetailsWidth = atom<number>(initial.trajectoryDetails)
 /**
  * Whether the right column is open — what most of the app actually wants to
  * know. Subscribing to the width itself would re-render a subscriber on every
@@ -75,7 +85,10 @@ function persist(): void {
   try {
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ details: $detailsWidth.get(), sidebar: $sidebarWidth.get() }),
+      JSON.stringify({
+        details: $detailsWidth.get(), sidebar: $sidebarWidth.get(),
+        trajectoryDetails: $trajectoryDetailsWidth.get(),
+      }),
     )
   } catch {
     /* private mode: the layout holds for this page load */
@@ -96,6 +109,13 @@ function persistSoon(): void {
 
 export function setSidebarWidth(px: number): void {
   $sidebarWidth.set(clampWidth(px, SIDEBAR_MIN, SIDEBAR_MAX))
+  persistSoon()
+}
+
+export function setTrajectoryDetailsWidth(px: number): void {
+  if (!Number.isFinite(px)) return
+
+  $trajectoryDetailsWidth.set(Math.max(240, Math.round(px)))
   persistSoon()
 }
 
