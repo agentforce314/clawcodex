@@ -649,7 +649,20 @@ update_shell_rc() {
     fi
 
     for rc in "${rc_files[@]}"; do
-        if grep -qF "$HOME/.local/bin" "$rc" 2>/dev/null; then
+        # Match our own marker (present verbatim in any rc we've already
+        # patched) as well as the other real spellings ~/.local/bin can take
+        # in a shell rc: literal '$HOME/.local/bin' (what $path_line itself
+        # is -- single-quoted, so $HOME reaches the file unexpanded), '~/.local/bin',
+        # and the fully-expanded real path (in case the user already has it
+        # some other way). Previously this checked ONLY the expanded real
+        # path, which the very line we append below can never contain -- so
+        # the check could never recognize the installer's own prior write,
+        # and every re-run (reinstall, --local, update) appended another
+        # duplicate marker+PATH block, unbounded, forever.
+        if grep -qF "$RC_MARKER" "$rc" 2>/dev/null \
+            || grep -qF '$HOME/.local/bin' "$rc" 2>/dev/null \
+            || grep -qF '~/.local/bin' "$rc" 2>/dev/null \
+            || grep -qF "$HOME/.local/bin" "$rc" 2>/dev/null; then
             log_ok "PATH already contains ~/.local/bin in $rc"
             continue
         fi
