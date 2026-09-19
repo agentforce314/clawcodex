@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
 import { createSession, resumeSession } from '../state/actions.ts'
@@ -148,6 +148,32 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
 
+  const currentId = activeId ?? liveId
+  const currentProjectId = useMemo(
+    () => projects.find(project =>
+      currentId === null
+        ? project.path === workspace || project.repos.some(repo =>
+            repo.groups.some(lane => lane.path === workspace),
+          )
+        : project.repos.some(repo =>
+            repo.groups.some(lane => lane.sessions.some(row => row.id === currentId)),
+          ),
+    )?.id,
+    [currentId, projects, workspace],
+  )
+
+  // Like DeepSeek's workspace browser, initialize only the current session's
+  // group and preserve explicit toggles. The launch workspace stays a derived
+  // default so restoring a session elsewhere does not leave both groups open.
+  useEffect(() => {
+    if (currentId === null || currentProjectId === undefined) return
+
+    setCollapsedProjects(current => Object.hasOwn(current, currentProjectId)
+      ? current
+      : { ...current, [currentProjectId]: false },
+    )
+  }, [currentId, currentProjectId])
+
   const searching = query.trim() !== ''
 
   const ordered = useMemo(
@@ -265,7 +291,8 @@ export function Sidebar({ collapsed }: SidebarProps) {
               // While searching, every surviving project is open: a project
               // that kept a match is exactly the one the user is looking in,
               // and leaving it collapsed hides the result they searched for.
-              const isCollapsed = !searching && collapsedProjects[project.id] === true
+              const isCollapsed = !searching &&
+                (collapsedProjects[project.id] ?? project.id !== currentProjectId)
               const count = visibleCount(project, duplicateLiveId, keep)
 
               // A project whose every session is an idle blank has nothing
@@ -275,6 +302,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
               return (
                 <div className={css.project} key={project.id}>
                   <button
+                    aria-expanded={!isCollapsed}
                     className={css.projectHeader}
                     onClick={() => {
                       setCollapsedProjects(current => ({
