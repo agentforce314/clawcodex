@@ -15,14 +15,25 @@ This test extracts ``update_shell_rc`` (and its ``RC_MARKER`` dependency)
 verbatim out of the real ``install.sh`` via ``sed`` -- not a hand-copied
 approximation -- so it always exercises the actual current source, and
 would catch a regression if someone reintroduces the mismatch.
+
+Skipped on Windows: install.sh is a bash script (it isn't even invoked on
+native Windows -- there is no bash/sed/grep guarantee there), and the CI
+Windows runner fails these with an unrelated "Could not determine home
+directory" error from spawning bash with a replaced (HOME/PATH-only)
+environment. This is a POSIX-shell test, not an install.sh-on-Windows test.
 """
 from __future__ import annotations
 
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="exercises install.sh's bash function body"
+)
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "install.sh"
 
