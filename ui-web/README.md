@@ -231,6 +231,12 @@ while it is the one on screen, labelled **New session**; the backend keeps
 every runtime session it spawned, and a row per abandoned press of the button
 was a column of nothing.
 
+Workspace folders start collapsed, with only the current session's folder
+expanded (or the selected workspace before a session starts). As in DeepSeek
+Harness, selecting a session opens its folder unless it was manually collapsed;
+manual toggles last for the page's lifetime. Filtering temporarily expands
+matching folders and restores their previous state when cleared.
+
 ## The session across a reload
 
 A reload lands back on the session the window was on. The client remembers
