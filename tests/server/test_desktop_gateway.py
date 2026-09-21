@@ -1218,17 +1218,20 @@ def test_session_create_can_make_the_workspace_folder(tmp_path: Path) -> None:
 
     with TestClient(build_app(state)) as client, _connect(client) as ws:
         ws.receive_json()
+        # A plain cwd passes through untouched, as it always has (the desktop
+        # client sends paths the gateway is not the judge of): nothing made.
         _rpc(ws, 1, "session.create", {"cwd": str(target)})
-        refused = _drain_for_response(ws, 1, [])
+        plain = _drain_for_response(ws, 1, [])["result"]
+        assert not target.exists()
         _rpc(ws, 2, "session.create", {"cwd": str(target), "create_dir": True})
         created = _drain_for_response(ws, 2, [])["result"]
         _rpc(ws, 3, "session.create", {"cwd": "relative/path", "create_dir": True})
         relative = _drain_for_response(ws, 3, [])
 
-    assert "no such directory" in refused["error"]["message"]
+    assert plain["session_id"] == "fake-1"
     assert target.is_dir()
-    assert created["session_id"] == "fake-1"
-    assert state.manager.cwds == [str(target)]
+    assert created["session_id"] == "fake-2"
+    assert state.manager.cwds == [str(target), str(target)]
     assert "must be absolute" in relative["error"]["message"]
 
 

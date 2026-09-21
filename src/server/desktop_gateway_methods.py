@@ -1367,11 +1367,14 @@ class GatewayConnection:
         (``.clawcodex/worktrees/<name>``, the CLI's ``--worktree``), which is
         left in place when the session ends — a browser tab has no exit
         dialog to offer keep-or-remove. Both are validated here so a bad path
-        is an error with a name rather than a runtime that fails to start.
+        is an error with a name rather than a runtime that fails to start. A
+        plain ``cwd`` passes through as it always has: the runtime, not the
+        gateway, is the judge of a workspace it is merely pointed at.
         """
         cwd = _clean(params.get("cwd"))
         wants_worktree = params.get("worktree") is True
-        if cwd is not None:
+        create_dir = params.get("create_dir") is True
+        if cwd is not None and (create_dir or wants_worktree):
             import os
 
             if wants_worktree and not os.path.isdir(os.path.expanduser(cwd)):
@@ -1382,9 +1385,7 @@ class GatewayConnection:
                     "A worktree needs an existing git repository; a new folder is "
                     "not one. Turn Worktree off, or pick a repository."
                 )
-            cwd = await asyncio.to_thread(
-                _prepare_workspace, cwd, bool(params.get("create_dir"))
-            )
+            cwd = await asyncio.to_thread(_prepare_workspace, cwd, create_dir)
         worktree: dict[str, Any] | None = None
         if wants_worktree:
             worktree = await asyncio.to_thread(
