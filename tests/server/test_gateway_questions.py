@@ -1215,6 +1215,8 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
         session_id = "rt1"
         init_info = {"model": "launch-default", "provider": "deepseek", "cwd": "/w"}
         titled = True
+        # What the reply's ``running`` reads: a stub runtime between turns.
+        turn_active = False
 
         def __init__(self) -> None:
             self.refreshed = False
