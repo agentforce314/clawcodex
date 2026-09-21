@@ -105,3 +105,6 @@ class WorkspaceSnapshot:
     key_files: tuple[str, ...]
     python_file_count: int
     test_file_count: int
+    #: True when the file walk hit its directory budget, so the counts are
+    #: lower bounds — rendered as ``N+ (partial scan)``.
+    counts_partial: bool = False

@@ -6,8 +6,9 @@ import { SettingsOverlay } from './settings/SettingsOverlay.tsx'
 import { SidebarRight } from './sidebar-right/SidebarRight.tsx'
 import { closeSidebar, resetSidebar } from './sidebar-right/store.ts'
 import { AppFrame } from './layout/AppFrame.tsx'
+import { NewSessionDialog, openNewSessionDialog } from './sidebar/NewSessionDialog.tsx'
 import { Sidebar } from './sidebar/Sidebar.tsx'
-import { createSession, start } from './state/actions.ts'
+import { start } from './state/actions.ts'
 import { $detailsOpen, $detailsWidth, openDetails, toggleSidebar } from './state/layout.ts'
 import { $bootError, $bootPhase, $sessionId, $workspace } from './state/store.ts'
 import { installTheme } from './state/theme.ts'
@@ -97,7 +98,7 @@ export function App() {
       // stealing it would surprise the user in their own browser.
       if (event.key === 'n' && event.shiftKey) {
         event.preventDefault()
-        void createSession({ cwd: $workspace.get() })
+        openNewSessionDialog()
       }
     }
 
@@ -121,9 +122,10 @@ export function App() {
         details={detailsOpen ? <SidebarRight /> : null}
         sidebar={state => <Sidebar collapsed={state.collapsed} />}
       />
-      {/* Outside the frame: it covers the whole app, including the sidebar
-          it is opened from. */}
+      {/* Outside the frame: they cover the whole app, including the sidebar
+          they are opened from. */}
       <SettingsOverlay />
+      <NewSessionDialog />
     </>
   )
 }

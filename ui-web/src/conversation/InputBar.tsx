@@ -17,7 +17,7 @@ import type {
   ModelOptionsResult,
 } from '../gateway/protocol.ts'
 import { attachImage, searchFiles } from '../state/actions.ts'
-import { $commands, $notice } from '../state/store.ts'
+import { $commands, $notice, $sessionAttaching } from '../state/store.ts'
 import { ArrowUpIcon, PlusIcon, SlashSquareIcon, StopIcon, XIcon } from '../ui/icons.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
 import {
@@ -112,6 +112,7 @@ export function InputBar({
 }: InputBarProps) {
   const commands = useStore($commands)
   const notice = useStore($notice)
+  const attaching = useStore($sessionAttaching)
   const textarea = useRef<HTMLTextAreaElement | null>(null)
   const card = useRef<HTMLDivElement | null>(null)
   const [highlight, setHighlight] = useState(0)
@@ -484,7 +485,7 @@ export function InputBar({
 
   return (
     <div className={[css.root, hero ? css.hero : ''].filter(Boolean).join(' ')}>
-      {notice.text !== '' && (
+      {notice.text !== '' ? (
         <div
           className={[css.notice, notice.tone === 'error' ? css.noticeError : '']
             .filter(Boolean)
@@ -493,6 +494,14 @@ export function InputBar({
         >
           {notice.text}
         </div>
+      ) : (
+        // The transcript is up before its runtime is: say so, since a prompt
+        // sent now waits for the agent rather than going out at once.
+        attaching && (
+          <div className={css.notice} role="status">
+            Connecting the agent…
+          </div>
+        )
       )}
       <div className={css.card} ref={card}>
         {mention !== null && files.length > 0 && (

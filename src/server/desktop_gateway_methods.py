@@ -142,6 +142,23 @@ class DesktopSession:
         self.pump_task: asyncio.Task | None = None
         self.init_info: dict[str, Any] = {}
         self.init_seen = asyncio.Event()
+        # The saved session this runtime replays (``session.resume``), or None
+        # for one created fresh. ``state.sessions`` is keyed by RUNTIME id and
+        # a resumed row gets a fresh runtime, so this is how a second click on
+        # the same row finds the runtime it already has instead of spawning
+        # another.
+        self.stored_id: str | None = None
+        # Set once ``_create`` has finished attaching this runtime (spawned,
+        # capability-negotiated, stored conversation loaded) — or given up.
+        # A concurrent resume of the same row waits on it rather than racing
+        # a second spawn.
+        self.attached = asyncio.Event()
+        # A prompt is being answered: set on submit, cleared by the turn's
+        # ``result`` frame. What ``session.close`` with ``if_idle`` refuses on.
+        self.turn_active = False
+        # The agent's frame stream ended on an error: nothing runs, nothing
+        # can answer a control query, and a conditional close need not ask.
+        self.dead = False
         # My queries INTO the agent (control_request → control_response).
         self._pending_control: dict[str, asyncio.Future] = {}
         # The agent's asks OF the user (can_use_tool …), keyed by request_id;
@@ -164,6 +181,10 @@ class DesktopSession:
         # in between outranks it.
         self.user_titled = False
         self.sockets: set[WebSocket] = set()
+        # The sockets that asked for this runtime (created or resumed it) and
+        # have not let go: a conditional close from one of them is refused
+        # while another still holds it — a desktop tile, another window.
+        self.holders: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
         # tool_use_id -> tool name, so a tool_result can label its row.
@@ -201,14 +222,28 @@ class DesktopSession:
         self._background.clear()
         if self.pump_task is not None:
             self.pump_task.cancel()
+        # Answer every waiting control query with "no reply" rather than
+        # cancelling it: a cancelled future raises CancelledError inside the
+        # RPC handler awaiting it, which unwinds the gateway's socket loop and
+        # drops that window's socket — the very window a retirement or
+        # another window's close should merely inform. None is the answer
+        # every caller already degrades on. Before the agent's own shutdown,
+        # so a handler on another socket unblocks now, not after the worker
+        # join.
+        for fut in self._pending_control.values():
+            if not fut.done():
+                fut.set_result(None)
+        self._pending_control.clear()
+        # Dead from here on: a query issued during or after the agent's own
+        # shutdown (a scheduled info refresh, a resume's tail on a runtime
+        # another window closed) answers None at once instead of waiting the
+        # control timeout on a pump that is already cancelled.
+        self.dead = True
         if self.agent is not None:
             try:
                 await self.agent.shutdown()
             except Exception:  # noqa: BLE001
                 pass
-        for fut in self._pending_control.values():
-            if not fut.done():
-                fut.cancel()
 
     # ── broadcast ────────────────────────────────────────────────────────────
 
@@ -229,7 +264,9 @@ class DesktopSession:
         deadlock until the timeout. Schedule it with ``refresh_session_info``.
         """
         settings = await self.control_query("get_settings", {})
-        payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
+        # Not a hardcoded False: this republish follows a resume reply that
+        # may have said running, and the desktop reads it as the turn state.
+        payload: dict[str, Any] = {"running": self.turn_active, "desktop_contract": DESKTOP_CONTRACT}
         if isinstance(settings, dict):
             model = settings.get("fusion") or settings.get("model")
             if model:
@@ -277,10 +314,50 @@ class DesktopSession:
             raise
         except Exception:  # noqa: BLE001
             logger.exception("desktop session %s pump died", self.session_id)
+            # The turn's end first, then the retirement: the teardown it
+            # schedules cancels THIS task, so every send happens before it.
             await self._broadcast(
                 "message.complete",
                 {"text": "", "status": "error", "error": "backend session ended unexpectedly"},
             )
+            await self._retire()
+            return
+        # The agent closed its stream on its own: the runtime is over.
+        await self._retire()
+
+    async def _retire(self) -> None:
+        """The agent's stream is gone: unregister this runtime and tear it down.
+
+        Left registered, a dead runtime would be handed back by the reuse
+        lookup on the next click and every prompt to it would fail; left
+        "busy", it could never be released. So it leaves the registry here,
+        every window learns (``session.closed``), and the teardown runs as
+        its own task — this is the pump's task, which the teardown cancels.
+        """
+        self.dead = True
+        self.turn_active = False
+        self._pending_asks.clear()
+        self._pending_question = None
+        # An attach waiting for system/init must not wait the full control
+        # timeout for a stream that will never send it.
+        self.init_seen.set()
+        if self.state.sessions.get(self.session_id) is not self:
+            return
+        self.state.sessions.pop(self.session_id, None)
+        await self._broadcast("session.closed", {})
+        task = asyncio.create_task(self._teardown())
+        self.state.teardowns.add(task)
+        task.add_done_callback(self.state.teardowns.discard)
+
+    async def _teardown(self) -> None:
+        try:
+            await self.shutdown()
+        except Exception:  # noqa: BLE001 — a failed teardown must not raise into the loop
+            logger.debug("desktop session %s: shutdown failed", self.session_id, exc_info=True)
+        try:
+            await self.state.manager.stop_session(self.session_id)
+        except Exception:  # noqa: BLE001 — index upkeep is best-effort
+            pass
 
     async def _route(self, frame: dict[str, Any]) -> None:
         kind = frame.get("type")
@@ -305,9 +382,15 @@ class DesktopSession:
                 await self._broadcast("session.info", _init_session_info(frame))
             return
 
+        # A turn the agent started for itself (a /goal continuation, a loop
+        # firing) has no submit_prompt; its frames are how the gateway learns
+        # it is running.
+        if kind in ("assistant", "stream_event"):
+            self.turn_active = True
         for type_, payload in translate_frame(frame, self._tool_names):
             await self._broadcast(type_, payload)
         if kind == "result":
+            self.turn_active = False
             # The renderer clears busy from message.complete; refresh the info
             # line too (permission mode may have flipped server-side).
             mode = frame.get("permission_mode")
@@ -437,9 +520,17 @@ class DesktopSession:
             return
         await self._apply_title(name)
 
+    @property
+    def idle(self) -> bool:
+        """No turn running and nothing waiting on the user (an approval, a question)."""
+        if self.dead:
+            return True
+        return not self.turn_active and not self._pending_asks and self._pending_question is None
+
     async def submit_prompt(self, text: str) -> None:
         if not self.ready:
             raise ValueError(f"session {self.session_id} is still starting")
+        self.turn_active = True
         await self._broadcast("message.start", {})
         await self.agent.send_to_agent(
             {"type": "user", "message": {"role": "user", "content": text}}
@@ -460,11 +551,12 @@ class DesktopSession:
 
     async def control_query(self, subtype: str, params: dict[str, Any],
                             timeout: float = CONTROL_TIMEOUT_S) -> Any:
-        # No agent to ask yet: answer the way a timeout does. Every caller
-        # already handles "no reply" (`if not isinstance(result, dict)`) by
-        # degrading to its own fallback, which is the honest outcome — the
-        # alternative was an AttributeError that failed the whole RPC.
-        if not self.ready:
+        # No agent to ask yet — or no agent left to answer: answer the way a
+        # timeout does. Every caller already handles "no reply" (`if not
+        # isinstance(result, dict)`) by degrading to its own fallback, which
+        # is the honest outcome — the alternative was an AttributeError that
+        # failed the whole RPC, or a 30 s wait on a stream that has ended.
+        if not self.ready or self.dead:
             return None
         rid = f"srv-{uuid.uuid4().hex[:12]}"
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -955,6 +1047,49 @@ def _clean(value: Any) -> str | None:
     return None
 
 
+def _prepare_workspace(path: str, create: bool) -> str:
+    """An absolute directory a session can run in, created when asked.
+
+    Raises ``ValueError`` — the gateway's "this is the caller's mistake" error
+    — for a relative path, a path that is a file, or a folder that does not
+    exist when ``create`` is off. Runs off the event loop (``makedirs`` and
+    the stats can block on a slow volume).
+    """
+    import os
+
+    expanded = os.path.expanduser(path.strip())
+    if not os.path.isabs(expanded):
+        raise ValueError(f"workspace path must be absolute: {path}")
+    normalized = os.path.normpath(expanded)
+    if os.path.isdir(normalized):
+        return normalized
+    if os.path.exists(normalized):
+        raise ValueError(f"not a directory: {normalized}")
+    if not create:
+        raise ValueError(f"no such directory: {normalized}")
+    try:
+        os.makedirs(normalized, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"cannot create {normalized}: {exc.strerror or exc}") from exc
+    return normalized
+
+
+def _create_session_worktree(cwd: str) -> dict[str, Any]:
+    """A fresh worktree of the repo at ``cwd`` (the CLI's bare ``--worktree``)."""
+    from src.utils.worktree_session import WorktreeError, create_worktree_for_session
+
+    try:
+        session = create_worktree_for_session(None, cwd=cwd)
+    except WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "name": session.worktree_name,
+        "path": session.worktree_path,
+        "branch": session.worktree_branch,
+        "repo_root": session.repo_root,
+    }
+
+
 def _positive_int(value: Any, fallback: int) -> int:
     """A positive integer from a JSON field, or ``fallback``.
 
@@ -986,6 +1121,7 @@ class GatewayConnection:
         self.method_handlers = {
             "session.create": self.session_create,
             "session.resume": self.session_resume,
+            "session.history": self.session_history,
             "session.activate": self.session_activate,
             "session.close": self.session_close,
             "session.active_list": self.session_active_list,
@@ -1043,6 +1179,7 @@ class GatewayConnection:
     async def on_close(self) -> None:
         for session in self.state.sessions.values():
             session.sockets.discard(self.websocket)
+            session.holders.discard(self.websocket)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -1062,18 +1199,48 @@ class GatewayConnection:
             raise ValueError(f"session {session_id} is still starting")
         return session
 
+    def _live_session_for(self, stored_id: str) -> DesktopSession | None:
+        """The runtime this server already has for ``stored_id``, if any.
+
+        Either the runtime itself (a session created here saves under its own
+        id) or the fresh runtime a resume of that row spawned (``stored_id``).
+        Without the second match every click on a row the server had already
+        replayed spawned yet another runtime and left the previous one alive.
+        """
+        direct = self.state.sessions.get(stored_id)
+        if direct is not None and not direct.dead:
+            return direct
+        for session in self.state.sessions.values():
+            if session.stored_id == stored_id and not session.dead:
+                return session
+        return None
+
     async def _create(self, cwd: str | None, resume: str | None,
                       params: dict[str, Any] | None = None) -> DesktopSession:
         manager = self.state.manager
         workspace = cwd or self.state.workspace
-        if resume and resume in self.state.sessions:
-            return self.state.sessions[resume]
+        if resume:
+            existing = self._live_session_for(resume)
+            if existing is not None:
+                # A second resume while the first is still attaching waits
+                # for it — two rapid clicks must not become two runtimes.
+                # Uncapped: the event is set on every exit of _create.
+                await existing.attached.wait()
+                # Still registered: the attach succeeded. This socket may
+                # not be the one that spawned it — a second window opening
+                # the same row — and it needs the turn events too.
+                if existing.session_id in self.state.sessions:
+                    existing.sockets.add(self.websocket)
+                    existing.holders.add(self.websocket)
+                    return existing
         # A resumed stored session still gets a fresh runtime session: spawn,
         # then load the stored conversation via the `resume` control below.
         info = manager.create_session(cwd=workspace)
         session_id = info.id
         session = DesktopSession(session_id, self.state)
+        session.stored_id = resume
         session.sockets.add(self.websocket)
+        session.holders.add(self.websocket)
         self.state.sessions[session_id] = session
         # Honor the composer's provider/model/effort selection at spawn time, so
         # a session can use a working provider even when the config default is
@@ -1109,7 +1276,24 @@ class GatewayConnection:
             # sessionless call (model.options, commands.catalog …) from any
             # window picks it up. Re-raised untouched; this only cleans up.
             self.state.sessions.pop(session_id, None)
+            session.attached.set()
             raise
+        try:
+            await self._attach(session, resume, params)
+        finally:
+            session.attached.set()
+        # The agent's stream ended while the runtime was being attached: it
+        # has already retired itself, and handing its id out would only make
+        # the next prompt fail. Say so — the caller's socket stays up.
+        if session.dead:
+            raise ValueError(f"session {session_id} ended while starting")
+        return session
+
+    async def _attach(self, session: DesktopSession, resume: str | None,
+                      params: dict[str, Any]) -> None:
+        """Finish a freshly spawned runtime: init, capabilities, stored replay."""
+        manager = self.state.manager
+        session_id = session.session_id
         try:
             manager.mark_running(session_id)
         except Exception:  # noqa: BLE001 — index upkeep is best-effort
@@ -1124,7 +1308,7 @@ class GatewayConnection:
         # a client that ignored the question would park the session's worker
         # thread until the ask timeout. Clients that render questions ask for
         # the real thing here; the ones that don't are left exactly as before.
-        if _wants_questions(params):
+        if _wants_questions(params) and not session.dead:
             reply = await session.control_query("set_ask_user_interactive", {"enabled": True})
             if isinstance(reply, dict) and reply.get("ok") is not False:
                 session.asks_questions = True
@@ -1132,7 +1316,7 @@ class GatewayConnection:
                 logger.warning(
                     "session %s: interactive questions refused: %r", session_id, reply
                 )
-        if resume:
+        if resume and not session.dead:
             # A stored session brings its own name; auto-titling would rename
             # someone's saved conversation after whatever they type next.
             session.titled = True
@@ -1140,7 +1324,9 @@ class GatewayConnection:
             if not isinstance(reply, dict) or reply.get("ok") is False:
                 logger.warning("session %s: resume of %s refused: %r",
                                session_id, resume, reply)
-        return session
+                # Not a replay of that row after all: the next click must
+                # try again rather than reuse an empty conversation.
+                session.stored_id = None
 
     # ── methods ──────────────────────────────────────────────────────────────
 
@@ -1153,6 +1339,9 @@ class GatewayConnection:
         return await _asyncio.to_thread(self._build_projects_tree, preview_limit)
 
     def _build_projects_tree(self, preview_limit: int) -> dict[str, Any]:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+
         from src.server.desktop_projects import build_project_tree, canonical_workspace_path
         from src.server.desktop_sessions import list_session_rows
         from src.utils.git import get_repo_root, list_worktrees
@@ -1163,7 +1352,9 @@ class GatewayConnection:
         # just-created session still places into its repo immediately.
         seen = {r.get("id") for r in rows}
         active_cwd: str | None = None
-        for session in self.state.sessions.values():
+        # A copy: this runs on a worker thread while the loop adds and
+        # removes sessions (projects.tree is served beside a resume).
+        for session in list(self.state.sessions.values()):
             info = getattr(session, "init_info", None) or {}
             cwd = info.get("cwd") if isinstance(info, dict) else None
             if cwd:
@@ -1177,19 +1368,38 @@ class GatewayConnection:
                 })
                 seen.add(sid)
 
-        # Per-cwd / per-repo memoized git probes: a tree can hold many sessions
-        # in the same repo, so probe each distinct path once.
-        repo_cache: dict[str, str | None] = {}
-        wt_cache: dict[str, list[str]] = {}
+        # Git probes are memoized ACROSS rebuilds on the serve state: the
+        # tree is rebuilt after every turn end and every session switch, and
+        # a sessions dir accumulates thousands of distinct cwds, so probing
+        # each one every time cost seconds per rebuild.
+        cache = self.state.probe_cache
         workspace_cache: dict[str, str | None] = {}
 
         def worktrees_of(repo_root: str) -> list[str]:
             # ``git worktree list`` is repo-global and main-first from ANY
             # worktree in the repo, so this is correct whether keyed by the
             # main root or a linked-worktree path.
-            if repo_root not in wt_cache:
-                wt_cache[repo_root] = [w.path for w in list_worktrees(repo_root) if w.path]
-            return wt_cache[repo_root]
+            cached = cache.worktrees(repo_root)
+            if cached is None:
+                cached = [w.path for w in list_worktrees(repo_root) if w.path]
+                cache.set_worktrees(repo_root, cached)
+            return cached
+
+        def probe_toplevel(cwd: str) -> str | None:
+            # A cwd that is gone — a deleted temp dir, an unmounted volume —
+            # is not a repo, and needs no git call to say so.
+            if not os.path.isdir(cwd):
+                return None
+            return get_repo_root(cwd) or None
+
+        # Every cwd the cache cannot answer, probed in parallel: each is one
+        # subprocess, and the first tree after boot has all of them to do.
+        wanted = {c for c in (str(r.get("cwd") or "").strip() for r in rows) if c}
+        missing = [c for c in wanted if not cache.has_repo_root(c)]
+        if missing:
+            with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+                for cwd, top in zip(missing, pool.map(probe_toplevel, missing)):
+                    cache.set_repo_root(cwd, top)
 
         def repo_root_of(cwd: str) -> str | None:
             # ``rev-parse --show-toplevel`` inside a LINKED worktree returns the
@@ -1197,14 +1407,13 @@ class GatewayConnection:
             # worktree into its own project. Resolve the MAIN worktree root
             # (the first ``git worktree list`` entry) so linked worktrees group
             # as lanes under their repo, matching the renderer's tree.
-            if cwd not in repo_cache:
-                top = get_repo_root(cwd)
-                if top:
-                    worktrees = worktrees_of(top)
-                    repo_cache[cwd] = worktrees[0] if worktrees else top
-                else:
-                    repo_cache[cwd] = None
-            return repo_cache[cwd]
+            if not cache.has_repo_root(cwd):
+                cache.set_repo_root(cwd, probe_toplevel(cwd))
+            top = cache.repo_root(cwd)
+            if not top:
+                return None
+            worktrees = worktrees_of(top)
+            return worktrees[0] if worktrees else top
 
         def workspace_path_of(cwd: str) -> str | None:
             if cwd not in workspace_cache:
@@ -1221,12 +1430,109 @@ class GatewayConnection:
         )
 
     async def session_create(self, params: dict[str, Any]) -> dict[str, Any]:
-        session = await self._create(params.get("cwd"), None, params)
-        return {
+        """Spawn a fresh session.
+
+        ``cwd`` names the workspace; with ``create_dir`` a folder that does
+        not exist yet is created (the "new workspace" flow, mkdir -p). With
+        ``worktree`` the session runs in a fresh git worktree of that repo
+        (``.clawcodex/worktrees/<name>``, the CLI's ``--worktree``), which is
+        left in place when the session ends — a browser tab has no exit
+        dialog to offer keep-or-remove. Both are validated here so a bad path
+        is an error with a name rather than a runtime that fails to start. A
+        plain ``cwd`` passes through as it always has: the runtime, not the
+        gateway, is the judge of a workspace it is merely pointed at.
+        """
+        cwd = _clean(params.get("cwd"))
+        wants_worktree = params.get("worktree") is True
+        create_dir = params.get("create_dir") is True
+        if cwd is not None and (create_dir or wants_worktree):
+            import os
+
+            if wants_worktree and not os.path.isdir(os.path.expanduser(cwd)):
+                # Checked before anything is created: a folder made here
+                # would never be a repository, and a worktree refusal after
+                # the mkdir would leave an empty folder behind.
+                raise ValueError(
+                    "A worktree needs an existing git repository; a new folder is "
+                    "not one. Turn Worktree off, or pick a repository."
+                )
+            cwd = await asyncio.to_thread(_prepare_workspace, cwd, create_dir)
+        worktree: dict[str, Any] | None = None
+        if wants_worktree:
+            worktree = await asyncio.to_thread(
+                _create_session_worktree, cwd or self.state.workspace
+            )
+            cwd = worktree["path"]
+            # The next sidebar tree must show the new lane. Every repo's list,
+            # not just this one's: the tree keys worktree lists by whatever
+            # ``git rev-parse`` printed for a cwd, which need not spell the
+            # repo root the way the worktree helper does (symlinked /tmp …).
+            self.state.probe_cache.forget_worktrees()
+        session = await self._create(cwd, None, params)
+        reply: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": session.session_id,
             "info": _init_session_info(session.init_info),
         }
+        if worktree is not None:
+            reply["worktree"] = worktree
+        return reply
+
+    async def session_history(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A saved session's transcript, cold: no runtime is spawned or touched.
+
+        What the web client renders the moment a sidebar row is clicked; the
+        runtime attaches afterwards (``session.resume``) without the reader
+        waiting on it. Same message shape as ``session.resume`` returns.
+
+        When this server already has a runtime replaying the row, its OWN
+        record is preferred — it holds the turns run since the row was
+        resumed, which the row's file never learns about.
+        """
+        wanted = str(params.get("session_id") or "")
+        if not wanted:
+            raise ValueError("session_id required")
+        from src.server.desktop_sessions import load_session_messages
+
+        sessions_dir = self.state.saved_sessions_dir()
+        live = self._live_session_for(wanted)
+        stored = None
+        if live is not None and live.session_id != wanted:
+            stored = await asyncio.to_thread(load_session_messages, sessions_dir, live.session_id)
+        if stored is None:
+            stored = await asyncio.to_thread(load_session_messages, sessions_dir, wanted)
+        if stored is None:
+            if live is None:
+                raise ValueError(f"unknown session: {wanted}")
+            # A runtime that never saved (nothing typed since it was made):
+            # there is nothing to show, and that is not an error.
+            info = _init_session_info(live.init_info)
+            info["running"] = live.turn_active
+            return {
+                "session_id": wanted,
+                "stored_session_id": wanted,
+                "live_session_id": live.session_id,
+                "found": False,
+                "messages": [],
+                "message_count": 0,
+                "info": info,
+            }
+        info: dict[str, Any] = {key: stored[key] for key in ("cwd", "model", "provider") if stored.get(key)}
+        if live is not None:
+            info["running"] = live.turn_active
+        reply: dict[str, Any] = {
+            "session_id": wanted,
+            "stored_session_id": wanted,
+            "found": True,
+            "messages": stored["messages"],
+            "message_count": stored["message_count"],
+            "info": info,
+        }
+        if stored.get("title"):
+            reply["title"] = stored["title"]
+        if live is not None:
+            reply["live_session_id"] = live.session_id
+        return reply
 
     async def session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         wanted = str(params.get("session_id") or "") or None
@@ -1238,6 +1544,11 @@ class GatewayConnection:
         # this, so the user reads a switch that held as a revert. Re-read the
         # live settings and tell the truth, here where both paths converge.
         settings = await session.control_query("get_settings", {})
+        # The stream can end during that round trip, or another window can
+        # close the runtime outright; a dead or unregistered id handed out
+        # here would only fail the next prompt.
+        if session.dead or self.state.sessions.get(session.session_id) is not session:
+            raise ValueError(f"session {session.session_id} ended while starting")
         if isinstance(settings, dict):
             live_model = settings.get("fusion") or settings.get("model")
             if live_model:
@@ -1245,19 +1556,36 @@ class GatewayConnection:
             if settings.get("provider"):
                 session.init_info["provider"] = str(settings["provider"])
         session.refresh_session_info()
+        info = _init_session_info(session.init_info)
+        # Reattaching to a runtime mid-turn is a normal path now (a busy
+        # runtime is kept and handed back); the client must adopt it as
+        # running, not draw the turn's remaining deltas under its next prompt.
+        info["running"] = session.turn_active
+        # The row this runtime replays — which is NOT the row asked for when
+        # the agent refused the replay (stored_id was cleared): echoing the
+        # asked-for row would make the client keep an empty runtime as the
+        # conversation on screen.
+        stored_row = (session.stored_id or session.session_id) if wanted else session.session_id
         response: dict[str, Any] = {
             "session_id": session.session_id,
-            "stored_session_id": wanted or session.session_id,
+            "stored_session_id": stored_row,
             "resumed": wanted or session.session_id,
             "message_count": 0,
             "messages": [],
-            "info": _init_session_info(session.init_info),
+            "info": info,
         }
         omit = bool(params.get("omit_messages") or params.get("lazy"))
         if wanted and not omit:
             from src.server.desktop_sessions import load_session_messages
 
-            stored = load_session_messages(self.state.saved_sessions_dir(), wanted)
+            sessions_dir = self.state.saved_sessions_dir()
+            stored = None
+            # A runtime already replaying this row has the complete record
+            # (see session_history); the row's own file is the fallback.
+            if session.session_id != wanted:
+                stored = await asyncio.to_thread(load_session_messages, sessions_dir, session.session_id)
+            if stored is None:
+                stored = await asyncio.to_thread(load_session_messages, sessions_dir, wanted)
             if stored is not None:
                 response["messages"] = stored["messages"]
                 response["message_count"] = stored["message_count"]
@@ -1273,15 +1601,68 @@ class GatewayConnection:
         return await self.session_create(params)
 
     async def session_close(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Shut a runtime down.
+
+        ``if_idle`` closes only a runtime with no turn running and nothing
+        waiting on the user — the web client's "let go of the session I am
+        leaving" — and answers ``closed: False`` otherwise. Checked here, on
+        the server's knowledge, because a client that just attached to a
+        runtime another window is driving does not know it is busy.
+        """
         session_id = str(params.get("session_id") or "")
+        if params.get("if_idle") is True:
+            session = self.state.sessions.get(session_id)
+            if session is None:
+                return {"ok": True, "closed": False, "reason": "gone"}
+            # This socket lets go; anyone else still holding it keeps it —
+            # a desktop tile, another window that opened the same row.
+            session.holders.discard(self.websocket)
+            if session.holders:
+                return {"ok": True, "closed": False, "reason": "held"}
+            if not await self._session_is_idle(session):
+                return {"ok": True, "closed": False, "reason": "busy"}
+            # Re-checked after the await: a prompt from another socket can
+            # land while the agent answers, a replaced entry is not the
+            # runtime that was asked about, and a holder may have arrived.
+            if self.state.sessions.get(session_id) is not session:
+                return {"ok": True, "closed": False, "reason": "gone"}
+            if session.holders:
+                return {"ok": True, "closed": False, "reason": "held"}
+            if not session.idle:
+                return {"ok": True, "closed": False, "reason": "busy"}
         session = self.state.sessions.pop(session_id, None)
         if session is not None:
-            await session.shutdown()
-            try:
-                await self.state.manager.stop_session(session_id)
-            except Exception:  # noqa: BLE001 — index upkeep is best-effort
-                pass
-        return {"ok": True}
+            # Every window on this runtime learns it is gone, so the next
+            # prompt reconnects instead of failing with "unknown session".
+            await session._broadcast("session.closed", {})
+            # The teardown (SessionEnd hooks, a bounded worker join) runs
+            # behind the reply: calls on this socket are served in order, and
+            # the call after a close is the open of the session being moved
+            # to — it must not wait seconds on the one being left.
+            task = asyncio.create_task(session._teardown())
+            self.state.teardowns.add(task)
+            task.add_done_callback(self.state.teardowns.discard)
+        return {"ok": True, "closed": session is not None}
+
+    async def _session_is_idle(self, session: DesktopSession) -> bool:
+        """Idle by the gateway's own knowledge AND the agent's.
+
+        The gateway sees the turns it submitted and the asks it relayed. The
+        agent also knows about work it started for itself — a /goal
+        continuation, a /loop or cron job waiting to fire, a queued prompt, a
+        background shell — which ``get_activity`` reports. No reply (an agent
+        too old for the control, or too busy to answer) reads as busy: the
+        cost of a wrong "idle" is killing someone's loop.
+        """
+        if not session.idle:
+            return False
+        if session.dead:
+            return True
+        activity = await session.control_query("get_activity", {}, timeout=5.0)
+        if not isinstance(activity, dict) or activity.get("ok") is False:
+            return False
+        return activity.get("busy") is not True
+
 
     async def session_active_list(self, _: dict[str, Any]) -> dict[str, Any]:
         sessions = []

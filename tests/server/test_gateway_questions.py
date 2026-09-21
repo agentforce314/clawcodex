@@ -1215,6 +1215,12 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
         session_id = "rt1"
         init_info = {"model": "launch-default", "provider": "deepseek", "cwd": "/w"}
         titled = True
+        # What the reply's ``running`` reads: a stub runtime between turns.
+        turn_active = False
+        # The row this runtime replays (the reply echoes it).
+        stored_id = "stored-1"
+        # Its stream is up.
+        dead = False
 
         def __init__(self) -> None:
             self.refreshed = False
@@ -1235,6 +1241,9 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
     connection._create = _create  # type: ignore[method-assign]
 
     class _State:
+        # The registry the reply's liveness check consults.
+        sessions = {"rt1": session}
+
         def saved_sessions_dir(self):  # pragma: no cover - not reached
             raise AssertionError
 

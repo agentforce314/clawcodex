@@ -30,10 +30,13 @@ import {
   $pendingModel,
   $providers,
   $queue,
+  $sessionAttaching,
   $sessionId,
   $sessionLoading,
+  $sessionTitle,
   $storedSessionId,
   $transcript,
+  $workspace,
 } from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
 
@@ -179,6 +182,9 @@ beforeEach(() => {
   $models.set({})
   $notice.set({ text: '', tone: 'info' })
   $queue.set([])
+  $sessionAttaching.set(false)
+  $sessionTitle.set('')
+  $workspace.set('')
 })
 
 afterEach(() => {
@@ -680,7 +686,13 @@ describe('the remembered session', () => {
     await submitPrompt('hello there')
     await settle()
 
-    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'S1', stored: 'S1' })
+    // `used`: a prompt went to it, so a reload will keep it rather than let
+    // it go on the next navigation.
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({
+      live: 'S1',
+      stored: 'S1',
+      used: true,
+    })
 
     // A reload: fresh stores, the same browser storage, the runtime still up.
     setGatewayClient(null)
@@ -739,7 +751,10 @@ describe('the remembered session', () => {
     // The runtime first, then — no record behind it — the stored row; the
     // blank runtime the first attempt spawned is closed.
     expect(resumes.map(frame => frame.params.session_id)).toEqual(['R', 'X'])
-    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({ session_id: 'R2' })
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R2',
+    })
     expect($sessionId.get()).toBe('R3')
     expect($storedSessionId.get()).toBe('X')
     expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R3', stored: 'X' })
@@ -781,5 +796,640 @@ describe('the remembered session', () => {
     expect($sessionId.get()).toBeNull()
     expect(window.localStorage.getItem(MEMORY)).toBeNull()
     expect($notice.get().text).toBe('')
+  })
+})
+
+describe('opening a saved session', () => {
+  const HISTORY = {
+    found: true,
+    info: { cwd: '/repo', model: 'stored-model' },
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+    title: 'Saved chat',
+  }
+
+  it('renders the stored transcript before the runtime is attached', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.resume')
+
+    const opening = resumeSession('X')
+    await settle()
+
+    // The cold read landed: the row is highlighted, the transcript is up,
+    // the title and workspace are the stored ones — and no runtime yet.
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes.map(node => node.kind)).toEqual(['user'])
+    expect($sessionLoading.get()).toBe(false)
+    expect($sessionAttaching.get()).toBe(true)
+    expect($sessionId.get()).toBeNull()
+    expect($workspace.get()).toBe('/repo')
+    expect($sessionTitle.get()).toBe('Saved chat')
+
+    gateway.release('session.resume')
+    await opening
+    await settle()
+
+    expect($sessionId.get()).toBe('R1')
+    expect($sessionAttaching.get()).toBe(false)
+    expect($transcript.get().nodes).toHaveLength(1)
+
+    const resume = gateway.sent.find(frame => frame.method === 'session.resume')
+    expect(resume?.params).toMatchObject({ omit_messages: true, session_id: 'X' })
+    expect(gateway.methods().indexOf('session.history')).toBeLessThan(gateway.methods().indexOf('session.resume'))
+  })
+
+  it('holds a prompt typed while the runtime attaches, for that conversation', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    const sending = submitPrompt('and then?')
+    await settle()
+
+    // Nothing went out yet, and no session of its own was created.
+    expect(gateway.methods()).not.toContain('prompt.submit')
+    expect(gateway.methods()).not.toContain('session.create')
+
+    gateway.release('session.resume')
+    await sending
+    await settle()
+
+    const submit = gateway.sent.find(frame => frame.method === 'prompt.submit')
+    expect(submit?.params).toEqual({ session_id: 'R1', text: 'and then?' })
+  })
+
+  it('falls back to the one-call resume on a backend without session.history', async () => {
+    const gateway = await connect({
+      'session.resume': {
+        messages: HISTORY.messages,
+        session_id: 'R1',
+        stored_session_id: 'X',
+        title: 'Saved chat',
+      },
+    })
+
+    gateway.failing.add('session.history')
+    // The fake refuses with "<method> refused"; the real backend says
+    // "method not found: session.history".
+    const socket = gateway as unknown as { send: (raw: string) => void }
+    const send = socket.send.bind(gateway)
+    socket.send = (raw: string) => {
+      const frame = JSON.parse(raw) as { id: string; method: string }
+
+      if (frame.method === 'session.history') {
+        gateway.sent.push(frame as never)
+        queueMicrotask(() => {
+          ;(gateway as unknown as { deliver: (f: unknown) => void }).deliver({
+            error: { message: 'method not found: session.history' },
+            id: frame.id,
+          })
+        })
+
+        return
+      }
+
+      send(raw)
+    }
+
+    await resumeSession('X')
+    await settle()
+
+    expect($sessionId.get()).toBe('R1')
+    expect($transcript.get().nodes).toHaveLength(1)
+    expect($sessionTitle.get()).toBe('Saved chat')
+    expect($notice.get().text).toBe('')
+
+    const resume = gateway.sent.find(frame => frame.method === 'session.resume')
+    expect(resume?.params).not.toHaveProperty('omit_messages')
+  })
+
+  it('reports a row the backend cannot read, and does not attach to it', async () => {
+    const gateway = await connect()
+
+    gateway.failing.add('session.history')
+
+    await resumeSession('gone')
+    await settle()
+
+    expect($notice.get().text).toContain('Could not open that session')
+    expect(gateway.methods()).not.toContain('session.resume')
+    expect($sessionLoading.get()).toBe(false)
+  })
+
+  it('does not reopen the conversation already on screen', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+    const before = gateway.sent.length
+
+    await resumeSession('X')
+    await settle()
+
+    expect(gateway.sent.length).toBe(before)
+  })
+
+  it('releases a runtime it only looked at, and keeps one it used', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    // Looked at X, moved on to Y: X's runtime is let go — conditionally, on
+    // the backend's own idle check.
+    await resumeSession('X')
+    await settle()
+    expect($sessionId.get()).toBe('R1')
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'Y' }
+    await resumeSession('Y')
+    await settle()
+
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R1',
+    })
+    expect($sessionId.get()).toBe('R2')
+
+    // A prompt was sent to Y: it is a session in use, loops and all, and
+    // leaving it — even once the turn is over — must not close it.
+    await submitPrompt('keep going')
+    await settle()
+    gateway.emit('message.complete', { status: 'ok', text: 'hi' }, 'R2')
+    await settle()
+    expect($transcript.get().running).toBe(false)
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Z', stored_session_id: 'Z' }
+    gateway.results['session.resume'] = { session_id: 'R3', stored_session_id: 'Z' }
+    await resumeSession('Z')
+    await settle()
+
+    const closes = gateway.sent.filter(frame => frame.method === 'session.close')
+    expect(closes.map(frame => frame.params.session_id)).toEqual(['R1'])
+  })
+
+  it('ignores a late attach after navigating on', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    gateway.results['session.create'] = { session_id: 'S9' }
+    await createSession()
+    await settle()
+
+    gateway.release('session.resume')
+    await settle()
+
+    expect($sessionId.get()).toBe('S9')
+    expect($storedSessionId.get()).toBe('S9')
+    expect($sessionAttaching.get()).toBe(false)
+  })
+})
+
+describe('createSession options', () => {
+  it('asks for the folder to be created and the session to be isolated', async () => {
+    const gateway = await connect()
+
+    gateway.results['session.create'] = { session_id: 'S2', worktree: { path: '/repo/.clawcodex/worktrees/x' } }
+    const failure = await createSession({ createDir: true, cwd: '/new/place', worktree: true })
+    await settle()
+
+    expect(failure).toBeNull()
+    expect(gateway.sent.find(frame => frame.method === 'session.create')?.params).toMatchObject({
+      create_dir: true,
+      cwd: '/new/place',
+      worktree: true,
+    })
+    expect($sessionId.get()).toBe('S2')
+  })
+
+  it('hands the refusal back to the caller as well as the notice', async () => {
+    const gateway = await connect()
+
+    gateway.failing.add('session.create')
+    const failure = await createSession({ cwd: 'relative' })
+
+    expect(failure).toBe('session.create refused')
+    expect($notice.get().text).toContain('session.create refused')
+    expect($sessionId.get()).toBeNull()
+  })
+})
+
+describe('a runtime that goes away', () => {
+  const HISTORY = {
+    found: true,
+    info: { cwd: '/repo' },
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+  }
+
+  it('reconnects the conversation and resends when the backend no longer has the runtime', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+    expect($sessionId.get()).toBe('R1')
+
+    // The runtime died behind a restart; the next attach lands on a new one.
+    gateway.sequences['prompt.submit'] = []
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'X' }
+    const socket = gateway as unknown as { send: (raw: string) => void; deliver: (f: unknown) => void }
+    const send = socket.send.bind(gateway)
+    let refusals = 0
+    socket.send = (raw: string) => {
+      const frame = JSON.parse(raw) as { id: string; method: string; params: { session_id?: string } }
+
+      if (frame.method === 'prompt.submit' && frame.params.session_id === 'R1') {
+        refusals += 1
+        gateway.sent.push(frame as never)
+        queueMicrotask(() => {
+          socket.deliver({ error: { message: 'unknown session: R1' }, id: frame.id })
+        })
+
+        return
+      }
+
+      send(raw)
+    }
+
+    await submitPrompt('still there?')
+    await settle()
+
+    const submits = gateway.sent.filter(frame => frame.method === 'prompt.submit')
+    expect(refusals).toBe(1)
+    expect(submits.map(frame => frame.params.session_id)).toEqual(['R1', 'R2'])
+    expect($sessionId.get()).toBe('R2')
+    expect($notice.get().text).toBe('')
+    expect($transcript.get().nodes.map(node => node.kind)).toEqual(['user', 'user'])
+
+    // The reconnected runtime was used: moving on does not close it.
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
+    gateway.results['session.resume'] = { session_id: 'R3', stored_session_id: 'Y' }
+    await resumeSession('Y')
+    await settle()
+    expect(gateway.methods()).not.toContain('session.close')
+  })
+
+  it('drops the runtime id on session.closed and reconnects on the next prompt', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    gateway.emit('session.closed', {}, 'R1')
+    await settle()
+    expect($sessionId.get()).toBeNull()
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'X' }
+    await submitPrompt('back again')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.create')
+    expect(gateway.sent.find(frame => frame.method === 'prompt.submit')?.params).toEqual({
+      session_id: 'R2',
+      text: 'back again',
+    })
+  })
+
+  it('adopts a runtime handed back mid-turn as running', async () => {
+    await connect({
+      'session.history': HISTORY,
+      'session.resume': { info: { running: true }, session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    expect($transcript.get().running).toBe(true)
+  })
+
+  it('opens row B while row A is still attaching, and lets A’s late attach go', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y', title: 'Row B' }
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'Y' }
+    const opening = resumeSession('Y')
+    await settle()
+    expect($storedSessionId.get()).toBe('Y')
+    expect($sessionTitle.get()).toBe('Row B')
+
+    gateway.release('session.resume')
+    await opening
+    await settle()
+
+    expect($sessionId.get()).toBe('R2')
+    expect($storedSessionId.get()).toBe('Y')
+    expect($sessionAttaching.get()).toBe(false)
+    // A's late attach produced a runtime nobody is on: let go of it, on the
+    // backend's idle check.
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'R1' },
+    ])
+  })
+
+  it('does not carry "used" onto a fresh replay after a reload', async () => {
+    const MEMORY = 'clawcodex.web.session'
+    window.localStorage.setItem(MEMORY, JSON.stringify({ live: 'gone', stored: 'X', used: true }))
+
+    // The used runtime is gone; the reload lands on a fresh replay of X.
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R9', stored_session_id: 'X' },
+    })
+    expect($sessionId.get()).toBe('R9')
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R9', stored: 'X' })
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
+    gateway.results['session.resume'] = { session_id: 'R10', stored_session_id: 'Y' }
+    await resumeSession('Y')
+    await settle()
+
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R9',
+    })
+  })
+
+  it('keeps a session that was in use before a reload', async () => {
+    await connect()
+    await submitPrompt('hello there')
+    await settle()
+
+    const MEMORY = 'clawcodex.web.session'
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({
+      live: 'S1',
+      stored: 'S1',
+      used: true,
+    })
+
+    setGatewayClient(null)
+    $sessionId.set(null)
+    $transcript.set(emptyTranscript())
+
+    const gateway = await connect({
+      'session.history': { found: true, messages: HISTORY.messages, session_id: 'S1', stored_session_id: 'S1' },
+      'session.resume': { session_id: 'S1', stored_session_id: 'S1' },
+    })
+    expect($sessionId.get()).toBe('S1')
+
+    // Moving on does not close it: it was used, and a reload changes nothing.
+    gateway.results['session.history'] = HISTORY
+    gateway.results['session.resume'] = { session_id: 'R1', stored_session_id: 'X' }
+    await resumeSession('X')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.close')
+  })
+})
+
+describe('createSession and the conversation on screen', () => {
+  const HISTORY = {
+    found: true,
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+    title: 'Saved chat',
+  }
+
+  it('keeps the conversation when the backend refuses the create', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    gateway.failing.add('session.create')
+    const failure = await createSession({ cwd: 'relative' })
+    await settle()
+
+    expect(failure).toBe('session.create refused')
+    expect($sessionId.get()).toBe('R1')
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+    expect($sessionTitle.get()).toBe('Saved chat')
+    expect(gateway.methods()).not.toContain('session.close')
+  })
+
+  it('lets a slow create go when a row was opened meanwhile', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.create')
+    gateway.results['session.create'] = { session_id: 'S9' }
+    const creating = createSession({ cwd: '/repo', worktree: true })
+    await settle()
+
+    await resumeSession('X')
+    await settle()
+    expect($sessionId.get()).toBe('R1')
+
+    gateway.release('session.create')
+    expect(await creating).toBeNull()
+    await settle()
+
+    // The row stays on screen; the runtime the create spawned is released.
+    expect($sessionId.get()).toBe('R1')
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'S9',
+    })
+  })
+})
+
+describe('the same row opened again while its first open is still landing', () => {
+  const HISTORY = {
+    found: true,
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'A',
+    stored_session_id: 'A',
+  }
+
+  it('does not close the runtime the later open adopted (A, B, A)', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'RA', stored_session_id: 'A' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('A')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'B', stored_session_id: 'B' }
+    gateway.results['session.resume'] = { session_id: 'RB', stored_session_id: 'B' }
+    void resumeSession('B')
+    await settle()
+
+    gateway.results['session.history'] = HISTORY
+    gateway.results['session.resume'] = { session_id: 'RA', stored_session_id: 'A' }
+    const third = resumeSession('A')
+    await settle()
+
+    // All three attaches land, in order: A (stale), B (stale), A (current).
+    gateway.release('session.resume')
+    await third
+    await settle()
+
+    expect($sessionId.get()).toBe('RA')
+    expect($storedSessionId.get()).toBe('A')
+    // Only B's runtime is let go; A's is the one on screen.
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'RB' },
+    ])
+  })
+
+  it('leaves the prompt with the reader when a saved row cannot be reconnected', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'RA', stored_session_id: 'A' },
+    })
+
+    await resumeSession('A')
+    await settle()
+    gateway.emit('session.closed', {}, 'RA')
+    await settle()
+    expect($sessionId.get()).toBeNull()
+
+    gateway.failing.add('session.resume')
+    await submitPrompt('hello?')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.create')
+    expect(gateway.methods()).not.toContain('prompt.submit')
+    expect($notice.get().text).toContain('Could not resume that session')
+  })
+})
+
+describe('a runtime reachable by two rows', () => {
+  // Runtime X replayed row R and then ran a turn, so rows R and X both exist
+  // and the backend answers an open of X with `stored_session_id: R`.
+  const HISTORY_X = {
+    found: true,
+    messages: [{ content: [{ text: 'fuller record', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+  }
+  const REPLY_X = { session_id: 'X', stored_session_id: 'R' }
+
+  it('keeps the clicked row when it names the runtime itself', async () => {
+    await connect({ 'session.history': HISTORY_X, 'session.resume': REPLY_X })
+
+    await resumeSession('X')
+    await settle()
+
+    expect($sessionId.get()).toBe('X')
+    expect($storedSessionId.get()).toBe('X')
+    expect(JSON.parse(window.localStorage.getItem('clawcodex.web.session') ?? 'null')).toEqual({
+      live: 'X',
+      stored: 'X',
+    })
+  })
+
+  it('does not close it after X, S, X when the stale reply names the replayed row', async () => {
+    const gateway = await connect({ 'session.history': HISTORY_X, 'session.resume': REPLY_X })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY_X, session_id: 'S', stored_session_id: 'S' }
+    gateway.results['session.resume'] = { session_id: 'RS', stored_session_id: 'S' }
+    void resumeSession('S')
+    await settle()
+
+    gateway.results['session.history'] = HISTORY_X
+    gateway.results['session.resume'] = REPLY_X
+    const third = resumeSession('X')
+    await settle()
+
+    gateway.release('session.resume')
+    await third
+    await settle()
+
+    expect($sessionId.get()).toBe('X')
+    expect($storedSessionId.get()).toBe('X')
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'RS' },
+    ])
+  })
+})
+
+describe('the same runtime reached through its other row', () => {
+  it('stays "used" when a click on the replayed row hands the used runtime back', async () => {
+    const gateway = await connect({
+      'session.history': {
+        found: true,
+        messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+        session_id: 'X',
+        stored_session_id: 'X',
+      },
+      'session.resume': { session_id: 'X', stored_session_id: 'R' },
+    })
+
+    await resumeSession('X')
+    await settle()
+    await submitPrompt('do something')
+    await settle()
+    gateway.emit('message.complete', { status: 'ok', text: 'done' }, 'X')
+    await settle()
+
+    // Row R names the same runtime; the backend hands X back.
+    gateway.results['session.history'] = {
+      found: true,
+      messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+      session_id: 'R',
+      stored_session_id: 'R',
+    }
+    await resumeSession('R')
+    await settle()
+    expect($sessionId.get()).toBe('X')
+
+    // Moving on must not release it: it was used, whichever row got it back.
+    gateway.results['session.history'] = { found: true, messages: [], session_id: 'S', stored_session_id: 'S' }
+    gateway.results['session.resume'] = { session_id: 'RS', stored_session_id: 'S' }
+    await resumeSession('S')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.close')
   })
 })

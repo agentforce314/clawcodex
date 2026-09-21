@@ -144,3 +144,16 @@ describe('workspace folder expansion', () => {
     expect(screen.getByText('gamma conversation')).toBeTruthy()
   })
 })
+
+describe('New session', () => {
+  it('opens the dialog instead of starting a session on the spot', async () => {
+    const { $newSessionDialog } = await import('../state/store.ts')
+    $newSessionDialog.set(false)
+
+    render(<Sidebar collapsed={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+
+    expect($newSessionDialog.get()).toBe(true)
+    $newSessionDialog.set(false)
+  })
+})

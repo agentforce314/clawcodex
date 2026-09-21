@@ -1,0 +1,171 @@
+/* The New session dialog. Same chrome as the Full-access confirmation: a
+   centred card on the mask, above the composer's menus and the settings
+   takeover. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--cc-alias-bg-mask-1);
+}
+
+.dialog {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(440px, 100%);
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--cc-alias-border-inverted);
+  border-radius: 14px;
+  background: var(--cc-specific-menu);
+  box-shadow: var(--cc-shadow-lv3);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.title {
+  color: var(--cc-alias-label-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cc-alias-label-secondary);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.hint {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.select,
+.input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--cc-alias-border-l3);
+  border-radius: 8px;
+  background: var(--cc-alias-bg-layer-1);
+  color: var(--cc-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.select:focus-visible,
+.input:focus-visible {
+  outline: 2px solid var(--cc-alias-button-info-fill);
+  outline-offset: -1px;
+}
+
+.input::placeholder {
+  color: var(--cc-alias-label-caption);
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.switchText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A switch drawn from the checkbox itself, so the state stays in the form. */
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--cc-alias-border-l4);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--cc-static-neutral-00);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 120ms ease;
+}
+
+.switch:checked {
+  background: var(--cc-alias-button-info-fill);
+}
+
+.switch:checked::after {
+  transform: translateX(16px);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--cc-alias-button-info-fill);
+  outline-offset: 2px;
+}
+
+.error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cc-alias-interactive-bg-hover-danger);
+  color: var(--cc-static-red-600);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

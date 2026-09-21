@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from starlette.testclient import TestClient
 
 from src.providers.base import ChatResponse
 from src.server.agent_server import AgentServerConfig, make_spawn_agent
+from src.server.desktop_gateway_methods import CONTROL_TIMEOUT_S
 from src.server.desktop_serve import DesktopServeState, build_app
 from src.server.session_manager import SessionManager
 
@@ -96,6 +98,20 @@ class FakeAgent:
         # saved as the default for new sessions. Tests flip it to model a
         # session that may not write the host's settings.
         self.persist_preferences = True
+        # Leave a user message unanswered (the turn stays open until the test
+        # pushes its own ``result`` frame).
+        self.hold_turns = False
+        # What ``get_activity`` reports beyond the gateway's own view: a goal
+        # continuation, a loop, a background shell.
+        self.busy = False
+        # A shutdown that takes a while (SessionEnd hooks, a worker join).
+        self.shutdown_delay_s = 0.0
+        # A slow ``get_activity`` answer, for the close's re-check.
+        self.activity_delay_s = 0.0
+        # A slow ``get_settings`` answer, for a death during the resume's tail.
+        self.settings_delay_s = 0.0
+        # Die before ever announcing system/init.
+        self.die_before_init = False
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -105,6 +121,10 @@ class FakeAgent:
             reply: dict | None = None
             if subtype == "resume":
                 reply = {"ok": True}
+            elif subtype == "get_activity":
+                if self.activity_delay_s:
+                    await asyncio.sleep(self.activity_delay_s)
+                reply = {"ok": True, "busy": self.busy}
             elif subtype == "set_model":
                 # Record the switch so get_settings reports the new state.
                 self.model = request.get("model") or self.model
@@ -154,6 +174,8 @@ class FakeAgent:
                 else:
                     reply = {"ok": False, "error": "usage: /recap [on|off|status]"}
             elif subtype == "get_settings":
+                if self.settings_delay_s:
+                    await asyncio.sleep(self.settings_delay_s)
                 reply = {
                     "model": self.model,
                     "provider": self.provider,
@@ -174,6 +196,8 @@ class FakeAgent:
                 )
             return
         if frame.get("type") == "user":
+            if self.hold_turns:
+                return
             # One scripted streamed turn per user message.
             await self.queue.put(
                 {
@@ -205,6 +229,8 @@ class FakeAgent:
             )
 
     async def messages_from_agent(self):
+        if self.die_before_init:
+            raise RuntimeError("stream died before init")
         yield {
             "type": "system",
             "subtype": "init",
@@ -213,21 +239,29 @@ class FakeAgent:
             "model": "fake",
         }
         while True:
-            yield await self.queue.get()
+            item = await self.queue.get()
+            # An exception queued by a test stands for the agent stream dying.
+            if isinstance(item, BaseException):
+                raise item
+            yield item
 
     async def shutdown(self) -> None:
+        if self.shutdown_delay_s:
+            await asyncio.sleep(self.shutdown_delay_s)
         self.shutdown_called = True
 
 
 class FakeManager:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.cwds: list[str] = []
         self._n = 0
 
     def create_session(self, cwd: str):
         self._n += 1
         session_id = f"fake-{self._n}"
         self.created.append(session_id)
+        self.cwds.append(cwd)
         return SimpleNamespace(id=session_id, cwd=cwd)
 
     def mark_running(self, session_id: str) -> None:
@@ -1047,3 +1081,683 @@ def test_effort_change_round_trips_and_reports_persisted(tmp_path: Path) -> None
         _rpc(ws, 5, "config.set", {"session_id": sid, "key": "effort", "value": "bogus"})
         result = _drain_for_response(ws, 5, events)["result"]
         assert result["ok"] is False and "invalid effort" in result["error"]
+
+
+# ─── opening a saved session: cold history, runtime reuse ────────────────────
+
+
+def _write_saved(sessions_dir: Path, session_id: str, messages: list, **extra) -> None:
+    sessions_dir.mkdir(exist_ok=True)
+    payload = {
+        "session_id": session_id,
+        "preview": "hello?",
+        "message_count": len(messages),
+        "cwd": "/tmp/where",
+        "model": "m-stored",
+        "provider": "p-stored",
+        "conversation": {"messages": messages},
+        **extra,
+    }
+    (sessions_dir / f"{session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_session_history_reads_the_saved_transcript_without_a_runtime(tmp_path: Path) -> None:
+    """The sidebar click renders from this — no spawn, no control round-trip."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(
+        state.sessions_dir, "old-chat",
+        [{"role": "user", "content": "hello?"},
+         {"role": "assistant", "content": [{"type": "text", "text": "hi back"}]}],
+        name="My chat",
+    )
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.history", {"session_id": "old-chat"})
+        result = _drain_for_response(ws, 1, events)["result"]
+
+    assert result["found"] is True
+    assert result["stored_session_id"] == "old-chat"
+    assert result["title"] == "My chat"
+    assert [m["role"] for m in result["messages"]] == ["user", "assistant"]
+    assert result["info"] == {"cwd": "/tmp/where", "model": "m-stored", "provider": "p-stored"}
+    assert agents == [] and state.manager.created == []
+
+
+def test_session_history_of_an_unknown_row_is_an_error(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    state.sessions_dir.mkdir()
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.history", {"session_id": "nope"})
+        reply = _drain_for_response(ws, 1, [])
+
+    assert "unknown session" in reply["error"]["message"]
+
+
+def test_resuming_the_same_row_twice_reuses_its_runtime(tmp_path: Path) -> None:
+    """Every click used to spawn a fresh runtime and leave the last one alive.
+
+    ``state.sessions`` is keyed by runtime id, and a resumed row's runtime has
+    a different id from the row, so the "already live" check never matched a
+    row. The second resume must come back with the same runtime, spawn-free.
+    """
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "hello?"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "old-chat"})
+        first = _drain_for_response(ws, 1, events)["result"]
+        _rpc(ws, 2, "session.resume", {"session_id": "old-chat", "omit_messages": True})
+        second = _drain_for_response(ws, 2, events)["result"]
+
+    assert first["session_id"] == "fake-1"
+    assert second["session_id"] == "fake-1"
+    assert second["stored_session_id"] == "old-chat"
+    assert second.get("messages_omitted") is True
+    assert len(agents) == 1 and state.manager.created == ["fake-1"]
+    assert state.sessions["fake-1"].stored_id == "old-chat"
+
+
+def test_a_live_replay_answers_history_from_its_own_record(tmp_path: Path) -> None:
+    """Turns run after a resume are saved under the RUNTIME's id; the row the
+    user clicks still names the original file. Opening the row again must
+    show the conversation as it is now, not as the row's file left it."""
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "first"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "old-chat", "omit_messages": True})
+        runtime = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        # The runtime saved its own, longer record after a turn.
+        _write_saved(
+            state.sessions_dir, runtime,
+            [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}],
+        )
+        _rpc(ws, 2, "session.history", {"session_id": "old-chat"})
+        history = _drain_for_response(ws, 2, events)["result"]
+        _rpc(ws, 3, "session.resume", {"session_id": "old-chat"})
+        resumed = _drain_for_response(ws, 3, events)["result"]
+
+    assert history["live_session_id"] == runtime
+    assert [m["content"] for m in history["messages"]] == ["first", "second"]
+    assert [m["content"] for m in resumed["messages"]] == ["first", "second"]
+
+
+def test_two_concurrent_resumes_of_one_row_share_a_spawn(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "hello?"}])
+    gate = asyncio.Event()
+    base_spawn = state.spawn_agent
+
+    async def slow_spawn(session_id, cwd, resume):
+        await gate.wait()
+        return await base_spawn(session_id, cwd, resume)
+
+    state.spawn_agent = slow_spawn
+
+    async def run() -> tuple[dict, dict]:
+        from src.server.desktop_gateway_methods import GatewayConnection
+
+        class _Socket:
+            async def send_json(self, obj):  # pragma: no cover - no pushes read
+                pass
+
+        conn = GatewayConnection(websocket=_Socket(), state=state)  # type: ignore[arg-type]
+        first = asyncio.create_task(conn.session_resume({"session_id": "old-chat"}))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(conn.session_resume({"session_id": "old-chat"}))
+        await asyncio.sleep(0)
+        gate.set()
+        return await first, await second
+
+    a, b = asyncio.run(run())
+    assert a["session_id"] == b["session_id"] == "fake-1"
+    assert len(agents) == 1
+
+
+# ─── session.create: a new folder, a worktree ────────────────────────────────
+
+
+def test_session_create_can_make_the_workspace_folder(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    target = tmp_path / "fresh" / "project"
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        # A plain cwd passes through untouched, as it always has (the desktop
+        # client sends paths the gateway is not the judge of): nothing made.
+        _rpc(ws, 1, "session.create", {"cwd": str(target)})
+        plain = _drain_for_response(ws, 1, [])["result"]
+        assert not target.exists()
+        _rpc(ws, 2, "session.create", {"cwd": str(target), "create_dir": True})
+        created = _drain_for_response(ws, 2, [])["result"]
+        _rpc(ws, 3, "session.create", {"cwd": "relative/path", "create_dir": True})
+        relative = _drain_for_response(ws, 3, [])
+
+    assert plain["session_id"] == "fake-1"
+    assert target.is_dir()
+    assert created["session_id"] == "fake-2"
+    assert state.manager.cwds == [str(target), str(target)]
+    assert "must be absolute" in relative["error"]["message"]
+
+
+def test_session_create_can_isolate_the_session_in_a_worktree(tmp_path: Path) -> None:
+    import subprocess
+
+    import os
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # The real environment plus an identity: git on Windows needs SYSTEMROOT,
+    # TEMP and friends to start at all.
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "root"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, env=env)
+    state, _agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.create", {"cwd": str(repo), "worktree": True})
+        created = _drain_for_response(ws, 1, [])["result"]
+        _rpc(ws, 2, "session.create", {"cwd": str(tmp_path), "worktree": True})
+        refused = _drain_for_response(ws, 2, [])
+
+    worktree = created["worktree"]
+    assert Path(worktree["path"]).is_dir()
+    assert Path(worktree["path"]).resolve().parent == (repo / ".clawcodex" / "worktrees").resolve()
+    assert Path(worktree["repo_root"]).resolve() == repo.resolve()
+    assert state.manager.cwds == [worktree["path"]]
+    assert "git repository" in refused["error"]["message"]
+
+
+def test_session_close_if_idle_refuses_a_busy_runtime(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        _agents[0].hold_turns = True
+        _rpc(ws, 2, "prompt.submit", {"session_id": sid, "text": "hi"})
+        _drain_for_response(ws, 2, events)
+        # Mid-turn: the conditional close is refused, the runtime stays.
+        _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
+        refused = _drain_for_response(ws, 3, events)["result"]
+        assert refused == {"ok": True, "closed": False, "reason": "busy"}
+        assert sid in state.sessions
+        # The turn ends: now it is idle and goes.
+        _agents[0].queue.put_nowait({"type": "result", "subtype": "success",
+                                     "result": "done", "permission_mode": "default"})
+        _drain_for_event(ws, "message.complete", events)
+        _rpc(ws, 4, "session.close", {"session_id": sid, "if_idle": True})
+        closed = _drain_for_response(ws, 4, events)["result"]
+        assert closed == {"ok": True, "closed": True}
+        assert sid not in state.sessions
+
+
+def test_session_close_if_idle_trusts_the_agent_about_its_own_work(tmp_path: Path) -> None:
+    """A /goal continuation or a /loop is invisible to the gateway: the agent
+    says busy through ``get_activity``, and the conditional close is refused."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].busy = True
+        _rpc(ws, 2, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 2, events)["result"] == {"ok": True, "closed": False, "reason": "busy"}
+        agents[0].busy = False
+        _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 3, events)["result"] == {"ok": True, "closed": True}
+
+
+def test_session_close_if_idle_refuses_while_an_approval_is_pending(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].queue.put_nowait({
+            "type": "control_request", "request_id": "ask-1",
+            "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "ls"}},
+        })
+        _drain_for_event(ws, "approval.request", events)
+        _rpc(ws, 2, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 2, events)["result"]["closed"] is False
+        _rpc(ws, 3, "approval.respond", {"session_id": sid, "choice": "once"})
+        _drain_for_response(ws, 3, events)
+        _rpc(ws, 4, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 4, events)["result"]["closed"] is True
+
+
+def test_session_close_answers_before_a_slow_teardown_and_tells_every_window(tmp_path: Path) -> None:
+    """The reply — and the next call on the socket, the open of the session
+    being moved to — must not wait on SessionEnd hooks and the worker join."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "next-row", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].shutdown_delay_s = 5.0
+        _rpc(ws, 2, "session.close", {"session_id": sid})
+        _rpc(ws, 3, "session.history", {"session_id": "next-row"})
+        closed = _drain_for_response(ws, 2, events)["result"]
+        history = _drain_for_response(ws, 3, events)["result"]
+        # Both answered while the teardown is still running: ordering, not
+        # a wall-clock bound, is the claim.
+        assert agents[0].shutdown_called is False
+
+    assert closed == {"ok": True, "closed": True}
+    assert history["message_count"] == 1
+    assert any(e.get("type") == "session.closed" and e.get("session_id") == sid for e in events)
+    assert sid not in state.sessions
+
+
+def test_a_second_window_resuming_the_same_row_gets_the_turn_events(tmp_path: Path) -> None:
+    """The reuse path must subscribe the resuming socket: before, a second
+    window handed the first window's runtime saw none of its own turn."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "shared-row", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        events_a: list[dict] = []
+        events_b: list[dict] = []
+        _rpc(first, 1, "session.resume", {"session_id": "shared-row", "omit_messages": True})
+        runtime = _drain_for_response(first, 1, events_a)["result"]["session_id"]
+        _rpc(second, 1, "session.resume", {"session_id": "shared-row", "omit_messages": True})
+        assert _drain_for_response(second, 1, events_b)["result"]["session_id"] == runtime
+        assert len(agents) == 1
+        _rpc(second, 2, "prompt.submit", {"session_id": runtime, "text": "from b"})
+        _drain_for_response(second, 2, events_b)
+        complete = _drain_for_event(second, "message.complete", events_b)
+        assert complete["session_id"] == runtime
+
+
+def test_resume_reports_a_runtime_mid_turn_as_running(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "busy-row", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "busy-row", "omit_messages": True})
+        runtime = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].hold_turns = True
+        _rpc(ws, 2, "prompt.submit", {"session_id": runtime, "text": "go"})
+        _drain_for_response(ws, 2, events)
+        _rpc(ws, 3, "session.resume", {"session_id": "busy-row", "omit_messages": True})
+        again = _drain_for_response(ws, 3, events)["result"]
+        _rpc(ws, 4, "session.history", {"session_id": "busy-row"})
+        history = _drain_for_response(ws, 4, events)["result"]
+
+    assert again["session_id"] == runtime
+    assert again["info"]["running"] is True
+    assert history["info"]["running"] is True
+
+
+def test_session_history_of_a_live_runtime_that_never_saved_is_empty_not_an_error(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    state.sessions_dir.mkdir()
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        _rpc(ws, 2, "session.history", {"session_id": sid})
+        history = _drain_for_response(ws, 2, events)["result"]
+
+    assert history["found"] is False
+    assert history["messages"] == [] and history["live_session_id"] == sid
+    assert history["info"]["running"] is False
+
+
+def test_a_refused_replay_is_not_reused(tmp_path: Path) -> None:
+    """A runtime whose ``resume`` control the agent refused holds no
+    conversation; the next click must spawn again rather than adopt it."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+
+    class Refusing(FakeAgent):
+        async def send_to_agent(self, frame: dict) -> None:
+            request = frame.get("request") or {}
+            if frame.get("type") == "control_request" and request.get("subtype") == "resume":
+                self.inbound.append(frame)
+                await self.queue.put({
+                    "type": "control_response",
+                    "response": {"request_id": frame["request_id"], "response": {"ok": False, "error": "nope"}},
+                })
+                return
+            await super().send_to_agent(frame)
+
+    async def spawn(session_id, cwd, resume):
+        agent = Refusing()
+        agents.append(agent)
+        return agent
+
+    state.spawn_agent = spawn
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "row", "omit_messages": True})
+        reply = _drain_for_response(ws, 1, events)["result"]
+        first = reply["session_id"]
+        _rpc(ws, 2, "session.resume", {"session_id": "row", "omit_messages": True})
+        second = _drain_for_response(ws, 2, events)["result"]["session_id"]
+
+    assert first != second and len(agents) == 2
+    # …and the reply does not claim the row it failed to replay, so a client
+    # never keeps the empty runtime as that conversation.
+    assert reply["stored_session_id"] == first
+
+
+def test_prepare_workspace_expands_home_and_refuses_a_file(tmp_path: Path, monkeypatch) -> None:
+    from src.server.desktop_gateway_methods import _prepare_workspace
+
+    # HOME for POSIX, USERPROFILE for Windows (ntpath ignores HOME).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+
+    assert _prepare_workspace("~/proj", False) == str(tmp_path / "proj")
+    assert _prepare_workspace("~/fresh/deep", True) == str(tmp_path / "fresh" / "deep")
+    assert (tmp_path / "fresh" / "deep").is_dir()
+    with pytest.raises(ValueError, match="not a directory"):
+        _prepare_workspace(str(tmp_path / "notes.txt"), True)
+
+
+def test_worktree_on_a_new_folder_is_refused_before_anything_is_created(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    target = tmp_path / "brand-new"
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.create", {"cwd": str(target), "create_dir": True, "worktree": True})
+        refused = _drain_for_response(ws, 1, [])
+
+    assert "existing git repository" in refused["error"]["message"]
+    assert not target.exists()
+
+
+def test_session_close_if_idle_rechecks_after_asking_the_agent(tmp_path: Path) -> None:
+    """A prompt that lands while the agent is answering ``get_activity`` must
+    keep the runtime: the idle verdict is re-taken after the await."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        events_a: list[dict] = []
+        events_b: list[dict] = []
+        _rpc(first, 1, "session.create", {})
+        sid = _drain_for_response(first, 1, events_a)["result"]["session_id"]
+        agent = agents[0]
+        agent.hold_turns = True
+        agent.activity_delay_s = 0.5
+        # The close starts asking the agent; meanwhile a prompt arrives on
+        # another socket.
+        _rpc(first, 2, "session.close", {"session_id": sid, "if_idle": True})
+        _rpc(second, 1, "prompt.submit", {"session_id": sid, "text": "late"})
+        _drain_for_response(second, 1, events_b)
+        closed = _drain_for_response(first, 2, events_a)["result"]
+
+    assert closed == {"ok": True, "closed": False, "reason": "busy"}
+    assert sid in state.sessions
+
+
+def test_a_dead_runtime_is_not_busy(tmp_path: Path) -> None:
+    """The pump dying mid-turn clears the busy markers, so the runtime can be
+    released with ``if_idle`` instead of refusing forever."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].hold_turns = True
+        _rpc(ws, 2, "prompt.submit", {"session_id": sid, "text": "hi"})
+        _drain_for_response(ws, 2, events)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        complete = _drain_for_event(ws, "message.complete", events)
+        assert complete["payload"]["status"] == "error"
+        # Retired on the spot: the turn's end first, then unregistered and
+        # every window told, so the next click spawns afresh instead of
+        # being handed the corpse.
+        closed = _drain_for_event(ws, "session.closed", events)
+        assert closed["session_id"] == sid
+        assert sid not in state.sessions
+        _rpc(ws, 3, "prompt.submit", {"session_id": sid, "text": "anyone?"})
+        assert "unknown session" in _drain_for_response(ws, 3, events)["error"]["message"]
+        _rpc(ws, 4, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 4, events)["result"] == {"ok": True, "closed": False, "reason": "gone"}
+
+
+def test_get_activity_is_answered_by_a_runtime_that_refused_to_start() -> None:
+    from tests.server.test_cron_control import _control, _last_reply, _make_session
+
+    sess, emitted, _clock = _make_session()
+    sess.init_error = "sandbox unavailable"
+    _control(sess, "get_activity")
+    reply = _last_reply(emitted)
+
+    assert reply["ok"] is True and reply["busy"] is False
+    # …while a control that does work is still refused.
+    _control(sess, "rename", name="x")
+    assert _last_reply(emitted)["ok"] is False
+
+
+def test_a_conditional_close_keeps_a_runtime_another_window_holds(tmp_path: Path) -> None:
+    """A window browsing rows must not close the runtime a desktop tile or
+    another window opened and sits on; only the last holder's release closes."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "shared", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        runtime = _drain_for_response(first, 1, [])["result"]["session_id"]
+        _rpc(second, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        assert _drain_for_response(second, 1, [])["result"]["session_id"] == runtime
+        _rpc(second, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(second, 2, [])["result"] == {"ok": True, "closed": False, "reason": "held"}
+        assert runtime in state.sessions
+        _rpc(first, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(first, 2, [])["result"] == {"ok": True, "closed": True}
+    assert len(agents) == 1
+
+
+def test_a_disconnected_window_no_longer_holds_its_runtime(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "shared", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as first:
+        first.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        runtime = _drain_for_response(first, 1, [])["result"]["session_id"]
+        with _connect(client) as second:
+            second.receive_json()
+            _rpc(second, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+            _drain_for_response(second, 1, [])
+        # The second window went away: its hold went with it.
+        for _ in range(50):
+            if len(state.sessions[runtime].holders) == 1:
+                break
+            time.sleep(0.02)
+        _rpc(first, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(first, 2, [])["result"] == {"ok": True, "closed": True}
+
+
+def test_a_dying_runtime_answers_its_waiting_queries_instead_of_dropping_sockets(tmp_path: Path) -> None:
+    """A control query awaiting a runtime that dies gets "no reply", not a
+    CancelledError that unwinds the handler and closes the window's socket."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        events_a: list[dict] = []
+        events_b: list[dict] = []
+        _rpc(first, 1, "session.create", {})
+        sid = _drain_for_response(first, 1, events_a)["result"]["session_id"]
+        # The fake never answers get_context_usage: the second window waits.
+        _rpc(second, 1, "session.usage", {"session_id": sid})
+        time.sleep(0.1)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        usage = _drain_for_response(second, 1, events_b)
+        assert usage["result"] == {}
+        # The socket is still served.
+        _rpc(second, 2, "setup.status", {})
+        assert _drain_for_response(second, 2, events_b)["result"] == {"provider_configured": True}
+        _rpc(first, 2, "setup.status", {})
+        assert _drain_for_response(first, 2, events_a)["result"] == {"provider_configured": True}
+    assert sid not in state.sessions
+
+
+def test_the_opener_survives_a_runtime_dying_mid_attach(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        # With the questions capability the attach waits on
+        # set_ask_user_interactive, which the fake never answers.
+        _rpc(ws, 1, "session.resume", {
+            "session_id": "row", "omit_messages": True,
+            "capabilities": {"ask_user_question": True},
+        })
+        for _ in range(100):
+            if agents and any(
+                (f.get("request") or {}).get("subtype") == "set_ask_user_interactive" for f in agents[0].inbound
+            ):
+                break
+            time.sleep(0.02)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        reply = _drain_for_response(ws, 1, events)
+        assert "ended while starting" in reply["error"]["message"]
+        _rpc(ws, 2, "setup.status", {})
+        assert _drain_for_response(ws, 2, events)["result"] == {"provider_configured": True}
+    assert state.sessions == {}
+
+
+def test_a_stream_that_dies_before_init_fails_the_attach_at_once(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    base_spawn = state.spawn_agent
+
+    async def spawn(session_id, cwd, resume):
+        agent = await base_spawn(session_id, cwd, resume)
+        agent.die_before_init = True
+        return agent
+
+    state.spawn_agent = spawn
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        started = time.monotonic()
+        _rpc(ws, 1, "session.create", {})
+        reply = _drain_for_response(ws, 1, [])
+        elapsed = time.monotonic() - started
+
+    assert "ended while starting" in reply["error"]["message"]
+    # What this discriminates is the control timeout the attach used to wait.
+    assert elapsed < CONTROL_TIMEOUT_S / 2, f"waited {elapsed:.0f}s on a stream that never sent init"
+    assert state.sessions == {}
+
+
+def test_a_runtime_dying_during_the_resume_tail_is_not_handed_out(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+    base_spawn = state.spawn_agent
+
+    async def spawn(session_id, cwd, resume):
+        agent = await base_spawn(session_id, cwd, resume)
+        agent.settings_delay_s = 0.5
+        return agent
+
+    state.spawn_agent = spawn
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.resume", {"session_id": "row", "omit_messages": True})
+        for _ in range(100):
+            if agents and any(
+                (f.get("request") or {}).get("subtype") == "get_settings" for f in agents[0].inbound
+            ):
+                break
+            time.sleep(0.02)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        reply = _drain_for_response(ws, 1, [])
+
+    assert "ended while starting" in reply["error"]["message"]
+    assert state.sessions == {}
+
+
+def test_a_resume_whose_runtime_was_closed_outright_meanwhile_is_refused(tmp_path: Path) -> None:
+    """A desktop tile's unconditional close during the resume's tail must not
+    leave the resuming window with an id the registry no longer has."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+    base_spawn = state.spawn_agent
+
+    async def spawn(session_id, cwd, resume):
+        agent = await base_spawn(session_id, cwd, resume)
+        agent.settings_delay_s = 0.5
+        return agent
+
+    state.spawn_agent = spawn
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "row", "omit_messages": True})
+        for _ in range(100):
+            if agents and any(
+                (f.get("request") or {}).get("subtype") == "get_settings" for f in agents[0].inbound
+            ):
+                break
+            time.sleep(0.02)
+        runtime = next(iter(state.sessions))
+        _rpc(second, 1, "session.close", {"session_id": runtime})
+        assert _drain_for_response(second, 1, [])["result"]["closed"] is True
+        reply = _drain_for_response(first, 1, [])
+
+    assert "ended while starting" in reply["error"]["message"]
+    assert state.sessions == {}

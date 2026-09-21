@@ -404,7 +404,10 @@ class _AgentSession:
         # refuse (critic C8). ``interrupt`` is exempt (a benign abort of a
         # non-existent turn). Mirrors the ``session not ready`` pattern the
         # permission-mode handlers already use.
-        if self.init_error is not None and subtype != "interrupt":
+        # ``get_activity`` is exempt too: a runtime that refused to start
+        # has no work, and answering "refused" would read as busy — leaving
+        # it unreleasable by a conditional close.
+        if self.init_error is not None and subtype not in ("interrupt", "get_activity"):
             self._reply(request_id, {"ok": False, "error": self.init_error})
             return
         if subtype == "interrupt":
@@ -799,6 +802,9 @@ class _AgentSession:
             return
         if subtype == "resume":
             self._do_resume(request_id, inner.get("session_id"))
+            return
+        if subtype == "get_activity":
+            self._reply(request_id, self._activity_snapshot())
             return
         if subtype == "branch":
             self._do_branch(request_id)
@@ -3095,6 +3101,41 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] branch failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _activity_snapshot(self) -> dict[str, Any]:
+        """What this session is doing that a gateway cannot see from outside.
+
+        A gateway knows the turns IT submitted. It does not know about a
+        /goal continuation the agent queued for itself, a /loop or cron job
+        waiting to fire, a prompt still in the inbox, or a background shell
+        the agent started — all of which an idle-looking session may carry,
+        and all of which ``session.close`` with ``if_idle`` must not kill.
+        """
+        with self._lock:
+            turn_active = self._current_abort is not None
+            goal_active = self._goal_mgr is not None and self._goal_mgr.is_active()
+        queued = not self._inbox.empty()
+        scheduled = False
+        try:
+            scheduled = bool(self.cron_scheduler.list_jobs()) or self.cron_scheduler.wakeup_info() is not None
+        except Exception:  # noqa: BLE001 — the scheduler is optional state
+            logger.debug("[agent-server] scheduler probe failed", exc_info=True)
+        background = False
+        try:
+            background = self._bgtasks is not None and any(
+                getattr(task, "status", "") == "running" for task in self._bgtasks.list()
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] background task probe failed", exc_info=True)
+        return {
+            "ok": True,
+            "turn_active": turn_active,
+            "queued": queued,
+            "goal_active": goal_active,
+            "scheduled": scheduled,
+            "background": background,
+            "busy": turn_active or queued or goal_active or scheduled or background,
+        }
 
     def _do_resume(self, request_id: object, session_id: object) -> None:
         """Load a saved conversation into this session (the original's /resume).

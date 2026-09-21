@@ -51,6 +51,16 @@ async def send_event(
     await _send_json(websocket, {"method": "event", "params": params})
 
 
+#: Pure reads that answer beside whatever the socket is doing, instead of
+#: queueing behind it. Everything else runs one call at a time per socket,
+#: in order — a prompt after an interrupt, a close after a submit — which is
+#: what a client relying on the answer order needs. These two are file reads
+#: off the event loop: the sidebar click's transcript must not sit behind
+#: the runtime attach the previous click started, or the teardown of the
+#: session being left.
+CONCURRENT_METHODS = frozenset({"session.history", "projects.tree"})
+
+
 async def handle_gateway_socket(websocket: WebSocket, state: DesktopServeState) -> None:
     """Accept one gateway socket and pump it until disconnect."""
     await websocket.accept()
@@ -59,6 +69,7 @@ async def handle_gateway_socket(websocket: WebSocket, state: DesktopServeState) 
 
     conn = GatewayConnection(websocket=websocket, state=state)
     await conn.on_open()
+    concurrent: set[asyncio.Task] = set()
     try:
         while True:
             try:
@@ -69,8 +80,15 @@ async def handle_gateway_socket(websocket: WebSocket, state: DesktopServeState) 
                 continue
             if not isinstance(frame, dict):
                 continue
+            if frame.get("method") in CONCURRENT_METHODS:
+                task = asyncio.create_task(_dispatch(conn, frame))
+                concurrent.add(task)
+                task.add_done_callback(concurrent.discard)
+                continue
             await _dispatch(conn, frame)
     finally:
+        for task in concurrent:
+            task.cancel()
         await conn.on_close()
 
 
@@ -92,6 +110,8 @@ async def _dispatch(conn: Any, frame: dict[str, Any]) -> None:
 
     try:
         result = await handler(params)
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 — one bad call must not drop the socket
         logger.warning("gateway: %s failed", method, exc_info=True)
         if request_id is not None:

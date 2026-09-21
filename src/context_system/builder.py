@@ -101,14 +101,19 @@ def _build_workspace_section(root: Path, current: Path) -> str:
         f"- Today's date: {date.today().isoformat()}",
         f"- Workspace root: {workspace.workspace_root}",
         f"- Current directory: {workspace.current_directory}",
-        f"- Python files: {workspace.python_file_count}",
-        f"- Test files: {workspace.test_file_count}",
+        f"- Python files: {_count_text(workspace.python_file_count, workspace.counts_partial)}",
+        f"- Test files: {_count_text(workspace.test_file_count, workspace.counts_partial)}",
     ]
     if workspace.key_files:
         lines.append(f"- Key files: {', '.join(workspace.key_files)}")
     if workspace.top_level_entries:
         lines.append(f"- Top-level entries: {', '.join(workspace.top_level_entries)}")
     return "\n".join(lines)
+
+
+def _count_text(count: int, partial: bool) -> str:
+    """``1234``, or ``1234+ (partial scan)`` when the walk hit its budget."""
+    return f"{count}+ (partial scan)" if partial else str(count)
 
 
 def _build_git_section(cwd: str) -> str:

@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
-import { createSession, resumeSession } from '../state/actions.ts'
+import { resumeSession } from '../state/actions.ts'
 import { toggleSidebar } from '../state/layout.ts'
 import { BrandMark } from '../ui/BrandMark.tsx'
 import {
@@ -28,6 +28,7 @@ import {
   XIcon,
 } from '../ui/icons.tsx'
 import { filterProjects, isBlankSession, visibleSessions } from './filter.ts'
+import { openNewSessionDialog } from './NewSessionDialog.tsx'
 import { absoluteTime, relativeTime } from './recency.ts'
 import css from './Sidebar.module.css'
 
@@ -218,9 +219,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
         {!collapsed && (
           <button
             className={css.brand}
-            onClick={() => {
-              void createSession({ cwd: workspace })
-            }}
+            onClick={openNewSessionDialog}
             title="New session"
             type="button"
           >
@@ -240,9 +239,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
 
       <button
         className={css.newSession}
-        onClick={() => {
-          void createSession({ cwd: workspace })
-        }}
+        onClick={openNewSessionDialog}
         title="New session"
         type="button"
       >
