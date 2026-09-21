@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1460,11 +1461,15 @@ def test_a_refused_replay_is_not_reused(tmp_path: Path) -> None:
         ws.receive_json()
         events: list[dict] = []
         _rpc(ws, 1, "session.resume", {"session_id": "row", "omit_messages": True})
-        first = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        reply = _drain_for_response(ws, 1, events)["result"]
+        first = reply["session_id"]
         _rpc(ws, 2, "session.resume", {"session_id": "row", "omit_messages": True})
         second = _drain_for_response(ws, 2, events)["result"]["session_id"]
 
     assert first != second and len(agents) == 2
+    # …and the reply does not claim the row it failed to replay, so a client
+    # never keeps the empty runtime as that conversation.
+    assert reply["stored_session_id"] == first
 
 
 def test_prepare_workspace_expands_home_and_refuses_a_file(tmp_path: Path, monkeypatch) -> None:
@@ -1603,7 +1608,60 @@ def test_a_disconnected_window_no_longer_holds_its_runtime(tmp_path: Path) -> No
         for _ in range(50):
             if len(state.sessions[runtime].holders) == 1:
                 break
-            import time as _time
-            _time.sleep(0.02)
+            time.sleep(0.02)
         _rpc(first, 2, "session.close", {"session_id": runtime, "if_idle": True})
         assert _drain_for_response(first, 2, [])["result"] == {"ok": True, "closed": True}
+
+
+def test_a_dying_runtime_answers_its_waiting_queries_instead_of_dropping_sockets(tmp_path: Path) -> None:
+    """A control query awaiting a runtime that dies gets "no reply", not a
+    CancelledError that unwinds the handler and closes the window's socket."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        events_a: list[dict] = []
+        events_b: list[dict] = []
+        _rpc(first, 1, "session.create", {})
+        sid = _drain_for_response(first, 1, events_a)["result"]["session_id"]
+        # The fake never answers get_context_usage: the second window waits.
+        _rpc(second, 1, "session.usage", {"session_id": sid})
+        time.sleep(0.1)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        usage = _drain_for_response(second, 1, events_b)
+        assert usage["result"] == {}
+        # The socket is still served.
+        _rpc(second, 2, "setup.status", {})
+        assert _drain_for_response(second, 2, events_b)["result"] == {"provider_configured": True}
+        _rpc(first, 2, "setup.status", {})
+        assert _drain_for_response(first, 2, events_a)["result"] == {"provider_configured": True}
+    assert sid not in state.sessions
+
+
+def test_the_opener_survives_a_runtime_dying_mid_attach(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        # With the questions capability the attach waits on
+        # set_ask_user_interactive, which the fake never answers.
+        _rpc(ws, 1, "session.resume", {
+            "session_id": "row", "omit_messages": True,
+            "capabilities": {"ask_user_question": True},
+        })
+        for _ in range(100):
+            if agents and any(
+                (f.get("request") or {}).get("subtype") == "set_ask_user_interactive" for f in agents[0].inbound
+            ):
+                break
+            time.sleep(0.02)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        reply = _drain_for_response(ws, 1, events)
+        assert "ended while starting" in reply["error"]["message"]
+        _rpc(ws, 2, "setup.status", {})
+        assert _drain_for_response(ws, 2, events)["result"] == {"provider_configured": True}
+    assert state.sessions == {}

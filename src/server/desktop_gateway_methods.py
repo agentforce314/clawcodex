@@ -227,9 +227,16 @@ class DesktopSession:
                 await self.agent.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+        # Answer every waiting control query with "no reply" rather than
+        # cancelling it: a cancelled future raises CancelledError inside the
+        # RPC handler awaiting it, which unwinds the gateway's socket loop and
+        # drops that window's socket — the very window a retirement or
+        # another window's close should merely inform. None is the answer
+        # every caller already degrades on.
         for fut in self._pending_control.values():
             if not fut.done():
-                fut.cancel()
+                fut.set_result(None)
+        self._pending_control.clear()
 
     # ── broadcast ────────────────────────────────────────────────────────────
 
@@ -534,11 +541,12 @@ class DesktopSession:
 
     async def control_query(self, subtype: str, params: dict[str, Any],
                             timeout: float = CONTROL_TIMEOUT_S) -> Any:
-        # No agent to ask yet: answer the way a timeout does. Every caller
-        # already handles "no reply" (`if not isinstance(result, dict)`) by
-        # degrading to its own fallback, which is the honest outcome — the
-        # alternative was an AttributeError that failed the whole RPC.
-        if not self.ready:
+        # No agent to ask yet — or no agent left to answer: answer the way a
+        # timeout does. Every caller already handles "no reply" (`if not
+        # isinstance(result, dict)`) by degrading to its own fallback, which
+        # is the honest outcome — the alternative was an AttributeError that
+        # failed the whole RPC, or a 30 s wait on a stream that has ended.
+        if not self.ready or self.dead:
             return None
         rid = f"srv-{uuid.uuid4().hex[:12]}"
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -1264,6 +1272,11 @@ class GatewayConnection:
             await self._attach(session, resume, params)
         finally:
             session.attached.set()
+        # The agent's stream ended while the runtime was being attached: it
+        # has already retired itself, and handing its id out would only make
+        # the next prompt fail. Say so — the caller's socket stays up.
+        if session.dead:
+            raise ValueError(f"session {session_id} ended while starting")
         return session
 
     async def _attach(self, session: DesktopSession, resume: str | None,
@@ -1533,9 +1546,14 @@ class GatewayConnection:
         # runtime is kept and handed back); the client must adopt it as
         # running, not draw the turn's remaining deltas under its next prompt.
         info["running"] = session.turn_active
+        # The row this runtime replays — which is NOT the row asked for when
+        # the agent refused the replay (stored_id was cleared): echoing the
+        # asked-for row would make the client keep an empty runtime as the
+        # conversation on screen.
+        stored_row = (session.stored_id or session.session_id) if wanted else session.session_id
         response: dict[str, Any] = {
             "session_id": session.session_id,
-            "stored_session_id": wanted or session.session_id,
+            "stored_session_id": stored_row,
             "resumed": wanted or session.session_id,
             "message_count": 0,
             "messages": [],

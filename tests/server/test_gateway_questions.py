@@ -1217,6 +1217,8 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
         titled = True
         # What the reply's ``running`` reads: a stub runtime between turns.
         turn_active = False
+        # The row this runtime replays (the reply echoes it).
+        stored_id = "stored-1"
 
         def __init__(self) -> None:
             self.refreshed = False
