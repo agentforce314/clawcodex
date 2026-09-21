@@ -104,6 +104,8 @@ class FakeAgent:
         self.busy = False
         # A shutdown that takes a while (SessionEnd hooks, a worker join).
         self.shutdown_delay_s = 0.0
+        # A slow ``get_activity`` answer, for the close's re-check.
+        self.activity_delay_s = 0.0
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -114,6 +116,8 @@ class FakeAgent:
             if subtype == "resume":
                 reply = {"ok": True}
             elif subtype == "get_activity":
+                if self.activity_delay_s:
+                    await asyncio.sleep(self.activity_delay_s)
                 reply = {"ok": True, "busy": self.busy}
             elif subtype == "set_model":
                 # Record the switch so get_settings reports the new state.
@@ -225,7 +229,11 @@ class FakeAgent:
             "model": "fake",
         }
         while True:
-            yield await self.queue.get()
+            item = await self.queue.get()
+            # An exception queued by a test stands for the agent stream dying.
+            if isinstance(item, BaseException):
+                raise item
+            yield item
 
     async def shutdown(self) -> None:
         if self.shutdown_delay_s:
@@ -1238,11 +1246,15 @@ def test_session_create_can_make_the_workspace_folder(tmp_path: Path) -> None:
 def test_session_create_can_isolate_the_session_in_a_worktree(tmp_path: Path) -> None:
     import subprocess
 
+    import os
+
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-           "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"],
-           "HOME": str(tmp_path)}
+    # The real environment plus an identity: git on Windows needs SYSTEMROOT,
+    # TEMP and friends to start at all.
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
     for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "root"]):
         subprocess.run(["git", *args], cwd=repo, check=True, env=env)
     state, _agents = _fake_state(tmp_path)
@@ -1256,8 +1268,8 @@ def test_session_create_can_isolate_the_session_in_a_worktree(tmp_path: Path) ->
 
     worktree = created["worktree"]
     assert Path(worktree["path"]).is_dir()
-    assert Path(worktree["path"]).parent == repo / ".clawcodex" / "worktrees"
-    assert worktree["repo_root"] == str(repo.resolve())
+    assert Path(worktree["path"]).resolve().parent == (repo / ".clawcodex" / "worktrees").resolve()
+    assert Path(worktree["repo_root"]).resolve() == repo.resolve()
     assert state.manager.cwds == [worktree["path"]]
     assert "git repository" in refused["error"]["message"]
 
@@ -1460,7 +1472,9 @@ def test_a_refused_replay_is_not_reused(tmp_path: Path) -> None:
 def test_prepare_workspace_expands_home_and_refuses_a_file(tmp_path: Path, monkeypatch) -> None:
     from src.server.desktop_gateway_methods import _prepare_workspace
 
+    # HOME for POSIX, USERPROFILE for Windows (ntpath ignores HOME).
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     (tmp_path / "proj").mkdir()
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
 
@@ -1482,3 +1496,68 @@ def test_worktree_on_a_new_folder_is_refused_before_anything_is_created(tmp_path
 
     assert "existing git repository" in refused["error"]["message"]
     assert not target.exists()
+
+
+def test_session_close_if_idle_rechecks_after_asking_the_agent(tmp_path: Path) -> None:
+    """A prompt that lands while the agent is answering ``get_activity`` must
+    keep the runtime: the idle verdict is re-taken after the await."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        events_a: list[dict] = []
+        events_b: list[dict] = []
+        _rpc(first, 1, "session.create", {})
+        sid = _drain_for_response(first, 1, events_a)["result"]["session_id"]
+        agent = agents[0]
+        agent.hold_turns = True
+        agent.activity_delay_s = 0.5
+        # The close starts asking the agent; meanwhile a prompt arrives on
+        # another socket.
+        _rpc(first, 2, "session.close", {"session_id": sid, "if_idle": True})
+        _rpc(second, 1, "prompt.submit", {"session_id": sid, "text": "late"})
+        _drain_for_response(second, 1, events_b)
+        closed = _drain_for_response(first, 2, events_a)["result"]
+
+    assert closed == {"ok": True, "closed": False, "reason": "busy"}
+    assert sid in state.sessions
+
+
+def test_a_dead_runtime_is_not_busy(tmp_path: Path) -> None:
+    """The pump dying mid-turn clears the busy markers, so the runtime can be
+    released with ``if_idle`` instead of refusing forever."""
+    state, agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        agents[0].hold_turns = True
+        _rpc(ws, 2, "prompt.submit", {"session_id": sid, "text": "hi"})
+        _drain_for_response(ws, 2, events)
+        agents[0].queue.put_nowait(RuntimeError("stream died"))
+        complete = _drain_for_event(ws, "message.complete", events)
+        assert complete["payload"]["status"] == "error"
+        _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
+        # The agent is gone with the pump: no activity answer, which reads
+        # as busy — so the gateway's own markers being reset is what the
+        # unconditional close relies on, and what the next test pins.
+        _drain_for_response(ws, 3, events)
+        session = state.sessions.get(sid)
+        assert session is None or (session.turn_active is False and session.idle)
+
+
+def test_get_activity_is_answered_by_a_runtime_that_refused_to_start() -> None:
+    from tests.server.test_cron_control import _control, _last_reply, _make_session
+
+    sess, emitted, _clock = _make_session()
+    sess.init_error = "sandbox unavailable"
+    _control(sess, "get_activity")
+    reply = _last_reply(emitted)
+
+    assert reply["ok"] is True and reply["busy"] is False
+    # …while a control that does work is still refused.
+    _control(sess, "rename", name="x")
+    assert _last_reply(emitted)["ok"] is False

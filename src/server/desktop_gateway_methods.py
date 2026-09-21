@@ -291,6 +291,11 @@ class DesktopSession:
             raise
         except Exception:  # noqa: BLE001
             logger.exception("desktop session %s pump died", self.session_id)
+            # Nothing is running or asking any more; without this a dead
+            # runtime reads as busy and refuses every conditional close.
+            self.turn_active = False
+            self._pending_asks.clear()
+            self._pending_question = None
             await self._broadcast(
                 "message.complete",
                 {"text": "", "status": "error", "error": "backend session ended unexpectedly"},
@@ -1046,11 +1051,6 @@ def _suggestion_scope(suggestion: dict[str, Any]) -> str:
     return "always"
 
 
-#: Session teardowns in flight (session.close answers before they finish);
-#: held so they are not garbage-collected mid-shutdown.
-_TEARDOWNS: set[asyncio.Task] = set()
-
-
 class GatewayConnection:
     """One accepted gateway socket: method table + session subscription."""
 
@@ -1283,7 +1283,9 @@ class GatewayConnection:
         # just-created session still places into its repo immediately.
         seen = {r.get("id") for r in rows}
         active_cwd: str | None = None
-        for session in self.state.sessions.values():
+        # A copy: this runs on a worker thread while the loop adds and
+        # removes sessions (projects.tree is served beside a resume).
+        for session in list(self.state.sessions.values()):
             info = getattr(session, "init_info", None) or {}
             cwd = info.get("cwd") if isinstance(info, dict) else None
             if cwd:
@@ -1531,8 +1533,14 @@ class GatewayConnection:
         session_id = str(params.get("session_id") or "")
         if params.get("if_idle") is True:
             session = self.state.sessions.get(session_id)
-            if session is not None and not await self._session_is_idle(session):
-                return {"ok": True, "closed": False, "reason": "busy"}
+            if session is not None:
+                if not await self._session_is_idle(session):
+                    return {"ok": True, "closed": False, "reason": "busy"}
+                # Re-checked after the await: a prompt from another socket
+                # can land while the agent answers, and a replaced entry is
+                # not the runtime that was asked about.
+                if self.state.sessions.get(session_id) is not session or not session.idle:
+                    return {"ok": True, "closed": False, "reason": "busy"}
         session = self.state.sessions.pop(session_id, None)
         if session is not None:
             # Every window on this runtime learns it is gone, so the next
@@ -1543,8 +1551,8 @@ class GatewayConnection:
             # the call after a close is the open of the session being moved
             # to — it must not wait seconds on the one being left.
             task = asyncio.create_task(self._teardown(session))
-            _TEARDOWNS.add(task)
-            task.add_done_callback(_TEARDOWNS.discard)
+            self.state.teardowns.add(task)
+            task.add_done_callback(self.state.teardowns.discard)
         return {"ok": True, "closed": session is not None}
 
     async def _session_is_idle(self, session: DesktopSession) -> bool:

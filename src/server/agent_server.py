@@ -404,7 +404,10 @@ class _AgentSession:
         # refuse (critic C8). ``interrupt`` is exempt (a benign abort of a
         # non-existent turn). Mirrors the ``session not ready`` pattern the
         # permission-mode handlers already use.
-        if self.init_error is not None and subtype != "interrupt":
+        # ``get_activity`` is exempt too: a runtime that refused to start
+        # has no work, and answering "refused" would read as busy — leaving
+        # it unreleasable by a conditional close.
+        if self.init_error is not None and subtype not in ("interrupt", "get_activity"):
             self._reply(request_id, {"ok": False, "error": self.init_error})
             return
         if subtype == "interrupt":

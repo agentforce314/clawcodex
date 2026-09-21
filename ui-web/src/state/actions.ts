@@ -236,7 +236,9 @@ async function restoreSession(): Promise<void> {
   // same runtime came back, and with it whatever loop or goal it was
   // running. A fresh replay of the stored row is a new runtime, untouched.
   sessionTouched = result.session_id === remembered.live && remembered.used === true
-  rememberSession({ ...remembered, live: result.session_id, ...(sessionTouched && { used: true }) })
+
+  const { used: _used, ...rest } = remembered
+  rememberSession({ ...rest, live: result.session_id, ...(sessionTouched && { used: true }) })
 }
 
 /* ── boot ────────────────────────────────────────────────────────────────── */
@@ -335,7 +337,8 @@ function handleEvent(event: GatewayEvent): void {
   if (event.type === 'session.closed') {
     $sessionId.set(null)
     $sessionAttaching.set(false)
-    $transcript.set({ ...$transcript.get(), running: false })
+    // Nothing can answer an ask on a runtime that is gone.
+    $transcript.set({ ...clearQuestion(clearApproval($transcript.get())), running: false })
 
     return
   }
@@ -390,16 +393,10 @@ const CAPABILITIES = { ask_user_question: true }
  *   the same text the notice shows, for a dialog that wants to stay open on it.
  */
 export async function createSession(options: SessionSpawnOptions = {}): Promise<string | null> {
-  releaseIdleRuntime()
-  beginSessionNavigation()
-  $transcript.set(emptyTranscript())
-  $trajectory.set(emptyTrajectory())
-  $detailsNodeId.set(null)
-  $subagentView.set(null)
-  $sessionTitle.set('')
-  $sessionId.set(null)
-  $storedSessionId.set(null)
-  $sessionAttaching.set(false)
+  // The conversation on screen gives way only once the new session exists:
+  // a refused create (a bad path, a folder that is not a repository) leaves
+  // the reader where they were, with the reason, not on an empty hero.
+  const epoch = sessionNavigationEpoch
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES }
 
@@ -422,24 +419,43 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   if (model !== undefined && model !== '') params.model = model
   if (options.effort !== undefined && options.effort !== '') params.reasoning_effort = options.effort
 
+  let result: SessionResumeResult
+
   try {
-    const result = await gateway().request<SessionResumeResult>('session.create', params)
-
-    adoptSession(result)
-    await applyPendingApprovalMode()
-
-    return null
+    result = await gateway().request<SessionResumeResult>('session.create', params)
   } catch (error) {
     notice(`Could not start a session: ${errorText(error)}`, 'error')
-
-    return errorText(error)
-  } finally {
     // A create that fails must not leave a "Loading session…" spinner over an
     // empty transcript: the composer is still usable, and the hero is the
-    // honest place to land. Resume owns this flag too, so clearing it here
-    // covers a create that interleaves with one.
-    $sessionLoading.set(false)
+    // honest place to land.
+    if (epoch === sessionNavigationEpoch) $sessionLoading.set(false)
+
+    return errorText(error)
   }
+
+  // The reader moved on while the backend was spawning (a row click during
+  // a slow worktree create): the session is not the one on screen, so it is
+  // not adopted — and not left running either.
+  if (epoch !== sessionNavigationEpoch) {
+    if (result.session_id !== $sessionId.get()) letGoOfRuntime(result.session_id)
+
+    return null
+  }
+
+  releaseIdleRuntime()
+  beginSessionNavigation()
+  $transcript.set(emptyTranscript())
+  $trajectory.set(emptyTrajectory())
+  $detailsNodeId.set(null)
+  $subagentView.set(null)
+  $sessionTitle.set('')
+  $storedSessionId.set(null)
+  $sessionAttaching.set(false)
+  $sessionLoading.set(false)
+  adoptSession(result)
+  await applyPendingApprovalMode()
+
+  return null
 }
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
@@ -482,8 +498,13 @@ function releaseIdleRuntime(): void {
     return
   }
 
+  letGoOfRuntime(previous)
+}
+
+/** A conditional close: the backend keeps the runtime if it is busy. */
+function letGoOfRuntime(sessionId: string): void {
   gateway()
-    .request('session.close', { if_idle: true, session_id: previous })
+    .request('session.close', { if_idle: true, session_id: sessionId })
     .catch(() => {
       /* a runtime nothing is waiting on; the backend reaps it either way */
     })
@@ -594,9 +615,14 @@ async function resumeSessionCore(
     try {
       const result = await gateway().request<SessionResumeResult>('session.resume', params)
 
-      // Navigated on meanwhile: the runtime is the backend's to keep for the
-      // next visit, and none of this belongs to the conversation now on screen.
-      if (epoch !== sessionNavigationEpoch) return null
+      // Navigated on meanwhile: none of this belongs to the conversation now
+      // on screen, and the runtime it attached is nobody's — let it go
+      // (conditionally: another window may be driving it).
+      if (epoch !== sessionNavigationEpoch) {
+        if (result.session_id !== $sessionId.get()) letGoOfRuntime(result.session_id)
+
+        return null
+      }
 
       adoptSession(result)
       // A backend that answered with the transcript anyway (no cold read
@@ -836,6 +862,7 @@ async function send(text: string, retried = false): Promise<void> {
 
   try {
     await gateway().request('prompt.submit', { session_id: sessionId, text })
+    markSessionUsed()
   } catch (error) {
     // The runtime is gone — closed by another window, or lost to a backend
     // restart behind the reconnect. The conversation is not: reconnect it

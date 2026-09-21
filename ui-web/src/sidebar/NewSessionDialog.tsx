@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import { createSession } from '../state/actions.ts'
 import { $newSessionDialog, $projects, $workspace } from '../state/store.ts'
@@ -107,6 +107,10 @@ function NewSessionForm() {
     }
   }, [])
 
+  // The scrim closes on a click that STARTED on it: a drag that begins in
+  // the path field and ends outside must not throw the form away.
+  const pressedOnScrim = useRef(false)
+
   const creatingNew = choice === NEW_WORKSPACE
   const target = creatingNew ? path.trim() : choice
   const canCreate = target !== '' && !creating
@@ -132,7 +136,17 @@ function NewSessionForm() {
   }
 
   return (
-    <div className={css.scrim} onClick={close}>
+    <div
+      className={css.scrim}
+      onClick={event => {
+        if (pressedOnScrim.current && event.target === event.currentTarget) close()
+
+        pressedOnScrim.current = false
+      }}
+      onMouseDown={event => {
+        pressedOnScrim.current = event.target === event.currentTarget
+      }}
+    >
       <form
         aria-labelledby="cc-new-session-title"
         className={css.dialog}

@@ -1084,6 +1084,13 @@ describe('a runtime that goes away', () => {
     expect($sessionId.get()).toBe('R2')
     expect($notice.get().text).toBe('')
     expect($transcript.get().nodes.map(node => node.kind)).toEqual(['user', 'user'])
+
+    // The reconnected runtime was used: moving on does not close it.
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
+    gateway.results['session.resume'] = { session_id: 'R3', stored_session_id: 'Y' }
+    await resumeSession('Y')
+    await settle()
+    expect(gateway.methods()).not.toContain('session.close')
   })
 
   it('drops the runtime id on session.closed and reconnects on the next prompt', async () => {
@@ -1148,6 +1155,34 @@ describe('a runtime that goes away', () => {
     expect($sessionId.get()).toBe('R2')
     expect($storedSessionId.get()).toBe('Y')
     expect($sessionAttaching.get()).toBe(false)
+    // A's late attach produced a runtime nobody is on: let go of it, on the
+    // backend's idle check.
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'R1' },
+    ])
+  })
+
+  it('does not carry "used" onto a fresh replay after a reload', async () => {
+    const MEMORY = 'clawcodex.web.session'
+    window.localStorage.setItem(MEMORY, JSON.stringify({ live: 'gone', stored: 'X', used: true }))
+
+    // The used runtime is gone; the reload lands on a fresh replay of X.
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R9', stored_session_id: 'X' },
+    })
+    expect($sessionId.get()).toBe('R9')
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R9', stored: 'X' })
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
+    gateway.results['session.resume'] = { session_id: 'R10', stored_session_id: 'Y' }
+    await resumeSession('Y')
+    await settle()
+
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R9',
+    })
   })
 
   it('keeps a session that was in use before a reload', async () => {
@@ -1179,5 +1214,65 @@ describe('a runtime that goes away', () => {
     await settle()
 
     expect(gateway.methods()).not.toContain('session.close')
+  })
+})
+
+describe('createSession and the conversation on screen', () => {
+  const HISTORY = {
+    found: true,
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+    title: 'Saved chat',
+  }
+
+  it('keeps the conversation when the backend refuses the create', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    gateway.failing.add('session.create')
+    const failure = await createSession({ cwd: 'relative' })
+    await settle()
+
+    expect(failure).toBe('session.create refused')
+    expect($sessionId.get()).toBe('R1')
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+    expect($sessionTitle.get()).toBe('Saved chat')
+    expect(gateway.methods()).not.toContain('session.close')
+  })
+
+  it('lets a slow create go when a row was opened meanwhile', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.create')
+    gateway.results['session.create'] = { session_id: 'S9' }
+    const creating = createSession({ cwd: '/repo', worktree: true })
+    await settle()
+
+    await resumeSession('X')
+    await settle()
+    expect($sessionId.get()).toBe('R1')
+
+    gateway.release('session.create')
+    expect(await creating).toBeNull()
+    await settle()
+
+    // The row stays on screen; the runtime the create spawned is released.
+    expect($sessionId.get()).toBe('R1')
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'S9',
+    })
   })
 })
