@@ -1540,13 +1540,12 @@ def test_a_dead_runtime_is_not_busy(tmp_path: Path) -> None:
         agents[0].queue.put_nowait(RuntimeError("stream died"))
         complete = _drain_for_event(ws, "message.complete", events)
         assert complete["payload"]["status"] == "error"
+        assert state.sessions[sid].dead is True and state.sessions[sid].idle
+        # No agent left to ask, and nothing to protect: released at once,
+        # not after a 5 s activity timeout read as "busy".
         _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
-        # The agent is gone with the pump: no activity answer, which reads
-        # as busy — so the gateway's own markers being reset is what the
-        # unconditional close relies on, and what the next test pins.
-        _drain_for_response(ws, 3, events)
-        session = state.sessions.get(sid)
-        assert session is None or (session.turn_active is False and session.idle)
+        assert _drain_for_response(ws, 3, events)["result"] == {"ok": True, "closed": True}
+        assert sid not in state.sessions
 
 
 def test_get_activity_is_answered_by_a_runtime_that_refused_to_start() -> None:

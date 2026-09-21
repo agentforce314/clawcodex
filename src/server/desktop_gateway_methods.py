@@ -156,6 +156,9 @@ class DesktopSession:
         # A prompt is being answered: set on submit, cleared by the turn's
         # ``result`` frame. What ``session.close`` with ``if_idle`` refuses on.
         self.turn_active = False
+        # The agent's frame stream ended on an error: nothing runs, nothing
+        # can answer a control query, and a conditional close need not ask.
+        self.dead = False
         # My queries INTO the agent (control_request → control_response).
         self._pending_control: dict[str, asyncio.Future] = {}
         # The agent's asks OF the user (can_use_tool …), keyed by request_id;
@@ -292,7 +295,9 @@ class DesktopSession:
         except Exception:  # noqa: BLE001
             logger.exception("desktop session %s pump died", self.session_id)
             # Nothing is running or asking any more; without this a dead
-            # runtime reads as busy and refuses every conditional close.
+            # runtime reads as busy and refuses every conditional close — and
+            # a control query to it would only time out.
+            self.dead = True
             self.turn_active = False
             self._pending_asks.clear()
             self._pending_question = None
@@ -465,6 +470,8 @@ class DesktopSession:
     @property
     def idle(self) -> bool:
         """No turn running and nothing waiting on the user (an approval, a question)."""
+        if self.dead:
+            return True
         return not self.turn_active and not self._pending_asks and self._pending_question is None
 
     async def submit_prompt(self, text: str) -> None:
@@ -1567,6 +1574,8 @@ class GatewayConnection:
         """
         if not session.idle:
             return False
+        if session.dead:
+            return True
         activity = await session.control_query("get_activity", {}, timeout=5.0)
         if not isinstance(activity, dict) or activity.get("ok") is False:
             return False
