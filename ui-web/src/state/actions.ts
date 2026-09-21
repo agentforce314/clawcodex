@@ -89,6 +89,20 @@ let client: GatewayClient | null = null
 // advances it immediately, so a late reply from the conversation being left
 // cannot overwrite the transcript or status line of the one being opened.
 let sessionNavigationEpoch = 0
+
+/**
+ * The runtime attach in flight for the conversation on screen, if any, so a
+ * prompt typed while it lands waits for it instead of creating a session.
+ */
+let attachInFlight: Promise<SessionResumeResult | null> | null = null
+
+/**
+ * Whether anything was done in the session on screen — a prompt sent, an
+ * approval or a question answered — since it was adopted. A session only
+ * looked at is let go of when the window moves on; one that was used stays
+ * up, its loops and scheduled work with it.
+ */
+let sessionTouched = false
 // The backend owns sending images; keep their bytes here only for the local
 // user row, including prompts waiting in the queue. Drained with the prompt.
 let pendingImages: Attachment[] = []
@@ -111,6 +125,7 @@ function notice(text: string, tone: 'error' | 'info' = 'info'): void {
 
 function beginSessionNavigation(): void {
   sessionNavigationEpoch += 1
+  attachInFlight = null
   pendingImages = []
   notice('')
 }
@@ -407,26 +422,22 @@ export async function resumeSession(storedId: string, cwd?: string): Promise<voi
 }
 
 /**
- * The runtime attach in flight for the conversation on screen, if any, so a
- * prompt typed while it lands waits for it instead of creating a session.
- */
-let attachInFlight: Promise<SessionResumeResult | null> | null = null
-
-/**
- * Let go of the runtime this window is leaving, when nothing is happening in it.
+ * Let go of the runtime this window is leaving, when it was only looked at.
  *
  * Every resume spawns a runtime, and a window that browsed twenty saved
  * sessions would otherwise leave twenty agents (threads, MCP servers) running
- * behind it. A runtime mid-turn, holding an approval or a question, or with
- * prompts queued stays up: closing it would lose work, and its events keep
- * arriving on this socket. The conversation itself is not lost — the backend
- * saves it under the runtime's id at every turn end, so the row replays from
- * there. Nothing is awaited: the navigation must not wait on a teardown.
+ * behind it. Only a session nothing was done in is released: one a prompt was
+ * sent to stays up, with any loop or scheduled work it carries, as does one
+ * mid-turn, holding an approval or a question, or with prompts queued. The
+ * backend applies the same idle test on its own knowledge (`if_idle`), for a
+ * runtime another window is driving. Nothing is lost either way: a runtime
+ * that ran a turn saved it under its own id, and a row replays from there.
+ * Nothing is awaited: the navigation must not wait on a teardown.
  */
 function releaseIdleRuntime(): void {
   const previous = $sessionId.get()
 
-  if (previous === null) return
+  if (previous === null || sessionTouched) return
 
   const transcript = $transcript.get()
 
@@ -440,7 +451,7 @@ function releaseIdleRuntime(): void {
   }
 
   gateway()
-    .request('session.close', { session_id: previous })
+    .request('session.close', { if_idle: true, session_id: previous })
     .catch(() => {
       /* a runtime nothing is waiting on; the backend reaps it either way */
     })
@@ -582,6 +593,7 @@ async function resumeSessionCore(
 }
 
 function adoptSession(result: SessionResumeResult): void {
+  sessionTouched = false
   $sessionId.set(result.session_id)
   $storedSessionId.set(result.stored_session_id ?? result.session_id)
   rememberSession({
@@ -751,6 +763,8 @@ export async function submitPrompt(text: string, spawn: SessionSpawnOptions = {}
     if ($sessionId.get() === null) return
   }
 
+  sessionTouched = true
+
   if (trimmed.startsWith('/')) {
     const handled = await runSlashCommand(trimmed)
 
@@ -840,6 +854,7 @@ async function runSlashCommand(input: string): Promise<boolean> {
 /* ── approvals ───────────────────────────────────────────────────────────── */
 
 export async function respondApproval(choice: ApprovalChoice): Promise<void> {
+  sessionTouched = true
   const sessionId = $sessionId.get()
 
   if (sessionId === null) return
@@ -864,6 +879,7 @@ export async function respondQuestion(
   action: 'decline' | 'submit',
   answers: Record<string, string> = {},
 ): Promise<void> {
+  sessionTouched = true
   const sessionId = $sessionId.get()
 
   if (sessionId === null) return

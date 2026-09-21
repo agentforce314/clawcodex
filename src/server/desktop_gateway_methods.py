@@ -153,6 +153,9 @@ class DesktopSession:
         # A concurrent resume of the same row waits on it rather than racing
         # a second spawn.
         self.attached = asyncio.Event()
+        # A prompt is being answered: set on submit, cleared by the turn's
+        # ``result`` frame. What ``session.close`` with ``if_idle`` refuses on.
+        self.turn_active = False
         # My queries INTO the agent (control_request → control_response).
         self._pending_control: dict[str, asyncio.Future] = {}
         # The agent's asks OF the user (can_use_tool …), keyed by request_id;
@@ -319,6 +322,7 @@ class DesktopSession:
         for type_, payload in translate_frame(frame, self._tool_names):
             await self._broadcast(type_, payload)
         if kind == "result":
+            self.turn_active = False
             # The renderer clears busy from message.complete; refresh the info
             # line too (permission mode may have flipped server-side).
             mode = frame.get("permission_mode")
@@ -448,9 +452,15 @@ class DesktopSession:
             return
         await self._apply_title(name)
 
+    @property
+    def idle(self) -> bool:
+        """No turn running and nothing waiting on the user (an approval, a question)."""
+        return not self.turn_active and not self._pending_asks and self._pending_question is None
+
     async def submit_prompt(self, text: str) -> None:
         if not self.ready:
             raise ValueError(f"session {self.session_id} is still starting")
+        self.turn_active = True
         await self._broadcast("message.start", {})
         await self.agent.send_to_agent(
             {"type": "user", "message": {"role": "user", "content": text}}
@@ -1358,8 +1368,11 @@ class GatewayConnection:
                 _create_session_worktree, cwd or self.state.workspace
             )
             cwd = worktree["path"]
-            # The next sidebar tree must show the new lane.
-            self.state.probe_cache.forget_worktrees(worktree["repo_root"])
+            # The next sidebar tree must show the new lane. Every repo's list,
+            # not just this one's: the tree keys worktree lists by whatever
+            # ``git rev-parse`` printed for a cwd, which need not spell the
+            # repo root the way the worktree helper does (symlinked /tmp …).
+            self.state.probe_cache.forget_worktrees()
         session = await self._create(cwd, None, params)
         reply: dict[str, Any] = {
             "session_id": session.session_id,
@@ -1474,7 +1487,19 @@ class GatewayConnection:
         return await self.session_create(params)
 
     async def session_close(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Shut a runtime down.
+
+        ``if_idle`` closes only a runtime with no turn running and nothing
+        waiting on the user — the web client's "let go of the session I am
+        leaving" — and answers ``closed: False`` otherwise. Checked here, on
+        the server's knowledge, because a client that just attached to a
+        runtime another window is driving does not know it is busy.
+        """
         session_id = str(params.get("session_id") or "")
+        if params.get("if_idle") is True:
+            session = self.state.sessions.get(session_id)
+            if session is not None and not session.idle:
+                return {"ok": True, "closed": False, "reason": "busy"}
         session = self.state.sessions.pop(session_id, None)
         if session is not None:
             await session.shutdown()
@@ -1482,7 +1507,7 @@ class GatewayConnection:
                 await self.state.manager.stop_session(session_id)
             except Exception:  # noqa: BLE001 — index upkeep is best-effort
                 pass
-        return {"ok": True}
+        return {"ok": True, "closed": session is not None}
 
     async def session_active_list(self, _: dict[str, Any]) -> dict[str, Any]:
         sessions = []

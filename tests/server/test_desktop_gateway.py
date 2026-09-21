@@ -96,6 +96,9 @@ class FakeAgent:
         # saved as the default for new sessions. Tests flip it to model a
         # session that may not write the host's settings.
         self.persist_preferences = True
+        # Leave a user message unanswered (the turn stays open until the test
+        # pushes its own ``result`` frame).
+        self.hold_turns = False
 
     async def send_to_agent(self, frame: dict) -> None:
         self.inbound.append(frame)
@@ -174,6 +177,8 @@ class FakeAgent:
                 )
             return
         if frame.get("type") == "user":
+            if self.hold_turns:
+                return
             # One scripted streamed turn per user message.
             await self.queue.put(
                 {
@@ -1243,3 +1248,29 @@ def test_session_create_can_isolate_the_session_in_a_worktree(tmp_path: Path) ->
     assert worktree["repo_root"] == str(repo.resolve())
     assert state.manager.cwds == [worktree["path"]]
     assert "git repository" in refused["error"]["message"]
+
+
+def test_session_close_if_idle_refuses_a_busy_runtime(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.create", {})
+        sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        _agents[0].hold_turns = True
+        _rpc(ws, 2, "prompt.submit", {"session_id": sid, "text": "hi"})
+        _drain_for_response(ws, 2, events)
+        # Mid-turn: the conditional close is refused, the runtime stays.
+        _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
+        refused = _drain_for_response(ws, 3, events)["result"]
+        assert refused == {"ok": True, "closed": False, "reason": "busy"}
+        assert sid in state.sessions
+        # The turn ends: now it is idle and goes.
+        _agents[0].queue.put_nowait({"type": "result", "subtype": "success",
+                                     "result": "done", "permission_mode": "default"})
+        _drain_for_event(ws, "message.complete", events)
+        _rpc(ws, 4, "session.close", {"session_id": sid, "if_idle": True})
+        closed = _drain_for_response(ws, 4, events)["result"]
+        assert closed == {"ok": True, "closed": True}
+        assert sid not in state.sessions

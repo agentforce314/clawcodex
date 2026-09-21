@@ -745,7 +745,10 @@ describe('the remembered session', () => {
     // The runtime first, then — no record behind it — the stored row; the
     // blank runtime the first attempt spawned is closed.
     expect(resumes.map(frame => frame.params.session_id)).toEqual(['R', 'X'])
-    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({ session_id: 'R2' })
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R2',
+    })
     expect($sessionId.get()).toBe('R3')
     expect($storedSessionId.get()).toBe('X')
     expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'R3', stored: 'X' })
@@ -933,36 +936,44 @@ describe('opening a saved session', () => {
     expect(gateway.sent.length).toBe(before)
   })
 
-  it('releases the idle runtime it leaves behind, but never a busy one', async () => {
+  it('releases a runtime it only looked at, and keeps one it used', async () => {
     const gateway = await connect({
       'session.history': HISTORY,
       'session.resume': { session_id: 'R1', stored_session_id: 'X' },
     })
 
-    await submitPrompt('hello')
-    await settle()
-    gateway.emit('message.complete', { status: 'ok', text: 'hi' }, 'S1')
-    await settle()
-    expect($sessionId.get()).toBe('S1')
-
+    // Looked at X, moved on to Y: X's runtime is let go — conditionally, on
+    // the backend's own idle check.
     await resumeSession('X')
     await settle()
-
-    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({ session_id: 'S1' })
     expect($sessionId.get()).toBe('R1')
-
-    // Back to a session mid-turn: leaving it must not close it.
-    await submitPrompt('keep going')
-    await settle()
-    expect($transcript.get().running).toBe(true)
 
     gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y' }
     gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'Y' }
     await resumeSession('Y')
     await settle()
 
+    expect(gateway.sent.find(frame => frame.method === 'session.close')?.params).toEqual({
+      if_idle: true,
+      session_id: 'R1',
+    })
+    expect($sessionId.get()).toBe('R2')
+
+    // A prompt was sent to Y: it is a session in use, loops and all, and
+    // leaving it — even once the turn is over — must not close it.
+    await submitPrompt('keep going')
+    await settle()
+    gateway.emit('message.complete', { status: 'ok', text: 'hi' }, 'R2')
+    await settle()
+    expect($transcript.get().running).toBe(false)
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Z', stored_session_id: 'Z' }
+    gateway.results['session.resume'] = { session_id: 'R3', stored_session_id: 'Z' }
+    await resumeSession('Z')
+    await settle()
+
     const closes = gateway.sent.filter(frame => frame.method === 'session.close')
-    expect(closes.map(frame => frame.params.session_id)).toEqual(['S1'])
+    expect(closes.map(frame => frame.params.session_id)).toEqual(['R1'])
   })
 
   it('ignores a late attach after navigating on', async () => {

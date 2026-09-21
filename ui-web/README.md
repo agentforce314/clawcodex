@@ -255,11 +255,14 @@ spawn and again on resume — ~45 s to open a session).
 A row the backend has already replayed comes back with the same runtime:
 the backend keys live sessions by runtime id, matches a resume on the stored
 id the runtime replays, and a second click while the first is still
-attaching waits on it instead of spawning twice. Leaving a session releases
-its runtime (`session.close`) when nothing is happening in it — no turn
-running, no approval or question pending, no prompts queued — so browsing
-through saved sessions does not leave a trail of idle agents; the
-conversation itself is saved under the runtime's id at every turn end and
+attaching waits on it instead of spawning twice. Leaving a session that was
+only *looked at* — nothing sent to it, no approval or question answered —
+releases its runtime (`session.close` with `if_idle`, which the backend
+refuses for a runtime mid-turn or waiting on the user, since a runtime
+another window is driving is busy in ways this one cannot see). So browsing
+through saved sessions does not leave a trail of idle agents, while a
+session that was used stays up with whatever loop or scheduled work it
+carries; a runtime that ran a turn saved it under its own id, and the row
 replays from there. A backend without `session.history` gets the one-call
 resume, transcript included, as before.
 
