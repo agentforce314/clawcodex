@@ -142,6 +142,17 @@ class DesktopSession:
         self.pump_task: asyncio.Task | None = None
         self.init_info: dict[str, Any] = {}
         self.init_seen = asyncio.Event()
+        # The saved session this runtime replays (``session.resume``), or None
+        # for one created fresh. ``state.sessions`` is keyed by RUNTIME id and
+        # a resumed row gets a fresh runtime, so this is how a second click on
+        # the same row finds the runtime it already has instead of spawning
+        # another.
+        self.stored_id: str | None = None
+        # Set once ``_create`` has finished attaching this runtime (spawned,
+        # capability-negotiated, stored conversation loaded) — or given up.
+        # A concurrent resume of the same row waits on it rather than racing
+        # a second spawn.
+        self.attached = asyncio.Event()
         # My queries INTO the agent (control_request → control_response).
         self._pending_control: dict[str, asyncio.Future] = {}
         # The agent's asks OF the user (can_use_tool …), keyed by request_id;
@@ -955,6 +966,49 @@ def _clean(value: Any) -> str | None:
     return None
 
 
+def _prepare_workspace(path: str, create: bool) -> str:
+    """An absolute directory a session can run in, created when asked.
+
+    Raises ``ValueError`` — the gateway's "this is the caller's mistake" error
+    — for a relative path, a path that is a file, or a folder that does not
+    exist when ``create`` is off. Runs off the event loop (``makedirs`` and
+    the stats can block on a slow volume).
+    """
+    import os
+
+    expanded = os.path.expanduser(path.strip())
+    if not os.path.isabs(expanded):
+        raise ValueError(f"workspace path must be absolute: {path}")
+    normalized = os.path.normpath(expanded)
+    if os.path.isdir(normalized):
+        return normalized
+    if os.path.exists(normalized):
+        raise ValueError(f"not a directory: {normalized}")
+    if not create:
+        raise ValueError(f"no such directory: {normalized}")
+    try:
+        os.makedirs(normalized, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"cannot create {normalized}: {exc.strerror or exc}") from exc
+    return normalized
+
+
+def _create_session_worktree(cwd: str) -> dict[str, Any]:
+    """A fresh worktree of the repo at ``cwd`` (the CLI's bare ``--worktree``)."""
+    from src.utils.worktree_session import WorktreeError, create_worktree_for_session
+
+    try:
+        session = create_worktree_for_session(None, cwd=cwd)
+    except WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "name": session.worktree_name,
+        "path": session.worktree_path,
+        "branch": session.worktree_branch,
+        "repo_root": session.repo_root,
+    }
+
+
 def _positive_int(value: Any, fallback: int) -> int:
     """A positive integer from a JSON field, or ``fallback``.
 
@@ -986,6 +1040,7 @@ class GatewayConnection:
         self.method_handlers = {
             "session.create": self.session_create,
             "session.resume": self.session_resume,
+            "session.history": self.session_history,
             "session.activate": self.session_activate,
             "session.close": self.session_close,
             "session.active_list": self.session_active_list,
@@ -1062,17 +1117,46 @@ class GatewayConnection:
             raise ValueError(f"session {session_id} is still starting")
         return session
 
+    def _live_session_for(self, stored_id: str) -> DesktopSession | None:
+        """The runtime this server already has for ``stored_id``, if any.
+
+        Either the runtime itself (a session created here saves under its own
+        id) or the fresh runtime a resume of that row spawned (``stored_id``).
+        Without the second match every click on a row the server had already
+        replayed spawned yet another runtime and left the previous one alive.
+        """
+        direct = self.state.sessions.get(stored_id)
+        if direct is not None:
+            return direct
+        for session in self.state.sessions.values():
+            if session.stored_id == stored_id:
+                return session
+        return None
+
     async def _create(self, cwd: str | None, resume: str | None,
                       params: dict[str, Any] | None = None) -> DesktopSession:
         manager = self.state.manager
         workspace = cwd or self.state.workspace
-        if resume and resume in self.state.sessions:
-            return self.state.sessions[resume]
+        if resume:
+            existing = self._live_session_for(resume)
+            if existing is not None:
+                # A second resume while the first is still attaching waits
+                # for it — two rapid clicks must not become two runtimes.
+                if not existing.attached.is_set():
+                    try:
+                        await asyncio.wait_for(existing.attached.wait(), CONTROL_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        pass
+                # Still registered: the attach succeeded (or is stuck past
+                # its timeout, in which case a second spawn would not help).
+                if existing.session_id in self.state.sessions:
+                    return existing
         # A resumed stored session still gets a fresh runtime session: spawn,
         # then load the stored conversation via the `resume` control below.
         info = manager.create_session(cwd=workspace)
         session_id = info.id
         session = DesktopSession(session_id, self.state)
+        session.stored_id = resume
         session.sockets.add(self.websocket)
         self.state.sessions[session_id] = session
         # Honor the composer's provider/model/effort selection at spawn time, so
@@ -1109,7 +1193,19 @@ class GatewayConnection:
             # sessionless call (model.options, commands.catalog …) from any
             # window picks it up. Re-raised untouched; this only cleans up.
             self.state.sessions.pop(session_id, None)
+            session.attached.set()
             raise
+        try:
+            await self._attach(session, resume, params)
+        finally:
+            session.attached.set()
+        return session
+
+    async def _attach(self, session: DesktopSession, resume: str | None,
+                      params: dict[str, Any]) -> None:
+        """Finish a freshly spawned runtime: init, capabilities, stored replay."""
+        manager = self.state.manager
+        session_id = session.session_id
         try:
             manager.mark_running(session_id)
         except Exception:  # noqa: BLE001 — index upkeep is best-effort
@@ -1140,7 +1236,6 @@ class GatewayConnection:
             if not isinstance(reply, dict) or reply.get("ok") is False:
                 logger.warning("session %s: resume of %s refused: %r",
                                session_id, resume, reply)
-        return session
 
     # ── methods ──────────────────────────────────────────────────────────────
 
@@ -1153,6 +1248,9 @@ class GatewayConnection:
         return await _asyncio.to_thread(self._build_projects_tree, preview_limit)
 
     def _build_projects_tree(self, preview_limit: int) -> dict[str, Any]:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+
         from src.server.desktop_projects import build_project_tree, canonical_workspace_path
         from src.server.desktop_sessions import list_session_rows
         from src.utils.git import get_repo_root, list_worktrees
@@ -1177,19 +1275,38 @@ class GatewayConnection:
                 })
                 seen.add(sid)
 
-        # Per-cwd / per-repo memoized git probes: a tree can hold many sessions
-        # in the same repo, so probe each distinct path once.
-        repo_cache: dict[str, str | None] = {}
-        wt_cache: dict[str, list[str]] = {}
+        # Git probes are memoized ACROSS rebuilds on the serve state: the
+        # tree is rebuilt after every turn end and every session switch, and
+        # a sessions dir accumulates thousands of distinct cwds, so probing
+        # each one every time cost seconds per rebuild.
+        cache = self.state.probe_cache
         workspace_cache: dict[str, str | None] = {}
 
         def worktrees_of(repo_root: str) -> list[str]:
             # ``git worktree list`` is repo-global and main-first from ANY
             # worktree in the repo, so this is correct whether keyed by the
             # main root or a linked-worktree path.
-            if repo_root not in wt_cache:
-                wt_cache[repo_root] = [w.path for w in list_worktrees(repo_root) if w.path]
-            return wt_cache[repo_root]
+            cached = cache.worktrees(repo_root)
+            if cached is None:
+                cached = [w.path for w in list_worktrees(repo_root) if w.path]
+                cache.set_worktrees(repo_root, cached)
+            return cached
+
+        def probe_toplevel(cwd: str) -> str | None:
+            # A cwd that is gone — a deleted temp dir, an unmounted volume —
+            # is not a repo, and needs no git call to say so.
+            if not os.path.isdir(cwd):
+                return None
+            return get_repo_root(cwd) or None
+
+        # Every cwd the cache cannot answer, probed in parallel: each is one
+        # subprocess, and the first tree after boot has all of them to do.
+        wanted = {c for c in (str(r.get("cwd") or "").strip() for r in rows) if c}
+        missing = [c for c in wanted if not cache.has_repo_root(c)]
+        if missing:
+            with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+                for cwd, top in zip(missing, pool.map(probe_toplevel, missing)):
+                    cache.set_repo_root(cwd, top)
 
         def repo_root_of(cwd: str) -> str | None:
             # ``rev-parse --show-toplevel`` inside a LINKED worktree returns the
@@ -1197,14 +1314,13 @@ class GatewayConnection:
             # worktree into its own project. Resolve the MAIN worktree root
             # (the first ``git worktree list`` entry) so linked worktrees group
             # as lanes under their repo, matching the renderer's tree.
-            if cwd not in repo_cache:
-                top = get_repo_root(cwd)
-                if top:
-                    worktrees = worktrees_of(top)
-                    repo_cache[cwd] = worktrees[0] if worktrees else top
-                else:
-                    repo_cache[cwd] = None
-            return repo_cache[cwd]
+            if not cache.has_repo_root(cwd):
+                cache.set_repo_root(cwd, probe_toplevel(cwd))
+            top = cache.repo_root(cwd)
+            if not top:
+                return None
+            worktrees = worktrees_of(top)
+            return worktrees[0] if worktrees else top
 
         def workspace_path_of(cwd: str) -> str | None:
             if cwd not in workspace_cache:
@@ -1221,12 +1337,90 @@ class GatewayConnection:
         )
 
     async def session_create(self, params: dict[str, Any]) -> dict[str, Any]:
-        session = await self._create(params.get("cwd"), None, params)
-        return {
+        """Spawn a fresh session.
+
+        ``cwd`` names the workspace; with ``create_dir`` a folder that does
+        not exist yet is created (the "new workspace" flow, mkdir -p). With
+        ``worktree`` the session runs in a fresh git worktree of that repo
+        (``.clawcodex/worktrees/<name>``, the CLI's ``--worktree``), which is
+        left in place when the session ends — a browser tab has no exit
+        dialog to offer keep-or-remove. Both are validated here so a bad path
+        is an error with a name rather than a runtime that fails to start.
+        """
+        cwd = _clean(params.get("cwd"))
+        if cwd is not None:
+            cwd = await asyncio.to_thread(
+                _prepare_workspace, cwd, bool(params.get("create_dir"))
+            )
+        worktree: dict[str, Any] | None = None
+        if params.get("worktree") is True:
+            worktree = await asyncio.to_thread(
+                _create_session_worktree, cwd or self.state.workspace
+            )
+            cwd = worktree["path"]
+            # The next sidebar tree must show the new lane.
+            self.state.probe_cache.forget_worktrees(worktree["repo_root"])
+        session = await self._create(cwd, None, params)
+        reply: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": session.session_id,
             "info": _init_session_info(session.init_info),
         }
+        if worktree is not None:
+            reply["worktree"] = worktree
+        return reply
+
+    async def session_history(self, params: dict[str, Any]) -> dict[str, Any]:
+        """A saved session's transcript, cold: no runtime is spawned or touched.
+
+        What the web client renders the moment a sidebar row is clicked; the
+        runtime attaches afterwards (``session.resume``) without the reader
+        waiting on it. Same message shape as ``session.resume`` returns.
+
+        When this server already has a runtime replaying the row, its OWN
+        record is preferred — it holds the turns run since the row was
+        resumed, which the row's file never learns about.
+        """
+        wanted = str(params.get("session_id") or "")
+        if not wanted:
+            raise ValueError("session_id required")
+        from src.server.desktop_sessions import load_session_messages
+
+        sessions_dir = self.state.saved_sessions_dir()
+        live = self._live_session_for(wanted)
+        stored = None
+        if live is not None and live.session_id != wanted:
+            stored = await asyncio.to_thread(load_session_messages, sessions_dir, live.session_id)
+        if stored is None:
+            stored = await asyncio.to_thread(load_session_messages, sessions_dir, wanted)
+        if stored is None:
+            if live is None:
+                raise ValueError(f"unknown session: {wanted}")
+            # A runtime that never saved (nothing typed since it was made):
+            # there is nothing to show, and that is not an error.
+            return {
+                "session_id": wanted,
+                "stored_session_id": wanted,
+                "live_session_id": live.session_id,
+                "found": False,
+                "messages": [],
+                "message_count": 0,
+                "info": _init_session_info(live.init_info),
+            }
+        info = {key: stored[key] for key in ("cwd", "model", "provider") if stored.get(key)}
+        reply: dict[str, Any] = {
+            "session_id": wanted,
+            "stored_session_id": wanted,
+            "found": True,
+            "messages": stored["messages"],
+            "message_count": stored["message_count"],
+            "info": info,
+        }
+        if stored.get("title"):
+            reply["title"] = stored["title"]
+        if live is not None:
+            reply["live_session_id"] = live.session_id
+        return reply
 
     async def session_resume(self, params: dict[str, Any]) -> dict[str, Any]:
         wanted = str(params.get("session_id") or "") or None
@@ -1257,7 +1451,14 @@ class GatewayConnection:
         if wanted and not omit:
             from src.server.desktop_sessions import load_session_messages
 
-            stored = load_session_messages(self.state.saved_sessions_dir(), wanted)
+            sessions_dir = self.state.saved_sessions_dir()
+            stored = None
+            # A runtime already replaying this row has the complete record
+            # (see session_history); the row's own file is the fallback.
+            if session.session_id != wanted:
+                stored = await asyncio.to_thread(load_session_messages, sessions_dir, session.session_id)
+            if stored is None:
+                stored = await asyncio.to_thread(load_session_messages, sessions_dir, wanted)
             if stored is not None:
                 response["messages"] = stored["messages"]
                 response["message_count"] = stored["message_count"]

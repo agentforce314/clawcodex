@@ -47,6 +47,19 @@ export const $transcript = atom<TranscriptState>(emptyTranscript())
 export const $sessionLoading = atom<boolean>(false)
 
 /**
+ * The stored transcript is on screen and its runtime is still being attached.
+ *
+ * Opening a saved session is two steps: the transcript is read cold and
+ * rendered at once, then the runtime that will answer the next prompt is
+ * spawned behind it. This flags the second step — the composer says so, and a
+ * prompt sent meanwhile waits for it rather than starting a session of its own.
+ */
+export const $sessionAttaching = atom<boolean>(false)
+
+/** The New session dialog: open or not. */
+export const $newSessionDialog = atom<boolean>(false)
+
+/**
  * The same events as `$transcript`, kept at full resolution and timed.
  *
  * Only the live session has one: the stored transcript a resume returns has no

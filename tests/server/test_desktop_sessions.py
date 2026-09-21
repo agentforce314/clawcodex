@@ -522,3 +522,61 @@ def test_conversation_keeps_a_step_usage_and_model_on_disk() -> None:
     assert stored[1]["usage"] == {"input_tokens": 3, "output_tokens": 2}
     assert stored[1]["model"] == "deepseek-v4-flash"
     assert "usage" not in stored[0]
+
+
+# ─── the sidebar row cache ───────────────────────────────────────────────────
+
+
+def test_list_session_rows_rereads_only_changed_files(tmp_path: Path, monkeypatch) -> None:
+    from src.server import desktop_sessions
+
+    desktop_sessions.clear_session_row_cache()
+    d = tmp_path / "sessions"
+    d.mkdir()
+    _write_session(d, "a", preview="A", count=1, age_s=20)
+    _write_session(d, "b", preview="B", count=1, age_s=10)
+    reads: list[str] = []
+    real = desktop_sessions._read_session_file
+
+    def counting(path):
+        reads.append(path.stem)
+        return real(path)
+
+    monkeypatch.setattr(desktop_sessions, "_read_session_file", counting)
+
+    first = desktop_sessions.list_session_rows(d, limit=0)
+    assert [r["id"] for r in first["sessions"]] == ["b", "a"]
+    assert sorted(reads) == ["a", "b"]
+
+    # Nothing changed: no file is parsed again, rows are equal but not shared.
+    second = desktop_sessions.list_session_rows(d, limit=0)
+    assert sorted(reads) == ["a", "b"]
+    assert second["sessions"] == first["sessions"]
+    second["sessions"][0]["is_active"] = True
+    assert desktop_sessions.list_session_rows(d, limit=0)["sessions"][0]["is_active"] is False
+
+    # A rewritten file is parsed again and its new content served.
+    _write_session(d, "a", preview="A2", count=3)
+    third = desktop_sessions.list_session_rows(d, limit=0)
+    assert reads.count("a") == 2
+    assert [r["id"] for r in third["sessions"]] == ["a", "b"]
+    assert third["sessions"][0]["preview"] == "A2"
+
+    # A deleted file leaves the cache too.
+    (d / "b.json").unlink()
+    assert [r["id"] for r in desktop_sessions.list_session_rows(d, limit=0)["sessions"]] == ["a"]
+    assert "b.json" not in " ".join(desktop_sessions._ROW_CACHE)
+    desktop_sessions.clear_session_row_cache()
+
+
+def test_load_session_messages_carries_the_stored_session_facts(tmp_path: Path) -> None:
+    from src.server.desktop_sessions import load_session_messages
+
+    d = tmp_path / "sessions"
+    d.mkdir()
+    _write_session(d, "s", preview="P", count=1, messages=[{"role": "user", "content": "hi"}])
+
+    stored = load_session_messages(d, "s")
+
+    assert stored is not None
+    assert (stored["cwd"], stored["model"], stored["provider"]) == ("/tmp/w", "m1", "p1")

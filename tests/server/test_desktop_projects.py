@@ -183,3 +183,39 @@ def test_unresolved_cwd_falls_into_home_bucket(tmp_path):
     )
 
     assert [project["id"] for project in tree["projects"]] == [NO_PROJECT_ID]
+
+
+# ─── ProbeCache ──────────────────────────────────────────────────────────────
+
+
+def test_probe_cache_answers_within_its_ttl_and_forgets_after():
+    from src.server.desktop_projects import ProbeCache
+
+    now = [100.0]
+    cache = ProbeCache(ttl_s=10.0, worktree_ttl_s=2.0, clock=lambda: now[0])
+
+    assert cache.has_repo_root("/a") is False
+    cache.set_repo_root("/a", "/repo")
+    cache.set_repo_root("/b", None)  # "not a repo" is an answer too
+    cache.set_worktrees("/repo", ["/repo", "/repo/.wt/x"])
+
+    assert cache.has_repo_root("/a") and cache.repo_root("/a") == "/repo"
+    assert cache.has_repo_root("/b") and cache.repo_root("/b") is None
+    assert cache.worktrees("/repo") == ["/repo", "/repo/.wt/x"]
+
+    now[0] += 3.0
+    assert cache.worktrees("/repo") is None  # worktree lists expire sooner
+    assert cache.has_repo_root("/a")
+    now[0] += 8.0
+    assert cache.has_repo_root("/a") is False
+
+
+def test_probe_cache_forget_worktrees_drops_one_repo():
+    from src.server.desktop_projects import ProbeCache
+
+    cache = ProbeCache()
+    cache.set_worktrees("/r1", ["/r1"])
+    cache.set_worktrees("/r2", ["/r2"])
+    cache.forget_worktrees("/r1")
+    assert cache.worktrees("/r1") is None
+    assert cache.worktrees("/r2") == ["/r2"]

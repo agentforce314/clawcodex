@@ -31,9 +31,84 @@ failed and no repo/worktree lane was ever built.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any, Callable
 
 NO_PROJECT_ID = "__no_project__"
+
+
+class ProbeCache:
+    """Memoized git probes for the sidebar tree, shared across rebuilds.
+
+    ``projects.tree`` shells out once per distinct session cwd (``git
+    rev-parse --show-toplevel``) and once per repo (``git worktree list``). A
+    sessions directory accumulates thousands of distinct cwds over time —
+    temp dirs, worktrees, test fixtures — so probing them all on every rebuild
+    cost seconds, and the tree is rebuilt after every turn end and every
+    session switch. A repo root answer is kept for ``ttl_s`` (a directory's
+    repo does not move); the worktree list for ``worktree_ttl_s``, and
+    :meth:`forget_worktrees` drops it early when this server adds one.
+    Thread-safe: the tree is built off the event loop and probes run in a
+    pool.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_s: float = 300.0,
+        worktree_ttl_s: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_s = ttl_s
+        self._worktree_ttl_s = worktree_ttl_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        # cwd → (expires_at, toplevel or None)
+        self._repo_root: dict[str, tuple[float, str | None]] = {}
+        # repo root → (expires_at, worktree paths, main first)
+        self._worktrees: dict[str, tuple[float, list[str]]] = {}
+
+    def has_repo_root(self, cwd: str) -> bool:
+        with self._lock:
+            entry = self._repo_root.get(cwd)
+        return entry is not None and entry[0] > self._clock()
+
+    def repo_root(self, cwd: str) -> str | None:
+        """The cached toplevel for ``cwd`` (None: not a repo, or not cached)."""
+        with self._lock:
+            entry = self._repo_root.get(cwd)
+        if entry is None or entry[0] <= self._clock():
+            return None
+        return entry[1]
+
+    def set_repo_root(self, cwd: str, toplevel: str | None) -> None:
+        with self._lock:
+            self._repo_root[cwd] = (self._clock() + self._ttl_s, toplevel)
+
+    def worktrees(self, repo_root: str) -> list[str] | None:
+        with self._lock:
+            entry = self._worktrees.get(repo_root)
+        if entry is None or entry[0] <= self._clock():
+            return None
+        return list(entry[1])
+
+    def set_worktrees(self, repo_root: str, paths: list[str]) -> None:
+        with self._lock:
+            self._worktrees[repo_root] = (self._clock() + self._worktree_ttl_s, list(paths))
+
+    def forget_worktrees(self, repo_root: str | None = None) -> None:
+        """Drop the worktree list for one repo, or every repo's."""
+        with self._lock:
+            if repo_root is None:
+                self._worktrees.clear()
+            else:
+                self._worktrees.pop(repo_root, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._repo_root.clear()
+            self._worktrees.clear()
 
 
 def canonical_workspace_path(path: str) -> str | None:
@@ -262,4 +337,4 @@ def build_project_tree(
     }
 
 
-__all__ = ["build_project_tree", "canonical_workspace_path", "NO_PROJECT_ID"]
+__all__ = ["ProbeCache", "build_project_tree", "canonical_workspace_path", "NO_PROJECT_ID"]

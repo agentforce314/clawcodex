@@ -27,6 +27,7 @@ import type {
   ProjectsTreeResult,
   ProviderListResult,
   ProviderMutationResult,
+  SessionHistoryResult,
   SessionResumeResult,
   SlashResult,
   SubagentInterruptResult,
@@ -55,6 +56,7 @@ import {
   $projectsLoading,
   $queue,
   $sessionId,
+  $sessionAttaching,
   $sessionLoading,
   $sessionTitle,
   $storedSessionId,
@@ -184,21 +186,12 @@ async function restoreSession(): Promise<void> {
   let result = await resumeSessionCore(remembered.live, remembered.cwd, true)
 
   if (
-    result !== null &&
-    (result.messages?.length ?? 0) === 0 &&
+    (result === null || (result.messages?.length ?? 0) === 0) &&
     remembered.stored !== remembered.live
   ) {
-    const blank = result.session_id
-
+    // The blank runtime the first attempt landed on (if any) is idle, so
+    // navigating to the stored row releases it — see releaseIdleRuntime.
     result = await resumeSessionCore(remembered.stored, remembered.cwd, true)
-
-    if (result !== null && result.session_id !== blank) {
-      try {
-        await gateway().request('session.close', { session_id: blank })
-      } catch {
-        /* a runtime nothing was ever typed into; the backend reaps it */
-      }
-    }
   }
 
   if (result === null) {
@@ -326,10 +319,14 @@ function handleEvent(event: GatewayEvent): void {
 /* ── sessions ────────────────────────────────────────────────────────────── */
 
 export interface SessionSpawnOptions {
+  /** Create `cwd` when it does not exist yet — the "new workspace" flow. */
+  createDir?: boolean
   cwd?: string
   effort?: string
   model?: string
   provider?: string
+  /** Run the session in a fresh git worktree of the repo at `cwd`. */
+  worktree?: boolean
 }
 
 /**
@@ -343,7 +340,13 @@ export interface SessionSpawnOptions {
  */
 const CAPABILITIES = { ask_user_question: true }
 
-export async function createSession(options: SessionSpawnOptions = {}): Promise<void> {
+/**
+ * Start a fresh session.
+ * @returns null once the session is up, else the backend's reason it is not —
+ *   the same text the notice shows, for a dialog that wants to stay open on it.
+ */
+export async function createSession(options: SessionSpawnOptions = {}): Promise<string | null> {
+  releaseIdleRuntime()
   beginSessionNavigation()
   $transcript.set(emptyTranscript())
   $trajectory.set(emptyTrajectory())
@@ -352,6 +355,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   $sessionTitle.set('')
   $sessionId.set(null)
   $storedSessionId.set(null)
+  $sessionAttaching.set(false)
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES }
 
@@ -368,6 +372,8 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   const model = options.model ?? pending?.model
 
   if (options.cwd !== undefined && options.cwd !== '') params.cwd = options.cwd
+  if (options.createDir === true) params.create_dir = true
+  if (options.worktree === true) params.worktree = true
   if (provider !== undefined && provider !== '') params.provider = provider
   if (model !== undefined && model !== '') params.model = model
   if (options.effort !== undefined && options.effort !== '') params.reasoning_effort = options.effort
@@ -377,8 +383,12 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 
     adoptSession(result)
     await applyPendingApprovalMode()
+
+    return null
   } catch (error) {
     notice(`Could not start a session: ${errorText(error)}`, 'error')
+
+    return errorText(error)
   } finally {
     // A create that fails must not leave a "Loading session…" spinner over an
     // empty transcript: the composer is still usable, and the hero is the
@@ -389,62 +399,186 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
 }
 
 export async function resumeSession(storedId: string, cwd?: string): Promise<void> {
+  // Already on this conversation, or landing on it: a second click has
+  // nothing to load and must not spawn anything.
+  if (storedId === $storedSessionId.get() && ($sessionId.get() !== null || attachInFlight !== null)) return
+
   await resumeSessionCore(storedId, cwd, false)
 }
 
 /**
- * The resume itself. `quiet` skips the failure notice, for a restore on boot
- * where "could not resume" would be about a session the reader never asked
- * for.
- * @returns the backend's reply, or null when the resume failed.
+ * The runtime attach in flight for the conversation on screen, if any, so a
+ * prompt typed while it lands waits for it instead of creating a session.
+ */
+let attachInFlight: Promise<SessionResumeResult | null> | null = null
+
+/**
+ * Let go of the runtime this window is leaving, when nothing is happening in it.
+ *
+ * Every resume spawns a runtime, and a window that browsed twenty saved
+ * sessions would otherwise leave twenty agents (threads, MCP servers) running
+ * behind it. A runtime mid-turn, holding an approval or a question, or with
+ * prompts queued stays up: closing it would lose work, and its events keep
+ * arriving on this socket. The conversation itself is not lost — the backend
+ * saves it under the runtime's id at every turn end, so the row replays from
+ * there. Nothing is awaited: the navigation must not wait on a teardown.
+ */
+function releaseIdleRuntime(): void {
+  const previous = $sessionId.get()
+
+  if (previous === null) return
+
+  const transcript = $transcript.get()
+
+  if (
+    transcript.running ||
+    transcript.approval !== undefined ||
+    transcript.question !== undefined ||
+    $queue.get().length > 0
+  ) {
+    return
+  }
+
+  gateway()
+    .request('session.close', { session_id: previous })
+    .catch(() => {
+      /* a runtime nothing is waiting on; the backend reaps it either way */
+    })
+}
+
+/** An older backend without the method: fall back to the one-call resume. */
+function isMethodMissing(error: unknown): boolean {
+  return errorText(error).includes('method not found')
+}
+
+/** Put a stored transcript on screen: nodes, timings, title and session facts. */
+function showStoredTranscript(stored: SessionHistoryResult | SessionResumeResult): void {
+  if (stored.title !== undefined && stored.title !== '') $sessionTitle.set(stored.title)
+
+  if (stored.info !== undefined) {
+    $transcript.set({ ...$transcript.get(), info: { ...$transcript.get().info, ...stored.info } })
+
+    if (stored.info.cwd !== undefined && stored.info.cwd !== '') $workspace.set(stored.info.cwd)
+  }
+
+  if (stored.messages === undefined || stored.messages.length === 0) return
+
+  $transcript.set({ ...$transcript.get(), nodes: hydrateStoredMessages(stored.messages) })
+  // The same stored messages carry wall-clock timestamps, which is enough for
+  // the Trajectory tab to show the run's shape and its tool timings instead
+  // of "nothing recorded".
+  $trajectory.set(hydrateStoredTrajectory(stored.messages))
+}
+
+/**
+ * Open a saved session: the transcript first, the runtime behind it.
+ *
+ * Two round-trips on purpose, the way the reference opens a session. The
+ * stored transcript is a file read (`session.history`) and lands in tens of
+ * milliseconds; the runtime that will answer the next prompt has a provider,
+ * a tool registry and a system prompt to build, and the reader should not
+ * look at a spinner for that — they came to read. While it attaches, the
+ * composer says so and a prompt sent meanwhile waits for it.
+ *
+ * `quiet` skips the failure notice, for a restore on boot where "could not
+ * resume" would be about a session the reader never asked for.
+ * @returns the backend's resume reply, carrying the stored messages, or null
+ *   when the session could not be opened.
  */
 async function resumeSessionCore(
   storedId: string,
   cwd: string | undefined,
   quiet: boolean,
 ): Promise<SessionResumeResult | null> {
+  releaseIdleRuntime()
   beginSessionNavigation()
+
+  const epoch = sessionNavigationEpoch
+
   $transcript.set(emptyTranscript())
   // Cleared while the replay is in flight; the stored messages rebuild it
   // below, timestamps included.
   $trajectory.set(emptyTrajectory())
   $detailsNodeId.set(null)
   $subagentView.set(null)
+  $sessionTitle.set('')
+  $sessionId.set(null)
+  // The row is highlighted from the click, not from a reply: the sidebar
+  // should not wait on anything to show which conversation was chosen.
+  $storedSessionId.set(storedId)
+  $sessionAttaching.set(false)
   $sessionLoading.set(true)
 
   const params: Record<string, unknown> = { capabilities: CAPABILITIES, session_id: storedId }
 
   if (cwd !== undefined && cwd !== '') params.cwd = cwd
 
+  // 1. The stored transcript, cold.
+  let history: SessionHistoryResult | null = null
+
   try {
-    const result = await gateway().request<SessionResumeResult>('session.resume', params)
-
-    adoptSession(result)
-
-    // Without this the header falls back to its "Untitled session"
-    // placeholder while the sidebar row the user just clicked keeps showing
-    // the real name.
-    if (result.title !== undefined && result.title !== '') $sessionTitle.set(result.title)
-
-    if (result.messages !== undefined && result.messages.length > 0) {
-      $transcript.set({
-        ...$transcript.get(),
-        nodes: hydrateStoredMessages(result.messages),
-      })
-      // The same stored messages carry wall-clock timestamps, which is enough
-      // for the Trajectory tab to show the run's shape and its tool timings
-      // instead of "nothing recorded".
-      $trajectory.set(hydrateStoredTrajectory(result.messages))
-    }
-
-    return result
+    history = await gateway().request<SessionHistoryResult>('session.history', { session_id: storedId })
   } catch (error) {
-    if (!quiet) notice(`Could not resume that session: ${errorText(error)}`, 'error')
+    if (epoch !== sessionNavigationEpoch) return null
 
-    return null
-  } finally {
-    $sessionLoading.set(false)
+    if (!isMethodMissing(error)) {
+      $sessionLoading.set(false)
+
+      if (!quiet) notice(`Could not open that session: ${errorText(error)}`, 'error')
+
+      return null
+    }
   }
+
+  if (epoch !== sessionNavigationEpoch) return null
+
+  if (history !== null) {
+    showStoredTranscript(history)
+    $sessionLoading.set(false)
+    // The attach need not carry the transcript again.
+    params.omit_messages = true
+  }
+
+  // 2. The runtime, attached behind the transcript.
+  $sessionAttaching.set(true)
+
+  let attach: Promise<SessionResumeResult | null> | null = null
+
+  attach = (async (): Promise<SessionResumeResult | null> => {
+    try {
+      const result = await gateway().request<SessionResumeResult>('session.resume', params)
+
+      // Navigated on meanwhile: the runtime is the backend's to keep for the
+      // next visit, and none of this belongs to the conversation now on screen.
+      if (epoch !== sessionNavigationEpoch) return null
+
+      adoptSession(result)
+      // A backend that answered with the transcript anyway (no cold read
+      // happened, or it holds a fuller record) — that is the one to show.
+      showStoredTranscript(result)
+
+      return history === null
+        ? result
+        : { ...result, message_count: history.message_count, messages: history.messages }
+    } catch (error) {
+      if (epoch === sessionNavigationEpoch && !quiet) {
+        notice(`Could not resume that session: ${errorText(error)}`, 'error')
+      }
+
+      return null
+    } finally {
+      if (epoch === sessionNavigationEpoch) {
+        $sessionLoading.set(false)
+        $sessionAttaching.set(false)
+      }
+
+      if (attachInFlight === attach) attachInFlight = null
+    }
+  })()
+
+  attachInFlight = attach
+
+  return attach
 }
 
 function adoptSession(result: SessionResumeResult): void {
@@ -606,6 +740,10 @@ export async function submitPrompt(text: string, spawn: SessionSpawnOptions = {}
 
     return
   }
+
+  // A saved session whose runtime is still attaching: the prompt is for THAT
+  // conversation, so wait for it rather than starting a session of its own.
+  if (attachInFlight !== null) await attachInFlight
 
   if ($sessionId.get() === null) {
     await createSession(spawn)

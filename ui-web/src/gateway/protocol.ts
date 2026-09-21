@@ -243,6 +243,36 @@ export interface SessionCreateResult {
   info?: SessionInfoPayload
   session_id: string
   stored_session_id?: string
+  /** Present when the session was created with `worktree: true`. */
+  worktree?: SessionWorktree
+}
+
+/** The git worktree a session was isolated in (`session.create` → `worktree`). */
+export interface SessionWorktree {
+  branch?: string
+  name?: string
+  path: string
+  repo_root?: string
+}
+
+/**
+ * `session.history` — a saved session's transcript, read cold: no runtime is
+ * spawned or asked. What the sidebar click renders at once; the runtime
+ * attaches afterwards through `session.resume`.
+ *
+ * `found` is false for a live runtime that never saved (nothing typed into it
+ * yet): no messages, and not an error. `live_session_id` names the runtime
+ * already replaying this row when the backend has one.
+ */
+export interface SessionHistoryResult {
+  found?: boolean
+  info?: SessionInfoPayload
+  live_session_id?: string
+  message_count?: number
+  messages?: StoredMessage[]
+  session_id?: string
+  stored_session_id?: string
+  title?: string
 }
 
 export interface StoredMessage {

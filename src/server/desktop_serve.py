@@ -65,6 +65,8 @@ class DesktopServeState:
     sessions: dict[str, Any] = field(default_factory=dict)
     # Saved-transcript dir override (tests); default resolves per request.
     sessions_dir: Path | None = None
+    # Git probe answers the sidebar tree reuses across rebuilds.
+    probe_cache: Any = field(default_factory=lambda: _new_probe_cache())
 
     def spawn_for(self, provider: str | None, model: str | None,
                   effort: str | None) -> Callable[..., Awaitable[Any]]:
@@ -103,6 +105,12 @@ class DesktopServeState:
             except Exception:  # noqa: BLE001 — teardown must not raise
                 pass
         self.sessions.clear()
+
+
+def _new_probe_cache() -> Any:
+    from src.server.desktop_projects import ProbeCache
+
+    return ProbeCache()
 
 
 def _token_ok(state: DesktopServeState, presented: str | None) -> bool:

@@ -222,12 +222,14 @@ class FakeAgent:
 class FakeManager:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.cwds: list[str] = []
         self._n = 0
 
     def create_session(self, cwd: str):
         self._n += 1
         session_id = f"fake-{self._n}"
         self.created.append(session_id)
+        self.cwds.append(cwd)
         return SimpleNamespace(id=session_id, cwd=cwd)
 
     def mark_running(self, session_id: str) -> None:
@@ -1047,3 +1049,197 @@ def test_effort_change_round_trips_and_reports_persisted(tmp_path: Path) -> None
         _rpc(ws, 5, "config.set", {"session_id": sid, "key": "effort", "value": "bogus"})
         result = _drain_for_response(ws, 5, events)["result"]
         assert result["ok"] is False and "invalid effort" in result["error"]
+
+
+# ─── opening a saved session: cold history, runtime reuse ────────────────────
+
+
+def _write_saved(sessions_dir: Path, session_id: str, messages: list, **extra) -> None:
+    sessions_dir.mkdir(exist_ok=True)
+    payload = {
+        "session_id": session_id,
+        "preview": "hello?",
+        "message_count": len(messages),
+        "cwd": "/tmp/where",
+        "model": "m-stored",
+        "provider": "p-stored",
+        "conversation": {"messages": messages},
+        **extra,
+    }
+    (sessions_dir / f"{session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_session_history_reads_the_saved_transcript_without_a_runtime(tmp_path: Path) -> None:
+    """The sidebar click renders from this — no spawn, no control round-trip."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(
+        state.sessions_dir, "old-chat",
+        [{"role": "user", "content": "hello?"},
+         {"role": "assistant", "content": [{"type": "text", "text": "hi back"}]}],
+        name="My chat",
+    )
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.history", {"session_id": "old-chat"})
+        result = _drain_for_response(ws, 1, events)["result"]
+
+    assert result["found"] is True
+    assert result["stored_session_id"] == "old-chat"
+    assert result["title"] == "My chat"
+    assert [m["role"] for m in result["messages"]] == ["user", "assistant"]
+    assert result["info"] == {"cwd": "/tmp/where", "model": "m-stored", "provider": "p-stored"}
+    assert agents == [] and state.manager.created == []
+
+
+def test_session_history_of_an_unknown_row_is_an_error(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    state.sessions_dir.mkdir()
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.history", {"session_id": "nope"})
+        reply = _drain_for_response(ws, 1, [])
+
+    assert "unknown session" in reply["error"]["message"]
+
+
+def test_resuming_the_same_row_twice_reuses_its_runtime(tmp_path: Path) -> None:
+    """Every click used to spawn a fresh runtime and leave the last one alive.
+
+    ``state.sessions`` is keyed by runtime id, and a resumed row's runtime has
+    a different id from the row, so the "already live" check never matched a
+    row. The second resume must come back with the same runtime, spawn-free.
+    """
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "hello?"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "old-chat"})
+        first = _drain_for_response(ws, 1, events)["result"]
+        _rpc(ws, 2, "session.resume", {"session_id": "old-chat", "omit_messages": True})
+        second = _drain_for_response(ws, 2, events)["result"]
+
+    assert first["session_id"] == "fake-1"
+    assert second["session_id"] == "fake-1"
+    assert second["stored_session_id"] == "old-chat"
+    assert second.get("messages_omitted") is True
+    assert len(agents) == 1 and state.manager.created == ["fake-1"]
+    assert state.sessions["fake-1"].stored_id == "old-chat"
+
+
+def test_a_live_replay_answers_history_from_its_own_record(tmp_path: Path) -> None:
+    """Turns run after a resume are saved under the RUNTIME's id; the row the
+    user clicks still names the original file. Opening the row again must
+    show the conversation as it is now, not as the row's file left it."""
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "first"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        events: list[dict] = []
+        _rpc(ws, 1, "session.resume", {"session_id": "old-chat", "omit_messages": True})
+        runtime = _drain_for_response(ws, 1, events)["result"]["session_id"]
+        # The runtime saved its own, longer record after a turn.
+        _write_saved(
+            state.sessions_dir, runtime,
+            [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}],
+        )
+        _rpc(ws, 2, "session.history", {"session_id": "old-chat"})
+        history = _drain_for_response(ws, 2, events)["result"]
+        _rpc(ws, 3, "session.resume", {"session_id": "old-chat"})
+        resumed = _drain_for_response(ws, 3, events)["result"]
+
+    assert history["live_session_id"] == runtime
+    assert [m["content"] for m in history["messages"]] == ["first", "second"]
+    assert [m["content"] for m in resumed["messages"]] == ["first", "second"]
+
+
+def test_two_concurrent_resumes_of_one_row_share_a_spawn(tmp_path: Path) -> None:
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "old-chat", [{"role": "user", "content": "hello?"}])
+    gate = asyncio.Event()
+    base_spawn = state.spawn_agent
+
+    async def slow_spawn(session_id, cwd, resume):
+        await gate.wait()
+        return await base_spawn(session_id, cwd, resume)
+
+    state.spawn_agent = slow_spawn
+
+    async def run() -> tuple[dict, dict]:
+        from src.server.desktop_gateway_methods import GatewayConnection
+
+        class _Socket:
+            async def send_json(self, obj):  # pragma: no cover - no pushes read
+                pass
+
+        conn = GatewayConnection(websocket=_Socket(), state=state)  # type: ignore[arg-type]
+        first = asyncio.create_task(conn.session_resume({"session_id": "old-chat"}))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(conn.session_resume({"session_id": "old-chat"}))
+        await asyncio.sleep(0)
+        gate.set()
+        return await first, await second
+
+    a, b = asyncio.run(run())
+    assert a["session_id"] == b["session_id"] == "fake-1"
+    assert len(agents) == 1
+
+
+# ─── session.create: a new folder, a worktree ────────────────────────────────
+
+
+def test_session_create_can_make_the_workspace_folder(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    target = tmp_path / "fresh" / "project"
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.create", {"cwd": str(target)})
+        refused = _drain_for_response(ws, 1, [])
+        _rpc(ws, 2, "session.create", {"cwd": str(target), "create_dir": True})
+        created = _drain_for_response(ws, 2, [])["result"]
+        _rpc(ws, 3, "session.create", {"cwd": "relative/path", "create_dir": True})
+        relative = _drain_for_response(ws, 3, [])
+
+    assert "no such directory" in refused["error"]["message"]
+    assert target.is_dir()
+    assert created["session_id"] == "fake-1"
+    assert state.manager.cwds == [str(target)]
+    assert "must be absolute" in relative["error"]["message"]
+
+
+def test_session_create_can_isolate_the_session_in_a_worktree(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"],
+           "HOME": str(tmp_path)}
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "root"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, env=env)
+    state, _agents = _fake_state(tmp_path)
+
+    with TestClient(build_app(state)) as client, _connect(client) as ws:
+        ws.receive_json()
+        _rpc(ws, 1, "session.create", {"cwd": str(repo), "worktree": True})
+        created = _drain_for_response(ws, 1, [])["result"]
+        _rpc(ws, 2, "session.create", {"cwd": str(tmp_path), "worktree": True})
+        refused = _drain_for_response(ws, 2, [])
+
+    worktree = created["worktree"]
+    assert Path(worktree["path"]).is_dir()
+    assert Path(worktree["path"]).parent == repo / ".clawcodex" / "worktrees"
+    assert worktree["repo_root"] == str(repo.resolve())
+    assert state.manager.cwds == [worktree["path"]]
+    assert "git repository" in refused["error"]["message"]

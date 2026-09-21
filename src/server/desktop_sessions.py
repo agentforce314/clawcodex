@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,22 @@ def _row_from_file(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Sidebar rows by file path, keyed on the (mtime, size) they were read at.
+# A session file is a whole conversation (up to a few MB), and the sidebar
+# tree is rebuilt after every turn end and every session switch: re-parsing
+# thousands of unchanged files each time cost ~1 s per rebuild. The stamp is
+# re-checked with one ``stat`` per file, so an edited, replaced or deleted
+# file is never served stale.
+_ROW_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_ROW_CACHE_LOCK = threading.Lock()
+
+
+def clear_session_row_cache() -> None:
+    """Forget every cached sidebar row (tests, or a sessions-dir switch)."""
+    with _ROW_CACHE_LOCK:
+        _ROW_CACHE.clear()
+
+
 def list_session_rows(
     sessions_dir: Path,
     *,
@@ -67,25 +84,47 @@ def list_session_rows(
     offset: int = 0,
     min_messages: int = 0,
 ) -> dict[str, Any]:
-    """Paginated sidebar listing, newest-first by file mtime."""
+    """Paginated sidebar listing, newest-first by file mtime.
+
+    Unchanged files come from :data:`_ROW_CACHE`; only a file whose
+    ``(mtime, size)`` moved since it was last read is parsed again.
+    """
+    stamped: list[tuple[Path, tuple[int, int], float]] = []
     try:
-        files = sorted(
-            sessions_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
+        for path in sessions_dir.glob("*.json"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue  # deleted between the listing and the stat
+            stamped.append((path, (stat.st_mtime_ns, stat.st_size), stat.st_mtime))
     except OSError:
-        files = []
+        stamped = []
+    stamped.sort(key=lambda item: item[2], reverse=True)
 
     rows: list[dict[str, Any]] = []
-    for path in files:
-        data = _read_session_file(path)
-        if data is None:
-            continue
-        row = _row_from_file(path, data)
+    seen: set[str] = set()
+    for path, stamp, _mtime in stamped:
+        key = str(path)
+        seen.add(key)
+        with _ROW_CACHE_LOCK:
+            cached = _ROW_CACHE.get(key)
+        if cached is not None and cached[0] == stamp:
+            row = cached[1]
+        else:
+            data = _read_session_file(path)
+            if data is None:
+                continue
+            row = _row_from_file(path, data)
+            with _ROW_CACHE_LOCK:
+                _ROW_CACHE[key] = (stamp, row)
         if row["message_count"] < min_messages:
             continue
-        rows.append(row)
+        # A copy per call: callers annotate rows (``is_active`` …) and the
+        # cached one must stay as the file said.
+        rows.append(dict(row))
+    with _ROW_CACHE_LOCK:
+        for key in [k for k in _ROW_CACHE if k not in seen]:
+            _ROW_CACHE.pop(key, None)
 
     window = rows[offset : offset + limit] if limit > 0 else rows[offset:]
     return {
@@ -224,12 +263,21 @@ def load_session_messages(sessions_dir: Path, session_id: str) -> dict[str, Any]
     # the sidebar reads it from this same file, and a header that disagreed
     # with the row the user just clicked is its own small confusion.
     name = data.get("name")
-    return {
+    result: dict[str, Any] = {
         "messages": messages,
         "message_count": len(messages),
         "session_id": str(data.get("session_id") or safe),
         "title": str(name) if isinstance(name, str) and name.strip() else "",
     }
+    # The facts a client needs to SHOW a stored session before any runtime
+    # exists for it: where it ran and what it ran on. Same keys as the
+    # ``session.info`` payload, so the header and the model chip read a cold
+    # transcript and a live one alike.
+    for key in ("cwd", "model", "provider"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            result[key] = value
+    return result
 
 
 def _write_session_file(path: Path, data: dict[str, Any]) -> bool:

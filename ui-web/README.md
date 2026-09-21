@@ -237,6 +237,46 @@ Harness, selecting a session opens its folder unless it was manually collapsed;
 manual toggles last for the page's lifetime. Filtering temporarily expands
 matching folders and restores their previous state when cleared.
 
+## Opening a saved session
+
+Clicking a row is two round-trips, the way the reference opens a session.
+`session.history` reads the stored transcript cold — a file read, tens of
+milliseconds even for a multi-megabyte conversation — and the client renders
+it at once: title, workspace, model chip, nodes, trajectory timings. Then
+`session.resume` attaches the runtime that will answer the next prompt
+(provider, tool registry, system prompt, the stored conversation loaded into
+it) behind the transcript; the composer says *Connecting the agent…*
+meanwhile, and a prompt sent during that window waits for the attach rather
+than starting a session of its own. Before this the whole click sat on the
+attach, and the attach sat on a system-prompt walk of the workspace that
+took ~20 s per build on a repo with a few `node_modules` trees (built at
+spawn and again on resume — ~45 s to open a session).
+
+A row the backend has already replayed comes back with the same runtime:
+the backend keys live sessions by runtime id, matches a resume on the stored
+id the runtime replays, and a second click while the first is still
+attaching waits on it instead of spawning twice. Leaving a session releases
+its runtime (`session.close`) when nothing is happening in it — no turn
+running, no approval or question pending, no prompts queued — so browsing
+through saved sessions does not leave a trail of idle agents; the
+conversation itself is saved under the runtime's id at every turn end and
+replays from there. A backend without `session.history` gets the one-call
+resume, transcript included, as before.
+
+## New session
+
+**New session** (the sidebar button, the brand mark, `⌘⇧N`) opens a dialog
+rather than starting a session on the spot. It offers every workspace the
+sidebar knows plus **Create new workspace…**, which takes an absolute folder
+path and creates the folder if it is not there yet (`session.create` with
+`create_dir`). The **Worktree** switch runs the session in a fresh git
+worktree of that repo — the CLI's `--worktree`, under
+`.clawcodex/worktrees/<name>` — so parallel sessions in one repo cannot step
+on each other's files; the worktree is left in place when the session ends,
+since a browser tab has no exit dialog to offer keep-or-remove. A refusal
+(a relative path, a folder that is not a git repository) stays in the dialog
+for correcting.
+
 ## The session across a reload
 
 A reload lands back on the session the window was on. The client remembers
@@ -248,9 +288,10 @@ the backend still has it, the reply is the very same session, its running
 turn included; once it is gone, the runtime's own record — the complete one —
 is replayed into a new runtime. A runtime that never saved, because nothing
 was typed after resuming a row, has no record, so the row it came from is
-replayed instead and the blank runtime the first attempt spawned is closed.
-A session the backend no longer knows is forgotten without a notice: the
-hero is the honest place to land.
+replayed instead (which releases the blank runtime the first attempt landed
+on, as any navigation away from an idle runtime does). A session the backend
+no longer knows is forgotten without a notice: the hero is the honest place
+to land.
 
 ## Trajectory
 
