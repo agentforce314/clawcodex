@@ -1241,6 +1241,9 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
     connection._create = _create  # type: ignore[method-assign]
 
     class _State:
+        # The registry the reply's liveness check consults.
+        sessions = {"rt1": session}
+
         def saved_sessions_dir(self):  # pragma: no cover - not reached
             raise AssertionError
 

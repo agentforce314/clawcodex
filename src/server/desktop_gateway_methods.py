@@ -234,14 +234,16 @@ class DesktopSession:
             if not fut.done():
                 fut.set_result(None)
         self._pending_control.clear()
+        # Dead from here on: a query issued during or after the agent's own
+        # shutdown (a scheduled info refresh, a resume's tail on a runtime
+        # another window closed) answers None at once instead of waiting the
+        # control timeout on a pump that is already cancelled.
+        self.dead = True
         if self.agent is not None:
             try:
                 await self.agent.shutdown()
             except Exception:  # noqa: BLE001
                 pass
-        # A query issued after this (a scheduled info refresh on a runtime
-        # another window closed) answers None at once.
-        self.dead = True
 
     # ── broadcast ────────────────────────────────────────────────────────────
 
@@ -1306,7 +1308,7 @@ class GatewayConnection:
         # a client that ignored the question would park the session's worker
         # thread until the ask timeout. Clients that render questions ask for
         # the real thing here; the ones that don't are left exactly as before.
-        if _wants_questions(params):
+        if _wants_questions(params) and not session.dead:
             reply = await session.control_query("set_ask_user_interactive", {"enabled": True})
             if isinstance(reply, dict) and reply.get("ok") is not False:
                 session.asks_questions = True
@@ -1314,7 +1316,7 @@ class GatewayConnection:
                 logger.warning(
                     "session %s: interactive questions refused: %r", session_id, reply
                 )
-        if resume:
+        if resume and not session.dead:
             # A stored session brings its own name; auto-titling would rename
             # someone's saved conversation after whatever they type next.
             session.titled = True
@@ -1542,9 +1544,10 @@ class GatewayConnection:
         # this, so the user reads a switch that held as a revert. Re-read the
         # live settings and tell the truth, here where both paths converge.
         settings = await session.control_query("get_settings", {})
-        # The stream can end during that round trip too; a dead id handed
-        # out here would only fail the next prompt.
-        if session.dead:
+        # The stream can end during that round trip, or another window can
+        # close the runtime outright; a dead or unregistered id handed out
+        # here would only fail the next prompt.
+        if session.dead or self.state.sessions.get(session.session_id) is not session:
             raise ValueError(f"session {session.session_id} ended while starting")
         if isinstance(settings, dict):
             live_model = settings.get("fusion") or settings.get("model")

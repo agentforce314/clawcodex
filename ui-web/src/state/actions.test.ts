@@ -1393,3 +1393,43 @@ describe('a runtime reachable by two rows', () => {
     ])
   })
 })
+
+describe('the same runtime reached through its other row', () => {
+  it('stays "used" when a click on the replayed row hands the used runtime back', async () => {
+    const gateway = await connect({
+      'session.history': {
+        found: true,
+        messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+        session_id: 'X',
+        stored_session_id: 'X',
+      },
+      'session.resume': { session_id: 'X', stored_session_id: 'R' },
+    })
+
+    await resumeSession('X')
+    await settle()
+    await submitPrompt('do something')
+    await settle()
+    gateway.emit('message.complete', { status: 'ok', text: 'done' }, 'X')
+    await settle()
+
+    // Row R names the same runtime; the backend hands X back.
+    gateway.results['session.history'] = {
+      found: true,
+      messages: [{ content: [{ text: 'hi', type: 'text' }], role: 'user' }],
+      session_id: 'R',
+      stored_session_id: 'R',
+    }
+    await resumeSession('R')
+    await settle()
+    expect($sessionId.get()).toBe('X')
+
+    // Moving on must not release it: it was used, whichever row got it back.
+    gateway.results['session.history'] = { found: true, messages: [], session_id: 'S', stored_session_id: 'S' }
+    gateway.results['session.resume'] = { session_id: 'RS', stored_session_id: 'S' }
+    await resumeSession('S')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.close')
+  })
+})

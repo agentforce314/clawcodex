@@ -580,6 +580,13 @@ async function resumeSessionCore(
   cwd: string | undefined,
   quiet: boolean,
 ): Promise<SessionResumeResult | null> {
+  // The runtime this navigation leaves, and whether it was used: a click on
+  // the other row of the same runtime (its own record vs the row it
+  // replayed) gets that runtime back, and it must not come back as "only
+  // looked at".
+  const previousRuntime = $sessionId.get()
+  const previousTouched = sessionTouched
+
   releaseIdleRuntime()
   beginSessionNavigation()
 
@@ -648,6 +655,9 @@ async function resumeSessionCore(
       }
 
       adoptSession(result)
+
+      if (result.session_id === previousRuntime && previousTouched) markSessionUsed()
+
       // A backend that answered with the transcript anyway (no cold read
       // happened, or it holds a fuller record) — that is the one to show.
       showStoredTranscript(result)

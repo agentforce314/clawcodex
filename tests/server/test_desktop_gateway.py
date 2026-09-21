@@ -26,6 +26,7 @@ from starlette.testclient import TestClient
 
 from src.providers.base import ChatResponse
 from src.server.agent_server import AgentServerConfig, make_spawn_agent
+from src.server.desktop_gateway_methods import CONTROL_TIMEOUT_S
 from src.server.desktop_serve import DesktopServeState, build_app
 from src.server.session_manager import SessionManager
 
@@ -1676,7 +1677,7 @@ def test_the_opener_survives_a_runtime_dying_mid_attach(tmp_path: Path) -> None:
 
 
 def test_a_stream_that_dies_before_init_fails_the_attach_at_once(tmp_path: Path) -> None:
-    state, agents = _fake_state(tmp_path)
+    state, _agents = _fake_state(tmp_path)
     base_spawn = state.spawn_agent
 
     async def spawn(session_id, cwd, resume):
@@ -1694,7 +1695,8 @@ def test_a_stream_that_dies_before_init_fails_the_attach_at_once(tmp_path: Path)
         elapsed = time.monotonic() - started
 
     assert "ended while starting" in reply["error"]["message"]
-    assert elapsed < 10, f"waited {elapsed:.0f}s on a stream that never sent init"
+    # What this discriminates is the control timeout the attach used to wait.
+    assert elapsed < CONTROL_TIMEOUT_S / 2, f"waited {elapsed:.0f}s on a stream that never sent init"
     assert state.sessions == {}
 
 
@@ -1722,6 +1724,40 @@ def test_a_runtime_dying_during_the_resume_tail_is_not_handed_out(tmp_path: Path
             time.sleep(0.02)
         agents[0].queue.put_nowait(RuntimeError("stream died"))
         reply = _drain_for_response(ws, 1, [])
+
+    assert "ended while starting" in reply["error"]["message"]
+    assert state.sessions == {}
+
+
+def test_a_resume_whose_runtime_was_closed_outright_meanwhile_is_refused(tmp_path: Path) -> None:
+    """A desktop tile's unconditional close during the resume's tail must not
+    leave the resuming window with an id the registry no longer has."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "row", [{"role": "user", "content": "hi"}])
+    base_spawn = state.spawn_agent
+
+    async def spawn(session_id, cwd, resume):
+        agent = await base_spawn(session_id, cwd, resume)
+        agent.settings_delay_s = 0.5
+        return agent
+
+    state.spawn_agent = spawn
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "row", "omit_messages": True})
+        for _ in range(100):
+            if agents and any(
+                (f.get("request") or {}).get("subtype") == "get_settings" for f in agents[0].inbound
+            ):
+                break
+            time.sleep(0.02)
+        runtime = next(iter(state.sessions))
+        _rpc(second, 1, "session.close", {"session_id": runtime})
+        assert _drain_for_response(second, 1, [])["result"]["closed"] is True
+        reply = _drain_for_response(first, 1, [])
 
     assert "ended while starting" in reply["error"]["message"]
     assert state.sessions == {}
