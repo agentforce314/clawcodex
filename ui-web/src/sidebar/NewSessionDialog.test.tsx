@@ -37,6 +37,25 @@ describe('knownWorkspaces', () => {
       .toEqual(['/work/current', '/work/alpha'])
     expect(knownWorkspaces('', [project('/a')])).toEqual(['/a'])
   })
+
+  it('offers a repo’s worktree lanes as well as the repo', () => {
+    const repo: ProjectNode = {
+      id: '/repo',
+      label: 'repo',
+      path: '/repo',
+      repos: [{
+        groups: [
+          { id: 'main', label: 'main', path: '/repo', sessions: [] },
+          { id: 'wt', label: 'feature', path: '/repo/.clawcodex/worktrees/feature', sessions: [] },
+        ],
+        id: '/repo',
+        label: 'repo',
+        path: '/repo',
+      }],
+    }
+
+    expect(knownWorkspaces('', [repo])).toEqual(['/repo', '/repo/.clawcodex/worktrees/feature'])
+  })
 })
 
 describe('NewSessionDialog', () => {

@@ -17,16 +17,31 @@ function baseName(path: string): string {
   return segments[segments.length - 1] ?? path
 }
 
+/** The shape of a sidebar project this dialog reads: its path and its lanes'. */
+export interface WorkspaceSource {
+  path?: string | null
+  repos?: readonly { groups?: readonly { path?: string | null }[] }[]
+}
+
 /**
  * The workspaces the dialog offers: the current one first, then every folder
- * the sidebar knows a session in, without repeats. "Home" (sessions with no
- * folder) has no path to start a session in, so it is not a choice.
+ * the sidebar knows a session in — a repo and each of its worktree lanes,
+ * which are the natural places to start another session — without repeats.
+ * "Home" (sessions with no folder) has no path to start a session in, so it
+ * is not a choice.
  */
-export function knownWorkspaces(current: string, projects: readonly { path?: string | null }[]): string[] {
+export function knownWorkspaces(current: string, projects: readonly WorkspaceSource[]): string[] {
   const seen = new Set<string>()
   const paths: string[] = []
+  const candidates = [
+    current,
+    ...projects.flatMap(project => [
+      project.path ?? '',
+      ...(project.repos ?? []).flatMap(repo => (repo.groups ?? []).map(lane => lane.path ?? '')),
+    ]),
+  ]
 
-  for (const path of [current, ...projects.map(project => project.path ?? '')]) {
+  for (const path of candidates) {
     if (path === '' || seen.has(path)) continue
 
     seen.add(path)

@@ -252,19 +252,29 @@ attach, and the attach sat on a system-prompt walk of the workspace that
 took ~20 s per build on a repo with a few `node_modules` trees (built at
 spawn and again on resume — ~45 s to open a session).
 
-A row the backend has already replayed comes back with the same runtime:
-the backend keys live sessions by runtime id, matches a resume on the stored
-id the runtime replays, and a second click while the first is still
-attaching waits on it instead of spawning twice. Leaving a session that was
-only *looked at* — nothing sent to it, no approval or question answered —
-releases its runtime (`session.close` with `if_idle`, which the backend
-refuses for a runtime mid-turn or waiting on the user, since a runtime
-another window is driving is busy in ways this one cannot see). So browsing
-through saved sessions does not leave a trail of idle agents, while a
-session that was used stays up with whatever loop or scheduled work it
-carries; a runtime that ran a turn saved it under its own id, and the row
-replays from there. A backend without `session.history` gets the one-call
-resume, transcript included, as before.
+A row the backend has already replayed comes back with the same runtime
+(subscribed to this socket too, so a second window sees the turns): the
+backend keys live sessions by runtime id, matches a resume on the stored id
+the runtime replays, and a second click while the first is still attaching
+waits on it instead of spawning twice. A runtime handed back mid-turn is
+adopted as running. `session.history` and `projects.tree` are pure reads
+the gateway serves beside whatever else the socket is doing, so a click's
+transcript never queues behind the previous click's attach or the teardown
+of the session being left.
+
+Leaving a session that was only *looked at* — nothing sent to it, no
+approval or question answered — releases its runtime: `session.close` with
+`if_idle`, which the backend refuses while a turn runs or an ask is pending,
+and refuses again on the agent's own word (`get_activity`: a `/goal`
+continuation, a `/loop` or cron job waiting to fire, a queued prompt, a
+background shell) — a runtime another window is driving is busy in ways this
+one cannot see. So browsing through saved sessions does not leave a trail
+of idle agents, while a session that was used stays up; "used" survives a
+reload with the remembered session. A closed runtime tells every window
+(`session.closed`), and a prompt to a runtime the backend no longer has
+reconnects the conversation and sends again; the row replays from the
+record the runtime saved under its own id. A backend without
+`session.history` gets the one-call resume, transcript included, as before.
 
 ## New session
 
@@ -276,9 +286,11 @@ path and creates the folder if it is not there yet (`session.create` with
 worktree of that repo — the CLI's `--worktree`, under
 `.clawcodex/worktrees/<name>` — so parallel sessions in one repo cannot step
 on each other's files; the worktree is left in place when the session ends,
-since a browser tab has no exit dialog to offer keep-or-remove. A refusal
-(a relative path, a folder that is not a git repository) stays in the dialog
-for correcting.
+since a browser tab has no exit dialog to offer keep-or-remove. The folder
+is created as the backend's own user, anywhere it can write (`~` expands).
+A refusal (a relative path, a folder that is not a git repository, Worktree
+on a folder that does not exist yet) stays in the dialog for correcting,
+before anything is created.
 
 ## The session across a reload
 

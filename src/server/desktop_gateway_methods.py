@@ -319,6 +319,11 @@ class DesktopSession:
                 await self._broadcast("session.info", _init_session_info(frame))
             return
 
+        # A turn the agent started for itself (a /goal continuation, a loop
+        # firing) has no submit_prompt; its frames are how the gateway learns
+        # it is running.
+        if kind in ("assistant", "stream_event"):
+            self.turn_active = True
         for type_, payload in translate_frame(frame, self._tool_names):
             await self._broadcast(type_, payload)
         if kind == "result":
@@ -1041,6 +1046,11 @@ def _suggestion_scope(suggestion: dict[str, Any]) -> str:
     return "always"
 
 
+#: Session teardowns in flight (session.close answers before they finish);
+#: held so they are not garbage-collected mid-shutdown.
+_TEARDOWNS: set[asyncio.Task] = set()
+
+
 class GatewayConnection:
     """One accepted gateway socket: method table + session subscription."""
 
@@ -1152,14 +1162,13 @@ class GatewayConnection:
             if existing is not None:
                 # A second resume while the first is still attaching waits
                 # for it — two rapid clicks must not become two runtimes.
-                if not existing.attached.is_set():
-                    try:
-                        await asyncio.wait_for(existing.attached.wait(), CONTROL_TIMEOUT_S)
-                    except asyncio.TimeoutError:
-                        pass
-                # Still registered: the attach succeeded (or is stuck past
-                # its timeout, in which case a second spawn would not help).
+                # Uncapped: the event is set on every exit of _create.
+                await existing.attached.wait()
+                # Still registered: the attach succeeded. This socket may
+                # not be the one that spawned it — a second window opening
+                # the same row — and it needs the turn events too.
                 if existing.session_id in self.state.sessions:
+                    existing.sockets.add(self.websocket)
                     return existing
         # A resumed stored session still gets a fresh runtime session: spawn,
         # then load the stored conversation via the `resume` control below.
@@ -1246,6 +1255,9 @@ class GatewayConnection:
             if not isinstance(reply, dict) or reply.get("ok") is False:
                 logger.warning("session %s: resume of %s refused: %r",
                                session_id, resume, reply)
+                # Not a replay of that row after all: the next click must
+                # try again rather than reuse an empty conversation.
+                session.stored_id = None
 
     # ── methods ──────────────────────────────────────────────────────────────
 
@@ -1358,12 +1370,23 @@ class GatewayConnection:
         is an error with a name rather than a runtime that fails to start.
         """
         cwd = _clean(params.get("cwd"))
+        wants_worktree = params.get("worktree") is True
         if cwd is not None:
+            import os
+
+            if wants_worktree and not os.path.isdir(os.path.expanduser(cwd)):
+                # Checked before anything is created: a folder made here
+                # would never be a repository, and a worktree refusal after
+                # the mkdir would leave an empty folder behind.
+                raise ValueError(
+                    "A worktree needs an existing git repository; a new folder is "
+                    "not one. Turn Worktree off, or pick a repository."
+                )
             cwd = await asyncio.to_thread(
                 _prepare_workspace, cwd, bool(params.get("create_dir"))
             )
         worktree: dict[str, Any] | None = None
-        if params.get("worktree") is True:
+        if wants_worktree:
             worktree = await asyncio.to_thread(
                 _create_session_worktree, cwd or self.state.workspace
             )
@@ -1411,6 +1434,8 @@ class GatewayConnection:
                 raise ValueError(f"unknown session: {wanted}")
             # A runtime that never saved (nothing typed since it was made):
             # there is nothing to show, and that is not an error.
+            info = _init_session_info(live.init_info)
+            info["running"] = live.turn_active
             return {
                 "session_id": wanted,
                 "stored_session_id": wanted,
@@ -1418,9 +1443,11 @@ class GatewayConnection:
                 "found": False,
                 "messages": [],
                 "message_count": 0,
-                "info": _init_session_info(live.init_info),
+                "info": info,
             }
-        info = {key: stored[key] for key in ("cwd", "model", "provider") if stored.get(key)}
+        info: dict[str, Any] = {key: stored[key] for key in ("cwd", "model", "provider") if stored.get(key)}
+        if live is not None:
+            info["running"] = live.turn_active
         reply: dict[str, Any] = {
             "session_id": wanted,
             "stored_session_id": wanted,
@@ -1452,13 +1479,18 @@ class GatewayConnection:
             if settings.get("provider"):
                 session.init_info["provider"] = str(settings["provider"])
         session.refresh_session_info()
+        info = _init_session_info(session.init_info)
+        # Reattaching to a runtime mid-turn is a normal path now (a busy
+        # runtime is kept and handed back); the client must adopt it as
+        # running, not draw the turn's remaining deltas under its next prompt.
+        info["running"] = session.turn_active
         response: dict[str, Any] = {
             "session_id": session.session_id,
             "stored_session_id": wanted or session.session_id,
             "resumed": wanted or session.session_id,
             "message_count": 0,
             "messages": [],
-            "info": _init_session_info(session.init_info),
+            "info": info,
         }
         omit = bool(params.get("omit_messages") or params.get("lazy"))
         if wanted and not omit:
@@ -1498,16 +1530,48 @@ class GatewayConnection:
         session_id = str(params.get("session_id") or "")
         if params.get("if_idle") is True:
             session = self.state.sessions.get(session_id)
-            if session is not None and not session.idle:
+            if session is not None and not await self._session_is_idle(session):
                 return {"ok": True, "closed": False, "reason": "busy"}
         session = self.state.sessions.pop(session_id, None)
         if session is not None:
-            await session.shutdown()
-            try:
-                await self.state.manager.stop_session(session_id)
-            except Exception:  # noqa: BLE001 — index upkeep is best-effort
-                pass
+            # Every window on this runtime learns it is gone, so the next
+            # prompt reconnects instead of failing with "unknown session".
+            await session._broadcast("session.closed", {})
+            # The teardown (SessionEnd hooks, a bounded worker join) runs
+            # behind the reply: calls on this socket are served in order, and
+            # the call after a close is the open of the session being moved
+            # to — it must not wait seconds on the one being left.
+            task = asyncio.create_task(self._teardown(session))
+            _TEARDOWNS.add(task)
+            task.add_done_callback(_TEARDOWNS.discard)
         return {"ok": True, "closed": session is not None}
+
+    async def _session_is_idle(self, session: DesktopSession) -> bool:
+        """Idle by the gateway's own knowledge AND the agent's.
+
+        The gateway sees the turns it submitted and the asks it relayed. The
+        agent also knows about work it started for itself — a /goal
+        continuation, a /loop or cron job waiting to fire, a queued prompt, a
+        background shell — which ``get_activity`` reports. No reply (an agent
+        too old for the control, or too busy to answer) reads as busy: the
+        cost of a wrong "idle" is killing someone's loop.
+        """
+        if not session.idle:
+            return False
+        activity = await session.control_query("get_activity", {}, timeout=5.0)
+        if not isinstance(activity, dict) or activity.get("ok") is False:
+            return False
+        return activity.get("busy") is not True
+
+    async def _teardown(self, session: DesktopSession) -> None:
+        try:
+            await session.shutdown()
+        except Exception:  # noqa: BLE001 — a failed teardown must not raise into the loop
+            logger.debug("session %s: shutdown failed", session.session_id, exc_info=True)
+        try:
+            await self.state.manager.stop_session(session.session_id)
+        except Exception:  # noqa: BLE001 — index upkeep is best-effort
+            pass
 
     async def session_active_list(self, _: dict[str, Any]) -> dict[str, Any]:
         sessions = []

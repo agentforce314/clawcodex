@@ -61,13 +61,14 @@ def _row_from_file(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# Sidebar rows by file path, keyed on the (mtime, size) they were read at.
-# A session file is a whole conversation (up to a few MB), and the sidebar
+# Sidebar rows by file path, keyed on the (mtime, size, inode) they were read
+# at. A session file is a whole conversation (up to a few MB), and the sidebar
 # tree is rebuilt after every turn end and every session switch: re-parsing
 # thousands of unchanged files each time cost ~1 s per rebuild. The stamp is
 # re-checked with one ``stat`` per file, so an edited, replaced or deleted
-# file is never served stale.
-_ROW_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+# file is never served stale — the inode catches an atomic replace of equal
+# size within one mtime tick on a coarse filesystem.
+_ROW_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, Any]], ] = {}
 _ROW_CACHE_LOCK = threading.Lock()
 
 
@@ -89,14 +90,14 @@ def list_session_rows(
     Unchanged files come from :data:`_ROW_CACHE`; only a file whose
     ``(mtime, size)`` moved since it was last read is parsed again.
     """
-    stamped: list[tuple[Path, tuple[int, int], float]] = []
+    stamped: list[tuple[Path, tuple[int, int, int], float]] = []
     try:
         for path in sessions_dir.glob("*.json"):
             try:
                 stat = path.stat()
             except OSError:
                 continue  # deleted between the listing and the stat
-            stamped.append((path, (stat.st_mtime_ns, stat.st_size), stat.st_mtime))
+            stamped.append((path, (stat.st_mtime_ns, stat.st_size, stat.st_ino), stat.st_mtime))
     except OSError:
         stamped = []
     stamped.sort(key=lambda item: item[2], reverse=True)

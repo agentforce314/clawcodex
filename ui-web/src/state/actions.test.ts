@@ -686,7 +686,13 @@ describe('the remembered session', () => {
     await submitPrompt('hello there')
     await settle()
 
-    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({ live: 'S1', stored: 'S1' })
+    // `used`: a prompt went to it, so a reload will keep it rather than let
+    // it go on the next navigation.
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({
+      live: 'S1',
+      stored: 'S1',
+      used: true,
+    })
 
     // A reload: fresh stores, the same browser storage, the runtime still up.
     setGatewayClient(null)
@@ -1025,5 +1031,153 @@ describe('createSession options', () => {
     expect(failure).toBe('session.create refused')
     expect($notice.get().text).toContain('session.create refused')
     expect($sessionId.get()).toBeNull()
+  })
+})
+
+describe('a runtime that goes away', () => {
+  const HISTORY = {
+    found: true,
+    info: { cwd: '/repo' },
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+  }
+
+  it('reconnects the conversation and resends when the backend no longer has the runtime', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+    expect($sessionId.get()).toBe('R1')
+
+    // The runtime died behind a restart; the next attach lands on a new one.
+    gateway.sequences['prompt.submit'] = []
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'X' }
+    const socket = gateway as unknown as { send: (raw: string) => void; deliver: (f: unknown) => void }
+    const send = socket.send.bind(gateway)
+    let refusals = 0
+    socket.send = (raw: string) => {
+      const frame = JSON.parse(raw) as { id: string; method: string; params: { session_id?: string } }
+
+      if (frame.method === 'prompt.submit' && frame.params.session_id === 'R1') {
+        refusals += 1
+        gateway.sent.push(frame as never)
+        queueMicrotask(() => {
+          socket.deliver({ error: { message: 'unknown session: R1' }, id: frame.id })
+        })
+
+        return
+      }
+
+      send(raw)
+    }
+
+    await submitPrompt('still there?')
+    await settle()
+
+    const submits = gateway.sent.filter(frame => frame.method === 'prompt.submit')
+    expect(refusals).toBe(1)
+    expect(submits.map(frame => frame.params.session_id)).toEqual(['R1', 'R2'])
+    expect($sessionId.get()).toBe('R2')
+    expect($notice.get().text).toBe('')
+    expect($transcript.get().nodes.map(node => node.kind)).toEqual(['user', 'user'])
+  })
+
+  it('drops the runtime id on session.closed and reconnects on the next prompt', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    gateway.emit('session.closed', {}, 'R1')
+    await settle()
+    expect($sessionId.get()).toBeNull()
+    expect($storedSessionId.get()).toBe('X')
+    expect($transcript.get().nodes).toHaveLength(1)
+
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'X' }
+    await submitPrompt('back again')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.create')
+    expect(gateway.sent.find(frame => frame.method === 'prompt.submit')?.params).toEqual({
+      session_id: 'R2',
+      text: 'back again',
+    })
+  })
+
+  it('adopts a runtime handed back mid-turn as running', async () => {
+    await connect({
+      'session.history': HISTORY,
+      'session.resume': { info: { running: true }, session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    await resumeSession('X')
+    await settle()
+
+    expect($transcript.get().running).toBe(true)
+  })
+
+  it('opens row B while row A is still attaching, and lets A’s late attach go', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'R1', stored_session_id: 'X' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'Y', stored_session_id: 'Y', title: 'Row B' }
+    gateway.results['session.resume'] = { session_id: 'R2', stored_session_id: 'Y' }
+    const opening = resumeSession('Y')
+    await settle()
+    expect($storedSessionId.get()).toBe('Y')
+    expect($sessionTitle.get()).toBe('Row B')
+
+    gateway.release('session.resume')
+    await opening
+    await settle()
+
+    expect($sessionId.get()).toBe('R2')
+    expect($storedSessionId.get()).toBe('Y')
+    expect($sessionAttaching.get()).toBe(false)
+  })
+
+  it('keeps a session that was in use before a reload', async () => {
+    await connect()
+    await submitPrompt('hello there')
+    await settle()
+
+    const MEMORY = 'clawcodex.web.session'
+    expect(JSON.parse(window.localStorage.getItem(MEMORY) ?? 'null')).toEqual({
+      live: 'S1',
+      stored: 'S1',
+      used: true,
+    })
+
+    setGatewayClient(null)
+    $sessionId.set(null)
+    $transcript.set(emptyTranscript())
+
+    const gateway = await connect({
+      'session.history': { found: true, messages: HISTORY.messages, session_id: 'S1', stored_session_id: 'S1' },
+      'session.resume': { session_id: 'S1', stored_session_id: 'S1' },
+    })
+    expect($sessionId.get()).toBe('S1')
+
+    // Moving on does not close it: it was used, and a reload changes nothing.
+    gateway.results['session.history'] = HISTORY
+    gateway.results['session.resume'] = { session_id: 'R1', stored_session_id: 'X' }
+    await resumeSession('X')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.close')
   })
 })

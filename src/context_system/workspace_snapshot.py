@@ -112,8 +112,10 @@ def count_python_files(root: Path, *, max_dirs: int = MAX_SCANNED_DIRS) -> tuple
     One breadth-first ``scandir`` walk: ignored directory names are skipped
     *before* they are entered (this is what makes the walk cheap — filtering
     ``rglob`` output afterwards still pays for every directory it crawled),
-    symlinks are never followed, and once ``max_dirs`` directories have been
-    scanned the walk stops and ``partial`` is True. Breadth-first so a partial
+    symlinks are never followed (nor counted: a symlinked ``.py`` is not a
+    file of this workspace), and once ``max_dirs`` directories or
+    :data:`MAX_SCANNED_ENTRIES` entries have been scanned the walk stops and
+    ``partial`` is True. Breadth-first so a partial
     scan still covers the project's shallow structure rather than one deep
     corner of it. Entries are visited in name order, so a partial count is
     deterministic for a given tree.

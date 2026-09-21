@@ -57,10 +57,14 @@ class ProbeCache:
         self,
         *,
         ttl_s: float = 300.0,
+        negative_ttl_s: float = 30.0,
         worktree_ttl_s: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._ttl_s = ttl_s
+        # "Not a repo" is kept for less time: a folder just created for a
+        # new workspace gets its ``git init`` moments later.
+        self._negative_ttl_s = negative_ttl_s
         self._worktree_ttl_s = worktree_ttl_s
         self._clock = clock
         self._lock = threading.Lock()
@@ -69,22 +73,30 @@ class ProbeCache:
         # repo root → (expires_at, worktree paths, main first)
         self._worktrees: dict[str, tuple[float, list[str]]] = {}
 
-    def has_repo_root(self, cwd: str) -> bool:
+    def lookup(self, cwd: str) -> tuple[bool, str | None]:
+        """``(cached, toplevel)`` for ``cwd``, read against one clock sample.
+
+        One sample, so an entry cannot be "there" for the found check and
+        "expired" for the value read a moment later.
+        """
+        now = self._clock()
         with self._lock:
             entry = self._repo_root.get(cwd)
-        return entry is not None and entry[0] > self._clock()
+        if entry is None or entry[0] <= now:
+            return False, None
+        return True, entry[1]
+
+    def has_repo_root(self, cwd: str) -> bool:
+        return self.lookup(cwd)[0]
 
     def repo_root(self, cwd: str) -> str | None:
         """The cached toplevel for ``cwd`` (None: not a repo, or not cached)."""
-        with self._lock:
-            entry = self._repo_root.get(cwd)
-        if entry is None or entry[0] <= self._clock():
-            return None
-        return entry[1]
+        return self.lookup(cwd)[1]
 
     def set_repo_root(self, cwd: str, toplevel: str | None) -> None:
+        ttl = self._ttl_s if toplevel else self._negative_ttl_s
         with self._lock:
-            self._repo_root[cwd] = (self._clock() + self._ttl_s, toplevel)
+            self._repo_root[cwd] = (self._clock() + ttl, toplevel)
 
     def worktrees(self, repo_root: str) -> list[str] | None:
         with self._lock:
