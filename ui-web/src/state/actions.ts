@@ -233,7 +233,8 @@ async function restoreSession(): Promise<void> {
   }
 
   // The row the sidebar highlights is the conversation's, not the runtime's:
-  // re-attaching to a live runtime reports the runtime as its own stored id.
+  // re-attaching to a live runtime may report the row it replayed, or its
+  // own record — the remembered row is the one the reader was on.
   $storedSessionId.set(remembered.stored === remembered.live ? $storedSessionId.get() : remembered.stored)
   // A reload is not a reason to let go of a session that was in use: the
   // same runtime came back, and with it whatever loop or goal it was
@@ -516,8 +517,11 @@ function releaseIdleRuntime(): void {
  */
 function isOnScreen(result: SessionResumeResult): boolean {
   const row = result.stored_session_id ?? result.session_id
+  const stored = $storedSessionId.get()
 
-  return result.session_id === $sessionId.get() || row === $storedSessionId.get()
+  // One runtime is reachable by two ids — its own record's row and the row
+  // it replayed — and the click may have named either.
+  return result.session_id === $sessionId.get() || result.session_id === stored || row === stored
 }
 
 /** A conditional close: the backend keeps the runtime if it is busy or held elsewhere. */
@@ -675,10 +679,15 @@ async function resumeSessionCore(
 function adoptSession(result: SessionResumeResult): void {
   sessionTouched = false
   $sessionId.set(result.session_id)
-  $storedSessionId.set(result.stored_session_id ?? result.session_id)
+  // The row the sidebar highlights: the one clicked, when it names the
+  // runtime's own record (the fuller one) — the backend would otherwise
+  // report the row that runtime replayed, and the highlight would jump.
+  const clicked = $storedSessionId.get()
+  const row = clicked !== null && clicked === result.session_id ? clicked : (result.stored_session_id ?? result.session_id)
+  $storedSessionId.set(row)
   rememberSession({
     live: result.session_id,
-    stored: result.stored_session_id ?? result.session_id,
+    stored: row,
     ...(result.info?.cwd === undefined || result.info.cwd === '' ? {} : { cwd: result.info.cwd }),
   })
   // The welcome-screen pick was for the session that now exists — created

@@ -1339,3 +1339,57 @@ describe('the same row opened again while its first open is still landing', () =
     expect($notice.get().text).toContain('Could not resume that session')
   })
 })
+
+describe('a runtime reachable by two rows', () => {
+  // Runtime X replayed row R and then ran a turn, so rows R and X both exist
+  // and the backend answers an open of X with `stored_session_id: R`.
+  const HISTORY_X = {
+    found: true,
+    messages: [{ content: [{ text: 'fuller record', type: 'text' }], role: 'user' }],
+    session_id: 'X',
+    stored_session_id: 'X',
+  }
+  const REPLY_X = { session_id: 'X', stored_session_id: 'R' }
+
+  it('keeps the clicked row when it names the runtime itself', async () => {
+    await connect({ 'session.history': HISTORY_X, 'session.resume': REPLY_X })
+
+    await resumeSession('X')
+    await settle()
+
+    expect($sessionId.get()).toBe('X')
+    expect($storedSessionId.get()).toBe('X')
+    expect(JSON.parse(window.localStorage.getItem('clawcodex.web.session') ?? 'null')).toEqual({
+      live: 'X',
+      stored: 'X',
+    })
+  })
+
+  it('does not close it after X, S, X when the stale reply names the replayed row', async () => {
+    const gateway = await connect({ 'session.history': HISTORY_X, 'session.resume': REPLY_X })
+
+    gateway.hold('session.resume')
+    void resumeSession('X')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY_X, session_id: 'S', stored_session_id: 'S' }
+    gateway.results['session.resume'] = { session_id: 'RS', stored_session_id: 'S' }
+    void resumeSession('S')
+    await settle()
+
+    gateway.results['session.history'] = HISTORY_X
+    gateway.results['session.resume'] = REPLY_X
+    const third = resumeSession('X')
+    await settle()
+
+    gateway.release('session.resume')
+    await third
+    await settle()
+
+    expect($sessionId.get()).toBe('X')
+    expect($storedSessionId.get()).toBe('X')
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'RS' },
+    ])
+  })
+})

@@ -1219,6 +1219,8 @@ def test_session_resume_reports_the_live_model_not_the_spawn_default() -> None:
         turn_active = False
         # The row this runtime replays (the reply echoes it).
         stored_id = "stored-1"
+        # Its stream is up.
+        dead = False
 
         def __init__(self) -> None:
             self.refreshed = False

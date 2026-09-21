@@ -222,21 +222,26 @@ class DesktopSession:
         self._background.clear()
         if self.pump_task is not None:
             self.pump_task.cancel()
-        if self.agent is not None:
-            try:
-                await self.agent.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
         # Answer every waiting control query with "no reply" rather than
         # cancelling it: a cancelled future raises CancelledError inside the
         # RPC handler awaiting it, which unwinds the gateway's socket loop and
         # drops that window's socket — the very window a retirement or
         # another window's close should merely inform. None is the answer
-        # every caller already degrades on.
+        # every caller already degrades on. Before the agent's own shutdown,
+        # so a handler on another socket unblocks now, not after the worker
+        # join.
         for fut in self._pending_control.values():
             if not fut.done():
                 fut.set_result(None)
         self._pending_control.clear()
+        if self.agent is not None:
+            try:
+                await self.agent.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        # A query issued after this (a scheduled info refresh on a runtime
+        # another window closed) answers None at once.
+        self.dead = True
 
     # ── broadcast ────────────────────────────────────────────────────────────
 
@@ -331,6 +336,9 @@ class DesktopSession:
         self.turn_active = False
         self._pending_asks.clear()
         self._pending_question = None
+        # An attach waiting for system/init must not wait the full control
+        # timeout for a stream that will never send it.
+        self.init_seen.set()
         if self.state.sessions.get(self.session_id) is not self:
             return
         self.state.sessions.pop(self.session_id, None)
@@ -1534,6 +1542,10 @@ class GatewayConnection:
         # this, so the user reads a switch that held as a revert. Re-read the
         # live settings and tell the truth, here where both paths converge.
         settings = await session.control_query("get_settings", {})
+        # The stream can end during that round trip too; a dead id handed
+        # out here would only fail the next prompt.
+        if session.dead:
+            raise ValueError(f"session {session.session_id} ended while starting")
         if isinstance(settings, dict):
             live_model = settings.get("fusion") or settings.get("model")
             if live_model:
