@@ -264,17 +264,20 @@ of the session being left.
 
 Leaving a session that was only *looked at* — nothing sent to it, no
 approval or question answered — releases its runtime: `session.close` with
-`if_idle`, which the backend refuses while a turn runs or an ask is pending,
-and refuses again on the agent's own word (`get_activity`: a `/goal`
-continuation, a `/loop` or cron job waiting to fire, a queued prompt, a
-background shell) — a runtime another window is driving is busy in ways this
-one cannot see. So browsing through saved sessions does not leave a trail
-of idle agents, while a session that was used stays up; "used" survives a
-reload with the remembered session. A closed runtime tells every window
-(`session.closed`), and a prompt to a runtime the backend no longer has
-reconnects the conversation and sends again; the row replays from the
-record the runtime saved under its own id. A backend without
-`session.history` gets the one-call resume, transcript included, as before.
+`if_idle`, which the backend refuses while another window or a desktop tile
+still holds the runtime (each socket that opened it is a holder until it
+lets go or disconnects), while a turn runs or an ask is pending, and again
+on the agent's own word (`get_activity`: a `/goal` continuation, a `/loop`
+or cron job waiting to fire, a queued prompt, a background shell). So
+browsing through saved sessions does not leave a trail of idle agents,
+while a session that was used stays up; "used" survives a reload with the
+remembered session. A runtime that goes away — closed by its last holder, or
+its agent stream ended — tells every window (`session.closed`) and leaves
+the registry, so the next prompt or click reconnects the conversation (a
+prompt to a runtime the backend no longer has is sent again after the
+reconnect); the row replays from the record the runtime saved under its own
+id. A backend without `session.history` gets the one-call resume,
+transcript included, as before.
 
 ## New session
 

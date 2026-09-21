@@ -1276,3 +1276,66 @@ describe('createSession and the conversation on screen', () => {
     })
   })
 })
+
+describe('the same row opened again while its first open is still landing', () => {
+  const HISTORY = {
+    found: true,
+    messages: [{ content: [{ text: 'stored hello', type: 'text' }], role: 'user' }],
+    session_id: 'A',
+    stored_session_id: 'A',
+  }
+
+  it('does not close the runtime the later open adopted (A, B, A)', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'RA', stored_session_id: 'A' },
+    })
+
+    gateway.hold('session.resume')
+    void resumeSession('A')
+    await settle()
+
+    gateway.results['session.history'] = { ...HISTORY, session_id: 'B', stored_session_id: 'B' }
+    gateway.results['session.resume'] = { session_id: 'RB', stored_session_id: 'B' }
+    void resumeSession('B')
+    await settle()
+
+    gateway.results['session.history'] = HISTORY
+    gateway.results['session.resume'] = { session_id: 'RA', stored_session_id: 'A' }
+    const third = resumeSession('A')
+    await settle()
+
+    // All three attaches land, in order: A (stale), B (stale), A (current).
+    gateway.release('session.resume')
+    await third
+    await settle()
+
+    expect($sessionId.get()).toBe('RA')
+    expect($storedSessionId.get()).toBe('A')
+    // Only B's runtime is let go; A's is the one on screen.
+    expect(gateway.sent.filter(frame => frame.method === 'session.close').map(frame => frame.params)).toEqual([
+      { if_idle: true, session_id: 'RB' },
+    ])
+  })
+
+  it('leaves the prompt with the reader when a saved row cannot be reconnected', async () => {
+    const gateway = await connect({
+      'session.history': HISTORY,
+      'session.resume': { session_id: 'RA', stored_session_id: 'A' },
+    })
+
+    await resumeSession('A')
+    await settle()
+    gateway.emit('session.closed', {}, 'RA')
+    await settle()
+    expect($sessionId.get()).toBeNull()
+
+    gateway.failing.add('session.resume')
+    await submitPrompt('hello?')
+    await settle()
+
+    expect(gateway.methods()).not.toContain('session.create')
+    expect(gateway.methods()).not.toContain('prompt.submit')
+    expect($notice.get().text).toContain('Could not resume that session')
+  })
+})

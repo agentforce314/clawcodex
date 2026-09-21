@@ -1342,8 +1342,6 @@ def test_session_close_if_idle_refuses_while_an_approval_is_pending(tmp_path: Pa
 def test_session_close_answers_before_a_slow_teardown_and_tells_every_window(tmp_path: Path) -> None:
     """The reply — and the next call on the socket, the open of the session
     being moved to — must not wait on SessionEnd hooks and the worker join."""
-    import time
-
     state, agents = _fake_state(tmp_path)
     state.sessions_dir = tmp_path / "saved"
     _write_saved(state.sessions_dir, "next-row", [{"role": "user", "content": "hi"}])
@@ -1353,17 +1351,17 @@ def test_session_close_answers_before_a_slow_teardown_and_tells_every_window(tmp
         events: list[dict] = []
         _rpc(ws, 1, "session.create", {})
         sid = _drain_for_response(ws, 1, events)["result"]["session_id"]
-        agents[0].shutdown_delay_s = 2.0
-        started = time.monotonic()
+        agents[0].shutdown_delay_s = 5.0
         _rpc(ws, 2, "session.close", {"session_id": sid})
         _rpc(ws, 3, "session.history", {"session_id": "next-row"})
         closed = _drain_for_response(ws, 2, events)["result"]
         history = _drain_for_response(ws, 3, events)["result"]
-        elapsed = time.monotonic() - started
+        # Both answered while the teardown is still running: ordering, not
+        # a wall-clock bound, is the claim.
+        assert agents[0].shutdown_called is False
 
     assert closed == {"ok": True, "closed": True}
     assert history["message_count"] == 1
-    assert elapsed < 1.5, f"the close's teardown held the socket for {elapsed:.1f}s"
     assert any(e.get("type") == "session.closed" and e.get("session_id") == sid for e in events)
     assert sid not in state.sessions
 
@@ -1540,12 +1538,16 @@ def test_a_dead_runtime_is_not_busy(tmp_path: Path) -> None:
         agents[0].queue.put_nowait(RuntimeError("stream died"))
         complete = _drain_for_event(ws, "message.complete", events)
         assert complete["payload"]["status"] == "error"
-        assert state.sessions[sid].dead is True and state.sessions[sid].idle
-        # No agent left to ask, and nothing to protect: released at once,
-        # not after a 5 s activity timeout read as "busy".
-        _rpc(ws, 3, "session.close", {"session_id": sid, "if_idle": True})
-        assert _drain_for_response(ws, 3, events)["result"] == {"ok": True, "closed": True}
+        # Retired on the spot: the turn's end first, then unregistered and
+        # every window told, so the next click spawns afresh instead of
+        # being handed the corpse.
+        closed = _drain_for_event(ws, "session.closed", events)
+        assert closed["session_id"] == sid
         assert sid not in state.sessions
+        _rpc(ws, 3, "prompt.submit", {"session_id": sid, "text": "anyone?"})
+        assert "unknown session" in _drain_for_response(ws, 3, events)["error"]["message"]
+        _rpc(ws, 4, "session.close", {"session_id": sid, "if_idle": True})
+        assert _drain_for_response(ws, 4, events)["result"] == {"ok": True, "closed": False, "reason": "gone"}
 
 
 def test_get_activity_is_answered_by_a_runtime_that_refused_to_start() -> None:
@@ -1560,3 +1562,48 @@ def test_get_activity_is_answered_by_a_runtime_that_refused_to_start() -> None:
     # …while a control that does work is still refused.
     _control(sess, "rename", name="x")
     assert _last_reply(emitted)["ok"] is False
+
+
+def test_a_conditional_close_keeps_a_runtime_another_window_holds(tmp_path: Path) -> None:
+    """A window browsing rows must not close the runtime a desktop tile or
+    another window opened and sits on; only the last holder's release closes."""
+    state, agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "shared", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as first, _connect(client) as second:
+        first.receive_json()
+        second.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        runtime = _drain_for_response(first, 1, [])["result"]["session_id"]
+        _rpc(second, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        assert _drain_for_response(second, 1, [])["result"]["session_id"] == runtime
+        _rpc(second, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(second, 2, [])["result"] == {"ok": True, "closed": False, "reason": "held"}
+        assert runtime in state.sessions
+        _rpc(first, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(first, 2, [])["result"] == {"ok": True, "closed": True}
+    assert len(agents) == 1
+
+
+def test_a_disconnected_window_no_longer_holds_its_runtime(tmp_path: Path) -> None:
+    state, _agents = _fake_state(tmp_path)
+    state.sessions_dir = tmp_path / "saved"
+    _write_saved(state.sessions_dir, "shared", [{"role": "user", "content": "hi"}])
+
+    with TestClient(build_app(state)) as client, _connect(client) as first:
+        first.receive_json()
+        _rpc(first, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+        runtime = _drain_for_response(first, 1, [])["result"]["session_id"]
+        with _connect(client) as second:
+            second.receive_json()
+            _rpc(second, 1, "session.resume", {"session_id": "shared", "omit_messages": True})
+            _drain_for_response(second, 1, [])
+        # The second window went away: its hold went with it.
+        for _ in range(50):
+            if len(state.sessions[runtime].holders) == 1:
+                break
+            import time as _time
+            _time.sleep(0.02)
+        _rpc(first, 2, "session.close", {"session_id": runtime, "if_idle": True})
+        assert _drain_for_response(first, 2, [])["result"] == {"ok": True, "closed": True}

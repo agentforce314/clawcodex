@@ -181,6 +181,10 @@ class DesktopSession:
         # in between outranks it.
         self.user_titled = False
         self.sockets: set[WebSocket] = set()
+        # The sockets that asked for this runtime (created or resumed it) and
+        # have not let go: a conditional close from one of them is refused
+        # while another still holds it — a desktop tile, another window.
+        self.holders: set[WebSocket] = set()
         # Scheduled session.info refreshes; held so they aren't GC'd mid-flight.
         self._background: set[asyncio.Task] = set()
         # tool_use_id -> tool name, so a tool_result can label its row.
@@ -246,7 +250,9 @@ class DesktopSession:
         deadlock until the timeout. Schedule it with ``refresh_session_info``.
         """
         settings = await self.control_query("get_settings", {})
-        payload: dict[str, Any] = {"running": False, "desktop_contract": DESKTOP_CONTRACT}
+        # Not a hardcoded False: this republish follows a resume reply that
+        # may have said running, and the desktop reads it as the turn state.
+        payload: dict[str, Any] = {"running": self.turn_active, "desktop_contract": DESKTOP_CONTRACT}
         if isinstance(settings, dict):
             model = settings.get("fusion") or settings.get("model")
             if model:
@@ -294,17 +300,47 @@ class DesktopSession:
             raise
         except Exception:  # noqa: BLE001
             logger.exception("desktop session %s pump died", self.session_id)
-            # Nothing is running or asking any more; without this a dead
-            # runtime reads as busy and refuses every conditional close — and
-            # a control query to it would only time out.
-            self.dead = True
-            self.turn_active = False
-            self._pending_asks.clear()
-            self._pending_question = None
+            # The turn's end first, then the retirement: the teardown it
+            # schedules cancels THIS task, so every send happens before it.
             await self._broadcast(
                 "message.complete",
                 {"text": "", "status": "error", "error": "backend session ended unexpectedly"},
             )
+            await self._retire()
+            return
+        # The agent closed its stream on its own: the runtime is over.
+        await self._retire()
+
+    async def _retire(self) -> None:
+        """The agent's stream is gone: unregister this runtime and tear it down.
+
+        Left registered, a dead runtime would be handed back by the reuse
+        lookup on the next click and every prompt to it would fail; left
+        "busy", it could never be released. So it leaves the registry here,
+        every window learns (``session.closed``), and the teardown runs as
+        its own task — this is the pump's task, which the teardown cancels.
+        """
+        self.dead = True
+        self.turn_active = False
+        self._pending_asks.clear()
+        self._pending_question = None
+        if self.state.sessions.get(self.session_id) is not self:
+            return
+        self.state.sessions.pop(self.session_id, None)
+        await self._broadcast("session.closed", {})
+        task = asyncio.create_task(self._teardown())
+        self.state.teardowns.add(task)
+        task.add_done_callback(self.state.teardowns.discard)
+
+    async def _teardown(self) -> None:
+        try:
+            await self.shutdown()
+        except Exception:  # noqa: BLE001 — a failed teardown must not raise into the loop
+            logger.debug("desktop session %s: shutdown failed", self.session_id, exc_info=True)
+        try:
+            await self.state.manager.stop_session(self.session_id)
+        except Exception:  # noqa: BLE001 — index upkeep is best-effort
+            pass
 
     async def _route(self, frame: dict[str, Any]) -> None:
         kind = frame.get("type")
@@ -1125,6 +1161,7 @@ class GatewayConnection:
     async def on_close(self) -> None:
         for session in self.state.sessions.values():
             session.sockets.discard(self.websocket)
+            session.holders.discard(self.websocket)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -1153,10 +1190,10 @@ class GatewayConnection:
         replayed spawned yet another runtime and left the previous one alive.
         """
         direct = self.state.sessions.get(stored_id)
-        if direct is not None:
+        if direct is not None and not direct.dead:
             return direct
         for session in self.state.sessions.values():
-            if session.stored_id == stored_id:
+            if session.stored_id == stored_id and not session.dead:
                 return session
         return None
 
@@ -1176,6 +1213,7 @@ class GatewayConnection:
                 # the same row — and it needs the turn events too.
                 if existing.session_id in self.state.sessions:
                     existing.sockets.add(self.websocket)
+                    existing.holders.add(self.websocket)
                     return existing
         # A resumed stored session still gets a fresh runtime session: spawn,
         # then load the stored conversation via the `resume` control below.
@@ -1184,6 +1222,7 @@ class GatewayConnection:
         session = DesktopSession(session_id, self.state)
         session.stored_id = resume
         session.sockets.add(self.websocket)
+        session.holders.add(self.websocket)
         self.state.sessions[session_id] = session
         # Honor the composer's provider/model/effort selection at spawn time, so
         # a session can use a working provider even when the config default is
@@ -1540,14 +1579,24 @@ class GatewayConnection:
         session_id = str(params.get("session_id") or "")
         if params.get("if_idle") is True:
             session = self.state.sessions.get(session_id)
-            if session is not None:
-                if not await self._session_is_idle(session):
-                    return {"ok": True, "closed": False, "reason": "busy"}
-                # Re-checked after the await: a prompt from another socket
-                # can land while the agent answers, and a replaced entry is
-                # not the runtime that was asked about.
-                if self.state.sessions.get(session_id) is not session or not session.idle:
-                    return {"ok": True, "closed": False, "reason": "busy"}
+            if session is None:
+                return {"ok": True, "closed": False, "reason": "gone"}
+            # This socket lets go; anyone else still holding it keeps it —
+            # a desktop tile, another window that opened the same row.
+            session.holders.discard(self.websocket)
+            if session.holders:
+                return {"ok": True, "closed": False, "reason": "held"}
+            if not await self._session_is_idle(session):
+                return {"ok": True, "closed": False, "reason": "busy"}
+            # Re-checked after the await: a prompt from another socket can
+            # land while the agent answers, a replaced entry is not the
+            # runtime that was asked about, and a holder may have arrived.
+            if self.state.sessions.get(session_id) is not session:
+                return {"ok": True, "closed": False, "reason": "gone"}
+            if session.holders:
+                return {"ok": True, "closed": False, "reason": "held"}
+            if not session.idle:
+                return {"ok": True, "closed": False, "reason": "busy"}
         session = self.state.sessions.pop(session_id, None)
         if session is not None:
             # Every window on this runtime learns it is gone, so the next
@@ -1557,7 +1606,7 @@ class GatewayConnection:
             # behind the reply: calls on this socket are served in order, and
             # the call after a close is the open of the session being moved
             # to — it must not wait seconds on the one being left.
-            task = asyncio.create_task(self._teardown(session))
+            task = asyncio.create_task(session._teardown())
             self.state.teardowns.add(task)
             task.add_done_callback(self.state.teardowns.discard)
         return {"ok": True, "closed": session is not None}
@@ -1581,15 +1630,6 @@ class GatewayConnection:
             return False
         return activity.get("busy") is not True
 
-    async def _teardown(self, session: DesktopSession) -> None:
-        try:
-            await session.shutdown()
-        except Exception:  # noqa: BLE001 — a failed teardown must not raise into the loop
-            logger.debug("session %s: shutdown failed", session.session_id, exc_info=True)
-        try:
-            await self.state.manager.stop_session(session.session_id)
-        except Exception:  # noqa: BLE001 — index upkeep is best-effort
-            pass
 
     async def session_active_list(self, _: dict[str, Any]) -> dict[str, Any]:
         sessions = []

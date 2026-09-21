@@ -225,6 +225,9 @@ async function restoreSession(): Promise<void> {
 
   if (result === null) {
     rememberSession(null)
+    // Nothing is on screen: the first prompt starts a session rather than
+    // trying a row the backend no longer has.
+    $storedSessionId.set(null)
 
     return
   }
@@ -424,11 +427,15 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   try {
     result = await gateway().request<SessionResumeResult>('session.create', params)
   } catch (error) {
-    notice(`Could not start a session: ${errorText(error)}`, 'error')
-    // A create that fails must not leave a "Loading session…" spinner over an
-    // empty transcript: the composer is still usable, and the hero is the
-    // honest place to land.
-    if (epoch === sessionNavigationEpoch) $sessionLoading.set(false)
+    // Only for the conversation that asked: after a navigation the reader
+    // has moved on, and the dialog carries its own copy of the reason.
+    if (epoch === sessionNavigationEpoch) {
+      notice(`Could not start a session: ${errorText(error)}`, 'error')
+      // A create that fails must not leave a "Loading session…" spinner over
+      // an empty transcript: the composer is still usable, and the hero is
+      // the honest place to land.
+      $sessionLoading.set(false)
+    }
 
     return errorText(error)
   }
@@ -437,7 +444,7 @@ export async function createSession(options: SessionSpawnOptions = {}): Promise<
   // a slow worktree create): the session is not the one on screen, so it is
   // not adopted — and not left running either.
   if (epoch !== sessionNavigationEpoch) {
-    if (result.session_id !== $sessionId.get()) letGoOfRuntime(result.session_id)
+    if (!isOnScreen(result)) letGoOfRuntime(result.session_id)
 
     return null
   }
@@ -501,7 +508,19 @@ function releaseIdleRuntime(): void {
   letGoOfRuntime(previous)
 }
 
-/** A conditional close: the backend keeps the runtime if it is busy. */
+/**
+ * Whether a stale reply names the conversation now on screen — by runtime, or
+ * by the row it replays. The backend answers a later open of the same row
+ * with the same runtime, and calls on the socket run in order, so a close
+ * sent for the stale reply would land after that later open adopted it.
+ */
+function isOnScreen(result: SessionResumeResult): boolean {
+  const row = result.stored_session_id ?? result.session_id
+
+  return result.session_id === $sessionId.get() || row === $storedSessionId.get()
+}
+
+/** A conditional close: the backend keeps the runtime if it is busy or held elsewhere. */
 function letGoOfRuntime(sessionId: string): void {
   gateway()
     .request('session.close', { if_idle: true, session_id: sessionId })
@@ -619,7 +638,7 @@ async function resumeSessionCore(
       // on screen, and the runtime it attached is nobody's — let it go
       // (conditionally: another window may be driving it).
       if (epoch !== sessionNavigationEpoch) {
-        if (result.session_id !== $sessionId.get()) letGoOfRuntime(result.session_id)
+        if (!isOnScreen(result)) letGoOfRuntime(result.session_id)
 
         return null
       }
@@ -826,22 +845,31 @@ export async function submitPrompt(text: string, spawn: SessionSpawnOptions = {}
   if ($sessionId.get() === null) {
     // On a saved session whose runtime is not attached — the attach failed,
     // or another window closed it — the prompt is still for THAT
-    // conversation: reconnect it rather than start a session of its own.
+    // conversation: reconnect it rather than start a session of its own,
+    // and if that fails the notice says so; a blank session would not be
+    // where the reader meant the prompt to go.
     const stored = $storedSessionId.get()
 
-    if (stored !== null) await resumeSessionCore(stored, undefined, false)
+    if (stored !== null) {
+      await resumeSessionCore(stored, undefined, false)
 
-    if ($sessionId.get() === null) await createSession(spawn)
+      if ($sessionId.get() === null) return
+    } else {
+      await createSession(spawn)
 
-    if ($sessionId.get() === null) return
+      if ($sessionId.get() === null) return
+    }
   }
-
-  markSessionUsed()
 
   if (trimmed.startsWith('/')) {
     const handled = await runSlashCommand(trimmed)
 
-    if (handled) return
+    if (handled) {
+      // A command ran in this session (a /loop, a /goal): it is in use.
+      markSessionUsed()
+
+      return
+    }
   }
 
   await send(trimmed)
