@@ -127,18 +127,18 @@ function NewSessionForm() {
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
 
-  // Read by the document-level handlers below, which must know the menu's
-  // state at the moment of the key or the press, not at their registration.
-  const menuOpenRef = useRef(menuOpen)
-  menuOpenRef.current = menuOpen
+  // The trigger, refocused when the list closes: a picked row unmounts
+  // under the focus, which would otherwise fall to the body.
+  const trigger = useRef<HTMLButtonElement | null>(null)
 
   const close = closeNewSessionDialog
 
+  // Re-registered on every change of `menuOpen`, so the handler reads the
+  // state at the moment of the key. With the picker open, Escape is the
+  // picker's: its own listener closes just the menu, and this one yields.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // With the picker open, Escape is the picker's: its own listener runs
-      // after this one and closes just the menu.
-      if (event.key === 'Escape' && !menuOpenRef.current) {
+      if (event.key === 'Escape' && !menuOpen) {
         event.stopPropagation()
         closeNewSessionDialog()
       }
@@ -149,7 +149,7 @@ function NewSessionForm() {
     return () => {
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [])
+  }, [menuOpen])
 
   // The scrim closes on a click that STARTED on it: a drag that begins in
   // the path field and ends outside must not throw the form away. A press
@@ -157,6 +157,11 @@ function NewSessionForm() {
   // handler runs before the picker's document listener does, so it still
   // sees the menu open.
   const pressedOnScrim = useRef(false)
+
+  const closeMenu = () => {
+    setMenuOpen(false)
+    trigger.current?.focus()
+  }
 
   const creatingNew = choice === NEW_WORKSPACE
   const target = creatingNew ? path.trim() : choice
@@ -223,12 +228,15 @@ function NewSessionForm() {
               <button
                 aria-expanded={menuOpen}
                 aria-haspopup="menu"
-                aria-labelledby="cc-new-session-workspace"
+                // The label AND the choice: a name that read "Workspace"
+                // alone never told a screen reader which folder it was.
+                aria-label={`Workspace: ${creatingNew ? 'New workspace' : choice}`}
                 autoFocus={!creatingNew}
                 className={css.picker}
                 onClick={() => {
                   setMenuOpen(value => !value)
                 }}
+                ref={trigger}
                 type="button"
               >
                 <span className={css.pickerIcon}>
@@ -247,13 +255,11 @@ function NewSessionForm() {
             emptyText="No workspaces yet."
             footer={ADD_WORKSPACE}
             items={rows}
-            onClose={() => {
-              setMenuOpen(false)
-            }}
+            onClose={closeMenu}
             onSelect={id => {
               setChoice(id)
-              setMenuOpen(false)
               setError('')
+              closeMenu()
             }}
             open={menuOpen}
             selectedId={creatingNew ? undefined : choice}

@@ -119,9 +119,11 @@
   color: var(--cc-alias-label-tertiary);
 }
 
+/* The name keeps its width and the path absorbs the truncation: the path
+   contains the name, so a clipped name would lose what the path repeats. */
 .pickerName {
-  flex: none;
-  max-width: 50%;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
