@@ -41,7 +41,18 @@ export interface MenuProps {
   align?: 'end' | 'start'
   /** The trigger, rendered in place. */
   anchor: ReactNode
+  /**
+   * Fill the owner's width: the trigger stretches, and the list spans it —
+   * the form-control shape, as opposed to a chip with a list of its own size.
+   */
+  block?: boolean
   emptyText?: string
+  /**
+   * Rows pinned below the scrolling list, after a divider: the actions that
+   * must stay reachable however long the list is ("Add workspace…"). They
+   * are never the selection, and their check is never drawn.
+   */
+  footer?: readonly MenuItem[]
   items: readonly MenuEntry[]
   onClose: () => void
   onSelect: (id: string) => void
@@ -65,7 +76,9 @@ export interface MenuProps {
 export function Menu({
   align = 'start',
   anchor,
+  block = false,
   emptyText,
+  footer,
   items,
   onClose,
   onSelect,
@@ -103,8 +116,28 @@ export function Menu({
 
   const selectable = items.filter((entry): entry is MenuItem => !isSeparator(entry) && !isLabel(entry))
 
+  const row = (entry: MenuItem, selected: boolean) => (
+    <button
+      className={[css.item, entry.danger === true ? css.danger : ''].filter(Boolean).join(' ')}
+      disabled={entry.disabled}
+      key={entry.id}
+      onClick={() => {
+        onSelect(entry.id)
+      }}
+      role="menuitem"
+      type="button"
+    >
+      {entry.icon !== undefined && <span className={css.itemIcon}>{entry.icon}</span>}
+      <span className={css.itemBody}>
+        <span className={css.itemLabel}>{entry.label}</span>
+        {entry.hint !== undefined && <span className={css.itemHint}>{entry.hint}</span>}
+      </span>
+      {selected && <CheckIcon className={css.check} size={14} />}
+    </button>
+  )
+
   return (
-    <span className={css.root} ref={root}>
+    <span className={[css.root, block ? css.rootBlock : ''].filter(Boolean).join(' ')} ref={root}>
       {anchor}
       {open && (
         <div
@@ -112,7 +145,10 @@ export function Menu({
             css.list,
             side === 'top' ? css.sideTop : css.sideBottom,
             align === 'end' ? css.alignEnd : css.alignStart,
-          ].join(' ')}
+            block ? css.listBlock : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
           role="menu"
         >
           <div className={css.viewport}>
@@ -132,34 +168,18 @@ export function Menu({
                   )
                 }
 
-                const selected = entry.id === selectedId
-
-                return (
-                  <button
-                    className={[css.item, entry.danger === true ? css.danger : '']
-                      .filter(Boolean)
-                      .join(' ')}
-                    disabled={entry.disabled}
-                    key={entry.id}
-                    onClick={() => {
-                      onSelect(entry.id)
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    {entry.icon !== undefined && <span className={css.itemIcon}>{entry.icon}</span>}
-                    <span className={css.itemBody}>
-                      <span className={css.itemLabel}>{entry.label}</span>
-                      {entry.hint !== undefined && (
-                        <span className={css.itemHint}>{entry.hint}</span>
-                      )}
-                    </span>
-                    {selected && <CheckIcon className={css.check} size={14} />}
-                  </button>
-                )
+                return row(entry, entry.id === selectedId)
               })
             )}
           </div>
+          {footer !== undefined && footer.length > 0 && (
+            // Outside the viewport on purpose: the list scrolls, the footer
+            // does not, so its rows stay in reach at any list length.
+            <div className={css.footer}>
+              <div className={css.separator} role="separator" />
+              {footer.map(entry => row(entry, false))}
+            </div>
+          )}
         </div>
       )}
     </span>

@@ -282,9 +282,12 @@ transcript included, as before.
 ## New session
 
 **New session** (the sidebar button, the brand mark, `⌘⇧N`) opens a dialog
-rather than starting a session on the spot. It offers every workspace the
-sidebar knows plus **Create new workspace…**, which takes an absolute folder
-path and creates the folder if it is not there yet (`session.create` with
+rather than starting a session on the spot. Its workspace picker lists every
+folder the sidebar knows (a row per folder, the path as a second line only
+where two folders share a name, the current one checked) with **Add
+workspace…** pinned below the list after a divider — at the end of a long
+list it was the row nobody scrolled to. That takes an absolute folder path
+and creates the folder if it is not there yet (`session.create` with
 `create_dir`). The **Worktree** switch runs the session in a fresh git
 worktree of that repo — the CLI's `--worktree`, under
 `.clawcodex/worktrees/<name>` — so parallel sessions in one repo cannot step

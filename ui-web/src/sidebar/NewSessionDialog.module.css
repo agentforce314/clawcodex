@@ -76,7 +76,7 @@
   line-height: 16px;
 }
 
-.select,
+.picker,
 .input {
   box-sizing: border-box;
   width: 100%;
@@ -90,10 +90,57 @@
   font-size: 13px;
 }
 
-.select:focus-visible,
+.picker:focus-visible,
 .input:focus-visible {
   outline: 2px solid var(--cc-alias-button-info-fill);
   outline-offset: -1px;
+}
+
+/* The workspace picker's trigger: the folder's name, its path dimmed beside
+   it, a chevron — a form control that opens the themed list, where a native
+   select would hand its popup to the OS. */
+.picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker:hover,
+.picker[aria-expanded='true'] {
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.pickerIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.pickerName {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickerPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cc-alias-label-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickerChevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--cc-alias-label-tertiary);
 }
 
 .input::placeholder {

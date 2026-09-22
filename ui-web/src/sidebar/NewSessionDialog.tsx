@@ -4,14 +4,15 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { createSession } from '../state/actions.ts'
 import { $newSessionDialog, $projects, $workspace } from '../state/store.ts'
 import { Button } from '../ui/primitives/Button.tsx'
-import { XIcon } from '../ui/icons.tsx'
+import { Menu, type MenuEntry, type MenuItem } from '../ui/primitives/Menu.tsx'
+import { ChevronDownIcon, FolderIcon, PlusIcon, XIcon } from '../ui/icons.tsx'
 import css from './NewSessionDialog.module.css'
 
-/** The select value that reveals the folder-path field. */
+/** The picker choice that reveals the folder-path field. */
 export const NEW_WORKSPACE = '__new_workspace__'
 
 /** The last path segment, for a label; the whole path when it has none. */
-function baseName(path: string): string {
+export function baseName(path: string): string {
   const segments = path.split(/[/\\]/).filter(Boolean)
 
   return segments[segments.length - 1] ?? path
@@ -51,6 +52,39 @@ export function knownWorkspaces(current: string, projects: readonly WorkspaceSou
   return paths
 }
 
+/**
+ * The picker's rows: one per workspace, named by its folder. The full path
+ * rides along as the second line only where two folders share a name — the
+ * common case stays one compact line per row, and a `clawcodex` next to
+ * another `clawcodex` still tells them apart.
+ */
+export function workspaceRows(workspaces: readonly string[]): MenuEntry[] {
+  const counts = new Map<string, number>()
+
+  for (const path of workspaces) {
+    const name = baseName(path)
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+
+  return workspaces.map(path => {
+    const name = baseName(path)
+
+    return {
+      icon: <FolderIcon size={14} />,
+      id: path,
+      label: name,
+      ...((counts.get(name) ?? 0) > 1 && { hint: path }),
+    }
+  })
+}
+
+/**
+ * Pinned below the list, after a divider, so it is in reach however many
+ * workspaces there are: at the end of a long list it was the row nobody
+ * scrolled to.
+ */
+const ADD_WORKSPACE: MenuItem[] = [{ icon: <PlusIcon size={14} />, id: NEW_WORKSPACE, label: 'Add workspace…' }]
+
 export function openNewSessionDialog(): void {
   $newSessionDialog.set(true)
 }
@@ -65,12 +99,13 @@ export function closeNewSessionDialog(): void {
  *
  * A session runs somewhere, and until now the only somewhere was the current
  * workspace: starting work in another project meant browsing to it first.
- * The dialog puts the choice where the intent is. "Create new workspace…"
- * takes an absolute path and makes the folder if it is not there yet; the
- * worktree switch runs the session in a fresh checkout of the repo, the
- * CLI's `--worktree`, so parallel sessions cannot step on each other's files.
- * Errors stay in the dialog: a path the backend refuses is corrected here,
- * not read off a status line behind a closed dialog.
+ * The dialog puts the choice where the intent is. The workspace picker lists
+ * every folder the sidebar knows, with **Add workspace…** pinned below the
+ * list; that takes an absolute path and makes the folder if it is not there
+ * yet. The worktree switch runs the session in a fresh checkout of the repo,
+ * the CLI's `--worktree`, so parallel sessions cannot step on each other's
+ * files. Errors stay in the dialog: a path the backend refuses is corrected
+ * here, not read off a status line behind a closed dialog.
  */
 export function NewSessionDialog() {
   const open = useStore($newSessionDialog)
@@ -84,17 +119,26 @@ function NewSessionForm() {
   const workspace = useStore($workspace)
   const projects = useStore($projects)
   const workspaces = useMemo(() => knownWorkspaces(workspace, projects), [projects, workspace])
+  const rows = useMemo(() => workspaceRows(workspaces), [workspaces])
   const [choice, setChoice] = useState(() => workspaces[0] ?? NEW_WORKSPACE)
+  const [menuOpen, setMenuOpen] = useState(false)
   const [path, setPath] = useState('')
   const [worktree, setWorktree] = useState(false)
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
 
+  // Read by the document-level handlers below, which must know the menu's
+  // state at the moment of the key or the press, not at their registration.
+  const menuOpenRef = useRef(menuOpen)
+  menuOpenRef.current = menuOpen
+
   const close = closeNewSessionDialog
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      // With the picker open, Escape is the picker's: its own listener runs
+      // after this one and closes just the menu.
+      if (event.key === 'Escape' && !menuOpenRef.current) {
         event.stopPropagation()
         closeNewSessionDialog()
       }
@@ -108,7 +152,10 @@ function NewSessionForm() {
   }, [])
 
   // The scrim closes on a click that STARTED on it: a drag that begins in
-  // the path field and ends outside must not throw the form away.
+  // the path field and ends outside must not throw the form away. A press
+  // that lands while the picker is open only closes the picker — this
+  // handler runs before the picker's document listener does, so it still
+  // sees the menu open.
   const pressedOnScrim = useRef(false)
 
   const creatingNew = choice === NEW_WORKSPACE
@@ -143,8 +190,8 @@ function NewSessionForm() {
 
         pressedOnScrim.current = false
       }}
-      onMouseDown={event => {
-        pressedOnScrim.current = event.target === event.currentTarget
+      onPointerDown={event => {
+        pressedOnScrim.current = event.target === event.currentTarget && !menuOpen
       }}
     >
       <form
@@ -167,25 +214,51 @@ function NewSessionForm() {
           </button>
         </div>
 
-        <label className={css.field}>
-          <span className={css.label}>Workspace</span>
-          <select
-            autoFocus={!creatingNew}
-            className={css.select}
-            onChange={event => {
-              setChoice(event.currentTarget.value)
+        <div className={css.field}>
+          <span className={css.label} id="cc-new-session-workspace">
+            Workspace
+          </span>
+          <Menu
+            anchor={
+              <button
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                aria-labelledby="cc-new-session-workspace"
+                autoFocus={!creatingNew}
+                className={css.picker}
+                onClick={() => {
+                  setMenuOpen(value => !value)
+                }}
+                type="button"
+              >
+                <span className={css.pickerIcon}>
+                  {creatingNew ? <PlusIcon size={14} /> : <FolderIcon size={14} />}
+                </span>
+                <span className={css.pickerName}>{creatingNew ? 'New workspace' : baseName(choice)}</span>
+                {!creatingNew && (
+                  <span className={css.pickerPath} title={choice}>
+                    {choice}
+                  </span>
+                )}
+                <ChevronDownIcon className={css.pickerChevron} size={12} />
+              </button>
+            }
+            block
+            emptyText="No workspaces yet."
+            footer={ADD_WORKSPACE}
+            items={rows}
+            onClose={() => {
+              setMenuOpen(false)
+            }}
+            onSelect={id => {
+              setChoice(id)
+              setMenuOpen(false)
               setError('')
             }}
-            value={choice}
-          >
-            {workspaces.map(candidate => (
-              <option key={candidate} value={candidate}>
-                {baseName(candidate)} — {candidate}
-              </option>
-            ))}
-            <option value={NEW_WORKSPACE}>Create new workspace…</option>
-          </select>
-        </label>
+            open={menuOpen}
+            selectedId={creatingNew ? undefined : choice}
+          />
+        </div>
 
         {creatingNew && (
           <label className={css.field}>
