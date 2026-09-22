@@ -7,6 +7,12 @@
   min-width: 0;
 }
 
+/* The form-control shape: the trigger fills the owner, the list spans it. */
+.rootBlock {
+  display: flex;
+  width: 100%;
+}
+
 .list {
   position: absolute;
   z-index: 100;
@@ -15,7 +21,9 @@
   flex-direction: column;
   min-width: 218px;
   max-width: 360px;
-  /* Stops short of the viewport edge; taller content scrolls inside. */
+  /* Stops short of the viewport edge; taller content scrolls inside. The
+     component measures the room on its side of the anchor once open and
+     sets a tighter cap inline (MENU_MAX_HEIGHT is this same 420). */
   max-height: min(420px, calc(100vh - 24px));
   padding: 4px;
   border: 1px solid var(--cc-alias-border-inverted);
@@ -27,6 +35,15 @@
      whichever descendant actually scrolls. */
   --cc-scrollbar-thumb: var(--cc-alias-scrollbar-bg-l2);
   --cc-scrollbar-thumb-hover: var(--cc-alias-scrollbar-hover-l2);
+}
+
+/* The block list spans its trigger. Compound with .list, and after it, so
+   the base rule's width bounds cannot win the cascade back. */
+.list.listBlock {
+  right: 0;
+  left: 0;
+  min-width: 0;
+  max-width: none;
 }
 
 /* Default: below the anchor. */
@@ -54,7 +71,19 @@
   overflow-y: auto;
 }
 
+/* Pinned below the scrolling list; the divider is part of it so the two
+   never separate when the list is short. */
+.footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
 .item {
+  /* Never shrunk: the viewport is a height-constrained flex column, and
+     without this a long list squashes every row to its min-height before
+     it scrolls — a two-line row's hint then overlaps the row below. */
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -135,12 +164,14 @@
 }
 
 .separator {
+  flex: none;
   height: 1px;
   margin: 4px 6px;
   background: var(--cc-alias-border-l2);
 }
 
 .label {
+  flex: none;
   padding: 6px 10px 2px;
   color: var(--cc-alias-label-caption);
   font-size: 11px;
@@ -151,6 +182,7 @@
 }
 
 .empty {
+  flex: none;
   padding: 12px 10px;
   color: var(--cc-alias-label-caption);
   font-size: 12px;
