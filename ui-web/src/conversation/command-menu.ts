@@ -31,6 +31,7 @@ import {
   ListIcon,
   MessageIcon,
   MonitorIcon,
+  PaperclipIcon,
   RefreshIcon,
   ShieldIcon,
   SparklesIcon,
@@ -55,10 +56,10 @@ export interface MenuRow {
   /** Heading shared by adjacent rows; only the empty query has sections. */
   readonly section?: string
   /** A client-side action rather than a command: picking it runs the action. */
-  readonly action?: 'image'
+  readonly action?: 'file' | 'image'
 }
 
-/** The one row that is not a command: the image picker, listed under Add. */
+/** The image picker, listed under Add — for a model that can read one. */
 export const IMAGE_ROW: MenuRow = {
   action: 'image',
   description: 'Attach an image',
@@ -67,9 +68,22 @@ export const IMAGE_ROW: MenuRow = {
   name: '/image',
 }
 
+/**
+ * The file picker, listed under Add for every model: a text file is inlined
+ * into the prompt and a PDF, an archive or a spreadsheet is saved where the
+ * agent's Read tool can open it.
+ */
+export const FILE_ROW: MenuRow = {
+  action: 'file',
+  description: 'Attach a file',
+  icon: PaperclipIcon,
+  label: 'File',
+  name: '/file',
+}
+
 /** Row names per section, highest usage first; the rest close Commands in catalog order. */
 const SECTION_ROWS = {
-  add: ['/image', '/plan', '/goal'],
+  add: ['/image', '/file', '/plan', '/goal'],
   commands: [
     '/compact',
     '/permissions',
@@ -135,11 +149,12 @@ export function aliasOf(row: MenuRow): string | undefined {
 }
 
 /**
- * Every row the menu can list: the catalog, each built-in with its face, and
- * the image action first when the session's model can read one.
+ * Every row the menu can list: the catalog, each built-in with its face, the
+ * image action first when the session's model can read one, and the file
+ * action for every model.
  */
 export function menuRows(commands: readonly CommandEntry[], vision: boolean): MenuRow[] {
-  const rows: MenuRow[] = vision ? [IMAGE_ROW] : []
+  const rows: MenuRow[] = [...(vision ? [IMAGE_ROW] : []), FILE_ROW]
 
   for (const command of commands) {
     const face = FACES.get(command.name)

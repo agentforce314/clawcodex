@@ -25,6 +25,59 @@
   border-radius: 12px;
 }
 
+/* Attached files: a card per file, the reference's 240×64 document card
+   shape — type glyph, name, then extension and size. Not a link: the file
+   lives in the session's artifact directory, which the reader column does
+   not browse. */
+.files {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: min(525px, 82%);
+}
+
+.fileCard {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+  max-width: 100%;
+  height: 56px;
+  padding: 0 12px;
+  border: 1px solid var(--cc-alias-border-l3);
+  border-radius: 12px;
+  background: var(--cc-specific-bubble);
+}
+
+.fileIcon {
+  flex: none;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.fileBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fileName {
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileMeta {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .bubble {
   /* 525px inside the 748 column keeps a short message from spanning the full
      width; the percentage keeps narrow windows sane. */

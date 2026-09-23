@@ -429,6 +429,55 @@
   opacity: 1;
 }
 
+/* An attached file: the reference's document card — type glyph, name, then
+   extension and size — with the same remove control and chip tag as a
+   thumbnail, and the same rule: here because its [File #N] chip is. */
+.fileCard {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 220px;
+  height: 56px;
+  padding: 0 28px 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--cc-alias-border-l2);
+  border-radius: 10px;
+  background: var(--cc-alias-interactive-bg-hover);
+}
+
+.fileCard:hover .thumbRemove {
+  opacity: 1;
+}
+
+.fileIcon {
+  flex: none;
+  color: var(--cc-alias-label-tertiary);
+}
+
+.fileBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fileName {
+  overflow: hidden;
+  color: var(--cc-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileMeta {
+  color: var(--cc-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 /* The number that ties the thumbnail to its [Image #N] chip in the text. */
 .thumbTag {
   position: absolute;

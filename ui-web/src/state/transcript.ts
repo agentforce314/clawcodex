@@ -39,8 +39,19 @@ export interface UserImage {
   url: string
 }
 
+/** A file attached to a prompt: what its card in the user row shows. */
+export interface UserFile {
+  name: string
+  /** Where the backend keeps it, once a stored message says so. */
+  path?: string
+  /** The prompt marker, `[File #N]`, when known. */
+  placeholder?: string
+  size?: number
+}
+
 export interface UserNode {
   at: number
+  files?: UserFile[]
   id: string
   images?: UserImage[]
   kind: 'user'
@@ -283,12 +294,20 @@ export function appendUserMessage(
   state: TranscriptState,
   text: string,
   images: UserImage[] = [],
+  files: UserFile[] = [],
 ): TranscriptState {
   return {
     ...state,
     nodes: [
       ...sealOpen(state.nodes),
-      { at: Date.now(), id: nextId('user'), kind: 'user', text, ...(images.length > 0 && { images }) },
+      {
+        at: Date.now(),
+        id: nextId('user'),
+        kind: 'user',
+        text,
+        ...(images.length > 0 && { images }),
+        ...(files.length > 0 && { files }),
+      },
     ],
   }
 }
@@ -686,6 +705,76 @@ function storedUserImages(blocks: StoredBlock[], text: string): UserImage[] {
   return images
 }
 
+/**
+ * The header line the agent writes above an attached file's contents:
+ * `[File #N: name] saved at <path> (<size>)`. The block it opens is the
+ * backend's, not the user's words, so it is hidden from the caption and
+ * turned back into the card the composer showed.
+ */
+const STORED_FILE_HEADER = /^\[File #(\d+): ([^\n]+?)\] (?:saved )?at ([^\n]+?) \(([\d.]+ [KM]?B)\)(?:\n|$)/
+
+/**
+ * Whether the block at `index` is an attached file's block rather than prose.
+ *
+ * The agent appends file blocks AFTER the user's text, so the first text
+ * block is never one: a user who happens to type a header-shaped line keeps
+ * their own words on screen.
+ */
+function isStoredFileBlock(block: StoredBlock, index: number, firstText: number): boolean {
+  return (
+    index > firstText &&
+    block?.type === 'text' &&
+    typeof block.text === 'string' &&
+    STORED_FILE_HEADER.test(block.text)
+  )
+}
+
+/** The index of the user's own text block: the first text block, if any. */
+function firstTextBlock(blocks: StoredBlock[]): number {
+  return blocks.findIndex(block => block?.type === 'text' && typeof block.text === 'string')
+}
+
+/** The files a stored user message carried, from the agent's header lines. */
+function storedUserFiles(blocks: StoredBlock[]): UserFile[] {
+  const files: UserFile[] = []
+  const firstText = firstTextBlock(blocks)
+
+  for (const [index, block] of blocks.entries()) {
+    if (!isStoredFileBlock(block, index, firstText)) continue
+    if (block?.type !== 'text' || typeof block.text !== 'string') continue
+
+    const match = STORED_FILE_HEADER.exec(block.text)
+
+    if (match === null) continue
+
+    const [, id, name, path, size] = match
+    const bytes = parseStoredSize(size ?? '')
+
+    files.push({
+      name: name ?? 'file',
+      path,
+      placeholder: `[File #${id ?? ''}]`,
+      ...(bytes !== undefined && { size: bytes }),
+    })
+  }
+
+  return files
+}
+
+/** `12.3 KB` back to bytes, well enough to render the same label. */
+function parseStoredSize(label: string): number | undefined {
+  const match = /^([\d.]+) ([KM]?B)$/.exec(label)
+
+  if (match === null) return undefined
+
+  const amount = Number(match[1])
+  const unit = match[2]
+
+  if (Number.isNaN(amount)) return undefined
+
+  return Math.round(amount * (unit === 'MB' ? 1024 * 1024 : unit === 'KB' ? 1024 : 1))
+}
+
 function blockText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -756,18 +845,37 @@ export function hydrateStoredMessages(
       }
 
       const images = storedUserImages(blocks, blockText(content))
-      // The backend appends coordinate/source metadata as separate text blocks.
-      // It guides the model; it is not part of the user's caption.
-      const text = blockText(images.length === 0 ? content : blocks.filter(block =>
-        !(block?.type === 'text' && typeof block.text === 'string' &&
-          /^\[Image(?:: (?:source:|original \d+x\d+)| source:)[\s\S]*\]$/.test(block.text)),
-      ))
+      const files = storedUserFiles(blocks)
+      // The backend appends coordinate/source metadata, and each attached
+      // file's block, as separate text blocks. They guide the model; they are
+      // not part of the user's caption.
+      const firstText = firstTextBlock(blocks)
+      const text = blockText(
+        images.length === 0 && files.length === 0
+          ? content
+          : blocks.filter(
+              (block, index) =>
+                !isStoredFileBlock(block, index, firstText) &&
+                !(
+                  block?.type === 'text' &&
+                  typeof block.text === 'string' &&
+                  /^\[Image(?:: (?:source:|original \d+x\d+)| source:)[\s\S]*\]$/.test(block.text)
+                ),
+            ),
+      )
 
-      if (text.trim() === '' && images.length === 0) continue
+      if (text.trim() === '' && images.length === 0 && files.length === 0) continue
 
       nodes = [
         ...sealOpen(nodes),
-        { at: 0, id: nextId('user'), kind: 'user', text, ...(images.length > 0 && { images }) },
+        {
+          at: 0,
+          id: nextId('user'),
+          kind: 'user',
+          text,
+          ...(images.length > 0 && { images }),
+          ...(files.length > 0 && { files }),
+        },
       ]
       continue
     }

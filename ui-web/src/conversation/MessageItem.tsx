@@ -5,6 +5,8 @@ import { openFile } from '../sidebar-right/store.ts'
 import { $workspace } from '../state/store.ts'
 import { AlertIcon, InfoIcon } from '../ui/icons.tsx'
 import { CopyButton } from '../ui/primitives/CopyButton.tsx'
+import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
+import { fileExtension, formatBytes } from './attachments.ts'
 import { Markdown } from '../ui/markdown/Markdown.tsx'
 import type { AssistantNode, NoticeNode, UserNode } from '../state/transcript.ts'
 import { projectUserText, userMessageCaption } from './user-text.tsx'
@@ -21,7 +23,7 @@ import css from './MessageItem.module.css'
 
 function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: string) => void }) {
   const workspace = useStore($workspace)
-  const caption = userMessageCaption(node.text, node.images)
+  const caption = userMessageCaption(node.text, node.images, node.files)
   // Plain text, not markdown: this is what the user typed, and rendering it
   // as markdown would silently rewrite their own words. The one decoration is
   // an @file mention, which becomes a chip that opens the file beside the
@@ -43,6 +45,28 @@ function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: str
               src={image.url}
               title={image.placeholder ?? image.name}
             />
+          ))}
+        </div>
+      )}
+      {node.files !== undefined && node.files.length > 0 && (
+        <div className={css.files}>
+          {node.files.map((file, index) => (
+            <div
+              className={css.fileCard}
+              data-file-card=""
+              key={index}
+              title={file.path ?? file.placeholder ?? file.name}
+            >
+              <FileTypeIcon className={css.fileIcon} path={file.name} size={18} />
+              <span className={css.fileBody}>
+                <span className={css.fileName}>{file.name}</span>
+                <span className={css.fileMeta}>
+                  {[fileExtension(file.name), file.size === undefined ? '' : formatBytes(file.size)]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </span>
+              </span>
+            </div>
           ))}
         </div>
       )}

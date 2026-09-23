@@ -11,7 +11,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { GatewayClient } from '../gateway/client.ts'
+import { MAX_FILE_BYTES } from '../conversation/attachments.ts'
 import {
+  attachFile,
   attachImage,
   clearSession,
   createSession,
@@ -1431,5 +1433,93 @@ describe('the same runtime reached through its other row', () => {
     await settle()
 
     expect(gateway.methods()).not.toContain('session.close')
+  })
+})
+
+describe('attached files', () => {
+  it('uploads the bytes and carries the card into the user row while the wire prompt stays text', async () => {
+    const gateway = await connect({ 'file.attach': { attached: true, id: 4, name: 'notes.txt' } })
+    await createSession()
+
+    expect(await attachFile(new Blob(['alpha'], { type: 'text/plain' }), 'notes.txt')).toEqual({ id: 4, name: 'notes.txt' })
+    expect(gateway.sent.find(frame => frame.method === 'file.attach')?.params).toEqual({
+      data: 'YWxwaGE=',
+      name: 'notes.txt',
+      session_id: 'S1',
+    })
+
+    await submitPrompt('[File #4] summarise this')
+
+    expect($transcript.get().nodes[0]).toMatchObject({
+      text: '[File #4] summarise this',
+      files: [{ name: 'notes.txt', placeholder: '[File #4]', size: 5 }],
+    })
+    expect($transcript.get().nodes[0]).not.toHaveProperty('images')
+    expect(gateway.sent.find(frame => frame.method === 'prompt.submit')?.params.text).toBe('[File #4] summarise this')
+  })
+
+  it('does not carry a file whose chip was deleted, and tells a file from an image of the same number', async () => {
+    const gateway = await connect({
+      'file.attach': { attached: true, id: 2, name: 'notes.txt' },
+      'image.attach': { attached: true, id: 2 },
+    })
+    await createSession()
+    await attachFile(new Blob(['alpha']), 'notes.txt')
+    await attachImage(new Blob(['image'], { type: 'image/png' }), 'shot.png')
+
+    await submitPrompt('[Image #2] only the picture')
+
+    expect($transcript.get().nodes[0]).toMatchObject({ images: [{ name: 'shot.png' }] })
+    expect($transcript.get().nodes[0]).not.toHaveProperty('files')
+    expect(gateway.methods().filter(method => method === 'file.attach')).toHaveLength(1)
+  })
+
+  it('refuses a file over the limit before any upload, with the limit named', async () => {
+    const gateway = await connect()
+    await createSession()
+
+    expect(await attachFile(new Blob([new Uint8Array(MAX_FILE_BYTES + 1)]), 'big.bin')).toBeNull()
+
+    expect(gateway.methods()).not.toContain('file.attach')
+    expect($notice.get().text).toContain('files up to 10.0 MB')
+  })
+
+  it('shows the name the backend kept, so every surface agrees', async () => {
+    const gateway = await connect({ 'file.attach': { attached: true, id: 5, name: 'My _Report_.pdf' } })
+    await createSession()
+
+    expect(await attachFile(new Blob(['pdf']), 'My [Report].pdf')).toEqual({ id: 5, name: 'My _Report_.pdf' })
+
+    await submitPrompt('[File #5] read it')
+    expect($transcript.get().nodes[0]).toMatchObject({ files: [{ name: 'My _Report_.pdf' }] })
+    expect(gateway.methods()).toContain('file.attach')
+  })
+
+  it('lets go of an upload that lands after the window moved to another session', async () => {
+    const gateway = await connect({ 'file.attach': { attached: true, id: 6, name: 'late.txt' } })
+    await createSession()
+
+    gateway.hold('file.attach')
+    const uploading = attachFile(new Blob(['x']), 'late.txt')
+    await settle()
+
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    gateway.release('file.attach')
+
+    expect(await uploading).toBeNull()
+    expect($notice.get().text).toBe('')
+
+    await submitPrompt('[File #6] nothing to attach')
+    expect($transcript.get().nodes.at(-1)).not.toHaveProperty('files')
+  })
+
+  it('reports the backend\'s refusal', async () => {
+    const gateway = await connect({ 'file.attach': { error: 'already holding 8 attached files' } })
+    await createSession()
+
+    expect(await attachFile(new Blob(['x']), 'x.txt')).toBeNull()
+    expect($notice.get().text).toBe('already holding 8 attached files')
+    expect(gateway.methods()).toContain('file.attach')
   })
 })

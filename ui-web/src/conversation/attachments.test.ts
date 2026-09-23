@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  fileExtension,
+  formatBytes,
   insertPlaceholder,
   isAttached,
   liveAttachments,
@@ -9,7 +11,10 @@ import {
   type Attachment,
 } from './attachments.ts'
 
-const shot = (id: number): Attachment => ({ id, name: `shot-${String(id)}.png`, url: `blob:${String(id)}` })
+const shot = (id: number): Attachment => ({
+  id, kind: 'image', name: `shot-${String(id)}.png`, url: `blob:${String(id)}`,
+})
+const doc = (id: number): Attachment => ({ id, kind: 'file', name: `report-${String(id)}.pdf`, size: 2048 })
 
 describe('placeholderFor', () => {
   it('matches the chip the backend looks for', () => {
@@ -92,5 +97,40 @@ describe('removePlaceholder', () => {
 
   it('removes only the chip asked for', () => {
     expect(removePlaceholder('[Image #1] [Image #2]', 1)).toBe('[Image #2]')
+  })
+})
+
+describe('file chips', () => {
+  it('use their own placeholder, so a file and an image can share a number', () => {
+    expect(placeholderFor(1, 'file')).toBe('[File #1]')
+    expect(isAttached('see [File #1]', 1, 'file')).toBe(true)
+    expect(isAttached('see [File #1]', 1, 'image')).toBe(false)
+    expect(isAttached('see [Image #1]', 1, 'file')).toBe(false)
+  })
+
+  it('are kept and ordered alongside images by where their chips appear', () => {
+    const kept = liveAttachments('[File #1] then [Image #1] and [File #2]', [shot(1), doc(1), doc(2), doc(3)])
+
+    expect(kept.map(item => `${item.kind}:${String(item.id)}`)).toEqual(['file:1', 'image:1', 'file:2'])
+  })
+
+  it('are inserted and removed like image chips', () => {
+    const inserted = insertPlaceholder('read', 4, 2, 'file')
+    expect(inserted.text).toBe('read [File #2] ')
+    expect(removePlaceholder('read [File #2] now', 2, 'file')).toBe('read now')
+    // The image chip of the same number is not what is removed.
+    expect(removePlaceholder('a [Image #2] b', 2, 'file')).toBe('a [Image #2] b')
+  })
+})
+
+describe('file card labels', () => {
+  it('formats sizes and extensions the way the card shows them', () => {
+    expect(formatBytes(512)).toBe('512 B')
+    expect(formatBytes(12600)).toBe('12.3 KB')
+    expect(formatBytes(3 * 1024 * 1024)).toBe('3.0 MB')
+    expect(fileExtension('report.pdf')).toBe('PDF')
+    expect(fileExtension('archive.tar.gz')).toBe('GZ')
+    expect(fileExtension('Makefile')).toBe('')
+    expect(fileExtension('.env')).toBe('')
   })
 })

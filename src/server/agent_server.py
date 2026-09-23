@@ -60,6 +60,7 @@ import json
 import logging
 import queue as _queue
 import re
+import tempfile
 import threading
 import time
 import uuid as _uuid
@@ -217,6 +218,10 @@ class _AgentSession:
     # uniqueness within one prompt, and a session-wide counter satisfies that
     # while matching what users actually see (#1, #2, #3 as they paste).
     _image_seq: int = 0
+    #: Files attached for the next prompt: ``(id, path, name, size,
+    #: expects_placeholder)`` — the ``[File #N]`` twin of ``_pending_images``.
+    _pending_files: list = field(default_factory=list)
+    _file_seq: int = 0
     # Completed user turns — the "turns: N" odometer on the client's session
     # stats line (the deleted REPL's ``_stats_turns``, repl/core.py). Counts
     # successful non-internal, non-btw turns; /resume seeds it from the
@@ -379,6 +384,10 @@ class _AgentSession:
             # image and then throw it away. Leave it queued for the real turn.
             if not ephemeral:
                 content = self._drain_pending_images(content)
+                # Off the loop: the file drain reads and decodes up to 256 KB
+                # per file, and on the multi-session transport a slow disk
+                # must not stall every other session.
+                content = await asyncio.to_thread(self._drain_pending_files, content)
             self._inbox.put({"__btw__": True, "content": content} if ephemeral else content)
             return
         if msg_type == "control_response":
@@ -721,6 +730,13 @@ class _AgentSession:
                 persist_source=inner.get("persist_source") is True,
             )
             return
+        if subtype == "attach_file":
+            await self._do_attach_file(
+                request_id, inner.get("path"), inner.get("name"),
+                expects_placeholder=bool(inner.get("placeholder")),
+                persist_source=inner.get("persist_source") is True,
+            )
+            return
         if subtype == "clipboard_image":
             await self._do_clipboard_image(
                 request_id, expects_placeholder=bool(inner.get("placeholder")),
@@ -998,11 +1014,13 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
-                # An image attached but never sent belongs to the conversation
-                # the user just discarded; carrying it into the fresh one would
-                # silently attach it to an unrelated prompt.
+                # An image or file attached but never sent belongs to the
+                # conversation the user just discarded; carrying it into the
+                # fresh one would silently attach it to an unrelated prompt.
                 with self._lock:
                     self._pending_images = []
+                    dropped_files, self._pending_files = self._pending_files, []
+                self._discard_pending_files(dropped_files)
                 # /clear starts a FRESH plan file (TS clearAllPlanSlugs on
                 # clear — plans.ts:75-86): drop every session's slug so the
                 # next plan-mode turn mints a new file instead of appending
@@ -1291,6 +1309,177 @@ class _AgentSession:
         accepted = self._attach_image(request_id, image, expects_placeholder=expects_placeholder)
         if not accepted and persist_source and image.source_path:
             Path(image.source_path).unlink(missing_ok=True)
+
+    #: Cap on files queued for one prompt — same reasoning as MAX_PENDING_IMAGES.
+    MAX_PENDING_FILES = 8
+
+    #: One attached file at most. Uploads travel base64 over the gateway socket
+    #: (a 16 MiB frame limit), and a 10 MiB file is already far beyond what a
+    #: prompt can inline — past this the Read tool is the honest way in.
+    MAX_ATTACHED_FILE_BYTES = 10 * 1024 * 1024
+
+    #: A text file larger than this is not inlined into the prompt; the model
+    #: is pointed at the saved path instead (Read with offset/limit).
+    MAX_INLINE_FILE_BYTES = 256 * 1024
+
+    def _queue_file(
+        self, path: str, name: str, size: int, *,
+        expects_placeholder: bool = False, persisted: bool = False,
+    ) -> int | None:
+        """Append under the lock and return the new file's id, or None if full.
+
+        ``persisted`` marks a copy this session made (its ``file-*/`` folder
+        is ours to remove once the file will never be sent); an original the
+        user pointed at is never touched.
+        """
+        with self._lock:
+            if len(self._pending_files) >= self.MAX_PENDING_FILES:
+                return None
+            self._file_seq += 1
+            file_id = self._file_seq
+            self._pending_files.append(
+                (file_id, path, name, size, expects_placeholder, persisted)
+            )
+            return file_id
+
+    @staticmethod
+    def _discard_pending_files(pending: list) -> None:
+        """Remove the persisted copies of files that will never be sent."""
+        import shutil
+
+        for entry in pending:
+            if entry[5]:
+                shutil.rmtree(Path(entry[1]).parent, ignore_errors=True)
+
+    async def _do_attach_file(
+        self, request_id: object, raw_path: object, raw_name: object, *,
+        expects_placeholder: bool = False, persist_source: bool = False,
+    ) -> None:
+        """Attach a file of any type to the next prompt (the ``[File #N]`` chip).
+
+        The gateway lands a browser upload in a temp file and asks for
+        ``persist_source``: the bytes are copied, under their own name, into
+        the session's readable artifact directory — the same place accepted
+        image originals go, which the Read tool may read from — before the
+        upload copy is removed. At submit, :meth:`_drain_pending_files`
+        inlines a text file's contents or points the model at the saved path
+        for a binary one.
+        """
+        text = str(raw_path or "").strip()
+        if not text:
+            self._reply(request_id, {"error": "no path given"})
+            return
+        source = Path(text).expanduser()
+        if not source.is_absolute():
+            # Against the session's directory, as /image does — never the
+            # server process's.
+            source = Path(self.cwd or ".") / source
+        try:
+            size = source.stat().st_size if source.is_file() else -1
+        except OSError:
+            size = -1
+        if size < 0:
+            self._reply(request_id, {"error": f"could not read file: {text}"})
+            return
+        name = _safe_attachment_leaf(str(raw_name or "") or source.name)
+        if size > self.MAX_ATTACHED_FILE_BYTES:
+            self._reply(request_id, {
+                "error": (
+                    f"{name} is {_format_bytes(size)}; files up to "
+                    f"{_format_bytes(self.MAX_ATTACHED_FILE_BYTES)} can be attached"
+                ),
+            })
+            return
+        with self._lock:
+            full = len(self._pending_files) >= self.MAX_PENDING_FILES
+        if full:
+            self._reply(request_id, {
+                "error": (
+                    f"already holding {self.MAX_PENDING_FILES} attached files "
+                    "— send them or run /clear before attaching another"
+                ),
+            })
+            return
+        path = str(source.resolve())
+        if persist_source:
+            from src.services.tool_execution.tool_result_persistence import resolve_tool_results_dir
+
+            try:
+                path = await asyncio.to_thread(
+                    _persist_file_source, source, name,
+                    resolve_tool_results_dir(self.tool_context) / "attachments",
+                )
+            except Exception as exc:  # noqa: BLE001 — report failed storage before accepting
+                self._reply(request_id, {"error": f"could not save file: {exc}"})
+                return
+        file_id = self._queue_file(
+            path, name, size, expects_placeholder=expects_placeholder, persisted=persist_source,
+        )
+        if file_id is None:
+            if persist_source:
+                # The whole ``file-*/`` folder is ours, not just the copy in it.
+                import shutil
+
+                shutil.rmtree(Path(path).parent, ignore_errors=True)
+            self._reply(request_id, {
+                "error": (
+                    f"already holding {self.MAX_PENDING_FILES} attached files "
+                    "— send them or run /clear before attaching another"
+                ),
+            })
+            return
+        self._reply(request_id, {
+            "attached": True, "id": file_id, "name": name, "path": path, "size": size,
+        })
+
+    def _drain_pending_files(self, content):
+        """Append the attached files to this prompt's content.
+
+        The twin of :meth:`_drain_pending_images`, run after it: a file whose
+        ``[File #N]`` chip is gone from the text is DROPPED (the chip doubles
+        as un-attach). Each kept file becomes one trailing text block — a
+        header line the clients recognise, ``[File #N: name] saved at <path>
+        (<size>)``, then the contents for a text file or a Read-tool hint for
+        a binary one, classified the way an ``@path`` mention would be.
+        Trailing, never leading, for the same reason the image metadata is:
+        readers of the prompt's front (turn budgets, previews, hooks) must
+        keep seeing the user's own words first.
+        """
+        with self._lock:
+            pending = self._pending_files
+            self._pending_files = []
+        if not pending:
+            return content
+
+        referenced = _parse_file_refs(_content_text(content))
+        trailing: list[dict] = []
+        dropped: list = []
+        for entry in pending:
+            file_id, path, name, size, expects_placeholder, persisted = entry
+            if expects_placeholder and file_id not in referenced:
+                logger.debug(
+                    "[agent-server] dropping file #%s: its [File #%s] chip was "
+                    "deleted from the prompt",
+                    file_id, file_id,
+                )
+                dropped.append(entry)
+                continue
+            trailing.append({
+                "type": "text",
+                "text": _describe_attached_file(
+                    file_id, path, name, size,
+                    inline_cap=self.MAX_INLINE_FILE_BYTES, persisted=persisted,
+                ),
+            })
+        # Un-attached files are not coming back: their copies go with them.
+        self._discard_pending_files(dropped)
+        if not trailing:
+            return content
+        if isinstance(content, list):
+            return content + trailing
+        text = content if isinstance(content, str) else str(content or "")
+        blocks: list[dict] = [{"type": "text", "text": text}] if text else []
+        return blocks + trailing
 
     async def _do_clipboard_image(
         self, request_id: object, *, expects_placeholder: bool = False
@@ -3158,11 +3347,14 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
-            # Same reasoning as /clear: an image attached but never sent belongs
-            # to the conversation being switched away from. Carrying it over
-            # would attach it to the first prompt of the resumed session.
+            # Same reasoning as /clear: an image or file attached but never
+            # sent belongs to the conversation being switched away from.
+            # Carrying it over would attach it to the first prompt of the
+            # resumed session.
             with self._lock:
                 self._pending_images = []
+                dropped_files, self._pending_files = self._pending_files, []
+            self._discard_pending_files(dropped_files)
             # Seed the turns odometer so the stats line continues where the
             # resumed session left off (its token/cost siblings restore below
             # via restore_cost_state). Prefer the exact persisted counter
@@ -5211,7 +5403,7 @@ class _AgentSession:
 
             from src.hooks.session_hooks import run_user_prompt_submit_hooks
 
-            text = _extract_prompt_text({"content": prompt})
+            text = _user_prompt_text(prompt)
             return _asyncio.run(run_user_prompt_submit_hooks(
                 text, session_id=self.session_id, cwd=self.cwd,
                 tool_use_context=self.tool_context,
@@ -5228,7 +5420,7 @@ class _AgentSession:
         try:
             from src.query.token_budget import parse_token_budget
 
-            return parse_token_budget(_extract_prompt_text({"content": prompt}))
+            return parse_token_budget(_user_prompt_text(prompt))
         except Exception:  # noqa: BLE001 — budget parse is best-effort
             logger.debug("[agent-server] token budget parse failed",
                          exc_info=True)
@@ -5283,7 +5475,7 @@ class _AgentSession:
                     self.session_id,
                     f"UserPromptSubmit operation blocked by hook:\n"
                     f"{ups.block_message}\n\nOriginal prompt: "
-                    f"{_extract_prompt_text({'content': prompt})}",
+                    f"{_user_prompt_text(prompt)}",
                     level="warning",
                 ))
                 self._emit(_result_message(
@@ -5568,6 +5760,11 @@ class _AgentSession:
                 pending.event.set()
         if abort is not None:
             abort.abort("session_closed")
+        # Files attached for a draft that will never be sent: their copies go
+        # with the session, as they do on /clear and resume.
+        with self._lock:
+            dropped_files, self._pending_files = self._pending_files, []
+        self._discard_pending_files(dropped_files)
         self._inbox.put(_SHUTDOWN)
         worker = self._worker
         if worker is not None:
@@ -6895,6 +7092,141 @@ def _parse_image_refs(text: str) -> set[int]:
     """
     ids = {int(m.group(1)) for m in _IMAGE_REF_RE.finditer(text)}
     return {i for i in ids if i > 0}
+
+
+def _user_prompt_text(prompt) -> str:
+    """The user's own words in a prompt: the string, or the FIRST text block.
+
+    Images lead a block list but are not text, and the blocks the drains
+    append — image metadata, attached files' contents — trail it, so the
+    first text block is what the user typed. The readers of the prompt's
+    edges need exactly that: the end-anchored ``+500k`` shorthand (which a
+    trailing block would silently defeat), UserPromptSubmit hooks (which must
+    not be handed a file's contents as "the prompt"), and the blocked-prompt
+    echo. ``_extract_prompt_text``, which joins every text block, stays the
+    right reader for the whole message. A client that sent several text
+    blocks of its own would be read by its first here; none does — text-only
+    lists collapse to one string in ``_extract_prompt_content`` before the
+    drains run, so the only lists that reach this are the drains' own.
+    """
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        for block in prompt:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))
+            if isinstance(block, str):
+                return block
+        return ""
+    return str(prompt or "")
+
+
+#: ``[File #3]`` in the prompt text is what keeps file #3 attached.
+_FILE_REF_RE = re.compile(r"\[File #(\d+)\]")
+
+
+def _parse_file_refs(text: str) -> set[int]:
+    """File ids still referenced by a ``[File #N]`` chip in ``text``."""
+    ids = {int(m.group(1)) for m in _FILE_REF_RE.finditer(text)}
+    return {i for i in ids if i > 0}
+
+
+def _safe_attachment_leaf(name: str) -> str:
+    """A display name a browser sent → a leaf name safe to store and to quote.
+
+    The leaf after either separator (a Windows client's full local path must
+    not leak into the store), control characters dropped, the characters no
+    filesystem or the chip grammar accepts replaced, trailing dots and spaces
+    trimmed, bounded in length. ``file`` when nothing survives.
+    """
+    import unicodedata
+
+    leaf = name[max(name.rfind("/"), name.rfind("\\")) + 1:]
+    # Control characters (C0, C1, DEL), Unicode format characters (bidi
+    # overrides, zero widths) and line/paragraph separators go: a name that
+    # renders as ``aexe.pdf`` while ending in ``.exe`` is not a name to store,
+    # and a separator would break the one-line header the clients parse.
+    clean = "".join(
+        ch for ch in leaf if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp")
+    )
+    clean = re.sub(r'[<>:"|?*\[\]]', "_", clean).strip().rstrip(". ")
+    clean = clean.encode("utf-8")[:128].decode("utf-8", errors="ignore").rstrip(". ")
+    # A Windows reserved device name (``nul.txt`` included) would write to the
+    # device instead of a file on a Windows server; any client can send one.
+    stem = clean.split(".", 1)[0].rstrip(". ")
+    if re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])", stem):
+        clean = "_" + clean
+    return clean if clean and clean not in (".", "..") else "file"
+
+
+def _format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _persist_file_source(source: Path, name: str, directory: Path) -> str:
+    """Copy an uploaded file into ``directory`` under its own name; return the path.
+
+    A private per-upload folder (``file-<random>/``) keeps the original leaf
+    name — the model reads ``report.pdf``, not ``upload-8f3a.bin`` — without
+    two uploads of the same name colliding.
+    """
+    import shutil
+
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder = Path(tempfile.mkdtemp(prefix="file-", dir=directory))
+    target = folder / name
+    try:
+        shutil.copyfile(source, target)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return str(target.resolve())
+
+
+def _describe_attached_file(
+    file_id: int, path: str, name: str, size: int, *, inline_cap: int, persisted: bool = True,
+) -> str:
+    """The prompt block for one attached file: header line, then contents or a hint.
+
+    A text file within ``inline_cap`` is inlined; a larger one is pointed at
+    without being read. The contents sit in a ``<system-reminder>`` envelope,
+    and a literal closing tag inside them is neutralised so a file cannot end
+    the envelope early and pass off what follows as the user's words — the
+    contents remain untrusted input either way, as any inlined file is.
+    """
+    from src.command_system.input_processing import read_file_attachment
+
+    where = "saved at" if persisted else "at"
+    header = f"[File #{file_id}: {name}] {where} {path} ({_format_bytes(size)})"
+    try:
+        info = read_file_attachment(path, max_text_bytes=inline_cap)
+    except Exception:  # noqa: BLE001 — a file that cannot be classified is still attached
+        info = {"kind": "binary", "hint": "Use the Read tool to inspect it."}
+    kind = info.get("kind")
+    if kind == "file":
+        content = re.sub(
+            r"</\s*system-reminder\s*>", "<\\/system-reminder>",
+            str(info.get("content") or ""), flags=re.IGNORECASE,
+        )
+        return (
+            f"{header}\n<system-reminder>\nContents of {name}:\n"
+            f"```\n{content}\n```\n</system-reminder>"
+        )
+    if kind == "large":
+        return (
+            f"{header}\n<system-reminder>\n{name} is {_format_bytes(size)}, too large "
+            f"to inline. Read it with the Read tool at {path}, using offset and limit "
+            f"for the parts you need.\n</system-reminder>"
+        )
+    hint = str(info.get("hint") or "Use the Read tool to inspect it.")
+    return (
+        f"{header}\n<system-reminder>\n{name} is a binary file and was not inlined. "
+        f"{hint} It is at {path}.\n</system-reminder>"
+    )
 
 
 def _content_text(content) -> str:

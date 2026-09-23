@@ -61,7 +61,7 @@ Two structural rules hold throughout:
 ## The composer
 
 The `+` button and a typed `/` open the same menu. With nothing typed it
-lists an **Add** section (the image picker, plan, goal) and a **Commands**
+lists an **Add** section (the image picker, the file picker, plan, goal) and a **Commands**
 section, each in usage order; every row carries a glyph, a title, the command
 name beside a title that differs from it (`Output style` / `output-style`), and
 the catalog's own description right-aligned, so the titles read as one column.
@@ -71,12 +71,35 @@ name or the title, prefix hits first — `/ol` finds `Output style` before
 design height or the space above the card, whichever is less, and a fade at
 its foot says there is more below.
 
-What a pick does depends on the row. The image row opens the picker. A
+What a pick does depends on the row. The image row opens the image picker
+and the file row the file picker. A
 command that takes an argument claims the draft as `/name ` — or as
 `/name <the text already typed>` when the launcher opened over a sentence, so
 "fix the bug" and Plan read `/plan fix the bug`. A bare command runs at once,
 as it would on Enter. The rows and their arrangement are a pure function
 (`src/conversation/command-menu.ts`); the composer decides what a pick does.
+
+### Attachments
+
+An image and a file attach the same way: the bytes go over the socket
+(`image.attach`, `file.attach`), the backend answers with a number, and a
+chip — `[Image #N]` or `[File #N]` — lands in the draft at the caret while
+a thumbnail or a file card appears under the text. The draft is the truth:
+a chip deleted from the text un-attaches (the backend drops anything whose
+chip is gone at submit), and the strip only shows what the draft still
+claims. A drop or a paste onto the composer sorts its files the same way —
+images the image way (refused, with the reason, on a model that cannot
+read one), everything else as a file. Files are capped at 10 MB, said
+before the upload.
+
+The backend keeps an accepted file under its own name in the session's
+artifact directory, where the agent's Read tool may open it, and at submit
+appends one block per file after the prompt: a header the client recognises
+(`[File #N: name] saved at <path> (<size>)`), then the contents of a text
+file — or, for a PDF, an archive, a spreadsheet or anything the sniff says
+is binary, a hint pointing the model at the saved path — classified the way
+an `@path` mention is. A reopened conversation turns those blocks back into
+file cards and keeps the inlined contents out of the caption.
 
 A sent message shows an `@path` mention as a chip carrying the file's type
 icon and name, and a click opens the file in the right column, read against
