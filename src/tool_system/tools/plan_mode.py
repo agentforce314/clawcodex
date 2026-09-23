@@ -302,6 +302,10 @@ def _exit_plan_mode_validate(
 def _exit_plan_mode_check_permissions(
     tool_input: dict[str, Any], _context: ToolContext
 ) -> PermissionResult:
+    if getattr(_context, "team_runtime", None) is not None and getattr(
+        _context, "teammate_name", None
+    ):
+        return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
     # ExitPlanModeV2Tool.ts:233-238 — always confirm with the user. Paired
     # with requires_user_interaction so the ask survives bypassPermissions
     # (check.py:416-426, the permissions.ts step-1e analog).
@@ -327,6 +331,21 @@ def _exit_plan_mode_call(tool_input: dict[str, Any], context: ToolContext) -> To
         except OSError:
             # logError parity — a failed sync must not fail the approval.
             pass
+
+    if context.team_runtime is not None and context.teammate_name:
+        request_id = context.team_runtime.request_plan(
+            context, plan or "", str(file_path)
+        )
+        return ToolResult(
+            name=EXIT_PLAN_MODE_TOOL_NAME,
+            output={
+                "awaitingLeaderApproval": True,
+                "request_id": request_id,
+                "plan": plan,
+                "filePath": str(file_path),
+                "isAgent": True,
+            },
+        )
 
     # Ensure the mode is changed when exiting plan mode — the fallback for
     # flows where the permission resolution didn't set the mode (e.g. a
@@ -365,9 +384,15 @@ def _exit_plan_mode_map_result(output: Any, tool_use_id: str) -> dict[str, Any]:
     """Verbatim mapToolResultToToolResultBlockParam (ExitPlanModeV2Tool.ts:419-492).
 
     (The teammate awaiting-leader-approval branch is not ported — in-process
-    teammates are scaffolding in the port; see the design doc §3.8.)
+    teammate submissions wait for the live team's leader protocol.)
     """
     data = output if isinstance(output, dict) else {}
+    if data.get("awaitingLeaderApproval"):
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": f"Plan submitted to team-lead (request_id={data.get('request_id')}). Stay in plan mode until the leader approves.",
+        }
     plan = data.get("plan")
     file_path = data.get("filePath")
     is_agent = bool(data.get("isAgent"))

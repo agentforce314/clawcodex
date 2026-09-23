@@ -39,7 +39,6 @@ from src.tool_system.protocol import ToolCall
 from src.types.content_blocks import TextBlock, ToolUseBlock
 from src.types.messages import AssistantMessage
 
-
 # ---------------------------------------------------------------------------
 # register_async_agent
 # ---------------------------------------------------------------------------
@@ -306,11 +305,12 @@ def test_async_agent_writes_jsonl_transcript_on_disk(tmp_path: Path) -> None:
     # 1. output_file is the JSONL transcript path.
     assert state.output_file.endswith(f"{task_id}.jsonl")
 
-    # 2. The file exists and has one line per yielded message.
+    # 2. Persist the initial prompt as well as every yielded message.
     transcript_path = Path(state.output_file)
     assert transcript_path.exists(), f"no transcript at {transcript_path}"
     lines = transcript_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 2
+    assert len(lines) == 3
+    assert json.loads(lines[0])["content"] == "x"
     for line in lines:
         # Each line is a parseable JSON object containing the asdict
         # of an AssistantMessage.

@@ -15,11 +15,10 @@ from unittest.mock import MagicMock, patch
 
 from src.goals import GoalJudgeTimeout
 from src.server.agent_server import (
+    _SHUTDOWN,
     AgentServerConfig,
     _AgentSession,
-    _SHUTDOWN,
 )
-
 
 def _judge_returning(payload: str):
     return lambda system, user: payload
@@ -384,15 +383,20 @@ class TestWorkerGoalRouting(unittest.TestCase):
         entangle two self-driving loops — _deliver_task_notifications never
         routes into _maybe_continue_goal."""
         sess, _ = _make_session()
+        from pathlib import Path
+
+        from src.tool_system.context import ToolContext
+        from src.utils.message_queue_manager import enqueue_pending_notification
+
+        sess.tool_context = ToolContext(workspace_root=Path(sess.cwd))
         hook_calls: list = []
         sess._maybe_continue_goal = lambda outcome: hook_calls.append(outcome)  # type: ignore[method-assign]
         sess._run_turn = lambda *a, **k: {"subtype": "success", "response_text": "recap"}  # type: ignore[method-assign]
 
-        with patch(
-            "src.utils.message_queue_manager.drain_pending_notifications",
-            return_value=[SimpleNamespace(value="<task-notification id='t1'/>")],
-        ):
-            delivered = sess._deliver_task_notifications()
+        enqueue_pending_notification(
+            value="<task-notification id='t1'/>", scope=sess.tool_context.runtime_tasks
+        )
+        delivered = sess._deliver_task_notifications()
         self.assertTrue(delivered)
         self.assertEqual(hook_calls, [])
 

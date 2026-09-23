@@ -130,7 +130,7 @@ class TestSpawnReapIntegration:
         import time
         from pathlib import Path
 
-        import src.utils.task_notification as tn
+        import src.utils.message_queue_manager as mq
         from src.tool_system.context import ToolContext, ToolUseOptions
         from src.tool_system.tools.bash.background import spawn_background_bash
 
@@ -142,13 +142,15 @@ class TestSpawnReapIntegration:
         # delivered, but 100 peek() polls saw only an already-drained queue.
         # The spy records AND forwards, so the production path stays intact.
         delivered = []
-        real_enqueue = tn.enqueue_pending_notification
+        real_enqueue = mq.enqueue_pending_notification
 
-        def _spy(*, value, mode="task-notification"):
+        def _spy(*, value, mode="task-notification", scope=None, recipient=None):
             delivered.append(value)
-            return real_enqueue(value=value, mode=mode)
+            return real_enqueue(
+                value=value, mode=mode, scope=scope, recipient=recipient
+            )
 
-        monkeypatch.setattr(tn, "enqueue_pending_notification", _spy)
+        monkeypatch.setattr(mq, "enqueue_pending_notification", _spy)
 
         clear_pending_notifications()
         ctx = ToolContext(workspace_root=tmp_path)

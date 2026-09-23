@@ -1,14 +1,17 @@
-"""The ``budget`` primitive — a token target that acts as a hard ceiling.
+"""The ``budget`` primitive — a token threshold checked before each agent starts.
 
 Exposes ``budget.total`` / ``budget.spent()`` / ``budget.remaining()`` to the
 script. The engine adds each agent's token usage via :meth:`Budget.add`; once
-``spent`` reaches ``total`` the next ``agent()`` call raises
+``spent`` reaches ``total`` the next waiting ``agent()`` call raises
 :class:`WorkflowBudgetExceeded`.
 
 Scripts scale depth with::
 
     while budget.total and budget.remaining() > 50_000:
         ...
+
+Already-running agents may finish above the threshold; this does not cap an
+individual model request.
 
 ``total`` is ``None`` when no target was set, in which case ``remaining()`` is
 ``math.inf`` and the ceiling never trips.

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Union
 
-
 # Mirrors typescript/src/types/permissions.ts:16-38.
 # `EXTERNAL_PERMISSION_MODES` is the user-addressable set written to
 # settings.json / passed via --permission-mode. `auto` and `bubble` are
@@ -324,6 +323,8 @@ class PermissionAskRequest:
     tool_input: dict[str, Any] | None = None
     suggestions: tuple[PermissionUpdate, ...] = ()
     decision_reason: PermissionDecisionReason | None = None
+    agent_id: str | None = None
+    abort_signal: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

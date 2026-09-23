@@ -167,6 +167,8 @@ def _stream_output(
             enqueue_pending_notification(
                 value=_monitor_notification_xml(task_id, output_path, lines),
                 mode="task-notification",
+                scope=context.runtime_tasks,
+                recipient=getattr(context, "notification_recipient", None),
             )
             return 1
 
@@ -181,12 +183,16 @@ def _stream_output(
                     # stopped), so it takes the completion framing, not the
                     # "STILL RUNNING" streaming preamble (critic C5-P2 minor #3).
                     value=_monitor_notification_xml(
-                        task_id, output_path,
+                        task_id,
+                        output_path,
                         f"Monitor auto-stopped after {sent} notifications "
                         f"(too many events). Re-run with a tighter filter "
                         f"(e.g. grep) if you still need to watch this.",
-                        status="killed"),
+                        status="killed",
+                    ),
                     mode="task-notification",
+                    scope=context.runtime_tasks,
+                    recipient=getattr(context, "notification_recipient", None),
                 )
                 return
             state = context.runtime_tasks.get(task_id)

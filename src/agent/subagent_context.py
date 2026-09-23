@@ -175,21 +175,15 @@ def create_subagent_context(
         workspace_root=parent_context.workspace_root,
         permission_context=permission_context,
         cwd=parent_context.cwd,
+        worktree_root=parent_context.worktree_root,
         read_file_fingerprints=read_file_fingerprints,
         task_manager=parent_context.task_manager,
         mcp_clients=parent_context.mcp_clients,
         lsp_client=parent_context.lsp_client,
         # Fresh isolated collections
         todos=[],
-        # QUERY-1 — the task BOARD is shared for TEAMMATE spawns (named
-        # agent + parent team): TS keeps one board (AppState.tasks; the
-        # team file), so a teammate's TaskCompleted stop hooks can see the
-        # tasks the leader assigned it. Anonymous subagents keep the ch10
-        # fresh-isolation semantics. INVARIANT (critic M1): this is a plain
-        # dict shared by reference — NOT RLock-guarded like runtime_tasks.
-        # Readers snapshot (list()) before filtering; if teammate fan-out
-        # ever mutates the board from worker threads, guard it like the
-        # sibling stores.
+        # Named teammates share one task board and its transaction lock.
+        # Anonymous subagents keep their own board.
         tasks=(
             parent_context.tasks
             if (
@@ -203,7 +197,16 @@ def create_subagent_context(
         crons={},
         # No-op / None for UI callbacks
         ask_user=None,
-        team=parent_context.team,
+        team=(
+            {**parent_context.team, "sender_name": overrides.teammate_name or agent_id}
+            if parent_context.team is not None
+            else None
+        ),
+        team_runtime=parent_context.team_runtime,
+        task_board_lock=parent_context.task_board_lock,
+        task_board_path=(
+            parent_context.task_board_path if overrides.teammate_name else None
+        ),
         output_style_name=parent_context.output_style_name,
         output_style_dir=parent_context.output_style_dir,
         additional_working_directories=parent_context.additional_working_directories,
@@ -219,6 +222,7 @@ def create_subagent_context(
         glob_limits=parent_context.glob_limits,
         content_replacement_state=content_replacement_state,
         agent_id=agent_id,
+        notification_recipient=agent_id,
         agent_type=agent_type,
         # QUERY-1 — teammate identity: name from the spawn; team from the
         # parent's team file (both required by the stop-hook gate, matching
@@ -252,6 +256,9 @@ def create_subagent_context(
         # the same store the parent queued into.
         runtime_tasks=parent_context.runtime_tasks,
         agent_name_registry=parent_context.agent_name_registry,
+        agent_continuations=parent_context.agent_continuations,
+        agent_progress_emit=parent_context.agent_progress_emit,
+        session_id=parent_context.session_id,
         # Same reason, same sharing rule: the supervisor is the session's
         # single view of what is live. A child with its own instance would
         # admit against an empty registry, so nesting would bypass the

@@ -137,6 +137,8 @@ class TeammateMessage:
     timestamp: str  # ISO 8601
     summary: str | None = None
     color: str | None = None
+    protocol: bool = False
+    control_id: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Serialize for disk. ``from_`` → ``from`` to match TS shape."""
@@ -145,6 +147,10 @@ class TeammateMessage:
             "text": self.text,
             "timestamp": self.timestamp,
         }
+        if self.protocol:
+            out["protocol"] = True
+        if self.control_id is not None:
+            out["control_id"] = self.control_id
         if self.summary is not None:
             out["summary"] = self.summary
         if self.color is not None:
@@ -159,6 +165,8 @@ class TeammateMessage:
             timestamp=str(raw.get("timestamp", "")),
             summary=raw.get("summary"),
             color=raw.get("color"),
+            protocol=raw.get("protocol") is True,
+            control_id=raw.get("control_id"),
         )
 
 

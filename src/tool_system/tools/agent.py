@@ -15,23 +15,16 @@ import logging
 import os
 import sys
 import time
-from typing import Any
+from dataclasses import replace
+from typing import Any, cast
 from uuid import uuid4
 
-from ..build_tool import Tool, build_tool
-from ..context import ToolContext
-from ..errors import ToolInputError
-from ..protocol import ToolResult
-from ..registry import ToolRegistry
-
 from src.agent.agent_definitions import (
-    AgentDefinition,
     FORK_AGENT,
+    AgentDefinition,
     find_agent_by_type,
     get_built_in_agents,
 )
-from src.agent.filter_agents_by_mcp import filter_agents_by_mcp_requirements
-from src.agent.load_agents_dir import get_agent_definitions_with_overrides
 from src.agent.agent_tool_utils import (
     extract_partial_result,
     finalize_agent_tool,
@@ -42,22 +35,25 @@ from src.agent.constants import (
     LEGACY_AGENT_TOOL_NAME,
     ONE_SHOT_BUILTIN_AGENT_TYPES,
 )
+from src.agent.filter_agents_by_mcp import filter_agents_by_mcp_requirements
 from src.agent.fork_subagent import (
     build_forked_messages,
     build_worktree_notice,
     is_fork_subagent_enabled,
     is_in_fork_child,
 )
+from src.agent.load_agents_dir import get_agent_definitions_with_overrides
 from src.agent.prompt import get_agent_prompt, get_agent_system_prompt
 from src.agent.run_agent import RunAgentParams, run_agent
 from src.services.swarm.agent_supervisor import AgentAdmissionError
 
-logger = logging.getLogger(__name__)
+from ..build_tool import Tool, build_tool
+from ..context import ToolContext
+from ..errors import ToolInputError
+from ..protocol import ToolResult
+from ..registry import ToolRegistry
 
-# Strong references to in-flight background lifecycles. asyncio keeps only a
-# weak reference to a bare ``create_task`` result, so without this a task can be
-# collected mid-flight and silently never finish.
-_BACKGROUND_LIFECYCLES: "set[Any]" = set()
+logger = logging.getLogger(__name__)
 
 
 def _emit_terminal_agent_progress(
@@ -127,7 +123,7 @@ AGENT_INPUT_SCHEMA: dict[str, Any] = {
                 "Optional model override for this agent. Takes precedence over "
                 "the agent definition's model frontmatter. If omitted, uses the "
                 "agent definition's model, or the provider's default subagent "
-                "model (typically a fast, inexpensive tier). Pass \"inherit\" "
+                'model (typically a fast, inexpensive tier). Pass "inherit" '
                 "to force the parent conversation's model, e.g. for hard "
                 "tasks that need its full capability."
             ),
@@ -143,10 +139,19 @@ AGENT_INPUT_SCHEMA: dict[str, Any] = {
                 "You will be notified when it completes."
             ),
         },
+        "team_name": {
+            "type": "string",
+            "description": "Spawn a named persistent teammate in this team (defaults to the active team).",
+        },
+        "mode": {
+            "type": "string",
+            "enum": ["default", "plan", "acceptEdits", "dontAsk", "bypassPermissions"],
+            "description": "Initial permission mode for a persistent teammate.",
+        },
         "isolation": {
             "type": "string",
             "description": (
-                "Isolation mode. \"worktree\" creates a temporary git worktree "
+                'Isolation mode. "worktree" creates a temporary git worktree '
                 "so the agent works on an isolated copy of the repo."
             ),
             "enum": ["worktree"],
@@ -249,6 +254,28 @@ def make_agent_tool(
         if isinstance(agent_name, str) and not agent_name.strip():
             agent_name = None  # treat empty/whitespace as absent
 
+        team_name = tool_input.get("team_name") or (context.team or {}).get("team_name")
+        is_teammate_spawn = bool(team_name and agent_name)
+        if tool_input.get("team_name") and (
+            context.team_runtime is None or context.team_runtime.name != team_name
+        ):
+            raise ToolInputError(
+                "TeamCreate must create the requested team before spawning teammates"
+            )
+        if context.teammate_name and context.team_runtime is not None:
+            if is_teammate_spawn:
+                raise ToolInputError(
+                    "Teammates cannot spawn other teammates; omit name for a synchronous subagent"
+                )
+            if run_in_background:
+                raise ToolInputError(
+                    "In-process teammates can only spawn synchronous subagents"
+                )
+        if is_teammate_spawn and context.team_runtime is None:
+            raise ToolInputError(
+                "The active team has no running lifecycle; create a team first"
+            )
+
         # Resolve agent definition.
         #
         # Routing rules mirror typescript/src/tools/AgentTool/AgentTool.tsx:318-356:
@@ -257,7 +284,9 @@ def make_agent_tool(
         # - subagent_type omitted, fork gate off → default to general-purpose.
         agent_definitions = _get_agent_definitions(context)
         is_fork_path = (
-            subagent_type is None and is_fork_subagent_enabled(context)
+            subagent_type is None
+            and not is_teammate_spawn
+            and is_fork_subagent_enabled(context)
         )
 
         if is_fork_path:
@@ -293,20 +322,35 @@ def make_agent_tool(
 
         # Resolve available tools
         available_tools = registry.list_tools()
+        isolation = tool_input.get("isolation") or agent_def.isolation
+        if isolation not in (None, "worktree"):
+            raise ToolInputError(f"Unsupported agent isolation: {isolation}")
 
         # Chapter-10 / WI-1.5: prefixed task id (``a<8 base36 chars>``)
         # mirroring TS Task.ts:79-105. Replaces the legacy 32-char
         # ``uuid4().hex`` so SendMessage / TaskStop dispatch keys are
         # uniform across types.
-        from src.tasks_core import generate_task_id  # local import — see _launch_async_agent
-        agent_id = generate_task_id("local_agent")
+        from src.tasks_core import (
+            generate_task_id,  # local import — see _launch_async_agent
+        )
+
+        agent_id = generate_task_id(
+            "in_process_teammate" if is_teammate_spawn else "local_agent"
+        )
         start_time = time.time()
         # Coordinator spawns are ALWAYS async so results arrive as
         # <task-notification> user messages — the interaction model the
         # coordinator system prompt teaches. Mirrors AgentTool.tsx:562's
         # ``|| isCoordinator`` term (the selectedAgent.background / fork /
         # kairos terms there belong to their own unported features).
-        is_async = run_in_background or is_coordinator_mode()
+        is_async = (
+            is_teammate_spawn
+            or run_in_background
+            or bool(agent_def.background)
+            or is_coordinator_mode()
+        )
+        if context.teammate_name and context.team_runtime is not None:
+            is_async = False
 
         if provider is None:
             return ToolResult(
@@ -435,37 +479,31 @@ def make_agent_tool(
         # this covers both the sync and background paths. Purely additive — no
         # hook means no behavior change.
         _emit_progress = getattr(context, "agent_progress_emit", None)
-        if _emit_progress is not None:
-            from src.tasks.progress import (
-                ProgressTracker,
-                total_tokens_from_tracker,
-                update_progress_from_message,
-            )
+        from src.tasks.progress import (
+            ProgressTracker,
+            total_tokens_from_tracker,
+            update_progress_from_message,
+        )
 
-            _tracker = ProgressTracker()
+        _tracker = ProgressTracker()
 
-            def _on_subagent_message(message: Any) -> None:
-                try:
-                    update_progress_from_message(_tracker, message)
-                    acts = _tracker.recent_activities
-                    activity = None
-                    if acts:
-                        last = acts[-1]
-                        activity = last.activity_description or last.tool_name
-                    # Feed the supervisor the same counter the HUD shows, so
-                    # `delegation.status` reports real progress instead of a
-                    # tool_count frozen at 0 for the agent's whole lifetime.
-                    #
-                    # Reaches only TOP-LEVEL agents today: agent_progress_emit is
-                    # set on the root tool_context alone (agent_server.py:6106)
-                    # and create_subagent_context does not carry it down, so a
-                    # nested agent never runs this hook and its tool_count stays
-                    # 0. Same reason `depth` below is always 0 in practice — it
-                    # is the right value to send, and becomes meaningful the day
-                    # the emit hook is propagated to child contexts.
-                    context.agent_supervisor.set_tool_count(
-                        agent_id, _tracker.tool_use_count,
-                    )
+        def _on_subagent_message(message: Any) -> None:
+            try:
+                update_progress_from_message(_tracker, message)
+                acts = _tracker.recent_activities
+                activity = None
+                if acts:
+                    last = acts[-1]
+                    activity = last.activity_description or last.tool_name
+                # Feed the supervisor the same counter the HUD shows, so
+                # `delegation.status` reports real progress instead of a
+                # tool_count frozen at 0 for the agent's whole lifetime.
+                #
+                context.agent_supervisor.set_tool_count(
+                    agent_id,
+                    _tracker.tool_use_count,
+                )
+                if _emit_progress is not None:
                     _emit_progress({
                         "agent_id": agent_id,
                         "depth": _depth,
@@ -479,10 +517,10 @@ def make_agent_tool(
                         "status": "running",
                         "tool_use_id": tool_use_id,
                     })
-                except Exception:
-                    logger.debug("subagent progress emit failed", exc_info=True)
+            except Exception:
+                logger.debug("subagent progress emit failed", exc_info=True)
 
-            run_params.on_message = _on_subagent_message
+        run_params.on_message = _on_subagent_message
 
         # ── Admission control ────────────────────────────────────────────
         # One session-scoped supervisor gates BOTH spawn paths. Each agent needs
@@ -499,8 +537,8 @@ def make_agent_tool(
         # that propagation while staying individually abortable: parent abort
         # reaches the child, and interrupting one subagent does not end the
         # parent's turn (create_child_abort_controller is one-way by design).
+        from src.utils.abort_controller import AbortController as _AbortController
         from src.utils.abort_controller import (
-            AbortController as _AbortController,
             create_child_abort_controller as _child_abort_controller,
         )
 
@@ -543,6 +581,13 @@ def make_agent_tool(
         # lifecycle has started. The sync path releases in its own finally, so
         # this guard covers the window before either takes over.
         try:
+            if isolation == "worktree":
+                _prepare_agent_worktree(run_params, context, agent_id)
+            if is_teammate_spawn:
+                output = context.team_runtime.spawn(
+                    run_params, description, mode=tool_input.get("mode")
+                )
+                return ToolResult(name=AGENT_TOOL_NAME, output=output)
             if is_async:
                 return _launch_async_agent(
                     run_params=run_params,
@@ -567,6 +612,8 @@ def make_agent_tool(
                 tool_use_id=tool_use_id,
             )
         except BaseException:
+            if run_params.worktree is not None:
+                run_params.worktree.close()
             context.agent_supervisor.release(agent_id)
             raise
 
@@ -583,8 +630,9 @@ def make_agent_tool(
         tool_use_id: Any = None,
     ) -> ToolResult:
         """Run an agent synchronously and return the result."""
-        from ..protocol import ToolResult as TR
         from src.types.messages import Message
+
+        from ..protocol import ToolResult as TR
 
         agent_messages: list[Message] = []
         interrupted = False
@@ -631,23 +679,12 @@ def make_agent_tool(
             run_params.on_message = _record_then_forward
 
         try:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're inside an async context — use a nested run
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(_sync_collect_agent_messages, run_params)
-                        agent_messages = future.result()
-                else:
-                    agent_messages = loop.run_until_complete(
-                        _collect_agent_messages(run_params)
-                    )
-            except RuntimeError:
-                # No event loop — create one
-                agent_messages = asyncio.run(
-                    _collect_agent_messages(run_params)
-                )
+            from src.utils.async_bridge import run_coroutine_blocking
+
+            agent_messages = run_coroutine_blocking(
+                _collect_agent_messages(run_params),
+                thread_name=f"agent:{agent_id}",
+            )
 
             # Finalize result
             metadata = {
@@ -669,6 +706,8 @@ def make_agent_tool(
         finally:
             if transcript is not None:
                 transcript.close()
+            if run_params.worktree is not None:
+                run_params.worktree.close()
             # The worker has genuinely exited by here (the messages are
             # collected and finalize_agent_tool has returned), so this is the
             # earliest honest point to free the slot. Releasing on a status
@@ -677,7 +716,10 @@ def make_agent_tool(
             _supervisor = run_params.parent_context.agent_supervisor
             # Read BEFORE releasing — the entry is gone afterwards, and the
             # result below has to say how the run actually ended.
-            interrupted = _supervisor.is_interrupted(agent_id)
+            interrupted = _supervisor.is_interrupted(agent_id) or bool(
+                run_params.abort_controller
+                and run_params.abort_controller.signal.aborted
+            )
             _supervisor.release(agent_id)
 
         # ch13 round-4 (critic M1) — emit a TERMINAL agent_progress so the
@@ -697,6 +739,8 @@ def make_agent_tool(
         # text it had produced — and it would act on that. Say what happened,
         # in the content the model actually reads.
         content = result.content
+        if run_params.worktree is not None and run_params.worktree.retained:
+            content = [*content, {"type": "text", "text": run_params.worktree.notice()}]
         if interrupted:
             content = [
                 {
@@ -726,6 +770,11 @@ def make_agent_tool(
                 # tier / provider default-subagent-model), so surface it.
                 "model": resolved_model,
                 "content": content,
+                "worktree_path": (
+                    str(run_params.worktree.path)
+                    if run_params.worktree and run_params.worktree.retained
+                    else None
+                ),
                 "total_duration_ms": result.total_duration_ms,
                 "total_tokens": result.total_tokens,
                 "total_tool_use_count": result.total_tool_use_count,
@@ -743,62 +792,33 @@ def make_agent_tool(
         agent_name: str | None = None,
         resolved_model: str | None = None,
         tool_use_id: Any = None,
+        resuming: bool = False,
     ) -> ToolResult:
-        """Launch an agent in the background and return immediately.
+        """Launch a session-owned worker with admission, transcript, and inbox.
 
-        Chapter-10 layered story:
-        * Chunk B / WI-1.5 — state on ``context.runtime_tasks`` as a
-          typed ``LocalAgentTaskState`` (no more ``context.tasks`` /
-          ``metadata._internal=True`` workaround).
-        * Chunk C / WI-2.2 (gate-zero) — sidechain JSONL transcript
-          opened for the lifetime of the agent run; ``output_file`` is
-          its absolute path.
-        * Chunk C / WI-2.3 — lifecycle goes through the named helpers
-          (``register_async_agent`` / ``complete_agent_task`` /
-          ``fail_agent_task``) so the registry mutations are atomic
-          and consistent across spawn / kill / completion paths.
-        * Chunk C / WI-2.4 — token accounting via ``ProgressTracker``;
-          ``finalize_agent_tool`` reads its accumulated totals instead
-          of reporting ``total_tokens=0``.
-        * Chunk F / WI-6.1 — optional ``agent_name`` registers the
-          spawn under ``context.agent_name_registry`` so SendMessage
-          can resolve ``to: <name>``. Collision-on-running raises;
-          collision-on-terminal silently overwrites.
+        A retained continuation reuses this path after completion or eviction.
+        Resumes wait for prior cleanup before they acquire a fresh admission slot.
         """
         # Local imports defer the cycle: ``src.tasks.local_agent``
         # reaches back into ``src.task_registry`` which is fine, but
         # importing them at module scope would tangle with
         # ``defaults.py``'s tool-construction order.
         from src.agent.transcript import TranscriptWriter
-        from src.tasks.local_agent import (
-            LocalAgentTaskState,
-            complete_agent_task,
-            fail_agent_task,
-            register_async_agent,
-        )
-        from src.tasks.progress import (
-            ProgressTracker,
-            update_progress_from_message,
-        )
         from src.services.swarm.agent_name_registry import (
             AgentNameAlreadyClaimedError,
         )
-        from src.utils.task_notification import enqueue_agent_notification
-
-        # WI-6.1 + critic C1 (Phase-7 fix): atomic check-and-claim
-        # under the typed registry's RLock. The previous Phase-6
-        # implementation had a TOCTOU window between the read and
-        # the write; the typed ``claim_or_raise`` closes it. We do
-        # the claim BEFORE the runtime_tasks write so a refused
-        # spawn doesn't leak a half-constructed agent_id into the
-        # runtime registry.
-        if agent_name is not None:
-            try:
-                context.agent_name_registry.claim_or_raise(
-                    agent_name, agent_id, context.runtime_tasks,
-                )
-            except AgentNameAlreadyClaimedError as exc:
-                raise ToolInputError(str(exc)) from exc
+        from src.tasks.local_agent import (
+            LocalAgentTaskState,
+            complete_agent_or_drain,
+            fail_agent_task,
+            register_async_agent,
+            update_agent_progress,
+        )
+        from src.tasks.progress import (
+            ProgressTracker,
+            get_progress_update,
+            update_progress_from_message,
+        )
 
         # R6 — a dedicated AbortController for this background run, stored on
         # the task state so kill_async_agent can .abort() it (→ the run's
@@ -812,20 +832,40 @@ def make_agent_tool(
         # the supervisor holds the same handle, and it is this helper's sole
         # call site.
         from src.utils.abort_controller import AbortController as _AbortController
+        from src.utils.task_notification import (
+            NotificationStatus,
+            enqueue_agent_notification,
+        )
 
         if run_params.abort_controller is None:
             run_params.abort_controller = _AbortController()
         _async_abort = run_params.abort_controller
 
+        previous_state = context.runtime_tasks.get(agent_id)
         register_async_agent(
             agent_id=agent_id,
             description=description,
             prompt=prompt,
             agent_type=agent_type,
             model=resolved_model,
+            selected_agent=run_params.agent_definition,
+            tool_use_id=tool_use_id,
             abort_controller=_async_abort,
+            notification_recipient=context.notification_recipient,
             registry=context.runtime_tasks,
         )
+        # Publish the task before claiming its name. A concurrent spawn can
+        # now see this running state; a failed claim removes only its own task.
+        if agent_name is not None and not resuming:
+            try:
+                context.agent_name_registry.claim_or_raise(
+                    agent_name,
+                    agent_id,
+                    context.runtime_tasks,
+                )
+            except AgentNameAlreadyClaimedError as exc:
+                context.runtime_tasks.remove(agent_id)
+                raise ToolInputError(str(exc)) from exc
         # ``register_async_agent`` populated ``output_file`` with the
         # JSONL transcript path; pull it back so the writer points at
         # the same path the lifecycle helpers committed to.
@@ -836,176 +876,226 @@ def make_agent_tool(
             else ""
         )
 
+        from src.agent.resume_agent import AgentContinuation
+        from src.types.messages import AssistantMessage, UserMessage
+
+        if not resuming:
+
+            def _restart(new_prompt: str, history: list[Any]) -> ToolResult:
+                params = replace(
+                    run_params,
+                    prompt=new_prompt,
+                    context_messages=history,
+                    abort_controller=_AbortController(),
+                    model=resolved_model,
+                )
+                tracking = getattr(context, "query_tracking", None)
+                context.agent_supervisor.admit(
+                    subagent_id=agent_id,
+                    parent_id=context.agent_id,
+                    depth=tracking.depth + 1 if tracking else 0,
+                    goal=description,
+                    model=resolved_model,
+                    abort_controller=params.abort_controller,
+                )
+                try:
+                    if params.worktree is not None:
+                        _prepare_agent_worktree(params, context, agent_id)
+                    return _launch_async_agent(
+                        run_params=params,
+                        context=context,
+                        agent_id=agent_id,
+                        description=description,
+                        prompt=new_prompt,
+                        agent_type=agent_type,
+                        agent_name=agent_name,
+                        resolved_model=resolved_model,
+                        tool_use_id=tool_use_id,
+                        resuming=True,
+                    )
+                except BaseException:
+                    if params.worktree is not None:
+                        params.worktree.close()
+                    context.agent_supervisor.release(agent_id)
+                    raise
+
+            context.agent_continuations[agent_id] = AgentContinuation(
+                restart=_restart,
+                output_file=transcript_path,
+            )
+        continuation = context.agent_continuations[agent_id]
+        continuation.finished.clear()
+        started_at = time.time()
+
         async def _background_lifecycle() -> None:
             tracker = ProgressTracker()
             messages: list[Any] = []
             transcript: TranscriptWriter | None = None
-            if transcript_path:
+
+            def persist(message: Any) -> None:
+                nonlocal transcript
+                if transcript is not None:
+                    try:
+                        transcript.append(message)
+                    except OSError:
+                        logger.exception("transcript append failed for %s", agent_id)
+                        transcript.close()
+                        transcript = None
+
+            try:
                 try:
                     transcript = TranscriptWriter(transcript_path)
                 except OSError:
-                    # Transcript open failure must not abort the run —
-                    # downstream Chunk D / Chunk F will degrade
-                    # gracefully (no outputFile content / no auto-resume
-                    # source) rather than crash.
-                    logger.exception(
-                        "transcript open failed for %s; continuing without disk persistence",
-                        agent_id,
-                    )
-                    transcript = None
-            try:
-                try:
-                    async for message in run_agent(run_params):
+                    logger.exception("transcript open failed for %s", agent_id)
+                history = list(run_params.context_messages or [])
+                initial = (
+                    [UserMessage(content=run_params.prompt)]
+                    if run_params.prompt
+                    else []
+                )
+                for message in (initial if resuming else [*history, *initial]):
+                    persist(message)
+                history.extend(initial)
+                current_params = run_params
+                while True:
+                    async for message in run_agent(current_params):
                         messages.append(message)
-                        # Live progress accounting — feeds the post-hoc
-                        # ``finalize_agent_tool`` token total via the
-                        # ``progress`` keyword (WI-2.4 fallback also
-                        # works if the tracker is somehow empty).
-                        try:
+                        history.append(message)
+                        if isinstance(message, AssistantMessage):
                             update_progress_from_message(tracker, message)
-                        except Exception:
-                            logger.exception(
-                                "progress tracker update failed for %s", agent_id
-                            )
-                        # Persist to disk per WI-2.2. Synchronous IO
-                        # outside the registry lock — A6/C5 contract is
-                        # preserved (no ``await`` under the registry's
-                        # RLock).
-                        if transcript is not None:
-                            try:
-                                transcript.append(message)
-                            except OSError:
-                                logger.exception(
-                                    "transcript append failed for %s; further appends will be skipped",
-                                    agent_id,
-                                )
-                                transcript.close()
-                                transcript = None
+                        update_agent_progress(
+                            agent_id,
+                            get_progress_update(tracker),
+                            context.runtime_tasks,
+                        )
+                        persist(message)
 
-                    metadata = {
-                        "start_time": time.time(),
-                        "agent_type": agent_type,
-                    }
                     result = finalize_agent_tool(
-                        messages, agent_id, metadata, progress=tracker
+                        messages,
+                        agent_id,
+                        {"start_time": started_at, "agent_type": agent_type},
+                        progress=tracker,
                     )
-                    result_text = "\n".join(
-                        block.get("text", "")
-                        for block in result.content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ).strip()
-                    if not result_text:
-                        result_text = "(Subagent completed with no textual output.)"
-
-                    complete_agent_task(
+                    result_text = (
+                        "\n".join(
+                            block.get("text", "")
+                            for block in result.content
+                            if isinstance(block, dict) and block.get("type") == "text"
+                        ).strip()
+                        or "(Subagent completed with no textual output.)"
+                    )
+                    pending = complete_agent_or_drain(
                         agent_id,
                         result_text=result_text,
                         registry=context.runtime_tasks,
                     )
-                    # R5 (ch13) — mark the async subagent terminal in the HUD.
-                    # Round-4 wired terminal progress for SYNC only; async
-                    # finished via enqueue_agent_notification alone, so the
-                    # HUD lingered "running" until the end-of-turn flush.
-                    # Report the AUTHORITATIVE runtime status, not a hardcoded
-                    # "completed". A concurrent kill marks the task terminal
-                    # "killed" in the registry; when this success branch runs
-                    # (on natural completion — local async agents don't yet
-                    # wire abort_event, so the run finishes normally — or a
-                    # cooperative stop where wired), complete_agent_task
-                    # no-ops on that terminal state (local_agent.py:287), so
-                    # the registry status stays "killed" and the HUD should
-                    # say so (the ui-tui mapping handles killed).
-                    _st = context.runtime_tasks.get(agent_id)
-                    _final_status = (
-                        str(getattr(_st, "status", "completed"))
-                        if _st is not None else "completed"
+                    if not pending:
+                        break
+                    # Atomically take corrections accepted during the final
+                    # response, before publishing a terminal state.
+                    for text in pending:
+                        message = UserMessage(content=text)
+                        history.append(message)
+                        persist(message)
+                    current_params = replace(
+                        run_params, prompt="", context_messages=history
                     )
-                    _emit_terminal_agent_progress(
-                        context, agent_id=agent_id, name=agent_name,
-                        description=description, subagent_type=agent_type,
-                        status=_final_status, model=resolved_model,
-                        tool_use_id=tool_use_id,
-                    )
-                    # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
-                    # ``<task-notification>`` envelope. Atomic check-and-
-                    # set on ``state.notified`` inside the helper means
-                    # a concurrent kill / fail / completion path can't
-                    # produce a second envelope.
-                    enqueue_agent_notification(
-                        task_id=agent_id,
-                        description=description,
-                        status="completed",
-                        output_file=transcript_path,
-                        final_message=result_text,
-                        usage={
-                            "total_tokens": result.total_tokens,
-                            "tool_uses": result.total_tool_use_count,
-                            "duration_ms": result.total_duration_ms,
-                        },
-                        registry=context.runtime_tasks,
-                    )
-                    logger.info(
-                        "Async agent %s (%s) finished: %d messages, %d tokens",
-                        agent_id, agent_type, len(messages), result.total_tokens,
-                    )
-                except Exception as exc:
-                    partial = extract_partial_result(messages)
-                    err_text = partial or str(exc)
-                    fail_agent_task(
-                        agent_id,
-                        error=err_text,
-                        registry=context.runtime_tasks,
-                    )
-                    enqueue_agent_notification(
-                        task_id=agent_id,
-                        description=description,
-                        status="failed",
-                        output_file=transcript_path,
-                        error=str(exc),
-                        final_message=partial,
-                        registry=context.runtime_tasks,
-                    )
-                    # R5 (ch13) — mark the failed async subagent terminal too.
-                    _emit_terminal_agent_progress(
-                        context, agent_id=agent_id, name=agent_name,
-                        description=description, subagent_type=agent_type,
-                        status="failed", model=resolved_model,
-                        tool_use_id=tool_use_id,
-                    )
-                    logger.exception(
-                        "Async agent %s (%s) failed",
-                        agent_id, agent_type,
-                    )
+                if run_params.worktree is not None:
+                    run_params.worktree.close()
+                    if run_params.worktree.retained:
+                        result_text += "\n\n" + run_params.worktree.notice()
+                        context.runtime_tasks.update(
+                            agent_id,
+                            lambda prev: (
+                                replace(prev, result_text=result_text)
+                                if isinstance(prev, LocalAgentTaskState)
+                                else prev
+                            ),
+                        )
+                state = context.runtime_tasks.get(agent_id)
+                status = str(getattr(state, "status", "completed"))
+                _emit_terminal_agent_progress(
+                    context,
+                    agent_id=agent_id,
+                    name=agent_name,
+                    description=description,
+                    subagent_type=agent_type,
+                    status=status,
+                    model=resolved_model,
+                    tool_use_id=tool_use_id,
+                )
+                enqueue_agent_notification(
+                    task_id=agent_id,
+                    description=description,
+                    status=cast(NotificationStatus, status),
+                    output_file=transcript_path,
+                    final_message=result_text,
+                    usage={
+                        "total_tokens": result.total_tokens,
+                        "tool_uses": result.total_tool_use_count,
+                        "duration_ms": result.total_duration_ms,
+                    },
+                    tool_use_id=tool_use_id,
+                    registry=context.runtime_tasks,
+                )
+            except (Exception, asyncio.CancelledError) as exc:
+                partial = extract_partial_result(messages)
+                if run_params.worktree is not None:
+                    run_params.worktree.close()
+                    if run_params.worktree.retained:
+                        partial += "\n\n" + run_params.worktree.notice()
+                fail_agent_task(
+                    agent_id,
+                    error=str(exc) or "Worker cancelled",
+                    registry=context.runtime_tasks,
+                )
+                state = context.runtime_tasks.get(agent_id)
+                status = str(getattr(state, "status", "failed"))
+                enqueue_agent_notification(
+                    task_id=agent_id,
+                    description=description,
+                    status=cast(NotificationStatus, status),
+                    output_file=transcript_path,
+                    error=str(exc),
+                    final_message=partial,
+                    tool_use_id=tool_use_id,
+                    registry=context.runtime_tasks,
+                )
+                _emit_terminal_agent_progress(
+                    context,
+                    agent_id=agent_id,
+                    name=agent_name,
+                    description=description,
+                    subagent_type=agent_type,
+                    status=status,
+                    model=resolved_model,
+                    tool_use_id=tool_use_id,
+                )
+                logger.exception("Async agent %s (%s) failed", agent_id, agent_type)
             finally:
-                # Background-bash reaping now lives in the CORE run_agent
-                # generator's finally (src/agent/run_agent.py) so it covers
-                # async + sync + workflow agents on the single shared path —
-                # not just this backgrounded wrapper.
                 if transcript is not None:
                     transcript.close()
-                # Same contract as the sync path: the slot is held until the
-                # background worker actually stops, including when it stops by
-                # being interrupted.
                 context.agent_supervisor.release(agent_id)
+                continuation.finished.set()
 
+        def _runner(_stop_event: Any) -> None:
+            asyncio.run(_background_lifecycle())
+
+        # Async tools are also invoked through short-lived asyncio.run bridges.
+        # A task attached to that loop would be cancelled when SendMessage returns.
         try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-
-        if running_loop is not None:
-            # Keep a strong reference: asyncio holds only a weak one, so a
-            # garbage-collected task never runs — and never reaches the
-            # ``finally`` that releases this agent's supervisor slot. The
-            # done-callback discards it once the lifecycle has finished.
-            task = running_loop.create_task(_background_lifecycle())
-            _BACKGROUND_LIFECYCLES.add(task)
-            task.add_done_callback(_BACKGROUND_LIFECYCLES.discard)
-        else:
-            def _runner(_stop_event: Any) -> None:
-                asyncio.run(_background_lifecycle())
-
             context.task_manager.start(name=f"agent:{agent_type}", target=_runner)
+        except BaseException:
+            if previous_state is not None:
+                context.runtime_tasks.upsert(previous_state)
+            else:
+                context.runtime_tasks.remove(agent_id)
+                if not resuming:
+                    if agent_name is not None:
+                        context.agent_name_registry.release(agent_name)
+                    context.agent_continuations.pop(agent_id, None)
+            continuation.finished.set()
+            raise
 
         return ToolResult(
             name=AGENT_TOOL_NAME,
@@ -1019,6 +1109,10 @@ def make_agent_tool(
                 "description": description,
                 "prompt": prompt,
                 "task_output_key": agent_id,
+                "output_file": transcript_path,
+                "worktree_path": (
+                    str(run_params.worktree.path) if run_params.worktree else None
+                ),
             },
         )
 
@@ -1080,7 +1174,23 @@ def make_agent_tool(
                     "Async agent launched successfully.\n"
                     f"agent_id: {result.get('agent_id', '')}\n"
                     f"task_output_key: {result.get('task_output_key', '')}\n"
-                    "Use TaskOutput with task_id equal to task_output_key to check completion."
+                    + (
+                        f"worktree_path: {result['worktree_path']}\n"
+                        if result.get("worktree_path")
+                        else ""
+                    )
+                    + "Use TaskOutput with task_id equal to task_output_key to check completion."
+                ),
+            }
+        if result.get("status") == "teammate_spawned":
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    f"Teammate {result['name']} started in team {result['team_name']}.\n"
+                    f"agent_id: {result['agent_id']}\n"
+                    f"output_file: {result['output_file']}\n"
+                    "Use SendMessage to communicate. The teammate stays available between assignments."
                 ),
             }
         # "interrupted" renders exactly like "completed": this mapper is what
@@ -1187,6 +1297,32 @@ def _resolve_parent_system_prompt(
     return None
 
 
+def _prepare_agent_worktree(
+    params: RunAgentParams, context: ToolContext, agent_id: str
+) -> None:
+    from src.agent.worktree import AgentWorktree
+
+    worktree = params.worktree
+    if worktree is None or not worktree.path.exists():
+        worktree = AgentWorktree.create(
+            str(context.cwd or context.workspace_root),
+            f"agent_{agent_id}_{uuid4().hex[:6]}",
+        )
+    worktree.closed = False
+    worktree.in_use = lambda: context.agent_supervisor.has_live_descendants(agent_id)
+    params.worktree = worktree
+    params.parent_context = replace(
+        context,
+        cwd=worktree.cwd,
+        workspace_root=worktree.path,
+        worktree_root=worktree.path,
+    )
+    notice = build_worktree_notice(
+        str(context.cwd or context.workspace_root), str(worktree.cwd)
+    )
+    params.prompt = (params.prompt + "\n\n" + notice).strip()
+
+
 def _resolve_fork_worktree_cwd(context: ToolContext) -> str | None:
     """Return the worktree cwd string for a fork child, or ``None``.
 
@@ -1252,8 +1388,8 @@ async def _collect_agent_messages(params: RunAgentParams) -> list[Any]:
     Prints intermediate agent messages (explanatory text, tool use summaries)
     to stderr so the user sees progress in real-time instead of a silent wait.
     """
-    from src.types.messages import Message, AssistantMessage
     from src.types.content_blocks import TextBlock, ToolUseBlock
+    from src.types.messages import AssistantMessage, Message
 
     agent_type = getattr(params.agent_definition, 'agent_type', 'agent')
     messages: list[Message] = []

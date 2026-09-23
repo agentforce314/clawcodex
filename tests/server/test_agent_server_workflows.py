@@ -503,8 +503,13 @@ async def test_notification_drain_emits_banner_and_summary_turn(tmp_path):
 
         collector = asyncio.get_running_loop().create_task(_collect())
         try:
-            enqueue_pending_notification(value=_WF_ENVELOPE)
-            enqueue_pending_notification(value=_AGENT_ENVELOPE)
+            enqueue_pending_notification(
+                value=_WF_ENVELOPE, scope=_session_of(handle).tool_context.runtime_tasks
+            )
+            enqueue_pending_notification(
+                value=_AGENT_ENVELOPE,
+                scope=_session_of(handle).tool_context.runtime_tasks,
+            )
 
             # Worker's idle poll (0.5s) drains both → 2 banners + ONE turn.
             assert await _wait_for(
@@ -547,7 +552,9 @@ async def test_notification_turn_is_internal_no_ultracode_reminder(tmp_path):
         r = await _control(handle, gen, "e1", {"subtype": "set_effort", "effort": "ultracode"})
         assert r["ok"] is True
 
-        enqueue_pending_notification(value=_WF_ENVELOPE)
+        enqueue_pending_notification(
+            value=_WF_ENVELOPE, scope=_session_of(handle).tool_context.runtime_tasks
+        )
         assert await _wait_for(lambda: len(_RECORDED_TURNS) >= 1, timeout=10)
         turn = _last_user_message(_RECORDED_TURNS[0])
         assert "background tasks you launched have finished" in turn

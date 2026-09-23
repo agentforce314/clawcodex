@@ -10,6 +10,8 @@ fake ``AgentRunner`` and a plain ``RuntimeTaskRegistry`` — no live model neede
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -25,12 +27,27 @@ logger = logging.getLogger(__name__)
 
 def persist_journal(path: str, records: Mapping) -> None:
     """Write a run's journal to disk (best-effort) so it can resume in-session."""
+    temp_path: Path | None = None
     try:
         file = Path(path)
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(records_to_json(records), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=file.parent, encoding="utf-8", delete=False
+        ) as stream:
+            temp_path = Path(stream.name)
+            stream.write(records_to_json(records))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, file)
     except OSError as exc:
         logger.debug("could not persist workflow journal to %s: %s", path, exc)
+    finally:
+        # Close before unlinking: Windows cannot remove an open temp file.
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Could not remove journal temp file %s", temp_path)
 
 
 def load_journal(path: str) -> Optional[dict]:
@@ -55,6 +72,7 @@ async def run_workflow_task(
     resume: Optional[Mapping] = None,
     resolve_workflow: Optional[Any] = None,
     tool_use_id: Optional[str] = None,
+    notification_recipient: str | None = None,
     budget_total: Optional[int] = None,
     max_concurrent: Optional[int] = None,
 ):
@@ -80,6 +98,7 @@ async def run_workflow_task(
             run=run,
             registry=registry,
             tool_use_id=tool_use_id,
+            notification_recipient=notification_recipient,
         )
 
     def _on_progress(_progress: WorkflowProgress) -> None:
@@ -98,6 +117,7 @@ async def run_workflow_task(
             resolve_workflow=resolve_workflow,
             budget_total=budget_total,
             max_concurrent=max_concurrent,
+            on_journal=lambda records: persist_journal(output_file, records),
         )
     except WorkflowMetaError as exc:
         # meta failed before the task was registered — surface a failed task so
@@ -112,6 +132,7 @@ async def run_workflow_task(
             run=None,
             registry=registry,
             tool_use_id=tool_use_id,
+            notification_recipient=notification_recipient,
         )
         fail_workflow_task(task_id, error=f"WorkflowMetaError: {exc}", registry=registry)
         return None

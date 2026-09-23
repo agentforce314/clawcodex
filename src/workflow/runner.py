@@ -17,7 +17,10 @@ testing (it needs a real provider) and is intentionally thin.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import time
 from typing import Any, Callable, Optional
 
 from src.utils.abort_controller import AbortController, AbortError
@@ -28,6 +31,8 @@ from .structured import (
     make_structured_output_tool,
 )
 from .types import AgentOutcome, AgentSpec
+
+logger = logging.getLogger(__name__)
 
 #: Appended to a schema call's prompt so the model emits via the injected tool.
 _SCHEMA_NUDGE = (
@@ -111,42 +116,145 @@ class LiveAgentRunner:
         # a corrective prompt, up to this many TOTAL attempts. Retries cost extra
         # only on failure — a model that gets it right first time pays nothing.
         self._schema_max_attempts = max(1, schema_max_attempts)
+        self._worktrees: dict[str, Any] = {}
+
+    def _agent_id(self, index: str) -> str:
+        # Stable for an agent's schema-repair attempts, safe for transcript paths.
+        digest = hashlib.sha256(f"{self._run_id}:{index}".encode()).hexdigest()[:20]
+        return f"a{digest}"
 
     async def run(self, spec: AgentSpec, *, abort: AbortController, index: str) -> AgentOutcome:
-        # isolation="worktree": run the agent in a throwaway git worktree so
-        # parallel file-mutating agents don't collide. Best-effort — if the
-        # worktree can't be created the agent runs in place.
+        context = self._parent_context
+        agent_id = self._agent_id(index)
+        tracking = context.query_tracking
+        depth = tracking.depth + 1 if tracking is not None else 0
+        context.agent_supervisor.admit(
+            subagent_id=agent_id,
+            parent_id=context.agent_id,
+            depth=depth,
+            goal=spec.label or spec.prompt[:80],
+            model=spec.model,
+            abort_controller=abort,
+        )
+        status = "failed"
+        usage = AgentOutcome()
+        try:
+            outcome = await self._run_with_isolation(
+                spec, abort=abort, index=index, usage=usage
+            )
+            status = "failed" if outcome.error else "completed"
+            return outcome
+        except Exception as exc:
+            return AgentOutcome(
+                tokens=usage.tokens,
+                tool_use_count=usage.tool_use_count,
+                skipped=abort.signal.aborted,
+                error=None if abort.signal.aborted else f"{type(exc).__name__}: {exc}",
+                worktree_path=usage.worktree_path,
+            )
+        finally:
+            if abort.signal.aborted:
+                status = "interrupted"
+            emit = context.agent_progress_emit
+            if emit is not None:
+                try:
+                    emit(
+                        {
+                            "agent_id": agent_id,
+                            "depth": depth,
+                            "name": spec.label,
+                            "description": spec.prompt[:80],
+                            "subagent_type": spec.agent_type
+                            or self._default_agent_type,
+                            "status": status,
+                            "tool_use_id": context.tool_use_id,
+                        }
+                    )
+                except Exception:
+                    logger.debug("workflow progress emit failed", exc_info=True)
+            context.agent_supervisor.release(agent_id)
+
+    async def _run_with_isolation(
+        self,
+        spec: AgentSpec,
+        *,
+        abort: AbortController,
+        index: str,
+        usage: AgentOutcome,
+    ) -> AgentOutcome:
         if spec.isolation == "worktree":
+            import asyncio
             import dataclasses
-            from pathlib import Path as _Path
 
-            from src.workflow.worktree import agent_worktree
+            from src.agent.worktree import AgentWorktree
+            from src.workflow.worktree import worktree_slug
 
-            base_cwd = str(self._parent_context.cwd) if getattr(self._parent_context, "cwd", None) else "."
-            async with agent_worktree(self._run_id, index, base_cwd) as wt:
-                context = (
-                    dataclasses.replace(self._parent_context, cwd=_Path(wt))
-                    if wt
-                    else self._parent_context
+            base_cwd = str(
+                self._parent_context.cwd or self._parent_context.workspace_root
+            )
+            wt = self._worktrees.get(index)
+            if wt is None or not wt.path.exists():
+                wt = await asyncio.to_thread(
+                    AgentWorktree.create, base_cwd, worktree_slug(self._run_id, index)
                 )
-                return await self._run_in_context(spec, context, abort=abort, index=index)
-        return await self._run_in_context(spec, self._parent_context, abort=abort, index=index)
+                self._worktrees[index] = wt
+            assert wt is not None
+            wt.closed = False
+            wt.in_use = (
+                lambda: self._parent_context.agent_supervisor.has_live_descendants(
+                    self._agent_id(index)
+                )
+            )
+            context = dataclasses.replace(
+                self._parent_context,
+                cwd=wt.cwd,
+                workspace_root=wt.path,
+                worktree_root=wt.path,
+            )
+            try:
+                outcome = await self._run_in_context(
+                    spec, context, abort=abort, index=index, usage=usage
+                )
+            finally:
+                await asyncio.to_thread(wt.close)
+                if wt.retained:
+                    usage.worktree_path = str(wt.path)
+            if wt.retained:
+                outcome.worktree_path = str(wt.path)
+                if spec.schema is None:
+                    outcome.text = (outcome.text or "") + "\n\n" + wt.notice()
+            return outcome
+        if spec.isolation is not None:
+            raise ValueError(f"Unsupported agent isolation: {spec.isolation}")
+        return await self._run_in_context(
+            spec, self._parent_context, abort=abort, index=index, usage=usage
+        )
 
     async def _run_in_context(
-        self, spec: AgentSpec, parent_context: Any, *, abort: AbortController, index: str
+        self,
+        spec: AgentSpec,
+        parent_context: Any,
+        *,
+        abort: AbortController,
+        index: str,
+        usage: AgentOutcome,
     ) -> AgentOutcome:
         # Imported lazily: ``src.agent`` pulls in the whole agent stack, which
         # the engine core deliberately never imports.
         from src.agent.agent_tool_utils import finalize_agent_tool, resolve_agent_tools
         from src.agent.constants import ALL_AGENT_DISALLOWED_TOOLS, WORKFLOW_TOOL_NAME
         from src.agent.run_agent import RunAgentParams, run_agent
-        from src.tasks.progress import ProgressTracker, update_progress_from_message
+        from src.tasks.progress import (
+            ProgressTracker,
+            total_tokens_from_tracker,
+            update_progress_from_message,
+        )
         from src.tool_system.registry import ToolRegistry
         from src.types.messages import AssistantMessage, UserMessage
 
         agent_type = spec.agent_type or self._default_agent_type
         agent_definition = self._resolve_agent(agent_type)
-        agent_id = f"wf_{self._run_id}-{index}"
+        agent_id = self._agent_id(index)
 
         # Resolve the agent's *scoped, firewalled* toolset (applies
         # ALL_AGENT_DISALLOWED_TOOLS — including Workflow, so a subagent can't
@@ -226,24 +334,60 @@ class LiveAgentRunner:
                 use_exact_tools=True,
             )
 
-            # ProgressTracker so finalize_agent_tool reports chapter-correct token
-            # totals (latest input + cumulative output) — these drive the budget.
+            from src.agent.transcript import TranscriptWriter, get_agent_transcript_path
+
             tracker = ProgressTracker()
             messages: list = []
+            transcript = None
+            started = time.time()
+            try:
+                transcript = TranscriptWriter(get_agent_transcript_path(agent_id))
+                transcript.append(UserMessage(content=prompt_text))
+            except OSError:
+                logger.debug("workflow transcript unavailable", exc_info=True)
             try:
                 async for message in run_agent(params):
                     messages.append(message)
-                    if isinstance(message, AssistantMessage):
+                    update_progress_from_message(tracker, message)
+                    if transcript is not None:
                         try:
-                            update_progress_from_message(tracker, message)
-                        except Exception:  # noqa: BLE001 — progress is best-effort
-                            pass
-            except AbortError:
-                raise  # cancellation unwinds; the engine marks the agent aborted
-
-            # finalize_agent_tool raises if the run produced no assistant message;
-            # the engine catches that and resolves agent() to None (a "death").
-            result = finalize_agent_tool(messages, agent_id, {"agent_type": agent_type}, progress=tracker)
+                            transcript.append(message)
+                        except OSError:
+                            transcript.close()
+                            transcript = None
+                    parent_context.agent_supervisor.set_tool_count(
+                        agent_id, tracker.tool_use_count
+                    )
+                    emit = parent_context.agent_progress_emit
+                    if emit is not None:
+                        try:
+                            tracking = parent_context.query_tracking
+                            emit(
+                                {
+                                    "agent_id": agent_id,
+                                    "depth": tracking.depth + 1 if tracking else 0,
+                                    "name": spec.label,
+                                    "description": spec.prompt[:80],
+                                    "subagent_type": agent_type,
+                                    "status": "running",
+                                    "tool_use_count": tracker.tool_use_count,
+                                    "tool_use_id": parent_context.tool_use_id,
+                                }
+                            )
+                        except Exception:
+                            logger.debug("workflow progress emit failed", exc_info=True)
+            finally:
+                usage.tokens += total_tokens_from_tracker(tracker)
+                usage.tool_use_count += tracker.tool_use_count
+                if transcript is not None:
+                    transcript.close()
+            abort.signal.throw_if_aborted()
+            result = finalize_agent_tool(
+                messages,
+                agent_id,
+                {"agent_type": agent_type, "start_time": started},
+                progress=tracker,
+            )
             return result, result.total_tokens, result.total_tool_use_count, messages
 
         # ── text agent: single shot ──────────────────────────────────────────

@@ -16,7 +16,8 @@ one envelope.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
+from xml.sax.saxutils import escape
 
 from src.constants.xml import (
     DURATION_MS_TAG,
@@ -31,7 +32,7 @@ from src.constants.xml import (
     TOTAL_TOKENS_TAG,
     USAGE_TAG,
 )
-from src.utils.message_queue_manager import enqueue_pending_notification
+from src.utils import message_queue_manager
 
 if TYPE_CHECKING:
     from src.task_registry import RuntimeTaskRegistry
@@ -90,14 +91,14 @@ def build_shell_notification_xml(
 
     summary = _xml_escape(_build_shell_summary(description, status, exit_code))
     tool_use_line = (
-        f"\n<{TOOL_USE_ID_TAG}>{tool_use_id}</{TOOL_USE_ID_TAG}>"
+        f"\n<{TOOL_USE_ID_TAG}>{escape(tool_use_id)}</{TOOL_USE_ID_TAG}>"
         if tool_use_id
         else ""
     )
     return (
         f"<{TASK_NOTIFICATION_TAG}>\n"
-        f"<{TASK_ID_TAG}>{task_id}</{TASK_ID_TAG}>{tool_use_line}\n"
-        f"<{OUTPUT_FILE_TAG}>{output_file}</{OUTPUT_FILE_TAG}>\n"
+        f"<{TASK_ID_TAG}>{escape(task_id)}</{TASK_ID_TAG}>{tool_use_line}\n"
+        f"<{OUTPUT_FILE_TAG}>{escape(output_file)}</{OUTPUT_FILE_TAG}>\n"
         f"<{STATUS_TAG}>{status}</{STATUS_TAG}>\n"
         f"<{SUMMARY_TAG}>{summary}</{SUMMARY_TAG}>\n"
         f"</{TASK_NOTIFICATION_TAG}>"
@@ -121,21 +122,16 @@ def build_task_notification_xml(
     composes this with the WI-3.2 check-and-set; tests use it directly
     for snapshot comparisons.
 
-    Format matches TS LocalAgentTask.tsx:252-257 byte-for-byte (modulo
-    optional sections that disappear when their inputs are absent). All
-    values are rendered as-is (no XML escaping) — the chapter shape
-    treats these as model-facing user content, and TS does the same
-    raw concatenation. Callers are responsible for not embedding
-    closing tags inside summary/result text.
+    Dynamic text is XML-escaped so worker output cannot inject envelope fields.
     """
-    summary = _build_summary(description, status, error)
+    summary = escape(_build_summary(description, status, error))
     tool_use_line = (
-        f"\n<{TOOL_USE_ID_TAG}>{tool_use_id}</{TOOL_USE_ID_TAG}>"
+        f"\n<{TOOL_USE_ID_TAG}>{escape(tool_use_id)}</{TOOL_USE_ID_TAG}>"
         if tool_use_id
         else ""
     )
     result_section = (
-        f"\n<{RESULT_TAG}>{final_message}</{RESULT_TAG}>"
+        f"\n<{RESULT_TAG}>{escape(final_message)}</{RESULT_TAG}>"
         if final_message
         else ""
     )
@@ -151,8 +147,8 @@ def build_task_notification_xml(
         usage_section = ""
     return (
         f"<{TASK_NOTIFICATION_TAG}>\n"
-        f"<{TASK_ID_TAG}>{task_id}</{TASK_ID_TAG}>{tool_use_line}\n"
-        f"<{OUTPUT_FILE_TAG}>{output_file}</{OUTPUT_FILE_TAG}>\n"
+        f"<{TASK_ID_TAG}>{escape(task_id)}</{TASK_ID_TAG}>{tool_use_line}\n"
+        f"<{OUTPUT_FILE_TAG}>{escape(output_file)}</{OUTPUT_FILE_TAG}>\n"
         f"<{STATUS_TAG}>{status}</{STATUS_TAG}>\n"
         f"<{SUMMARY_TAG}>{summary}</{SUMMARY_TAG}>{result_section}{usage_section}\n"
         f"</{TASK_NOTIFICATION_TAG}>"
@@ -214,7 +210,13 @@ def enqueue_agent_notification(
         usage=usage,
         tool_use_id=tool_use_id,
     )
-    enqueue_pending_notification(value=xml, mode="task-notification")
+    state = registry.get(task_id)
+    message_queue_manager.enqueue_pending_notification(
+        value=xml,
+        mode="task-notification",
+        scope=registry,
+        recipient=getattr(state, "notification_recipient", None),
+    )
     return True
 
 
@@ -266,7 +268,13 @@ def enqueue_shell_notification(
         exit_code=exit_code,
         tool_use_id=tool_use_id,
     )
-    enqueue_pending_notification(value=xml, mode="task-notification")
+    state = registry.get(task_id)
+    message_queue_manager.enqueue_pending_notification(
+        value=xml,
+        mode="task-notification",
+        scope=registry,
+        recipient=getattr(state, "notification_recipient", None),
+    )
     return True
 
 

@@ -156,7 +156,8 @@ def tool_context(tmp_path):
 
 def _write_and_read(tool_context, tmp_path, name, content):
     p = tmp_path / name
-    p.write_text(content, encoding="utf-8")
+    # Preserve the fixture's literal line endings, including explicit CRLF.
+    p.write_text(content, encoding="utf-8", newline="")
     tool_context.mark_file_read(p)
     return p
 

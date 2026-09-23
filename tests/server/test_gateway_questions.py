@@ -12,13 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
-
-# Evaluated at import on EVERY platform, so it must not touch a POSIX-only
-# name directly: pytest reads each skipif condition even when another matched.
-IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 from src.server.desktop_gateway_methods import (
     CONTROL_TIMEOUT_S,
@@ -428,20 +425,22 @@ def test_walk_is_breadth_first_so_truncation_drops_the_deepest(tmp_path, monkeyp
     assert "aaa/deep/deeper/buried.py" not in files
 
 
-def test_walk_survives_an_unreadable_directory(tmp_path) -> None:
+def test_walk_survives_an_unreadable_directory(tmp_path, monkeypatch) -> None:
     import os
 
     from src.server.desktop_gateway_methods import _walk_workspace_files
 
-    if IS_ROOT:
-        pytest.skip("root reads every directory regardless of mode")
-
     _tree(tmp_path, {"readable.py": "", "locked": {"hidden.py": ""}})
-    os.chmod(tmp_path / "locked", 0o000)
-    try:
-        files, _ = _walk_workspace_files(str(tmp_path))
-    finally:
-        os.chmod(tmp_path / "locked", 0o755)
+    scandir = os.scandir
+
+    def deny_locked(path):
+        # chmod(0) neither denies Windows ACL access nor restricts Unix root.
+        if Path(path) == tmp_path / "locked":
+            raise PermissionError("fixture directory is unreadable")
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", deny_locked)
+    files, _ = _walk_workspace_files(str(tmp_path))
 
     # The rest of the tree is still a useful list.
     assert files == ["readable.py"]

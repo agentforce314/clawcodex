@@ -454,13 +454,13 @@ class TestRunAgentClonesProvider(unittest.TestCase):
         import asyncio
         from unittest.mock import patch
 
-        from src.agent.run_agent import RunAgentParams, run_agent
         from src.agent.agent_definitions import EXPLORE_AGENT
+        from src.agent.run_agent import RunAgentParams, run_agent
 
         session_provider = _FakeProvider(_SONNET, [_SONNET, _HAIKU])
         captured = {}
 
-        async def _fake_query(qp):
+        async def _fake_query(qp, **kwargs):
             captured["provider"] = qp.provider
             captured["model"] = getattr(qp.provider, "model", None)
             return

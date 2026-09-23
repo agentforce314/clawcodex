@@ -53,10 +53,10 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from src.services.swarm.leader_permission_bridge import deliver_permission_decision
-from src.services.swarm.mailbox import get_inbox_path, read_mailbox
+from src.services.swarm.mailbox import TeammateMessage, get_inbox_path, read_mailbox
 
 if TYPE_CHECKING:
     from src.task_registry import RuntimeTaskRegistry
@@ -164,14 +164,15 @@ def _dispatch_plan_approval_response(
         )
         return
 
-    approved = bool(envelope.get("approved"))
+    approved = envelope.get("approved") is True
     permission_mode = envelope.get("permission_mode")
 
     def _apply(prev: Any) -> Any:
         if not isinstance(prev, InProcessTeammateTaskState):
             return prev
         new_permission_mode = (
-            permission_mode if isinstance(permission_mode, str)
+            permission_mode
+            if approved and isinstance(permission_mode, str)
             else prev.permission_mode
         )
         return replace(
@@ -198,7 +199,7 @@ def _dispatch_permission_response(envelope: dict[str, Any]) -> None:
     request_id = envelope.get("request_id")
     if not isinstance(request_id, str):
         return
-    approved = bool(envelope.get("approved"))
+    approved = envelope.get("approved") is True
     reason = envelope.get("reason")
     deliver_permission_decision(
         request_id, approved=approved,
@@ -218,6 +219,7 @@ def sweep_mailboxes(
     team_name: str,
     expected_lead_agent_id: str | None = None,
     recipient_to_agent_id: dict[str, str] | None = None,
+    deliver: Callable[[str, TeammateMessage], None] | None = None,
 ) -> int:
     """Read every tracked recipient's inbox and dispatch new envelopes.
 
@@ -253,6 +255,10 @@ def sweep_mailboxes(
             continue
 
         for msg in new_msgs:
+            if deliver is not None:
+                deliver(agent_id, msg)
+                dispatched += 1
+                continue
             envelope = _try_parse_envelope(msg.text)
             if envelope is None:
                 # Plain-text message — surface to the teammate's

@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 from src.providers.base import ChatResponse
 from src.tool_system.context import ToolContext
 
-
 _PARENT_LIST_PROMPT = [
     {"type": "text", "text": "You are a helpful CLI agent.",
      "cache_control": {"type": "ephemeral"}},
@@ -36,8 +35,8 @@ class TestResolveParentPrompt(unittest.TestCase):
         return ctx
 
     def test_prefers_rendered_list(self):
-        from src.tool_system.tools.agent import _resolve_parent_system_prompt
         from src.agent.agent_definitions import get_built_in_agents
+        from src.tool_system.tools.agent import _resolve_parent_system_prompt
 
         out = _resolve_parent_system_prompt(
             self._ctx(_PARENT_LIST_PROMPT), get_built_in_agents(),
@@ -45,8 +44,8 @@ class TestResolveParentPrompt(unittest.TestCase):
         self.assertEqual(out, _PARENT_LIST_PROMPT)
 
     def test_prefers_rendered_str(self):
-        from src.tool_system.tools.agent import _resolve_parent_system_prompt
         from src.agent.agent_definitions import get_built_in_agents
+        from src.tool_system.tools.agent import _resolve_parent_system_prompt
 
         out = _resolve_parent_system_prompt(
             self._ctx("PARENT STRING PROMPT"), get_built_in_agents(),
@@ -54,8 +53,8 @@ class TestResolveParentPrompt(unittest.TestCase):
         self.assertEqual(out, "PARENT STRING PROMPT")
 
     def test_none_when_unset(self):
-        from src.tool_system.tools.agent import _resolve_parent_system_prompt
         from src.agent.agent_definitions import get_built_in_agents
+        from src.tool_system.tools.agent import _resolve_parent_system_prompt
 
         ctx = self._ctx(None)
         ctx.agent_type = None
@@ -106,8 +105,8 @@ class TestForkThreadsParentPrompt(unittest.TestCase):
     def test_fork_child_system_prompt_is_parent_prompt(self):
         import os
 
-        from src.agent.run_agent import RunAgentParams, run_agent
         from src.agent.agent_definitions import FORK_AGENT
+        from src.agent.run_agent import RunAgentParams, run_agent
         from src.tool_system.context import ToolUseOptions
         from src.tool_system.defaults import build_default_registry
 
@@ -116,15 +115,15 @@ class TestForkThreadsParentPrompt(unittest.TestCase):
         parent.options = ToolUseOptions(tools=[])
 
         # Resolve the parent prompt exactly as the fork path does.
-        from src.tool_system.tools.agent import _resolve_parent_system_prompt
         from src.agent.agent_definitions import get_built_in_agents
+        from src.tool_system.tools.agent import _resolve_parent_system_prompt
 
         resolved = _resolve_parent_system_prompt(parent, get_built_in_agents())
         self.assertEqual(resolved, _PARENT_LIST_PROMPT)
 
         captured = {}
 
-        async def _fake_query(qp):
+        async def _fake_query(qp, **kwargs):
             captured["system_prompt"] = qp.system_prompt
             return
             yield

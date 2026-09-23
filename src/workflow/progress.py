@@ -39,6 +39,7 @@ class AgentRecord:
     #: Display metadata surfaced in the /workflows monitor.
     agent_type: str = ""
     tool_count: int = 0
+    worktree_path: str | None = None
     started_at: Optional[float] = None  # time.monotonic() at start (display only)
     elapsed: Optional[float] = None     # seconds, set on finish
 

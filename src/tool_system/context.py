@@ -5,14 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .errors import ToolPermissionError
-from .task_manager import TaskManager
 from src.permissions.types import PermissionAskHandler, ToolPermissionContext
 from src.services.swarm.agent_name_registry import AgentNameRegistry
 from src.services.swarm.agent_supervisor import AgentSupervisor
 from src.task_registry import RuntimeTaskRegistry
 from src.utils.abort_controller import AbortController
 
+from .errors import ToolPermissionError
+from .task_manager import TaskManager
 
 def _resolve_path(p: str | Path) -> Path:
     return Path(p).expanduser().resolve()
@@ -77,6 +77,8 @@ class ToolContext:
     lsp_client: Any | None = None
     todos: list[dict[str, Any]] = field(default_factory=list)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    task_board_lock: Any = field(default_factory=threading.RLock, repr=False)
+    task_board_path: Path | None = None
     # Chapter-10 / Chunk B / WI-1.3 — typed runtime-task registry. Houses
     # ``LocalShellTaskState`` / ``LocalAgentTaskState`` / etc. as
     # ``TaskStateBase`` subclasses. Replaces the un-typed
@@ -85,6 +87,8 @@ class ToolContext:
     # for the chapter-10 task state machine; ``tasks`` continues to host
     # ``tasks_v2``/todo entries for the unrelated TaskCreate system.
     runtime_tasks: RuntimeTaskRegistry = field(default_factory=RuntimeTaskRegistry)
+    # None is the session leader; children consume only their own notifications.
+    notification_recipient: str | None = None
     # WI-5.1: per-message tool-result aggregate counter. The execution
     # pipeline (Step 11) reads + increments this each time a tool result
     # is mapped to its API form; when the running total exceeds
@@ -133,6 +137,8 @@ class ToolContext:
     #   old terminal holders remain reachable by raw task_id + auto-
     #   resume (WI-7.4).
     agent_name_registry: AgentNameRegistry = field(default_factory=AgentNameRegistry)
+    # Executable continuations outlive terminal HUD entries, within this session.
+    agent_continuations: dict[str, Any] = field(default_factory=dict)
     # Session-scoped admission control + live-agent registry, shared BY
     # REFERENCE with every child context (subagent_context.py) so one
     # object sees the whole tree. Both spawn paths register here — the
@@ -163,6 +169,7 @@ class ToolContext:
     # legacy ``crons`` dict above.
     cron_scheduler: Any | None = None
     team: dict[str, Any] | None = None
+    team_runtime: Any = field(default=None, repr=False)
     output_style_name: str | None = None
     output_style_dir: Path | None = None
     additional_working_directories: tuple[Path, ...] = ()

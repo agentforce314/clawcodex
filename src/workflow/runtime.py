@@ -168,30 +168,42 @@ class WorkflowRun:
                 self._next_display(), eff_label, eff_phase, key_str, agent_type=eff_agent_type
             )
             self._progress.agent_finished(record, status="cached")
+            self._journal.record(key, spec, cached)
             return cached
 
         # Live calls only: count toward the per-run cap and the budget ceiling.
         self._controller.signal.throw_if_aborted()
         self._scheduler.reserve()
-        self._budget.check()
 
         record = self._progress.agent_started(
             self._next_display(), eff_label, eff_phase, key_str, agent_type=eff_agent_type
         )
         attempts = 0
+        total_tokens = total_tool_uses = 0
         while True:
             child = create_child_abort_controller(self._controller)
             self._agent_controllers[key_str] = child
             try:
                 async with self._scheduler.slot():
+                    child.signal.throw_if_aborted()
+                    self._budget.check()
                     try:
                         outcome = await self._runner.run(spec, abort=child, index=key_str)
                     except AbortError:
                         outcome = AgentOutcome(skipped=True)
                     except Exception as exc:  # noqa: BLE001 — a subagent death -> None
                         outcome = AgentOutcome(error=f"{type(exc).__name__}: {exc}")
+                    # Charge every attempt before releasing capacity. A queued
+                    # call must see the completed attempt's cost when admitted.
+                    self._budget.add(outcome.tokens)
+                    total_tokens += outcome.tokens
+                    total_tool_uses += outcome.tool_use_count
+            except Exception as exc:
+                self._progress.agent_finished(record, status="failed", error=str(exc))
+                raise
             finally:
                 self._agent_controllers.pop(key_str, None)
+                child.abort("attempt finished")
             # The `r` (retry) action re-spawns a running agent, bounded.
             if key_str in self._retry_requested and attempts < MAX_AGENT_RETRIES:
                 self._retry_requested.discard(key_str)
@@ -199,13 +211,17 @@ class WorkflowRun:
                 continue
             break
 
+        outcome.tokens, outcome.tool_use_count = total_tokens, total_tool_uses
+        record.worktree_path = outcome.worktree_path
+        if outcome.worktree_path:
+            self._progress.log(f"Worktree preserved at {outcome.worktree_path}")
+
         # A run-level kill (the whole controller aborted, vs. a single-agent
         # skip) propagates to end the run; a lone skip just resolves to None.
         if outcome.skipped and self._controller.signal.aborted:
             self._progress.agent_finished(record, status="failed", error="aborted")
             raise AbortError(self._controller.signal.reason or "aborted")
 
-        self._budget.add(outcome.tokens)
         if outcome.error is not None:
             self._progress.agent_finished(
                 record, status="failed", tokens=outcome.tokens,
@@ -223,7 +239,8 @@ class WorkflowRun:
                 record, status="completed", tokens=outcome.tokens, tool_count=outcome.tool_use_count,
             )
 
-        self._journal.record(key, spec, result)
+        if outcome.error is None and not outcome.skipped:
+            self._journal.record(key, spec, result)
         return result
 
     async def parallel(self, items) -> list:
@@ -291,10 +308,11 @@ class WorkflowRun:
             run_id=f"{self._run_id}/{name_or_ref}",
             resolve_workflow=self._resolve_workflow,
             scheduler=self._scheduler,  # share the concurrency cap
-            budget=self._budget,        # share the budget pool
+            budget=self._budget,  # share the budget pool
             controller=self._controller,
             base_path=current_branch().path + (slot,),
             _depth=self._depth + 1,
+            _journal=self._journal,
         )
         if not sub.ok:
             raise WorkflowError(f"nested workflow '{name_or_ref}' failed: {sub.error}")
@@ -330,6 +348,8 @@ async def run_workflow(
     budget: Optional[Budget] = None,
     base_path: CallKey = (),
     _depth: int = 0,
+    on_journal: Callable[[dict[CallKey, JournalRecord]], None] | None = None,
+    _journal: Journal | None = None,
 ) -> WorkflowResult:
     """Run a Python workflow ``source`` to completion.
 
@@ -341,7 +361,9 @@ async def run_workflow(
 
     scheduler = scheduler if scheduler is not None else Scheduler(max_concurrent)
     budget = budget if budget is not None else Budget(budget_total)
-    journal = Journal(resume)
+    journal = (
+        _journal if _journal is not None else Journal(resume, on_record=on_journal)
+    )
     progress = WorkflowProgress(meta.phases, on_change=on_progress)
     controller = controller if controller is not None else create_abort_controller()
 
@@ -369,6 +391,7 @@ async def run_workflow(
     value: Any = None
     error: Optional[str] = None
     try:
+        controller.signal.throw_if_aborted()
         value = await execute_workflow(source, run.namespace(), args)
     except WorkflowMetaError:
         raise  # compile error surfaced during exec — treat as pre-flight

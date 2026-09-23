@@ -25,7 +25,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ...context import ToolContext
 from src.tasks.local_shell import LocalShellTaskState
 from src.tasks_core import generate_task_id
 from src.utils.shell_platform import (
@@ -35,6 +34,7 @@ from src.utils.shell_platform import (
     popen_tree_kwargs,
 )
 
+from ...context import ToolContext
 
 def _bg_output_dir() -> Path:
     """Return the directory where background-task stdout/stderr files live.
@@ -125,6 +125,7 @@ def spawn_background_bash(
         # the shells it started (None for the main session — never reaped by
         # an agent exit).
         agent_id=getattr(context, "agent_id", None),
+        notification_recipient=context.notification_recipient,
     )
     context.runtime_tasks.upsert(state)
     # Chunk-B compat view: keep the legacy dict-of-dicts alive in lockstep
@@ -155,6 +156,7 @@ def spawn_background_bash(
                 from dataclasses import replace
 
                 from src.tasks.eviction import schedule_eviction
+
                 # Preserve a 'killed' status set by stop_background_bash (a
                 # user kill) — don't reclassify it as 'failed' from the SIGTERM
                 # exit code (critic C5-P1 #3). Its notified=True (set at kill)

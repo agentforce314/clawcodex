@@ -5,42 +5,15 @@ The universal communication primitive for inter-agent messaging:
 plain text from leader → teammate, structured protocol envelopes
 (shutdown, plan-approval), and broadcasts.
 
-Routing dispatch chain (matches TS dispatch order — preserved as
-real branches even for the out-of-scope schemes so a future addition
-is a localized body change, not a re-ordering):
-
-1. ``bridge:<session-id>`` — cross-machine via Anthropic's Remote
-   Control relay. **NotImplementedError stub** (out of scope per
-   ambiguity #5).
-2. ``uds:<socket-path>`` — local IPC via Unix-domain socket.
-   **NotImplementedError stub** (out of scope).
-3. **In-process** — registry first, raw agent_id fallback. If the
-   target is a running ``local_agent``, queue the message via
-   ``queue_pending_message``; if terminal, attempt
-   ``resume_agent_background`` (race-guarded).
-4. **Team mailbox** — when team context is active and the recipient
-   isn't an in-process agent, write a JSONL line to
-   ``<team>/<recipient>.jsonl``. ``"*"`` → broadcast to every team
-   member except the sender.
-5. **Error** — recipient not found in any branch.
-
-Structured protocols
---------------------
-
-The ``message`` field is a union: plain text (``str``) or one of
-``shutdown_request`` / ``shutdown_response`` /
-``plan_approval_response``. The latter carries sender-side
-authorization (``is_team_lead``) for plan approvals; receiver-side
-verification (envelope ``from`` matches ``lead_agent_id``) is the
-mailbox poller's job — see ``src/services/swarm/mailbox_poller.py``.
-
-Defense-in-depth note: the sender-side ``is_team_lead`` gate refuses
-``plan_approval_response`` from non-leader callers. The receiver-side
-``from`` check (in the poller) refuses envelopes that claim to be
-from the leader but were written through some other path — covers
-the case where a future malicious / buggy code path bypasses the
-SendMessage gate entirely.
+Active teams resolve roster names in their own namespace. Other plain-text
+recipients resolve through the session's local-worker registry, including real
+continuations of completed workers. TeamRuntime validates and records control
+messages before its single mailbox consumer applies them; arbitrary JSON in a
+plain message cannot change runtime state. Legacy mailbox helpers remain for
+callers that manage their own transport. Bridge and UDS addressing are explicit
+unsupported operations in this build.
 """
+
 from __future__ import annotations
 
 import logging
@@ -148,7 +121,7 @@ def _resolve_in_process(
         return by_name, context.runtime_tasks.get(by_name)
     # Step 2 — raw agent_id fallback (model may pass the id directly).
     by_id = context.runtime_tasks.get(name_or_id)
-    if by_id is not None:
+    if by_id is not None or name_or_id in context.agent_continuations:
         return name_or_id, by_id
     return None
 
@@ -169,27 +142,17 @@ async def _route_in_process(
         return None
     agent_id, state = resolved
 
-    if state is None:
-        # Name was bound but the runtime entry was evicted. Treat as
-        # not-an-in-process-agent so the mailbox branch can handle
-        # it (or the error branch if no team is active).
+    if state is None and agent_id not in context.agent_continuations:
         return None
-
-    if not isinstance(state, LocalAgentTaskState):
-        # Some other task type — let mailbox/error handle it.
+    if state is not None and not isinstance(state, LocalAgentTaskState):
         return None
-
-    if not is_terminal_task_status(state.status):
-        # Running — queue and return.
-        if not queue_pending_message(agent_id, message_text, context.runtime_tasks):
-            return _err(
-                f"Failed to queue message for {to!r} (task may have "
-                f"transitioned to terminal)."
+    if state is not None and not is_terminal_task_status(state.status):
+        if queue_pending_message(agent_id, message_text, context.runtime_tasks):
+            return _ok(
+                f"Message queued for delivery to {to!r} at its next turn.",
+                agent_id=agent_id,
             )
-        return _ok(
-            f"Message queued for delivery to {to!r} at its next tool round.",
-            agent_id=agent_id,
-        )
+        # Completion raced the queue operation: fall through to real resume.
 
     # Terminal — attempt auto-resume. Race-guarded by
     # ``resume_agent_background``: only one concurrent caller wins.
@@ -199,22 +162,10 @@ async def _route_in_process(
         agent_id=agent_id, prompt=message_text, context=context,
     )
     if result.resumed:
-        # ch10 round-4 (critic M1) — HONEST message. resume_agent_background
-        # re-registers the terminal agent as running and queues the message,
-        # but does NOT yet spawn a run_agent loop (resume_agent.py:163-165 —
-        # "wiring the resumed lifecycle into run_agent is a subsequent
-        # integration step"), so the follow-up is NOT processed. The old
-        # text claimed "resumed it in the background with your message,"
-        # which made the model wait for a reply that never comes — the exact
-        # silent-success failure this chapter's PR exists to eliminate.
-        # Report the limitation and tell the model to spawn a fresh agent.
-        # When the resume lifecycle lands, restore the success message.
-        return _err(
-            f"Agent {to!r} had already {state.status!r}. Live resume of a "
-            f"finished background agent is not yet supported, so your "
-            f"message will NOT be processed — spawn a fresh agent with the "
-            f"follow-up instead.",
+        return _ok(
+            f"Agent {to!r} resumed in the background with your message.",
             agent_id=agent_id,
+            output_file=result.output_file,
         )
     # Lost the race or unable to resume — queue onto whatever the
     # winner registered (or report an error if the agent state moved
@@ -414,18 +365,7 @@ def _structured_message_to_envelope(
 
 
 async def _send_message_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
-    """SendMessage entrypoint — input parse, then dispatch.
-
-    Dispatch order (preserved across all branches even when some are
-    out-of-scope stubs — the parity guarantee is that adding a future
-    body to bridge:/uds: is a body change, not a re-ordering):
-
-    1. ``bridge:<session-id>`` → ``NotImplementedError`` stub.
-    2. ``uds:<socket-path>`` → ``NotImplementedError`` stub.
-    3. In-process (name registry + runtime_tasks fallback).
-    4. Team mailbox (named recipient or ``"*"`` broadcast).
-    5. Error: recipient not found.
-    """
+    """Validate input and route to the active team or a local worker."""
     to = tool_input.get("to")
     if not isinstance(to, str) or not to.strip():
         raise ToolInputError("'to' is required and must be a non-empty string.")
@@ -463,6 +403,22 @@ async def _send_message_call(tool_input: dict[str, Any], context: ToolContext) -
             f"(feature('UDS_INBOX') is off-by-default upstream; "
             f"target was {addr.target!r})."
         )
+
+    if context.team_runtime is not None:
+        if isinstance(raw_message, str) and not summary:
+            raise ToolInputError("'summary' is required for plain-text messages.")
+        if (
+            isinstance(raw_message, str)
+            and to != "*"
+            and not context.team_runtime.has_recipient(to)
+        ):
+            local = await _route_in_process(
+                to=to, message_text=raw_message, context=context
+            )
+            if local is not None:
+                return local
+        output = context.team_runtime.send(context, to, raw_message, summary)
+        return ToolResult(name=SEND_MESSAGE_TOOL_NAME, output=output)
 
     # Determine sender name — the team config's ``sender_name`` if
     # set, else the agent's id. Plain leader uses 'team-lead'.
@@ -599,9 +555,12 @@ SendMessageTool: Tool = build_tool(
     prompt=(
         "Send a message to a teammate, a remote peer, or broadcast to "
         "the team. The 'to' field accepts a teammate name, '*' for "
-        "broadcast, or a 'bridge:'/'uds:' prefix for cross-session peers. "
+        "broadcast, or a local worker ID. Bridge and UDS transports are unsupported. "
         "The 'message' field is plain text or a structured protocol "
-        "(shutdown_request, shutdown_response, plan_approval_response)."
+        "(shutdown_request, shutdown_response, plan_approval_response). "
+        "A shutdown_request returns a generated request_id. Reply with that ID and approve true, "
+        "or approve false with a reason. Plan responses must come from team-lead and include "
+        "the plan request_id, approve, and optionally permission_mode. Rejection keeps plan restrictions."
     ),
     description="Send a message to a teammate / peer / team.",
     strict=False,  # ``message`` is a union, can't strict-validate via JSON Schema

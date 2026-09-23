@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import math
-import random
 import os
+import random
 import re
 import sys
 import time
@@ -13,6 +13,18 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
 
+from ..providers.base import BaseProvider, ChatResponse
+from ..services.compact.pipeline import (
+    CompressionPipeline,
+    PipelineConfig,
+    run_compression_pipeline,
+)
+from ..token_estimation import rough_token_count_estimation_for_messages
+from ..tool_system.build_tool import Tool, Tools
+from ..tool_system.context import ToolContext
+from ..tool_system.protocol import ToolCall, ToolResult
+from ..tool_system.registry import ToolRegistry
+from ..types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
 from ..types.messages import (
     AssistantMessage,
     Message,
@@ -21,15 +33,8 @@ from ..types.messages import (
     create_assistant_api_error_message,
     create_user_message,
 )
-from ..types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
-from ..tool_system.build_tool import Tool, Tools
-from ..tool_system.context import ToolContext
-from ..tool_system.protocol import ToolCall, ToolResult
-from ..tool_system.registry import ToolRegistry
 from ..utils.abort_controller import AbortController, AbortError
 from ..utils.image_validation import ImageSizeError
-from ..providers.base import BaseProvider, ChatResponse
-
 from .config import QueryConfig, build_query_config
 from .continuation_nudge import (
     EMPTY_TURN_NUDGE,
@@ -54,12 +59,6 @@ from .transitions import (
     Transition,
     set_terminal,
 )
-from ..services.compact.pipeline import (
-    CompressionPipeline,
-    PipelineConfig,
-    run_compression_pipeline,
-)
-from ..token_estimation import rough_token_count_estimation_for_messages
 
 logger = logging.getLogger(__name__)
 
@@ -267,29 +266,28 @@ async def _fire_post_sampling_hooks(
 
 
 def _drain_pending_user_messages(tool_use_context: Any) -> list[UserMessage]:
-    """Drain the running agent's ``pending_messages`` inbox, if any.
+    """Deliver this agent's inbox and child notifications between tool rounds.
 
-    Chapter-10 / Chunk D / WI-3.3 hook. The TS implementation drains at
-    the tool-round boundary inside the agent's run loop; the Python
-    equivalent is here, between `tool_results` and the next API call,
-    where the chapter's "messages arrive between tool rounds, not
-    mid-execution" contract holds.
-
-    No-op when:
-    * The context has no ``agent_id`` (top-level / non-runtime-task agents).
-    * The context has no ``runtime_tasks`` registry (test fixtures
-      that didn't construct a real ToolContext).
-    * The agent's entry isn't a ``LocalAgentTaskState`` (defensive —
-      a future task type that runs through the same query loop).
-    * The inbox is empty.
-
-    Returns the drained messages as a list of fresh ``UserMessage``
-    objects, which the caller appends to the next turn's prompt.
+    Session scope and recipient identity prevent another worker from stealing
+    the result. The leader also consumes teammate messages here; the server
+    handles its task-completion banners between turns.
     """
     agent_id = getattr(tool_use_context, "agent_id", None)
     runtime = getattr(tool_use_context, "runtime_tasks", None)
-    if not agent_id or runtime is None:
+    if runtime is None:
         return []
+    from src.utils.message_queue_manager import drain_pending_notifications
+
+    recipient = getattr(tool_use_context, "notification_recipient", None)
+    notices = drain_pending_notifications(
+        scope=runtime,
+        recipient=recipient,
+        # The server gives root task completions a banner between turns.
+        mode="teammate-message" if recipient is None else None,
+    )
+    messages = [UserMessage(content=notice.value) for notice in notices]
+    if not agent_id:
+        return messages
     # Local import to avoid pulling the tasks package into the query
     # module's import graph at startup; this hook only fires when an
     # agent_id is set, so the tasks module will already be loaded.
@@ -299,14 +297,15 @@ def _drain_pending_user_messages(tool_use_context: Any) -> list[UserMessage]:
             drain_pending_messages,
         )
     except ImportError:
-        return []
+        return messages
     state = runtime.get(agent_id)
-    if not isinstance(state, LocalAgentTaskState):
-        return []
-    drained = drain_pending_messages(agent_id, runtime)
-    if not drained:
-        return []
-    return [UserMessage(content=text) for text in drained]
+    if isinstance(state, LocalAgentTaskState):
+        drained = drain_pending_messages(agent_id, runtime)
+    else:
+        from src.services.swarm.team_runtime import drain_teammate_messages
+
+        drained = drain_teammate_messages(agent_id, runtime)
+    return messages + [UserMessage(content=text) for text in drained]
 
 
 def _yield_missing_tool_result_blocks(
@@ -1578,7 +1577,11 @@ async def _call_model_sync(
         )
 
         # Check if this is the first turn after compaction and log post-compaction telemetry
-        from ..bootstrap.state import consume_post_compaction, get_compaction_telemetry_data
+        from ..bootstrap.state import (
+            consume_post_compaction,
+            get_compaction_telemetry_data,
+        )
+
         if consume_post_compaction():
             telemetry_data = get_compaction_telemetry_data()
             model_name = getattr(response, "model", None) or getattr(provider, "model", None)
@@ -2196,11 +2199,11 @@ async def query(
                 and not has_attempted_reactive_compact
                 and config.reactive_compact_enabled
             ):
+                from ..services.api.errors import PromptTooLongError
                 from ..services.compact.reactive_compact import (
                     ReactiveCompactResult,
                     reactive_compact,
                 )
-                from ..services.api.errors import PromptTooLongError
 
                 # A MEDIA rejection is a COUNT/SIZE violation, not a token
                 # one, so fix it directly instead of routing through the

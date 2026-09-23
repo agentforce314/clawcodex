@@ -96,8 +96,8 @@ def test_find_member_by_name_case_insensitive() -> None:
 
 
 def test_team_create_writes_members_field(tmp_path: Path) -> None:
-    """``TeamCreate`` (Chunk-F edit) now writes ``members: []`` from
-    day one — verify the on-disk shape directly."""
+    """A newly created team establishes its leader identity and roster."""
+
     from src.tool_system.context import ToolContext
     from src.tool_system.tools.team import TeamCreateTool
 
@@ -106,6 +106,14 @@ def test_team_create_writes_members_field(tmp_path: Path) -> None:
         {"team_name": "my-team", "description": "x"}, ctx
     )
     raw = json.loads(get_team_file_path(tmp_path).read_text(encoding="utf-8"))
-    assert raw["members"] == []
+    assert len(raw["members"]) == 1
+    assert raw["members"][0]["name"] == "team-lead"
+    assert (
+        raw["members"][0]["agent_id"]
+        == ctx.team["lead_agent_id"]
+        == raw["lead_agent_id"]
+    )
+    assert ctx.agent_id is None  # the leader retains main-conversation semantics
     assert raw["team_name"] == "my-team"
     assert "lead_agent_id" in raw
+    ctx.team_runtime.delete()

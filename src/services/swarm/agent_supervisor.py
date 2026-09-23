@@ -12,11 +12,8 @@ when the worker actually exits, so one session-owned object answers "what is
 running right now", enforces capacity, and holds the abort handles that make
 interruption work for foreground agents too.
 
-Not yet covered: ``src/workflow/runner.py`` drives ``run_agent`` directly rather
-than through the Agent tool, so workflow agents consume no slot here, do not
-appear in :meth:`snapshot`, and cannot be interrupted through it. They have
-their own cap (``workflow/constants.py``). Routing them through this supervisor
-is deliberate future work, not an oversight to read past.
+Agent-tool workers, persistent teammates, and workflow workers all participate
+in the same admission and interruption lifecycle.
 
 Modelled on the OpenAI Codex ``AgentRegistry`` (``codex-rs/core/src/agent/
 registry.rs``): ``reserve_spawn_slot`` rejects with ``AgentLimitReached`` past a
@@ -75,9 +72,7 @@ DEFAULT_MAX_CONCURRENT_CHILDREN = 32
 #: grandchild at all — and coordinator workers cannot either, since Agent is
 #: also absent from ``ASYNC_AGENT_ALLOWED_TOOLS``. The one path that genuinely
 #: bypasses that filter is the fork agent (``use_exact_tools=True`` copies the
-#: parent's tool array verbatim, Agent included). ``workflow/runner.py`` is not
-#: bounded by this at all: it calls ``run_agent`` directly and never reaches
-#: ``admit`` — see the module docstring. Raise via ``CLAWCODEX_MAX_AGENT_DEPTH``.
+#: parent's tool array verbatim, Agent included). Workflow workers also acquire a supervisor slot. Raise via ``CLAWCODEX_MAX_AGENT_DEPTH``.
 DEFAULT_MAX_SPAWN_DEPTH = 3
 
 _ENV_MAX_CONCURRENT = "CLAWCODEX_MAX_CONCURRENT_AGENTS"
@@ -132,6 +127,7 @@ class _LiveAgent:
     status: str = "running"
     started_at: float = field(default_factory=time.time)
     tool_count: int = 0
+    ancestors: tuple[str, ...] = ()
     # The run's AbortController. ``query()`` polls ``signal.aborted`` at every
     # yield point, so calling ``.abort()`` on it halts a live run. Held here so
     # foreground agents — which never enter ``runtime_tasks`` and so have no
@@ -192,6 +188,11 @@ class AgentSupervisor:
         with self._lock:
             return len(self._live)
 
+    def has_live_descendants(self, subagent_id: str) -> bool:
+        """Keep ancestor resources alive even after an intermediate child exits."""
+        with self._lock:
+            return any(subagent_id in entry.ancestors for entry in self._live.values())
+
     # -- admission --------------------------------------------------------
 
     def admit(
@@ -240,6 +241,12 @@ class AgentSupervisor:
                     reason="capacity",
                 )
 
+            parent = self._live.get(parent_id) if parent_id else None
+            ancestors = (
+                ((*parent.ancestors, parent_id) if parent else (parent_id,))
+                if parent_id
+                else ()
+            )
             self._live[subagent_id] = _LiveAgent(
                 subagent_id=subagent_id,
                 parent_id=parent_id,
@@ -247,6 +254,7 @@ class AgentSupervisor:
                 goal=goal,
                 model=model,
                 abort_controller=abort_controller,
+                ancestors=ancestors,
             )
 
     def release(self, subagent_id: str) -> bool:
