@@ -82,7 +82,18 @@ timeout-race mechanics ×3); seven v1 passes flipped red on k=1
 variance (build/training-time jitter). At this k, treat 64-vs-63 as
 parity-to-slight-edge on score with a durable ~35% cost advantage.
 
-Nano sends six tools and a ~2K-token fixed payload (vs ~16K default), no
+Round 3 (#900 — no Bash timeout ceiling + anti-poll guidance, the
+constraint-checklist guideline, `run_in_background` removed from the nano
+Bash schema, stuck-command detection), `tb21-nano-flash-max-3`, same model,
+vision+websearch: **63/89 (70.8%)**. The draw was 61/87 at $1.04, with two
+trials lost to a pre-agent infra failure (curl SSL error fetching the uv
+installer, no agent involvement); both passed when re-run, and their cost is
+not in the $1.04. It was measured before #900's last commit, the nano-only
+tail-keeping truncation with a full-output spill file. Across the three draws
+nano's pass@1 is 60 / 64 / 63 (three different builds, the first without
+vision or web search); pass@2 70/89, pass@3 73/89 across those builds.
+
+Nano sends six tools and a ~2K-token fixed payload (vs ~17K default), no
 per-turn injections, /eco on. A trivial live A/B outside Harbor
 (deepseek-v4-pro, write-and-verify, both solved in 4 turns) showed the
 same shape: 3,439 vs 27,173 fresh input tokens.
