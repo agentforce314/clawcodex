@@ -23,19 +23,17 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.providers.base import ChatResponse
-from src.tool_system.context import ToolContext
-from src.tool_system.defaults import build_default_registry
-from src.types.messages import UserMessage
-from src.utils.abort_controller import AbortController
-
 from src.query.agent_loop_compat import (
     AgentLoopRunResult,
     run_query_as_agent_loop,
 )
-
+from src.tool_system.context import ToolContext
+from src.tool_system.defaults import build_default_registry
+from src.types.messages import UserMessage
+from src.utils.abort_controller import AbortController
 
 def _run(coro):
     return asyncio.run(coro)
@@ -73,7 +71,12 @@ class TestModelErrorPropagation(unittest.TestCase):
         original = ConnectionError("Connection refused: localhost:4000")
         provider = self._provider_that_raises(original)
 
-        with self.assertRaises(ConnectionError) as ctx:
+        # Exercise retry exhaustion and error propagation without spending
+        # minutes in real network backoff for this entirely mocked provider.
+        with (
+            patch("src.query.query._retry_after_seconds", return_value=0),
+            self.assertRaises(ConnectionError) as ctx,
+        ):
             _run(run_query_as_agent_loop(
                 initial_messages=[UserMessage(content="anything")],
                 provider=provider,
@@ -85,6 +88,7 @@ class TestModelErrorPropagation(unittest.TestCase):
 
         # The exact instance round-trips (not a wrapping).
         self.assertIs(ctx.exception, original)
+        self.assertGreater(provider.chat.call_count, 1)
 
     def test_generic_runtime_error_re_raises(self):
         """Generic upstream errors (not matched by query.py's special

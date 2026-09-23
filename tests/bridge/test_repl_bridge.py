@@ -24,7 +24,6 @@ from src.bridge.repl_bridge import (
 )
 from src.bridge.types import SessionDoneStatus
 
-
 # ── Test doubles ──────────────────────────────────────────────────────────
 
 
@@ -1550,30 +1549,28 @@ async def test_pointer_mtime_task_fires_and_advances_updated_at_ms(
     )
     assert handle is not None
 
-    # Snapshot the initial pointer state.
-    initial = read_pointer(
-        params.dir, machine_name=params.machine_name,
-    )
-    assert initial is not None
-    initial_updated_at_ms = initial.updated_at_ms
-    initial_created_at_ms = initial.created_at_ms
+    try:
+        initial = read_pointer(params.dir, machine_name=params.machine_name)
+        assert initial is not None
 
-    # Wait for at least one refresh tick to fire.
-    await asyncio.sleep(0.1)
+        # Observe a real refresh. Under CI load a fixed 100 ms sleep can
+        # expire before the background loop has even started its first timer.
+        async with asyncio.timeout(3):
+            while True:
+                refreshed = read_pointer(params.dir, machine_name=params.machine_name)
+                if (
+                    refreshed is not None
+                    and refreshed.updated_at_ms > initial.updated_at_ms
+                ):
+                    break
+                await asyncio.sleep(0.01)
 
-    refreshed = read_pointer(
-        params.dir, machine_name=params.machine_name,
-    )
-    assert refreshed is not None
-    # updated_at_ms advanced (mtime refresh happened).
-    assert refreshed.updated_at_ms > initial_updated_at_ms
-    # created_at_ms preserved (the daemon's install time doesn't reset).
-    assert refreshed.created_at_ms == initial_created_at_ms
-    # bridge_id + env_id unchanged.
-    assert refreshed.bridge_id == initial.bridge_id
-    assert refreshed.environment_id == initial.environment_id
-
-    await handle.teardown()
+        # Refresh preserves the install time and bridge/environment identity.
+        assert refreshed.created_at_ms == initial.created_at_ms
+        assert refreshed.bridge_id == initial.bridge_id
+        assert refreshed.environment_id == initial.environment_id
+    finally:
+        await handle.teardown()
 
 
 @pytest.mark.asyncio
@@ -1626,9 +1623,10 @@ async def test_perpetual_ignores_stale_pointer_from_different_dir(
 ) -> None:
     """A pointer file written for a different working directory must
     be rejected; init starts fresh as if no pointer existed."""
-    from src.bridge.bridge_pointer import write_pointer
     import json
     import os
+
+    from src.bridge.bridge_pointer import write_pointer
 
     params = _make_params(perpetual=True)
     params.dir = str(tmp_path)

@@ -90,7 +90,7 @@ an exhaustive live-model benchmark or a claim about every provider.
 
 ### Validation status
 
-- Final full Python run: **10,758 passed, 16 skipped, 340 passing subtests**
+- Local full Python run: **10,758 passed, 16 skipped, 340 passing subtests**
   in 604.73 seconds. The 11 warnings include existing unittest coroutine and
   deprecation warnings. Command: `python -m pytest -q tests --tb=short`.
 - The first full Python run: **10,743 passed, 12 failed, 16 skipped**, plus
@@ -119,6 +119,10 @@ an exhaustive live-model benchmark or a claim about every provider.
   lock before checking the persisted snapshot. This avoids reading an
   in-flight dictionary mutation. The team/task group passes **163 tests**,
   and the dependency/automatic-claim trace passes **20 independent runs**.
+- The bridge heartbeat regression waits for its persisted refresh with a
+  deadline and guaranteed teardown. The mocked connection-error regression
+  still exhausts retries and checks exception identity, with network backoff
+  reduced to zero inside that test. Their combined group passes **51 tests**.
 - Black and isort were applied to changed Python code. The four new runtime
   modules pass targeted mypy. Full-project mypy reports **395 diagnostics**
   versus **397 on the starting commit**, with **zero added diagnostics** after
