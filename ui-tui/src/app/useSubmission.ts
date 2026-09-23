@@ -18,22 +18,38 @@ import type { Msg } from '../types.js'
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
-import { looksLikeDroppedPath } from './useComposerState.js'
+import { looksLikeDroppedPath, trimSnips } from './useComposerState.js'
 
 const DOUBLE_ENTER_MS = 450
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
 
 const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
+// Returns the expander plus the snippets it consumed, so carried snippets
+// (see `carriedSnips`) can be dropped once their label has been sent.
 const expandSnips = (snips: PasteSnippet[]) => {
-  const byLabel = new Map<string, string[]>()
+  const byLabel = new Map<string, PasteSnippet[]>()
+  const used = new Set<PasteSnippet>()
 
-  for (const { label, text } of snips) {
-    const hit = byLabel.get(label)
-    hit ? hit.push(text) : byLabel.set(label, [text])
+  for (const snip of snips) {
+    const hit = byLabel.get(snip.label)
+    hit ? hit.push(snip) : byLabel.set(snip.label, [snip])
   }
 
-  return (value: string) => value.replace(PASTE_SNIPPET_RE, tok => byLabel.get(tok)?.shift() ?? tok)
+  const expand = (value: string) =>
+    value.replace(PASTE_SNIPPET_RE, tok => {
+      const snip = byLabel.get(tok)?.shift()
+
+      if (!snip) {
+        return tok
+      }
+
+      used.add(snip)
+
+      return snip.text
+    })
+
+  return { expand, used }
 }
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
@@ -54,6 +70,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
+  // Snippets whose labels went into the queue (busy / no-session submits).
+  // `clearIn()` empties `pasteSnips` right after enqueueing, so without these
+  // the label would reach the model — and the transcript — unexpanded once
+  // the queue drains. The label stays in the queued text (not the expansion)
+  // so `{!cmd}` interpolation never runs over pasted content.
+  const carriedSnips = useRef<PasteSnippet[]>([])
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -87,10 +109,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const send = useCallback(
     (text: string, showUserMessage = true) => {
-      const expand = expandSnips(composerState.pasteSnips)
+      const { expand: expandOnce, used } = expandSnips([...composerState.pasteSnips, ...carriedSnips.current])
 
-      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
+      const expand = (value: string) => {
+        const out = expandOnce(value)
+        carriedSnips.current = carriedSnips.current.filter(s => !used.has(s))
+
+        return out
+      }
+
+      // The transcript echo shows the EXPANDED text, as CC does: the collapsed
+      // `[[ … [N lines] … ]]` label is a composer affordance only.
+      const startSubmit = (rawText: string, showUserMessage = true) => {
         const sid = getUiState().sid
+        const submitText = expand(rawText)
 
         if (!sid) {
           return sys('session not ready yet')
@@ -98,10 +130,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
-        setLastUserMsg(text)
+        // /retry re-sends this after `clearIn()` has dropped the snippets, so
+        // it must be the expanded text or the label reaches the model.
+        setLastUserMsg(submitText)
 
         if (showUserMessage) {
-          appendMessage({ role: 'user', text: displayText })
+          appendMessage({ role: 'user', text: submitText })
         }
 
         patchUiState({ busy: true, status: 'running…' })
@@ -110,7 +144,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
           if (isSessionBusyError(e)) {
-            composerActions.enqueue(submitText)
+            // Queue the LABEL and re-carry its snippets, as the busy path
+            // does: queued text goes through `{!cmd}` interpolation, which
+            // must never run over pasted content.
+            carriedSnips.current = trimSnips([...carriedSnips.current, ...used])
+            composerActions.enqueue(rawText)
             patchUiState({ busy: true, status: 'queued for next turn' })
 
             return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
@@ -137,13 +175,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // The backend applies the same rule (image_paste.looks_like_dropped_path);
       // the two are deliberate mirrors, so keep them in sync.
       if (!looksLikeDroppedPath(text)) {
-        return startSubmit(text, expand(text), showUserMessage)
+        return startSubmit(text, showUserMessage)
       }
 
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
+            return startSubmit(text, showUserMessage)
           }
 
           if (r.is_image) {
@@ -152,9 +190,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+          startSubmit(r.text || text, showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+        .catch(() => startSubmit(text, showUserMessage))
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
@@ -261,13 +299,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (mode === 'steer' && live.sid) {
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+        // Steer bypasses `send`, so expand here; the snippets are cleared by
+        // the time a fallback enqueue would drain, hence the carry below.
+        const { expand, used } = expandSnips([...composerState.pasteSnips, ...carriedSnips.current])
+        const text = expand(full)
+
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text })
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
             if (r?.status !== 'queued') {
-              fallback('steer rejected — message queued for next turn')
+              return fallback('steer rejected — message queued for next turn')
             }
+
+            carriedSnips.current = carriedSnips.current.filter(s => !used.has(s))
           })
           .catch(() => fallback('steer failed — message queued for next turn'))
 
@@ -281,7 +326,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
       }
     },
-    [appendMessage, composerActions, composerRefs, gw, sys]
+    [appendMessage, composerActions, composerRefs, composerState.pasteSnips, gw, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -306,6 +351,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       const live = getUiState()
+
+      if (!live.sid || live.busy) {
+        carriedSnips.current = trimSnips([...carriedSnips.current, ...composerState.pasteSnips])
+      }
 
       if (!live.sid) {
         composerActions.pushHistory(full)
@@ -358,7 +407,18 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
+    [
+      appendMessage,
+      composerActions,
+      composerRefs,
+      composerState.pasteSnips,
+      handleBusyInput,
+      interpolate,
+      send,
+      sendQueued,
+      shellExec,
+      slashRef
+    ]
   )
 
   const submit = useCallback(

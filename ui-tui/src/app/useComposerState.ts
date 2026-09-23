@@ -26,7 +26,7 @@ import { getUiState } from './uiStore.js'
 const PASTE_SNIP_MAX_COUNT = 32
 const PASTE_SNIP_MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
-const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
+export const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
   let total = 0
   const out: PasteSnippet[] = []
 

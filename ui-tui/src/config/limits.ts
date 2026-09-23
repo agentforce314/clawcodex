@@ -20,6 +20,11 @@ export const VERBOSE_TRAIL_MAX_CHARS = 16_000
 export const VERBOSE_TRAIL_MAX_LINES = 200
 
 export const LONG_MSG = 300
+// User-prompt echo cap (CC UserPromptMessage): past MAX, show head + tail so
+// the question at the end of a big paste stays visible.
+export const USER_MSG_MAX_DISPLAY_CHARS = 10_000
+export const USER_MSG_TRUNCATE_HEAD_CHARS = 2_500
+export const USER_MSG_TRUNCATE_TAIL_CHARS = 2_500
 export const MAX_HISTORY = 800
 export const THINKING_COT_MAX = 160
 

@@ -1,4 +1,9 @@
-import { LONG_MSG } from '../config/limits.js'
+import {
+  LONG_MSG,
+  USER_MSG_MAX_DISPLAY_CHARS,
+  USER_MSG_TRUNCATE_HEAD_CHARS,
+  USER_MSG_TRUNCATE_TAIL_CHARS
+} from '../config/limits.js'
 import { buildToolTrailLine, fmtK } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
@@ -46,6 +51,30 @@ export const userDisplay = (text: string) => {
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
   return `${prefix || '(message)'} [long message]`
+}
+
+// indexOf walk, not split: the input can be a multi-megabyte paste.
+const countNewlines = (text: string, start = 0) => {
+  let n = 0
+
+  for (let i = text.indexOf('\n', start); i !== -1; i = text.indexOf('\n', i + 1)) {
+    n++
+  }
+
+  return n
+}
+
+/** CC UserPromptMessage cap: huge prompts render head + `… +N lines …` + tail. */
+export const truncateUserPrompt = (text: string) => {
+  if (text.length <= USER_MSG_MAX_DISPLAY_CHARS) {
+    return text
+  }
+
+  const head = text.slice(0, USER_MSG_TRUNCATE_HEAD_CHARS)
+  const tail = text.slice(-USER_MSG_TRUNCATE_TAIL_CHARS)
+  const hiddenLines = countNewlines(text, USER_MSG_TRUNCATE_HEAD_CHARS) - countNewlines(tail)
+
+  return `${head}\n… +${hiddenLines} lines …\n${tail}`
 }
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
