@@ -46,7 +46,9 @@ modes (reward 1.0)** — nano at **$0.0042 total vs $0.0186 (4.4×
 cheaper)**, e.g. fix-git: 54.8K vs 282.6K input tokens, $0.00165 vs
 $0.01015, 75 s vs 128 s. On the full 89-task suite head-to-head with
 the pi harness (both with vision+websearch, deepseek-v4-flash at max
-thinking, k=1): **nano 64/89 ($1.31) vs pi 63/89 ($2.01)**. Full
+thinking, k=1): **nano 64/89 ($1.31) vs pi 63/89 ($2.01)**; a later full
+run of the next round's build (#900, before its last commit) scored 63/89
+— read the pair as parity with pi on score. Full
 tables: `eval/harbor/RUN_NANO_TB21.md`.
 
 ## What nano does differently

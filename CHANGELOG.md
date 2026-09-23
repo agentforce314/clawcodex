@@ -7,14 +7,187 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-23
+
+### Added
+
+- **Persistent agent teams, and background workers that really resume
+  (#950).** A follow-up sent to a finished background worker used to flip it
+  back to `running` without ever starting a model loop, and the team tools
+  (`TeamCreate`, `SendMessage`, the shared task board) existed with no
+  production path that ran a teammate. Both lifecycles are now wired end to
+  end:
+  - **Resume is real.** A follow-up launches a managed thread that reloads the
+    worker's typed transcript history and reuses its ID and settings. A
+    correction accepted while the worker was writing its final answer
+    continues the loop instead of going unread.
+  - **Persistent teammates.** `TeamCreate` establishes the leader and roster;
+    a named `Agent` call creates a teammate that stays available for further
+    assignments, keeping its context and file-read fingerprints between them.
+    `SendMessage` delivers findings to a named peer or to the leader, a
+    teammate's final prose stays private, and idle/exit notices report who is
+    available.
+  - **A shared task board.** Team members share one locked, persisted board;
+    automatic pickup honors dependencies (the end-to-end suite runs 24
+    concurrent claimers over 12 tasks), and a completion hook can veto a
+    completion.
+  - **Plan and permission control.** Only a matching leader approval changes a
+    teammate's permission mode — a rejection, a stale response, or a mailbox
+    record the runtime never issued cannot. A worker's permission request
+    carries its identity and an abort signal, so interrupting the worker
+    denies and removes the pending prompt.
+  - **One supervisor for every worker.** Local, team and workflow workers
+    share admission, progress, transcript persistence, session- and
+    parent-scoped notification routing (a process-wide queue could deliver
+    another session's result), and a bounded shutdown when the session ends.
+  - **Worktree isolation is honored.** An `Agent` or workflow worker asked for
+    isolation runs in a real Git worktree or fails before the model runs — it
+    never silently edits the parent checkout. Edits and commits are preserved,
+    and a checkout still used by a background descendant is kept.
+  - **Races closed:** concurrent named launches (the task is published
+    before its name is claimed, and collisions are rejected), workflow
+    startup/stop (an immediate `TaskStop` works and a late start cannot
+    resurrect the task), workflow budget accounting (checked after a slot is
+    acquired, every attempt charged), and replay checkpoints.
+
+  Scope, as documented in `docs/multi-agent-runtime-verification.md`: teams
+  are in-process — the reference's tmux/iTerm pane, remote and UDS backends
+  are not implemented; one team per workspace; no automatic crash recovery;
+  a workflow's observed token budget stops new work from starting but is not a
+  hard spending cap. Verified by new end-to-end suites that drive real query
+  loops, tools, registries, worktrees and WebSocket connections against a
+  scripted provider, plus one live DeepSeek smoke run (background Read,
+  same-ID resume, peer-to-leader delivery, approved shutdown and
+  `TeamDelete`) — a smoke test, not a benchmark.
+- **Agent control plane — live subagent status, pause and interrupt (#915).** A
+  session-scoped supervisor now sees every subagent from both spawn paths
+  (foreground delegations previously registered nowhere, so nothing could list
+  or stop them). The TUI agents overlay's status readout, pause key (which
+  stops new spawns; running agents continue) and kill key are wired to it —
+  they had no backend at all and silently did nothing. The browser client
+  gains live agent status with per-agent interrupt and a session-wide pause on
+  new spawns (first as an **Agents** tab, since folded into the header's
+  subagent list — see Changed). An interrupted agent reports itself
+  as interrupted, not as a completed delegation with partial output.
+- Two admission limits, both configurable (#915):
+  `CLAWCODEX_MAX_CONCURRENT_AGENTS` (default 32 — a runaway backstop, not a
+  scheduling budget) and `CLAWCODEX_MAX_AGENT_DEPTH` (default 3). A refused
+  spawn returns a tool error the model can act on rather than failing the
+  turn.
+- **`clawcodex --nano` — a pi-shaped minimal harness profile (#879–#885,
+  #889–#891, #894, #897–#902).** Six tools (Read, Bash, Edit, Write, Grep,
+  Glob), a ~300-token system prompt, one-to-three-sentence tool docs, no
+  per-turn injections and `/eco` on: a ≈2,000-token fixed payload against the
+  default's ≈17,000. Skills are listed rather than tooled; Edit gains pi's
+  multi-edit ladder with a fuzzy near-miss match (#880); a truncation guard
+  refuses tool calls carried by a `max_tokens`-cut response, and compaction
+  summaries end with read/modified path ledgers (#881); the advisor never
+  activates under nano (#885); `vision_analyze` and `WebSearch` join as
+  conditional tools (#890, #894); long-running work gets no Bash timeout
+  ceiling and anti-poll guidance (#897), and an operational
+  constraint-checklist verification guideline lands (#898) — both held back
+  by #899 and relanded in #900, which adds an output-idle watchdog and pi-style
+  tail-keeping truncation with a full-output spill file. Runs headless, in the
+  TUI with a `nano` chip in the status line (#883, #884), and under `clawcodex
+  serve`/`web` with a badge in the browser (#901, #902). Default-off: without
+  the flag the harness is unchanged, apart from the Bash fix under Fixed. On
+  the full Terminal-Bench 2.1 suite, head to head with the pi harness
+  (`deepseek-v4-flash`, vision and web search on both sides, k=1 per run),
+  nano scored **64/89** at #896 (before the #897–#900 round) and **63/89** on
+  the #900 branch (measured before its final, nano-only tail-truncation
+  commit), against pi's **63/89**: parity on score.
+  The runs' recorded costs are in `eval/harbor/RUN_NANO_TB21.md`; the matched
+  Harbor runner and its fixes are #886, #887, #892, #893, #895. See
+  `docs/nano.md`.
+- **Cost-aware auto-compaction (#903).** `compact.mode = "cost_aware"` (the
+  default stays `token_threshold`) compacts only when the estimated savings —
+  tokens shed, at the model's effective input and cache-read rates — repay
+  the summary call within `compact.break_even_turns` (default 10), falling
+  back to the token threshold when pricing is unknown. Compaction telemetry
+  measures the first post-compaction turn's cache-hit rate and net cost, and
+  `/context` warns when a compaction cost more than it saved.
+- **DeepSeek-V4.1-Flash (`deepseek-flash`), and the DeepSeek line collapses
+  onto it (#925).** 1M context, 384K max output, thinking on by default — and
+  the first DeepSeek model that accepts an image, folding in the retired
+  `deepseek-v4-flash-vision-exp`, so a screenshot no longer needs a
+  fusion model on this provider. It is now the `deepseek`
+  provider's default and its whole subagent tier table (opus/sonnet/haiku),
+  because DeepSeek says V4.1 Flash "has comprehensively surpassed V4 Pro in
+  performance, cost, speed, and total time" and is retiring Pro onto it.
+  `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-chat` and
+  `deepseek-reasoner` all still resolve, so a pinned session keeps working.
+- **`/cost` follows DeepSeek's re-card and its V4 Pro retirement (#925).** V4.1
+  Flash is cheaper than the V4 flash line it replaces — **$0.15 / $0.60 per
+  MTok off-peak and $0.003 cache-hit**, against $0.22 / $0.66 / $0.007 — and
+  the retired flash ids are billed at that same card, since DeepSeek serves
+  them from V4.1 Flash. `deepseek-v4-pro` keeps its own card until 2026-09-14
+  12:00 Beijing (04:00 UTC) and prices as Flash from that instant, on top of
+  the peak/off-peak schedule (see Changed). Both axes read the request's
+  timestamp, so re-opening an August session still shows what it actually
+  cost rather than restating it 4.4× low.
+- **ChatGPT-subscription model discovery (#913, #917).** A subscription login
+  now discovers the models that account can actually use instead of showing a
+  hardcoded list, caches them per account and token, and hides a model the
+  backend rejects for five minutes (#917). The subscription catalog adds
+  GPT-6 Astra and GPT-5.6 Sol, Terra and Luna (Astra joins the API catalog
+  too), and `/model` groups each fusion model under its base model's provider
+  rather than the active one (#913).
+- **Web: the reference's session stats strip (#923).** One centred line under
+  the composer — `2 turns · 106 steps | LLM 6m28s · Tool call 23.7s | TTFT avg
+  1.3s · 258 tok/s | Cache hit 99% | Input 11.5M tok · Output 65.9K tok` —
+  replacing the two pills and their dialogs. A group with nothing measured
+  drops out whole. Stored assistant messages now keep each step's token
+  accounting and model (they were saved as `null`), and the session loader
+  forwards them in the live `step.complete` shape, so a resumed session
+  totals its cost exactly instead of hiding the figure; only TTFT and output
+  speed, which the file cannot record, stay off the line.
+- **Web: subagents in the header, and a child view per run (#922).** A
+  session that delegates shows **N subagents ▾** beside its title, with a
+  live dot while any still run; the list behind it names each delegation with
+  its type, model, state, tokens and duration, and opens the run in the
+  conversation column — its prompt, everything it did as tool rows, and a
+  read-only seat in place of the composer — with the parent's title as the
+  way back. Fed by two sources that used to be dropped on the floor: the
+  Agent tool's per-message progress now reaches the browser as
+  `subagent.progress` (the gateway translated nothing out of
+  `agent_progress` frames before), and the Agent tool's result envelope
+  (`agent_id`, status, model, duration, tokens, tool count) rides the
+  completion as `result.agent` and is persisted beside the stored result, so
+  a resumed session lists its subagents exactly as the live one did.
+  Foreground subagents now keep the same sidechain transcript background ones
+  do (`~/.clawcodex/transcripts/<agent_id>.jsonl`), and a new
+  `subagent.transcript` gateway method reads one in the stored-message shape
+  `session.resume` uses. **Model-written session titles** land in the same
+  change: after the heuristic first-line name, the session's own provider is
+  asked for a short title (`generate_title` control) — on any provider, not
+  the Anthropic-only path `generate_llm_title` was pinned to — and an
+  explicit rename in the meantime wins.
+- **Web: a sidebar of tabs, with the workspace readable in it (#918).** The
+  right column becomes tabs: **Session** (the old panel), **Files** (the
+  workspace, listed a level at a time over the gateway), and a tab per opened
+  file, read a page at a time — a `Read` row opens the file at the line the
+  agent was looking at. Its two stats pills were replaced the next day by the
+  one-line strip above (#923).
+- **Web: the reference's composer menu, sidebar start page, and whole-file
+  previews (#929).** The `+` button and a typed `/` open one ranked menu (an
+  Add section — image, plan, goal — and the commands in usage order). A `+` in
+  the right column's tab strip opens a Start page; files open in a viewer
+  that fits them — Markdown as prose, highlighted code, HTML in a sandboxed
+  frame, images, PDF — read through two new workspace-confined gateway calls
+  (`fs.read_bytes`, `fs.read_related`); and `@file` mentions in sent messages
+  become chips that open the file beside the conversation.
+- **Web: attach files of any type (#949).** The composer's Add menu gains
+  **File** beside **Image**; an attached file becomes a `[File #N]` chip plus
+  a card under the text, and drops and pastes sort images from other files.
+
 ### Changed
 
 - **A model or effort pick is saved as your default for new sessions, on
-  every interface.** Choosing a model in the TUI's `/model` picker, the web
-  client's model chip, or the desktop's model menu — and choosing an effort
-  level beside it — now writes the choice to your settings, so the next
-  session on the CLI, the web client and the desktop all start on it, and
-  the surface says so: `Set model to deepseek-flash and saved as your
+  every interface (#930).** Choosing a model in the TUI's `/model` picker, the
+  web client's model chip, or the desktop's model menu — and choosing an
+  effort level beside it — now writes the choice to your settings, so the
+  next session on the CLI, the web client and the desktop all start on it,
+  and the surface says so: `Set model to deepseek-flash and saved as your
   default for new sessions`, matching Claude Code's `/model`. Before this
   the TUI persisted the model silently while labelling the picker
   "persist: session", effort never persisted anywhere, and the web and
@@ -28,90 +201,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host user's own transports — the TUI's stdio child and `clawcodex
   serve`'s desktop/web sessions — never from a `--http` peer, which gets
   `persisted: false` and a session-scoped switch.
-
-### Added
-
-- **DeepSeek-V4.1-Flash (`deepseek-flash`), and the DeepSeek line collapses
-  onto it.** 1M context, 384K max output, thinking on by default — and the
-  first DeepSeek model that accepts an image, folding in the retired
-  `deepseek-v4-flash-vision-exp`, so a screenshot no longer needs a
-  fusion model on this provider. It is now the `deepseek`
-  provider's default and its whole subagent tier table (opus/sonnet/haiku),
-  because DeepSeek says V4.1 Flash "has comprehensively surpassed V4 Pro in
-  performance, cost, speed, and total time" and is retiring Pro onto it.
-  `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-chat` and
-  `deepseek-reasoner` all still resolve, so a pinned session keeps working.
-- **`/cost` follows DeepSeek's re-card and its V4 Pro retirement.** V4.1 Flash
-  is cheaper than the V4 flash line it replaces — **$0.15 / $0.60 per MTok
-  off-peak and $0.003 cache-hit**, against $0.22 / $0.66 / $0.007 — and the
-  retired flash ids are billed at that same card, since DeepSeek serves them
-  from V4.1 Flash. `deepseek-v4-pro` keeps its own card until 2026-09-14
-  12:00 Beijing (04:00 UTC) and prices as Flash from that instant, on top of
-  the existing peak/off-peak schedule. Both axes read the request's
-  timestamp, so re-opening an August session still shows what it actually
-  cost rather than restating it 4.4× low.
-
-- **Web: the reference's session stats strip.** One centred line under the
-  composer — `2 turns · 106 steps | LLM 6m28s · Tool call 23.7s | TTFT avg
-  1.3s · 258 tok/s | Cache hit 99% | Input 11.5M tok · Output 65.9K tok` —
-  replacing the two pills and their dialogs. A group with nothing measured
-  drops out whole. Stored assistant messages now keep each step's token
-  accounting and model (they were saved as `null`), and the session loader
-  forwards them in the live `step.complete` shape, so a resumed session
-  totals its cost exactly instead of hiding the figure; only TTFT and output
-  speed, which the file cannot record, stay off the line.
-- **Web: subagents in the header, and a child view per run.** A session that
-  delegates shows **N subagents ▾** beside its title, with a live dot while any
-  still run; the list behind it names each delegation with its type, model,
-  state, tokens and duration, and opens the run in the conversation column —
-  its prompt, everything it did as tool rows, and a read-only seat in place of
-  the composer — with the parent's title as the way back. Fed by two sources
-  that used to be dropped on the floor: the Agent tool's per-message progress
-  now reaches the browser as `subagent.progress` (the gateway translated
-  nothing out of `agent_progress` frames before), and the Agent tool's result
-  envelope (`agent_id`, status, model, duration, tokens, tool count) rides the
-  completion as `result.agent` and is persisted beside the stored result, so a
-  resumed session lists its subagents exactly as the live one did.
-- Foreground subagents now keep the same sidechain transcript background ones
-  do (`~/.clawcodex/transcripts/<agent_id>.jsonl`); a new `subagent.transcript`
-  gateway method reads one in the stored-message shape `session.resume` uses.
-- **Model-written session titles.** After the heuristic first-line name lands,
-  the session's own provider is asked for a short title (`generate_title`
-  control) and its answer replaces the heuristic — on any provider, not the
-  Anthropic-only path `generate_llm_title` was pinned to. An explicit rename
-  in the meantime wins.
-- **Agent control plane — live subagent status, pause and interrupt.** A
-  session-scoped supervisor now sees every subagent from both spawn paths
-  (foreground delegations previously registered nowhere, so nothing could list
-  or stop them). The TUI agents overlay's status readout, pause key and kill
-  key are wired to it — they had no backend at all and silently did nothing.
-  The browser client gains an **Agents** tab listing live agents with their
-  model, tool count, age and status, with per-agent interrupt and a
-  session-wide pause. An interrupted agent reports itself as interrupted, not
-  as a completed delegation with partial output.
-- Two admission limits, both configurable: `CLAWCODEX_MAX_CONCURRENT_AGENTS`
-  (default 32 — a runaway backstop, not a scheduling budget) and
-  `CLAWCODEX_MAX_AGENT_DEPTH` (default 3). A refused spawn returns a tool error
-  the model can act on rather than failing the turn.
-
-### Changed
-
+- **Agent turn budgets raised (#906):** subagents without an explicit limit
+  30 → 100 turns, `/goal` runs 20 → 100, and the query loop's `max_turns`
+  50 → 200 — long multi-step runs were being cut off mid-task.
+- **DeepSeek pricing gains a peak/off-peak axis (#905).** DeepSeek's current
+  card is published as peak/off-peak, which neither prompt size nor a
+  response's `service_tier` could express; `/cost` now prices by the
+  request's timestamp.
+- The advisor's activation helper now defaults to inactive when a caller
+  omits the enablement flag (#907). User-facing behavior is unchanged: the
+  advisor was already off unless `advisor_enabled` or `/advisor` turned it on.
+- **`clawcodex serve` refuses a non-loopback bind without `--allow-remote`
+  (#921),** as `clawcodex web` always did: its `GET /` hands out the session
+  token by design. `web --allow-remote` now forwards the flag to the server
+  it spawns.
+- **`clawcodex agent-server` refuses a non-loopback bind without `--token`
+  (#924),** since `POST /sessions` authenticates only when a token is set.
+  The bearer comparison is now constant-time; `--stdio` is exempt.
+- Web: one surface for subagents (#933–#935). The Agents tab is gone: Stop
+  moves onto each running row of the header's subagent list and into a
+  running child's seat, **Pause spawning** sits at the list's foot beside the
+  running count and cap, the list stays whole in a narrow column, and the
+  title gives way before the chip does.
 - Web: an `Agent` row reads `Agent · <description>`, with the run's activity
   (running) or `N tools · duration` (done) at its right edge, and a body of
-  prompt, report and a button into the run — it was a generic IN/OUT card.
+  prompt, report and a button into the run — it was a generic IN/OUT card
+  (#922).
 - Web: a `Bash` row's summary is the model's one-line description of the
   command when it gave one, with the command itself in the terminal card; the
-  raw command line was the summary before.
+  raw command line was the summary before (#922).
 - Web: the sidebar lists a blank session only while it is the one on screen,
   as **New session**; every other never-used runtime session is hidden, and
-  project counts count what is shown.
+  project counts count what is shown (#922).
+- Web: the right column may take up to 70% of the frame (#931); the
+  trajectory inspector is resizable and remembers its width (#942); only the
+  active session's workspace starts expanded (#946).
+- The installer's completion message names the Web UI command and address
+  (#914).
 
 ### Fixed
 
+- **Bash no longer stalls on a command that prints more than the ~64 KB pipe
+  buffer (#900).** Output was read only after the command exited, so a
+  command writing more than the pipe could hold blocked on its own write until
+  the timeout killed it, and came back reported as timed out with its output
+  cut at 64 KB. Output is now drained while the command runs, in every mode —
+  a fix that shipped with nano's stuck-command detection.
+- The TUI banner showed a stale version (v1.4.0 on a v1.6.0 build); it now
+  shows the running backend's version from the init frame (#917).
+- **Web: a saved session opens in milliseconds, not ~45 s (#947, #948).**
+  The transcript of a 1.8 MB session now shows in 85–150 ms instead of 48 s: a
+  recursive workspace walk built twice per resume was the bulk of it, and a
+  repeat click reuses the runtime instead of spawning a new one. The same
+  change adds a **New session** dialog that can start in a new workspace or a
+  fresh Git worktree, with **Add workspace…** pinned below the list (#948).
+- Web: a reload lands back on the same session (#932); the file reader keeps
+  its place across a reload (#919); non-Git sessions group by their own
+  workspace instead of all falling under Home (#910); a late `session.clear`
+  reply can no longer clear the chat you navigated to (#911); column drags
+  over an embedded document no longer stick or re-render the app per pixel
+  (#936–#938).
+- Web: image attachments stay visible in sent and reloaded messages (#940).
+  An uploaded image is retained in the session's artifact directory — it was
+  deleted right after attaching, so a later `Read` or `vision_analyze` failed
+  with "No such image file" — and a vision-capable main model gets the image
+  natively instead of being offered a second model to look at it (#941).
+- The tool-failure-loop guard no longer conflates distinct Bash failures that
+  share a startup banner: its fallback category now keys off the tail of the
+  result, where the traceback or compiler error is (#928).
+- `install.sh` stopped appending its PATH block to your shell rc on every run
+  (#943; the regression test skips on Windows, #945).
+- TUI: a stray glyph at the tail of a row the renderer repaints is now
+  erased instead of sticking for the rest of the session. The fix is partial,
+  as its PR states: a glyph anywhere else still needs `ctrl+L` (#888).
+- TUI: a collapsed paste echoes its full text in the transcript, and
+  `/retry` and prompts queued while the agent is busy send the paste rather
+  than its `[[ … ]]` label (#951).
 - `anthropic` is capped below 1.0. Version 1.0.0 moved the SDK onto `httpx2`,
   which rejects the `http_client=httpx.Client(...)` hook the provider layer
   depends on — the same migration `openai` is already capped for. An unpinned
-  resolve installed 1.x in CI while pinned local environments stayed green.
+  resolve installed 1.x in CI while pinned local environments stayed green
+  (#916, which also supplies the Harbor adapter's `_websearch` test fixture).
 
 ## [1.6.0] - 2026-08-15
 
@@ -989,7 +1159,8 @@ The focus was on building a solid foundation with clean architecture, comprehens
 
 ---
 
-[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/agentforce314/clawcodex/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/agentforce314/clawcodex/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/agentforce314/clawcodex/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/agentforce314/clawcodex/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/agentforce314/clawcodex/compare/v1.3.0...v1.4.0
