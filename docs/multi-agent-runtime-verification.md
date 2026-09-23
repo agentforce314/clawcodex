@@ -102,6 +102,14 @@ an exhaustive live-model benchmark or a claim about every provider.
 - PR CI additionally runs the full Python suite on Linux and Windows,
   desktop checks on both platforms, web typecheck/tests/build, and the Harbor
   adapter suite. The PR's checks are the authority for those platform results.
+- The [prior Windows CI run](https://github.com/agentforce314/clawcodex/actions/runs/35822292378)
+  failed in four fixtures that assumed Unix stdout encoding, newline
+  translation, permission bits, or home-directory environment variables.
+  The fixtures now emit explicit UTF-8, preserve literal line endings,
+  simulate an unreadable directory at the filesystem boundary, and retain the
+  native environment while isolating the config variable under test. Their
+  behavioral assertions remain in place; the affected group passes all
+  **144 tests** locally.
 - Black and isort were applied to changed Python code. The four new runtime
   modules pass targeted mypy. Full-project mypy reports **395 diagnostics**
   versus **397 on the starting commit**, with **zero added diagnostics** after

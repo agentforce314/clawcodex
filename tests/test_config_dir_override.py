@@ -9,6 +9,7 @@ error and no warning.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,10 @@ def _resolve(env_dir: str | None) -> str:
     A subprocess because these are import-time constants: re-importing in this
     process would not re-evaluate them.
     """
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(Path.home())}
+    # Path.home() needs USERPROFILE or HOMEDRIVE/HOMEPATH on Windows. Retain
+    # the platform environment while isolating only the variable under test.
+    env = os.environ.copy()
+    env.pop("CLAWCODEX_CONFIG_DIR", None)
     if env_dir is not None:
         env["CLAWCODEX_CONFIG_DIR"] = env_dir
     result = subprocess.run(

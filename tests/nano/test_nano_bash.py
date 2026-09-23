@@ -182,7 +182,14 @@ def test_nano_tail_decode_never_splits_multibyte(ctx, monkeypatch):
     # re-align (pi's trimToLastUtf8Bytes) so no replacement chars leak.
     monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "1000")
     set_nano_mode(True)
-    result = BashTool.call({"command": "python3 -c \"print('é'*5000)\""}, ctx)
+    # Emit UTF-8 bytes explicitly: Windows stdout defaults to a legacy code
+    # page, which would test a different encoding instead of a split sequence.
+    result = BashTool.call(
+        {
+            "command": "python3 -c \"import sys; sys.stdout.buffer.write(('\\u00e9'*5000+'\\n').encode('utf-8'))\""
+        },
+        ctx,
+    )
     out = result.output["stdout"]
     assert "Full output:" in out
     assert "�" not in out
