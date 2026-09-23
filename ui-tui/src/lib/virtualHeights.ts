@@ -1,4 +1,5 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
+import { truncateUserPrompt } from '../domain/messages.js'
 import { briefCallOfTrailLine, briefRuns, briefText, countBriefTools } from '../domain/toolBrief.js'
 import type { Msg } from '../types.js'
 
@@ -212,7 +213,8 @@ export const estimatedMsgHeight = (
   }
 
   const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
-  const text = msg.text
+  // Match the render: user prompts over the cap paint head + marker + tail.
+  const text = msg.role === 'user' ? truncateUserPrompt(msg.text) : msg.text
   // A `trail` block paints no text row at all (MessageLine hands it straight
   // to ToolTrail), so it must not be charged the one-row floor every prose
   // block gets — that alone doubled the estimate for a one-row brief.

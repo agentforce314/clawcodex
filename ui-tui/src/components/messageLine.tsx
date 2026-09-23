@@ -1,11 +1,11 @@
 import { Ansi, Box, NoSelect, Text } from '@clawcodex/ink'
-import { memo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
 import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
-import { userDisplay } from '../domain/messages.js'
+import { truncateUserPrompt, userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
@@ -63,6 +63,10 @@ export const MessageLine = memo(function MessageLine({
   // Collapse toggle for long system messages
   const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
   const [systemOpen, setSystemOpen] = useState(false)
+  // Memoised on text alone: the row re-renders on cols/theme changes too, and
+  // the cap walks the whole (possibly multi-MB) prompt. Hooks stay above the
+  // early returns below.
+  const userText = useMemo(() => (msg.role === 'user' ? truncateUserPrompt(msg.text) : msg.text), [msg.role, msg.text])
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return <TodoPanel defaultCollapsed={msg.todoCollapsedByDefault} marginBottom={1} t={t} todos={msg.todos} />
@@ -246,7 +250,7 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
+    return <Text {...(body ? { color: body } : {})}>{userText}</Text>
   })()
 
   // Diff segments (emitted by pushInlineDiffSegment between narration
