@@ -3,12 +3,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from src.services.swarm.task_board import with_task_board
+from src.utils.task_flags import is_todo_v2_enabled
+
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError
 from ..protocol import ToolResult
-from src.utils.task_flags import is_todo_v2_enabled
-
 
 _TASK_STATUSES = {"pending", "in_progress", "completed"}
 
@@ -131,6 +132,7 @@ def _cascade_delete(task_id: str, context: ToolContext) -> None:
 # ---------------------------------------------------------------------------
 
 
+@with_task_board(write=True)
 def _task_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     subject = tool_input.get("subject")
     description = tool_input.get("description")
@@ -229,6 +231,7 @@ All tasks are created with status `pending`.
 )
 
 
+@with_task_board(write=False)
 def _task_get_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     task_id = tool_input.get("taskId")
     if not isinstance(task_id, str) or not task_id.strip():
@@ -292,6 +295,7 @@ Returns full task details:
 )
 
 
+@with_task_board(write=False)
 def _task_list_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     # FOLLOW-UP (chapter-10 / Chunk B / critic concern C2): this filter
     # was scoped out of WI-1.5 (which only migrated ``_task_output_call``).
@@ -364,6 +368,65 @@ Use TaskGet with a specific task ID to view full details including description a
 
 
 def _task_update_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    from src.services.swarm.task_board import task_board
+
+    # Hooks can call tools themselves. Never hold the board lock while running
+    # external hook code or waiting for its event loop.
+    task_id = tool_input.get("taskId")
+    with task_board(context):
+        task = dict(context.tasks.get(task_id, {})) if isinstance(task_id, str) else {}
+    if (
+        task
+        and tool_input.get("status") == "completed"
+        and task.get("status") != "completed"
+    ):
+        from src.hooks.hook_executor import (
+            execute_task_completed_hooks,
+            has_hook_for_event,
+        )
+        from src.utils.async_bridge import run_coroutine_blocking
+
+        if has_hook_for_event("TaskCompleted", context):
+
+            async def check_completion() -> list[str]:
+                errors = []
+                async for result in execute_task_completed_hooks(
+                    str(task_id),
+                    task["subject"],
+                    task.get("description"),
+                    context.teammate_name or "",
+                    context.team_name or "",
+                    context,
+                    permission_mode=context.permission_context.mode,
+                ):
+                    if result.get("blocking_error"):
+                        error = result["blocking_error"]
+                        errors.append(
+                            str(
+                                error.get("blocking_error", error)
+                                if isinstance(error, dict)
+                                else error
+                            )
+                        )
+                return errors
+
+            errors = run_coroutine_blocking(check_completion())
+            if errors:
+                return ToolResult(
+                    name="TaskUpdate",
+                    output={
+                        "success": False,
+                        "taskId": task_id,
+                        "updatedFields": [],
+                        "error": "\n".join(errors),
+                    },
+                    is_error=True,
+                )
+    return _apply_task_update(tool_input, context)
+
+
+@with_task_board(write=True)
+def _apply_task_update(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     task_id = tool_input.get("taskId")
     if not isinstance(task_id, str) or not task_id.strip():
         raise ToolInputError("taskId must be a non-empty string")
@@ -374,6 +437,7 @@ def _task_update_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
             output={"success": False, "taskId": task_id, "updatedFields": [], "error": "Task not found"},
         )
 
+    previous_owner = task.get("owner")
     updated_fields: list[str] = []
     status_change: dict[str, str] | None = None
 
@@ -411,8 +475,16 @@ def _task_update_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
                 raise ToolInputError(f"{input_key} must be an array of strings when provided")
             cur = list(task.get(rel_field) or [])
             for x in ids:
+                if x == task_id:
+                    raise ToolInputError("A task cannot depend on itself")
                 if x not in cur:
                     cur.append(x)
+                other = context.tasks.get(x)
+                if other is not None:
+                    inverse = "blockedBy" if rel_field == "blocks" else "blocks"
+                    reverse = other.setdefault(inverse, [])
+                    if task_id not in reverse:
+                        reverse.append(task_id)
             if cur != task.get(rel_field):
                 task[rel_field] = cur
                 updated_fields.append(rel_field)
@@ -429,6 +501,16 @@ def _task_update_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
                 existing[k] = v
         task["metadata"] = existing
         updated_fields.append("metadata")
+
+    if (
+        task.get("status") == "in_progress"
+        and not task.get("owner")
+        and context.teammate_name
+    ):
+        task["owner"] = context.teammate_name
+        updated_fields.append("owner")
+    if context.team_runtime is not None and task.get("owner") != previous_owner:
+        context.team_runtime.notify_assignment(context, task)
 
     out: dict[str, Any] = {"success": True, "taskId": task_id, "updatedFields": updated_fields}
     if status_change is not None:

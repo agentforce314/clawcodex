@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable, Literal, TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, TypeVar
 
 from src.tasks_core import TaskStateBase, is_terminal_task_status
 
@@ -179,6 +179,10 @@ class InProcessTeammateTaskState(TaskStateBase):
     current_work_abort_event: asyncio.Event | None = field(
         default=None, repr=False, compare=False
     )
+    abort_controller: Any = field(default=None, repr=False, compare=False)
+    current_work_abort_controller: Any = field(default=None, repr=False, compare=False)
+    shutdown_approved: bool = False
+    plan_request_id: str | None = None
     awaiting_plan_approval: bool = False
     # TODO (Phase 9): tighten to ``permissions.types.PermissionMode``
     # Literal once the permission-forwarding bridge lands. Loose-typed
@@ -336,25 +340,34 @@ class InProcessTeammateTask:
         self, task_id: str, registry: "RuntimeTaskRegistry"
     ) -> None:
         aborted_event: asyncio.Event | None = None
+        controller: Any = None
 
         def _kill(prev: TaskStateBase) -> TaskStateBase:
-            nonlocal aborted_event
+            nonlocal aborted_event, controller
             if not isinstance(prev, InProcessTeammateTaskState):
                 return prev
             if is_terminal_task_status(prev.status):
                 return prev
             aborted_event = prev.abort_event
+            controller = prev.abort_controller
             return replace(prev, status="killed")
 
         registry.update(task_id, _kill)
-        # Set the event OUTSIDE the registry lock — same defense-in-depth
-        # pattern as kill_async_agent. asyncio.Event is thread-safe for
-        # ``set()`` (it dispatches via the loop's call_soon_threadsafe
-        # internally), but we don't want a misbehaving subclass to
-        # deadlock the registry.
+        if controller is not None:
+            controller.abort("teammate stopped")
+        # Legacy event-based runners must be woken on their owning loop.
+        # The production worker uses the cross-thread AbortController above.
         if aborted_event is not None:
             try:
-                aborted_event.set()
+                loop = getattr(aborted_event, "_loop", None)
+                if (
+                    loop is not None
+                    and loop is not asyncio.get_running_loop()
+                    and loop.is_running()
+                ):
+                    loop.call_soon_threadsafe(aborted_event.set)
+                else:
+                    aborted_event.set()
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception(

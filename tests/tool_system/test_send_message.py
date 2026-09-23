@@ -222,12 +222,8 @@ def test_message_to_running_agent_by_raw_id(tmp_path: Path) -> None:
 
 
 def test_message_to_terminal_agent_reports_honestly(tmp_path: Path) -> None:
-    """ch10 round-4 (critic M1) — SendMessage to a TERMINAL agent no longer
-    returns a false 'resumed it in the background' success (the live-resume
-    lifecycle is a documented stub that never spawns the loop). It returns
-    an error telling the model the message will NOT be processed and to
-    spawn a fresh agent. The resume_agent_background call still re-registers
-    the state (running + prompt), but the tool is honest about the outcome."""
+    """A legacy task without a launcher stays terminal after a failed send."""
+
     from src.tasks.local_agent import (
         complete_agent_task,
         register_async_agent,
@@ -246,14 +242,13 @@ def test_message_to_terminal_agent_reports_honestly(tmp_path: Path) -> None:
     )
     assert result.is_error is True
     msg = result.output["message"].lower()
-    assert "not yet supported" in msg or "fresh agent" in msg
+    assert "no executable continuation" in msg
     assert "resumed it in the background" not in msg
 
 
 @pytest.mark.asyncio
 async def test_concurrent_resume_race_only_one_winner(tmp_path: Path) -> None:
-    """Two concurrent SendMessage calls to the same dead agent_id;
-    only one resumes, the other queues."""
+    """Concurrent sends cannot turn a legacy task into a ghost worker."""
     from src.tasks.local_agent import (
         complete_agent_task,
         register_async_agent,
@@ -277,26 +272,10 @@ async def test_concurrent_resume_race_only_one_winner(tmp_path: Path) -> None:
         ),
     )
 
-    # ch10 round-4 (critic M1) — the atomic claim still yields exactly one
-    # winner + one loser, but the winner now reports the honest "not yet
-    # supported" error (was a false "resumed" success) while the loser
-    # queues onto the re-registered running state.
-    error_count = sum(1 for r in results if r.is_error)
-    queued_count = sum(
-        1 for r in results if not r.is_error
-        and "queued" in r.output["message"].lower()
-    )
-    assert error_count == 1, f"expected exactly 1 honest-error winner: {results}"
-    assert queued_count == 1, f"expected exactly 1 queued loser: {results}"
-
-    # The fresh state still has the resume prompt + the queued message in
-    # pending_messages (resume_agent_background's re-registration is
-    # unchanged; only the tool's message is honest).
+    assert all(r.is_error for r in results)
     final = ctx.runtime_tasks.get("a-race")
-    assert final.status == "running"
-    assert final.prompt in {"msg-A", "msg-B"}
-    other_msg = "msg-B" if final.prompt == "msg-A" else "msg-A"
-    assert other_msg in final.pending_messages
+    assert final.status == "completed"
+    assert not final.pending_messages
 
 
 # ---------------------------------------------------------------------------

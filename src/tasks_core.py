@@ -130,6 +130,7 @@ class TaskStateBase:
     output_file: str
     output_offset: int = 0
     notified: bool = False
+    notification_recipient: str | None = None
     tool_use_id: str | None = None
     end_time: float | None = None
     total_paused_seconds: float = 0.0

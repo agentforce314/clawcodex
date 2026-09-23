@@ -250,6 +250,10 @@ def handle_permission_ask(
         tool_input=tool_input,
         suggestions=tuple(decision.suggestions or ()),
         decision_reason=decision.decision_reason,
+        agent_id=getattr(context, "agent_id", None),
+        abort_signal=getattr(
+            getattr(context, "abort_controller", None), "signal", None
+        ),
     )
     reply = handler(request)
 

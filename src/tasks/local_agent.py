@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.tasks_core import TaskStateBase, is_terminal_task_status
 
@@ -92,12 +92,6 @@ class LocalAgentTaskState(TaskStateBase):
     last_reported_token_count: int = 0
     result_text: str = ""
     error: str | None = None
-    # Chunk F / WI-7.4 race guard. Set True by the auto-resume claim
-    # mutator when this terminal state is being re-spawned; concurrent
-    # SendMessage callers see the flag and back off to queueing the
-    # message onto the resumed agent's pending_messages instead.
-    # Reset to False on the fresh state ``register_async_agent`` upserts.
-    is_resuming: bool = False
 
 
 def is_local_agent_task(state: Any) -> bool:
@@ -124,6 +118,7 @@ def register_async_agent(
     model: str | None = None,
     tool_use_id: str | None = None,
     abort_controller: Any = None,
+    notification_recipient: str | None = None,
     registry: "RuntimeTaskRegistry",
 ) -> LocalAgentTaskState:
     """Register a brand-new background agent on the runtime registry.
@@ -163,6 +158,7 @@ def register_async_agent(
         model=model,
         tool_use_id=tool_use_id,
         abort_controller=abort_controller,
+        notification_recipient=notification_recipient,
         is_backgrounded=True,
     )
     registry.upsert(state)
@@ -298,6 +294,34 @@ def complete_agent_task(
         return _terminal_replace(prev, status="completed", result_text=result_text)
 
     registry.update(task_id, _complete)
+
+
+def complete_agent_or_drain(
+    task_id: str,
+    *,
+    result_text: str,
+    registry: "RuntimeTaskRegistry",
+) -> list[str]:
+    """Complete atomically, or take messages accepted during the last response.
+
+    A sender either queues before this boundary (another model turn is needed),
+    or observes the terminal state and resumes it. There is no successful send
+    to a worker that has already stopped consuming its inbox.
+    """
+    pending: list[str] = []
+
+    def _finish(prev: TaskStateBase) -> TaskStateBase:
+        if not isinstance(prev, LocalAgentTaskState) or is_terminal_task_status(
+            prev.status
+        ):
+            return prev
+        if prev.pending_messages:
+            pending.extend(prev.pending_messages)
+            return replace(prev, pending_messages=[])
+        return _terminal_replace(prev, status="completed", result_text=result_text)
+
+    registry.update(task_id, _finish)
+    return pending
 
 
 def fail_agent_task(

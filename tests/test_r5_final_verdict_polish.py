@@ -102,7 +102,11 @@ class TestAsyncKilledStatus(unittest.TestCase):
     'completed'."""
 
     def test_killed_async_emits_killed(self):
+        import asyncio
+        import threading
+
         import src.tool_system.tools.agent as agent_mod
+        from src.tasks.local_agent import kill_async_agent
         from src.tool_system.context import ToolContext
         from src.tool_system.defaults import build_default_registry
         from src.tool_system.protocol import ToolCall
@@ -114,26 +118,20 @@ class TestAsyncKilledStatus(unittest.TestCase):
             ctx = ToolContext(workspace_root=Path(tmp))
             ctx.agent_progress_emit = lambda ev: emitted.append(ev)
 
+            release = threading.Event()
             async def _fake(_p):
                 yield AssistantMessage(content=[TextBlock(text="partial")])
+                await asyncio.to_thread(release.wait, 2)
 
-            # complete_agent_task is a local import from src.tasks.local_agent;
-            # patch it there. Simulate a concurrent kill having marked the task
-            # terminal "killed" (complete_agent_task no-ops on terminal state).
-            def _mark_killed(agent_id, **kw):
-                st = ctx.runtime_tasks.get(agent_id)
-                if st is not None:
-                    st.status = "killed"
-
-            with patch.object(agent_mod, "run_agent", _fake), \
-                    patch("src.tasks.local_agent.complete_agent_task",
-                          _mark_killed):
+            with patch.object(agent_mod, "run_agent", _fake):
                 registry = build_default_registry(provider=object())
                 res = registry.dispatch(ToolCall(name="Agent", input={
                     "description": "bg", "prompt": "work",
                     "run_in_background": True,
                 }), ctx)
                 task_id = str(res.output["agent_id"])
+                kill_async_agent(task_id, ctx.runtime_tasks)
+                release.set()
                 deadline = time.time() + 2
                 while time.time() < deadline and not any(
                     e.get("status") in ("killed", "completed", "failed")

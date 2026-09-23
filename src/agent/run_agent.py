@@ -20,7 +20,6 @@ from ..tool_system.registry import ToolRegistry
 from ..types.content_blocks import ToolUseBlock
 from ..types.messages import AssistantMessage, Message, UserMessage
 from ..utils.abort_controller import AbortController
-
 from .agent_definitions import AgentDefinition, is_built_in_agent
 from .agent_tool_utils import (
     count_tool_uses,
@@ -38,6 +37,10 @@ logger = logging.getLogger(__name__)
 # Raised 30 -> 100: real multi-step subagent work was hitting the cap and
 # truncating before completion.
 SUBAGENT_DEFAULT_MAX_TURNS = 100
+
+
+class AgentRunError(Exception):
+    """A query stopped before completing the delegated work."""
 
 
 @dataclass
@@ -61,8 +64,12 @@ class RunAgentParams:
     # threaded to the subagent context so teammate stop hooks can gate.
     agent_name: str | None = None
     is_async: bool = False
+    is_teammate: bool = False
+    retained_context: ToolContext | None = None
+    on_context: Any = None
+    worktree: Any = None
     max_turns: int | None = None
-    system_prompt_override: str | None = None
+    system_prompt_override: str | list[Any] | None = None
     parent_system_prompt: "str | list | None" = None
     permission_mode_override: PermissionMode | None = None
     context_messages: list[Message] | None = None
@@ -239,6 +246,7 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     5. Cleans up on completion or abort
     """
     from ..query.query import QueryParams, StreamEvent, query
+    from ..query.transitions import EARLY_STOP_SUBTYPES, TerminalHolder
 
     # --- Setup ---
     agent_def = params.agent_definition
@@ -301,10 +309,15 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
 
     # Build permission context
     perm_context = _build_permission_context(
-        params.parent_context,
+        params.retained_context or params.parent_context,
         effective_mode,
-        params.is_async,
+        params.is_async and not params.is_teammate,
     )
+
+    if params.is_teammate and effective_mode == "plan":
+        from dataclasses import replace
+
+        perm_context = replace(perm_context, is_bypass_permissions_mode_available=False)
 
     # Strip orphaned tool_use blocks before threading parent context into the
     # child. Mirrors typescript/src/tools/AgentTool/runAgent.ts:381-385 — the
@@ -336,15 +349,21 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         share_abort_controller=not params.is_async,
         # Both sync and async subagents should contribute to response-length metrics.
         share_set_response_length=True,
-        share_permission_handler=not params.is_async,
+        share_permission_handler=not params.is_async or params.is_teammate,
         options=options_override,
     )
 
     # Create isolated context
-    subagent_context = create_subagent_context(
+    subagent_context = params.retained_context or create_subagent_context(
         params.parent_context,
         overrides,
     )
+    if params.retained_context is not None:
+        subagent_context.abort_controller = abort_controller
+        subagent_context.permission_context = perm_context
+        subagent_context.messages = sanitized_context_messages
+    if params.on_context is not None:
+        params.on_context(subagent_context)
 
     # Build initial messages.
     # When ``params.prompt`` is empty (e.g. fork path, where the directive is
@@ -419,8 +438,9 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         max_turns=max_turns,
     )
 
+    terminal = TerminalHolder()
     try:
-        async for message in query(query_params):
+        async for message in query(query_params, terminal_holder=terminal):
             # Skip stream events — parent doesn't need them
             if isinstance(message, StreamEvent):
                 continue
@@ -431,6 +451,15 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
                 params.on_message(message)
 
             yield message
+
+        if terminal.value is not None and (
+            terminal.value.reason in EARLY_STOP_SUBTYPES
+            or terminal.value.reason == "model_error"
+        ):
+            raise AgentRunError(
+                f"Agent stopped before completion: {terminal.value.reason}"
+                + (f": {terminal.value.error}" if terminal.value.error else "")
+            )
 
     except Exception as exc:
         logger.error("Agent %s (%s) failed: %s", agent_id, agent_def.agent_type, exc)
@@ -445,12 +474,13 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
             from src.tasks.local_shell import kill_shell_tasks_for_agent
 
             registry = getattr(subagent_context, "runtime_tasks", None)
-            if registry is not None:
+            if registry is not None and not params.is_teammate:
                 await kill_shell_tasks_for_agent(agent_id, registry)
         except Exception:  # noqa: BLE001 — cleanup must not break agent exit
             logger.debug("kill_shell_tasks_for_agent failed", exc_info=True)
         # Cleanup: release cloned file state cache memory
-        subagent_context.read_file_fingerprints.clear()
+        if not params.is_teammate:
+            subagent_context.read_file_fingerprints.clear()
         # Release initial messages
         initial_messages.clear()
         logger.debug(

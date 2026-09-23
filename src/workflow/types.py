@@ -55,6 +55,7 @@ class AgentOutcome:
     tool_use_count: int = 0
     error: Optional[str] = None
     skipped: bool = False
+    worktree_path: str | None = None
 
 
 class AgentRunner(Protocol):

@@ -45,8 +45,10 @@ _BANNER_STYLE: dict[str, tuple[str, str]] = {
 
 
 def _field(xml: str, tag: str) -> Optional[str]:
+    from html import unescape
+
     m = re.search(rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", xml, re.DOTALL)
-    return m.group(1).strip() if m else None
+    return unescape(m.group(1).strip()) if m else None
 
 
 def parse_task_id(xml: str) -> Optional[str]:
@@ -184,6 +186,18 @@ def build_notification_turn(notifications: list[str]) -> str:
     streaming preamble; any finished task in the batch keeps the completion
     preamble (its framing is what those tasks need)."""
     items = [n.strip() for n in notifications if n and n.strip()]
+    teammate_items = [n for n in items if n.startswith("<teammate-message ")]
+    task_items = [n for n in items if n not in teammate_items]
+    if teammate_items:
+        team_preamble = (
+            "<system-reminder>Messages from your teammates follow. Respond with SendMessage "
+            "when coordination is needed. An idle notice means the teammate is available; "
+            "it does not mean the team task is complete.</system-reminder>"
+        )
+        parts = [team_preamble, *teammate_items]
+        if task_items:
+            parts.append(build_notification_turn(task_items))
+        return "\n\n".join(parts)
     body = "\n\n".join(items)
     preamble = (
         _STREAMING_PREAMBLE

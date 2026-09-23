@@ -65,7 +65,8 @@ import threading
 import time
 import uuid as _uuid
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, field, replace as _dc_replace
+from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -671,7 +672,10 @@ class _AgentSession:
         if subtype == "external_includes":
             # External CLAWCODEX.md @-imports (ClaudeMdExternalIncludesDialog, §6).
             try:
-                from src.services.startup_gates import get_external_includes_state, list_external_includes
+                from src.services.startup_gates import (
+                    get_external_includes_state,
+                    list_external_includes,
+                )
 
                 externals = await list_external_includes(self.cwd)
                 state = get_external_includes_state(self.cwd)
@@ -891,7 +895,9 @@ class _AgentSession:
         if subtype == "list_agents":
             agents: list[dict] = []
             try:
-                from src.agent.load_agents_dir import get_agent_definitions_with_overrides
+                from src.agent.load_agents_dir import (
+                    get_agent_definitions_with_overrides,
+                )
 
                 for a in get_agent_definitions_with_overrides(self.cwd):
                     agents.append({
@@ -1295,7 +1301,9 @@ class _AgentSession:
             self._reply(request_id, {"error": f"could not read image: {text}"})
             return
         if persist_source:
-            from src.services.tool_execution.tool_result_persistence import resolve_tool_results_dir
+            from src.services.tool_execution.tool_result_persistence import (
+                resolve_tool_results_dir,
+            )
             from src.utils.image_paste import persist_image_source
 
             try:
@@ -1402,7 +1410,9 @@ class _AgentSession:
             return
         path = str(source.resolve())
         if persist_source:
-            from src.services.tool_execution.tool_result_persistence import resolve_tool_results_dir
+            from src.services.tool_execution.tool_result_persistence import (
+                resolve_tool_results_dir,
+            )
 
             try:
                 path = await asyncio.to_thread(
@@ -2045,7 +2055,11 @@ class _AgentSession:
                 self._reply(request_id, {"ok": False, "error": "missing provider"})
                 return
             from src.config import get_provider_config
-            from src.providers import get_provider_class, provider_has_credentials, resolve_api_key
+            from src.providers import (
+                get_provider_class,
+                provider_has_credentials,
+                resolve_api_key,
+            )
 
             provider_cfg = get_provider_config(name)
             api_key = resolve_api_key(name, provider_cfg)
@@ -2827,7 +2841,10 @@ class _AgentSession:
         ``ultracode`` is a session mode, never persisted."""
         try:
             from src.workflow.gating import is_workflows_enabled
-            from src.workflow.ultracode import is_ultracode_session, set_ultracode_session
+            from src.workflow.ultracode import (
+                is_ultracode_session,
+                set_ultracode_session,
+            )
 
             if effort is None or (isinstance(effort, str) and not effort.strip()):
                 # No arg ⇒ read-only report (the old picker's Esc-is-a-no-op).
@@ -3718,7 +3735,9 @@ class _AgentSession:
 
     # ─── shared control round-trip (worker thread; BLOCKS) ─────────────────
 
-    def _round_trip(self, request: dict, timeout: float) -> tuple[str, dict | None]:
+    def _round_trip(
+        self, request: dict, timeout: float, *, abort_signal: Any = None
+    ) -> tuple[str, dict | None]:
         """Emit a ``control_request`` and block for the client's reply.
 
         The single implementation behind both synchronous lanes (permission and
@@ -3738,6 +3757,13 @@ class _AgentSession:
         """
         request_id = str(_uuid.uuid4())
         pending = _Pending(event=threading.Event())
+        listener = None
+
+        def cancel() -> None:
+            with self._lock:
+                if not pending.event.is_set():
+                    pending.reply = {"behavior": "deny", "message": "agent interrupted"}
+                    pending.event.set()
 
         with self._lock:
             # Registering after shutdown() took its release snapshot would park
@@ -3750,6 +3776,10 @@ class _AgentSession:
             self._pending[request_id] = pending
 
         try:
+            if abort_signal is not None:
+                listener = abort_signal.add_listener(cancel)
+                if abort_signal.aborted:
+                    cancel()
             self._emit({
                 "type": "control_request",
                 "request_id": request_id,
@@ -3760,6 +3790,8 @@ class _AgentSession:
                 reply = pending.reply
         finally:
             # Pop on EVERY exit path, including a raising _emit.
+            if listener is not None:
+                abort_signal.remove_listener(listener)
             with self._lock:
                 self._pending.pop(request_id, None)
 
@@ -3803,6 +3835,7 @@ class _AgentSession:
             "tool_name": getattr(request, "tool_name", ""),
             "input": getattr(request, "tool_input", None) or {},
             "tool_use_id": None,
+            "agent_id": getattr(request, "agent_id", None),
             "suggestions": [
                 _serialize_permission_update(u)
                 for u in (getattr(request, "suggestions", None) or ())
@@ -3844,7 +3877,12 @@ class _AgentSession:
                 ) or bool(self.config.bypass_selectable)
             except Exception:  # noqa: BLE001 — degrade to the generic box
                 logger.debug("[agent-server] plan payload failed", exc_info=True)
-        status, reply = self._round_trip(wire_request, self.config.permission_timeout_s)
+        signal = getattr(request, "abort_signal", None)
+        status, reply = self._round_trip(
+            wire_request,
+            self.config.permission_timeout_s,
+            **({"abort_signal": signal} if signal is not None else {}),
+        )
 
         if status == "closed":
             return PermissionAskReply(behavior="deny", message="session closed")
@@ -4302,6 +4340,13 @@ class _AgentSession:
             return
 
         found = False
+
+        # A BACKGROUND agent must go through kill_async_agent, not a bare
+        # abort. Persistent teammates interrupt only their current assignment.
+        team_runtime = getattr(self.tool_context, "team_runtime", None)
+        if team_runtime is not None and team_runtime.interrupt_work(agent_id):
+            self._reply(request_id, {"found": True, "subagent_id": agent_id})
+            return
 
         # A BACKGROUND agent must go through kill_async_agent, not a bare
         # abort. query() RETURNS rather than raising when its controller is
@@ -5108,20 +5153,24 @@ class _AgentSession:
         both. Runs on the worker thread strictly between turns, so it can never
         interleave with a user turn. Returns whether anything was delivered.
 
-        CAVEAT (single-session-per-process assumption): the queue is
-        process-global while sessions are per-connection, so in a
-        multi-session process (DirectConnectServer spawns one agent per WS
-        connection) whichever worker polls first would drain EVERY session's
-        envelopes into its own conversation. Fine for the shipped stdio
-        deployment (one session per process); per-session scoping is required
-        before multi-session ``cc://`` ships.
+        The session's runtime registry scopes delivery, so another connection
+        cannot consume this session's completions.
         """
         if self.init_error is not None or self._stop.is_set():
             return False
         try:
             from src.utils.message_queue_manager import drain_pending_notifications
 
-            drained = drain_pending_notifications(mode="task-notification")
+            registry = getattr(self.tool_context, "runtime_tasks", None)
+            if registry is None:
+                return False
+            active = {
+                agent["subagent_id"]
+                for agent in self.tool_context.agent_supervisor.snapshot()["active"]
+            }
+            drained = drain_pending_notifications(
+                scope=registry, recipient=None, active_recipients=active
+            )
         except Exception:  # noqa: BLE001 — delivery must never kill the worker
             logger.debug("[agent-server] notification drain failed", exc_info=True)
             return False
@@ -5136,7 +5185,18 @@ class _AgentSession:
 
         registry = getattr(self.tool_context, "runtime_tasks", None)
         envelopes = [n.value for n in drained]
-        for xml in envelopes:
+        for notification in drained:
+            xml = notification.value
+            if notification.mode == "teammate-message":
+                self._emit(
+                    {
+                        "type": "system",
+                        "subtype": "teammate_message",
+                        "session_id": self.session_id,
+                        "message": xml,
+                    }
+                )
+                continue
             task_id = parse_task_id(xml)
             state = None
             if registry is not None and task_id:
@@ -5591,12 +5651,11 @@ class _AgentSession:
             # Coordinator mode: the MAIN loop runs on the filtered view
             # (Agent/SendMessage/TaskStop/StructuredOutput + PR-activity MCP);
             # subagents spawn from the Agent tool's captured FULL registry.
-            from src.coordinator.mode import coordinator_main_loop_registry
-
             # Cost is read as a DELTA of the tracker's running total rather
             # than recomputed from ``result.usage`` below — see the note at
             # the ``_cost`` assignment for why the aggregate cannot be priced.
             from src.bootstrap.state import get_total_cost_usd
+            from src.coordinator.mode import coordinator_main_loop_registry
 
             _cost_before = get_total_cost_usd()
             result = asyncio.run(run_query_as_agent_loop(
@@ -5725,6 +5784,8 @@ class _AgentSession:
 
     async def shutdown(self) -> None:
         self._stop.set()
+        if self.tool_context is not None:
+            self.tool_context.agent_supervisor.set_paused(True)
         # ch12 round-4 WI-3 — SessionEnd hooks fire at shutdown (TS
         # gracefulShutdown.ts:486). Configured cleanup hooks never ran.
         try:
@@ -5760,6 +5821,10 @@ class _AgentSession:
                 pending.event.set()
         if abort is not None:
             abort.abort("session_closed")
+        if self.tool_context is not None:
+            from src.tasks.shutdown import shutdown_background_tasks
+
+            await shutdown_background_tasks(self.tool_context)
         # Files attached for a draft that will never be sent: their copies go
         # with the session, as they do on /clear and resume.
         with self._lock:
@@ -6035,6 +6100,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
     client gets a clean error message instead of a bare socket close.
     """
     try:
+        from src.agent import Session
         from src.config import get_default_provider, get_provider_config
         from src.permissions.settings_paths import default_setup_paths
         from src.permissions.setup import setup_permissions
@@ -6043,7 +6109,6 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             provider_has_credentials,
             resolve_api_key,
         )
-        from src.agent import Session
         from src.tool_system.context import ToolContext
         from src.tool_system.defaults import build_default_registry
         from src.utils.startup_profiler import profile_checkpoint
@@ -6654,7 +6719,11 @@ def _agent_display_envelope(value: dict) -> dict:
     out: dict[str, Any] = {
         "type": "agent",
         "agent_id": str(value["agent_id"]),
-        "status": str(value.get("status") or "completed"),
+        "status": (
+            "async_launched"
+            if value.get("status") == "teammate_spawned"
+            else str(value.get("status") or "completed")
+        ),
     }
     for key in ("agent_type", "model"):
         item = value.get(key)
@@ -6721,7 +6790,8 @@ def _display_tool_result(value: Any) -> dict | None:
         "type" not in value
         and isinstance(value.get("agent_id"), str)
         and value.get("agent_id")
-        and value.get("status") in ("completed", "interrupted", "async_launched")
+        and value.get("status")
+        in ("completed", "interrupted", "async_launched", "teammate_spawned")
     ):
         return _agent_display_envelope(value)
     from src.tool_system.tools.ask_user_question import RESULT_TYPE

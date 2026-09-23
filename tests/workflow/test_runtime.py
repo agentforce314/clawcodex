@@ -138,6 +138,26 @@ async def test_budget_ceiling_stops_the_run(runner):
     assert runner.call_count == 2  # third never reached the runner
 
 
+async def test_queued_agents_check_budget_after_acquiring_slot(make_runner):
+    runner = make_runner(delay=0.01)
+    script = META + "return await parallel([agent(str(i)) for i in range(10)])"
+    result = await run_workflow(
+        script, runner=runner, budget_total=10, max_concurrent=1
+    )
+    assert runner.call_count == 2
+    assert len([value for value in result.value if value is not None]) == 2
+
+
+async def test_resume_of_a_resumed_run_keeps_cached_results(make_runner):
+    script = META + 'return await parallel([agent("one"), agent("two")])'
+    first = await run_workflow(script, runner=make_runner())
+    second = await run_workflow(script, runner=make_runner(), resume=first.journal)
+    third_runner = make_runner()
+    third = await run_workflow(script, runner=third_runner, resume=second.journal)
+    assert third.value == first.value
+    assert third_runner.call_count == 0
+
+
 async def test_per_call_item_cap(monkeypatch, runner):
     monkeypatch.setattr(runtime_mod, "MAX_ITEMS_PER_CALL", 3)
     script = META + "return await parallel([agent(str(i)) for i in range(4)])"

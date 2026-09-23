@@ -21,26 +21,18 @@ def _team_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
     if agent_type is not None and not isinstance(agent_type, str):
         raise ToolInputError("agent_type must be a string when provided")
 
-    lead_agent_id = uuid.uuid4().hex[:12]
-    team_file = context.workspace_root / ".clawcodex" / "team.json"
-    team_file.parent.mkdir(parents=True, exist_ok=True)
-    # Chapter-10 / Chunk F / WI-6.4: schema includes ``members: []`` from
-    # day one. TeammateInit (future Phase-7 work) appends entries when
-    # in-process teammates spawn. Keeping the empty list explicit makes
-    # the team-file parser's "missing members" tolerance defensive
-    # rather than load-bearing.
-    team = {
-        "team_name": team_name,
-        "description": description,
-        "agent_type": agent_type,
-        "lead_agent_id": lead_agent_id,
-        "members": [],
-    }
-    team_file.write_text(json.dumps(team, ensure_ascii=False, indent=2), encoding="utf-8")
-    context.team = team
+    if context.team is not None or context.teammate_name:
+        raise ToolInputError("Only a session without an active team can create a team")
+    from src.services.swarm.team_runtime import TeamRuntime
+
+    runtime = TeamRuntime(context, team_name.strip(), description)
     return ToolResult(
         name="TeamCreate",
-        output={"team_name": team_name, "team_file_path": str(team_file), "lead_agent_id": lead_agent_id},
+        output={
+            "team_name": runtime.name,
+            "team_file_path": str(context.workspace_root / ".clawcodex" / "team.json"),
+            "lead_agent_id": runtime.lead_id,
+        },
     )
 
 
@@ -57,36 +49,42 @@ TeamCreateTool: Tool = build_tool(
         "required": ["team_name"],
     },
     call=_team_create_call,
-    prompt="Create a lightweight team context for multi-agent workflows.",
-    description="Create a lightweight team context for multi-agent workflows.",
+    prompt=(
+        "Create a persistent team led by this session. Use Agent with name (and optionally team_name) "
+        "to start teammates, TaskCreate/TaskUpdate for shared work, and SendMessage for findings. "
+        "Teammates remain available between assignments; their final prose is private. "
+        "To finish, send each teammate a shutdown_request, wait for its approved exit, then TeamDelete."
+    ),
+    description="Create a persistent team with shared tasks and named teammates.",
     strict=True,
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     # Mirrors TS TeamCreateTool.toAutoClassifierInput.
-    to_auto_classifier_input=lambda input_data: (input_data or {}).get("team_name", "") or "",
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("team_name", "")
+    or "",
 )
 
 
 def _team_delete_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     if context.team is None:
         return ToolResult(name="TeamDelete", output={"success": False, "message": "No active team"})
-    team_name = context.team.get("team_name")
-    context.team = None
-    team_file = context.workspace_root / ".clawcodex" / "team.json"
-    if team_file.exists():
-        try:
-            team_file.unlink()
-        except Exception:
-            pass
-    return ToolResult(name="TeamDelete", output={"success": True, "message": "Team deleted", "team_name": team_name})
+    from src.services.swarm.team_membership import is_team_lead
+
+    if not is_team_lead(context):
+        raise ToolInputError("Only the team lead can delete the team")
+    if context.team_runtime is None:
+        raise ToolInputError("No live team runtime owns this team")
+    name = context.team_runtime.name
+    context.team_runtime.delete()
+    return ToolResult(name="TeamDelete", output={"success": True, "team_name": name})
 
 
 TeamDeleteTool: Tool = build_tool(
     name="TeamDelete",
     input_schema={"type": "object", "additionalProperties": False, "properties": {}},
     call=_team_delete_call,
-    prompt="Disband the current team context.",
+    prompt="Delete the current team's roster, mailbox, and task board after every teammate has exited. Active teammates must first approve shutdown or be stopped with TaskStop.",
     description="Disband the current team context.",
     strict=True,
     max_result_size_chars=100_000,

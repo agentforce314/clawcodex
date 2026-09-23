@@ -24,7 +24,7 @@ from typing import Iterator, Literal
 # messages) can be filtered. We adopt the same shape so future modes
 # (e.g. permission-request escalations in Phase 9) can join the queue
 # without reworking the contract.
-NotificationMode = Literal["task-notification"]
+NotificationMode = Literal["task-notification", "teammate-message"]
 
 
 @dataclass(frozen=True)
@@ -35,13 +35,23 @@ class PendingNotification:
 
     value: str
     mode: NotificationMode = "task-notification"
+    scope: object | None = None
+    recipient: str | None = None
 
 
 _lock = threading.RLock()
 _queue: deque[PendingNotification] = deque()
+_ALL_SCOPES = object()
+_ALL_RECIPIENTS = object()
 
 
-def enqueue_pending_notification(*, value: str, mode: NotificationMode = "task-notification") -> None:
+def enqueue_pending_notification(
+    *,
+    value: str,
+    mode: NotificationMode = "task-notification",
+    scope: object | None = None,
+    recipient: str | None = None,
+) -> None:
     """Push a notification onto the global queue.
 
     Mirrors TS ``enqueuePendingNotification``. Idempotency is the
@@ -50,11 +60,19 @@ def enqueue_pending_notification(*, value: str, mode: NotificationMode = "task-n
     is a dumb FIFO.
     """
     with _lock:
-        _queue.append(PendingNotification(value=value, mode=mode))
+        _queue.append(
+            PendingNotification(
+                value=value, mode=mode, scope=scope, recipient=recipient
+            )
+        )
 
 
 def drain_pending_notifications(
-    *, mode: NotificationMode | None = None
+    *,
+    mode: NotificationMode | None = None,
+    scope: object = _ALL_SCOPES,
+    recipient: object = _ALL_RECIPIENTS,
+    active_recipients: set[str] | None = None,
 ) -> list[PendingNotification]:
     """Atomically pop every queued notification (or every notification
     of one ``mode``) and return them in FIFO order.
@@ -62,17 +80,30 @@ def drain_pending_notifications(
     Pass ``mode=None`` to drain everything, or a specific mode to drain
     only that subset (the others stay queued). The return value is a
     plain list — callers iterating outside the lock cannot see
-    in-flight enqueues.
+    in-flight enqueues. Production consumers must pass their session registry
+    as ``scope``; omitting it is an administrative drain of every session.
     """
     with _lock:
-        if mode is None:
+        if mode is None and scope is _ALL_SCOPES and recipient is _ALL_RECIPIENTS:
             drained = list(_queue)
             _queue.clear()
             return drained
         kept: deque[PendingNotification] = deque()
         drained_subset: list[PendingNotification] = []
         for entry in _queue:
-            if entry.mode == mode:
+            if (
+                (mode is None or entry.mode == mode)
+                and (scope is _ALL_SCOPES or entry.scope is scope)
+                and (
+                    recipient is _ALL_RECIPIENTS
+                    or entry.recipient == recipient
+                    or (
+                        recipient is None
+                        and active_recipients is not None
+                        and entry.recipient not in active_recipients
+                    )
+                )
+            ):
                 drained_subset.append(entry)
             else:
                 kept.append(entry)

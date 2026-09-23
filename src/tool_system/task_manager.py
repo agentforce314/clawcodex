@@ -42,7 +42,12 @@ class TaskManager:
         )
         with self._lock:
             self._tasks[task_id] = task
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            with self._lock:
+                self._tasks.pop(task_id, None)
+            raise
         return task
 
     def stop(self, task_id: str) -> bool:
@@ -60,4 +65,3 @@ class TaskManager:
     def list(self) -> list[ManagedTask]:
         with self._lock:
             return list(self._tasks.values())
-

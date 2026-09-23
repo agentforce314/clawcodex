@@ -93,10 +93,10 @@ def test_never_raises_on_empty_registry():
 
 def test_spawn_stamps_agent_id_from_context():
     # spawn_background_bash stamps agent_id from ToolContext.agent_id
-    from types import SimpleNamespace
-    from src.tool_system.tools.bash import background
-
     import inspect
+    from types import SimpleNamespace
+
+    from src.tool_system.tools.bash import background
 
     src = inspect.getsource(background.spawn_background_bash)
     assert 'agent_id=getattr(context, "agent_id", None)' in src
@@ -117,8 +117,8 @@ def test_core_run_agent_finally_reaps_all_paths(monkeypatch):
     with the sub-agent's own agent_id on a plain run_agent invocation."""
     from pathlib import Path
 
-    from src.agent.run_agent import RunAgentParams, run_agent
     from src.agent.agent_definitions import EXPLORE_AGENT
+    from src.agent.run_agent import RunAgentParams, run_agent
     from src.tool_system.context import ToolContext, ToolUseOptions
     from src.tool_system.defaults import build_default_registry
 
@@ -130,7 +130,7 @@ def test_core_run_agent_finally_reaps_all_paths(monkeypatch):
     # function-level import in run_agent's finally re-reads this attribute
     monkeypatch.setattr("src.tasks.local_shell.kill_shell_tasks_for_agent", _spy)
 
-    async def _fake_query(qp):
+    async def _fake_query(qp, **kwargs):
         return
         yield  # empty async generator → run_agent falls straight to finally
 

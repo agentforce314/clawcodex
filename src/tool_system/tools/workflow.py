@@ -31,11 +31,35 @@ logger = logging.getLogger(__name__)
 _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "script": {"type": "string", "description": "An inline Python workflow script to run."},
-        "name": {"type": "string", "description": "Name of a saved workflow under .clawcodex/workflows."},
-        "script_path": {"type": "string", "description": "Path to a workflow script file to run."},
-        "args": {"description": "Structured input passed to the script as the `args` global."},
-        "resume_from_run_id": {"type": "string", "description": "Resume a prior run by id (same session)."},
+        "script": {
+            "type": "string",
+            "description": "An inline Python workflow script to run.",
+        },
+        "name": {
+            "type": "string",
+            "description": "Name of a saved workflow under .clawcodex/workflows.",
+        },
+        "script_path": {
+            "type": "string",
+            "description": "Path to a workflow script file to run.",
+        },
+        "budget_total": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Token budget: stop starting agents once observed usage reaches this value.",
+        },
+        "max_concurrent": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum agents executing simultaneously in this workflow.",
+        },
+        "args": {
+            "description": "Structured input passed to the script as the `args` global."
+        },
+        "resume_from_run_id": {
+            "type": "string",
+            "description": "Resume a prior run by id (same session).",
+        },
     },
     "additionalProperties": True,
 }
@@ -95,7 +119,9 @@ def _default_runner_factory(registry: Any, provider: Any) -> Callable[[ToolConte
             from src.agent.agent_definitions import GENERAL_PURPOSE_AGENT
             try:
                 from src.agent.agent_definitions import find_agent_by_type
-                from src.agent.load_agents_dir import get_agent_definitions_with_overrides
+                from src.agent.load_agents_dir import (
+                    get_agent_definitions_with_overrides,
+                )
 
                 agents = get_agent_definitions_with_overrides(str(context.cwd or "."))
                 found = find_agent_by_type(agents, agent_type)
@@ -150,6 +176,23 @@ def make_workflow_tool(
 
         output_file = get_workflow_run_path(run_id)
         runner = factory(context, run_id)
+        from src.tasks.local_workflow import fail_workflow_task, register_workflow_task
+        from src.utils.abort_controller import create_abort_controller
+
+        controller = create_abort_controller()
+        register_workflow_task(
+            task_id=task_id,
+            run_id=run_id,
+            workflow_name="workflow",
+            description="Starting workflow",
+            output_file=output_file,
+            progress=None,
+            run=None,
+            registry=context.runtime_tasks,
+            tool_use_id=context.tool_use_id,
+            notification_recipient=context.notification_recipient,
+            abort_controller=controller,
+        )
 
         # Same-session resume: replay the prior run's journal if asked.
         resume = None
@@ -170,8 +213,12 @@ def make_workflow_tool(
             run_id=run_id,
             output_file=output_file,
             args=tool_input.get("args"),
+            controller=controller,
             resume=resume,
-            tool_use_id=context.agent_id,
+            tool_use_id=context.tool_use_id,
+            notification_recipient=context.notification_recipient,
+            budget_total=tool_input.get("budget_total"),
+            max_concurrent=tool_input.get("max_concurrent"),
         )
 
         # Launch on a dedicated daemon thread that owns the run to completion.
@@ -180,10 +227,18 @@ def make_workflow_tool(
         # the *current* loop would be torn down the instant we return the handle
         # — the background run must outlive this call. ``task_manager.start``
         # invokes ``target(stop_event)``, hence the ``_stop`` parameter.
-        context.task_manager.start(
-            name=f"workflow:{run_id}",
-            target=lambda _stop: asyncio.run(coro),
-        )
+        try:
+            context.task_manager.start(
+                name=f"workflow:{run_id}",
+                target=lambda _stop: asyncio.run(coro),
+            )
+        except Exception as exc:
+            coro.close()
+            controller.abort("workflow_launch_failed")
+            fail_workflow_task(task_id, error=str(exc), registry=context.runtime_tasks)
+            return ToolResult(
+                name=WORKFLOW_TOOL_NAME, output={"error": str(exc)}, is_error=True
+            )
 
         return ToolResult(
             name=WORKFLOW_TOOL_NAME,

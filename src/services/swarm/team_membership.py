@@ -32,6 +32,9 @@ def is_team_lead(context: "ToolContext") -> bool:
     catastrophic in either).
     """
     team = getattr(context, "team", None)
+    runtime = getattr(context, "team_runtime", None)
+    if runtime is not None and runtime.context is context and not runtime.closed:
+        return True
     agent_id = getattr(context, "agent_id", None)
     if team is None or not agent_id:
         return False

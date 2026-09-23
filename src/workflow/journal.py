@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from .callpath import CallKey, key_from_str, key_to_str
 from .types import AgentSpec
@@ -51,9 +51,16 @@ def fingerprint(spec: AgentSpec) -> str:
 
 
 class Journal:
-    def __init__(self, prior: Optional[Mapping[CallKey, JournalRecord]] = None) -> None:
+
+    def __init__(
+        self,
+        prior: Optional[Mapping[CallKey, JournalRecord]] = None,
+        *,
+        on_record: Callable[[dict[CallKey, JournalRecord]], None] | None = None,
+    ) -> None:
         self._prior = dict(prior or {})
         self._records: dict[CallKey, JournalRecord] = {}
+        self._on_record = on_record
 
     def lookup(self, key: CallKey, spec: AgentSpec):
         """Return the cached result for an unchanged call at ``key``, else MISS."""
@@ -64,6 +71,8 @@ class Journal:
 
     def record(self, key: CallKey, spec: AgentSpec, result: Any) -> None:
         self._records[key] = JournalRecord(fingerprint(spec), result)
+        if self._on_record is not None:
+            self._on_record(self.records)
 
     @property
     def records(self) -> dict[CallKey, JournalRecord]:

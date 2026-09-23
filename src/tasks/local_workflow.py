@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.tasks_core import TaskStateBase, is_terminal_task_status
 
@@ -40,6 +40,8 @@ class LocalWorkflowTaskState(TaskStateBase):
     progress: Any = field(default=None, compare=False)
     #: The live ``WorkflowRun``, used to reach per-agent / run abort controllers.
     run: Any = field(default=None, repr=False, compare=False)
+    #: Published before the worker thread starts, so immediate TaskStop works.
+    abort_controller: Any = field(default=None, repr=False, compare=False)
     result: Any = None
     error: str | None = None
     is_backgrounded: bool = True
@@ -66,6 +68,8 @@ def register_workflow_task(
     run: Any,
     registry: "RuntimeTaskRegistry",
     tool_use_id: str | None = None,
+    notification_recipient: str | None = None,
+    abort_controller: Any = None,
 ) -> LocalWorkflowTaskState:
     import time
 
@@ -77,13 +81,34 @@ def register_workflow_task(
         start_time=time.time(),
         output_file=output_file,
         tool_use_id=tool_use_id,
+        notification_recipient=notification_recipient,
         run_id=run_id,
         workflow_name=workflow_name,
         progress=progress,
         run=run,
+        abort_controller=abort_controller or getattr(run, "controller", None),
         summary=_safe_summary(progress),
     )
-    registry.upsert(state)
+
+    def _bind(prev: TaskStateBase) -> TaskStateBase:
+        nonlocal state
+        if not isinstance(prev, LocalWorkflowTaskState):
+            raise TypeError("Workflow task ID belongs to another task type")
+        # Binding the live run must never resurrect a task stopped before its
+        # thread entered the engine, or reset its exactly-once notification.
+        state = replace(
+            prev,
+            workflow_name=workflow_name,
+            description=description,
+            progress=progress,
+            run=run,
+            abort_controller=prev.abort_controller or state.abort_controller,
+            summary=_safe_summary(progress),
+        )
+        return state
+
+    if not registry.update(task_id, _bind):
+        registry.upsert(state)
     return state
 
 
@@ -130,22 +155,24 @@ def fail_workflow_task(task_id: str, *, error: str, registry: "RuntimeTaskRegist
 
 def kill_workflow_task(task_id: str, registry: "RuntimeTaskRegistry") -> None:
     """Abort the whole run (cascades to every subagent) and mark it killed."""
-    captured_run: Any = None
+    captured_controller: Any = None
     fired = False
 
     def _kill(prev: TaskStateBase) -> TaskStateBase:
-        nonlocal captured_run, fired
+        nonlocal captured_controller, fired
         if not isinstance(prev, LocalWorkflowTaskState) or is_terminal_task_status(prev.status):
             return prev
-        captured_run = prev.run
+        captured_controller = prev.abort_controller or getattr(
+            prev.run, "controller", None
+        )
         fired = True
         return _terminal_replace(prev, status="killed")
 
     registry.update(task_id, _kill)
     # Abort OUTSIDE the registry lock (the controller fires listeners).
-    if captured_run is not None:
+    if captured_controller is not None:
         try:
-            captured_run.controller.abort("workflow_stopped")
+            captured_controller.abort("workflow_stopped")
         except Exception:
             logger.exception("failed to abort workflow run %s", task_id)
     if fired:
@@ -235,7 +262,11 @@ def enqueue_workflow_notification(
 
     def _mark(prev: TaskStateBase) -> TaskStateBase:
         nonlocal should_enqueue
-        if not isinstance(prev, LocalWorkflowTaskState) or prev.notified:
+        if (
+            not isinstance(prev, LocalWorkflowTaskState)
+            or prev.notified
+            or not is_terminal_task_status(prev.status)
+        ):
             return prev
         should_enqueue = True
         captured.update(
@@ -243,6 +274,9 @@ def enqueue_workflow_notification(
             output_file=prev.output_file,
             result=prev.result,
             tool_use_id=prev.tool_use_id,
+            recipient=prev.notification_recipient,
+            status=prev.status,
+            error=prev.error,
         )
         return replace(prev, notified=True)
 
@@ -250,6 +284,8 @@ def enqueue_workflow_notification(
     if not should_enqueue:
         return False
 
+    status = captured["status"]
+    error = captured["error"]
     final_message = _render_result(captured["result"]) if status == "completed" else None
     xml = build_task_notification_xml(
         task_id=task_id,
@@ -261,7 +297,12 @@ def enqueue_workflow_notification(
         usage={"total_tokens": tokens, "tool_uses": 0, "duration_ms": 0},
         tool_use_id=captured["tool_use_id"],
     )
-    enqueue_pending_notification(value=xml, mode="task-notification")
+    enqueue_pending_notification(
+        value=xml,
+        mode="task-notification",
+        scope=registry,
+        recipient=captured["recipient"],
+    )
     return True
 
 

@@ -128,7 +128,9 @@ def write_team_file(team: TeamFile, workspace_root: Path) -> None:
             for m in team.members
         ],
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    from src.services.swarm.task_board import write_json_atomic
+
+    write_json_atomic(path, payload)
 
 
 def add_member(team: TeamFile, member: TeamMember) -> TeamFile:

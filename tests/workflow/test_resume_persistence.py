@@ -51,3 +51,27 @@ async def test_resume_from_persisted_journal_is_full_cache(make_runner, tmp_path
 
 def test_load_journal_missing_file_is_none(tmp_path):
     assert load_journal(str(tmp_path / "nope.json")) is None
+
+
+async def test_completed_branch_is_on_disk_before_other_work_finishes(
+    make_runner, tmp_path
+):
+    from src.workflow.types import AgentOutcome
+
+    output_file = str(tmp_path / "checkpoint.json")
+
+    def handler(spec, index):
+        if spec.prompt == "two":
+            checkpoint = load_journal(output_file)
+            assert checkpoint is not None and len(checkpoint) == 1
+        return AgentOutcome(text=spec.prompt, tokens=5)
+
+    result = await run_workflow_task(
+        source=SCRIPT,
+        runner=make_runner(handler=handler),
+        registry=RuntimeTaskRegistry(),
+        task_id="checkpoint",
+        run_id="checkpoint",
+        output_file=output_file,
+    )
+    assert result.value == ["one", "two"]
