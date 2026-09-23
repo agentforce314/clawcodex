@@ -597,3 +597,42 @@ describe('rehydrating delegations', () => {
     expect(row?.result).toEqual({ output: 'a\nb' })
   })
 })
+
+describe('hydrateStoredMessages with attached files', () => {
+  it('turns the agent\'s file block back into a card and keeps it out of the caption', () => {
+    const [node] = hydrateStoredMessages([{
+      role: 'user',
+      content: [
+        { type: 'text', text: '[File #1] summarise this' },
+        {
+          type: 'text',
+          text: '[File #1: notes.txt] saved at /home/me/.clawcodex/ws/s1/tool-results/attachments/file-a1/notes.txt (11 B)\n<system-reminder>\nContents of notes.txt:\n```\nalpha\nbeta\n```\n</system-reminder>',
+        },
+      ],
+    }])
+
+    expect(node).toMatchObject({
+      kind: 'user',
+      text: '[File #1] summarise this',
+      files: [{
+        name: 'notes.txt',
+        path: '/home/me/.clawcodex/ws/s1/tool-results/attachments/file-a1/notes.txt',
+        placeholder: '[File #1]',
+        size: 11,
+      }],
+    })
+    expect(node).not.toHaveProperty('images')
+  })
+
+  it('keeps a file-only turn, and reads a binary card\'s size back', () => {
+    const [node] = hydrateStoredMessages([{
+      role: 'user',
+      content: [
+        { type: 'text', text: '[File #2]' },
+        { type: 'text', text: '[File #2: report.pdf] saved at /tmp/x/report.pdf (12.3 KB)\n<system-reminder>\nreport.pdf is a binary file and was not inlined.\n</system-reminder>' },
+      ],
+    }])
+
+    expect(node).toMatchObject({ kind: 'user', text: '[File #2]', files: [{ name: 'report.pdf', size: 12595 }] })
+  })
+})

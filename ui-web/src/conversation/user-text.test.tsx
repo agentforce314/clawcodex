@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { projectUserText, resolveMention } from './user-text.tsx'
+import { projectUserText, resolveMention, userMessageCaption } from './user-text.tsx'
 
 afterEach(cleanup)
 
@@ -37,5 +37,16 @@ describe('projectUserText', () => {
     expect(container.textContent).toBe('read docs first')
     expect(screen.queryByRole('button')).toBeNull()
     expect(container.querySelector('[data-ref-chip="folder"]')).not.toBeNull()
+  })
+})
+
+describe('userMessageCaption', () => {
+  it('drops the leading chips of attachments the row already shows, images and files alike', () => {
+    const images = [{ name: 'shot.png', placeholder: '[Image #2]', url: 'blob:x' }]
+    const files = [{ name: 'notes.txt', placeholder: '[File #1]' }]
+
+    expect(userMessageCaption('[File #1] [Image #2] compare these', images, files)).toBe('compare these')
+    // A chip with no card behind it, or one inside the sentence, stays as typed.
+    expect(userMessageCaption('[File #9] and [File #1] here', images, files)).toBe('[File #9] and [File #1] here')
   })
 })

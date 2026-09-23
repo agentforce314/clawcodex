@@ -1150,6 +1150,7 @@ class GatewayConnection:
             "fs.read_related": self.fs_read_related,
             "fs.search_files": self.fs_search_files,
             "image.attach": self.image_attach,
+            "file.attach": self.file_attach,
             "plan.get": self.plan_get,
             "provider.list": self.provider_list,
             "provider.save_key": self.provider_save_key,
@@ -2104,6 +2105,68 @@ class GatewayConnection:
             "attached": True,
             "id": result.get("id"),
             "name": result.get("name") or name,
+        }
+
+    async def file_attach(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Attach a file of any type to the next prompt.
+
+        The twin of :meth:`image_attach`: the bytes come over the socket, land
+        in a temp file, and the agent's ``attach_file`` control copies them —
+        under their own name — into the session's readable artifact directory
+        before the upload copy is removed. ``placeholder: True`` makes the
+        client's ``[File #N]`` chip authoritative, as it is for images. Size is
+        checked here too, before a decode nobody needs: a file past the cap is
+        refused with the cap named.
+        """
+        import base64
+        import os
+        import tempfile
+
+        from src.server.agent_server import _AgentSession, _format_bytes, _safe_attachment_leaf
+
+        raw = params.get("data")
+        if not isinstance(raw, str):
+            return {"error": "no file data"}
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        cap = _AgentSession.MAX_ATTACHED_FILE_BYTES
+        # Base64 is 4/3 of the payload: refuse before decoding what cannot fit.
+        if len(raw) > cap * 4 // 3 + 4:
+            return {"error": f"files up to {_format_bytes(cap)} can be attached"}
+        try:
+            blob = base64.b64decode(raw, validate=True)
+        except Exception:  # noqa: BLE001
+            return {"error": "file data was not valid base64"}
+        if len(blob) > cap:
+            return {"error": f"files up to {_format_bytes(cap)} can be attached"}
+
+        session = self._session(params)
+        name = _safe_attachment_leaf(str(params.get("name") or "file"))
+        suffix = os.path.splitext(name)[1]
+        handle, path = tempfile.mkstemp(prefix="clawcodex-upload-", suffix=suffix)
+        try:
+            with os.fdopen(handle, "wb") as fh:
+                fh.write(blob)
+            result = await session.control_query(
+                "attach_file",
+                {"path": path, "name": name, "placeholder": True, "persist_source": True},
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                logger.debug("file.attach: could not remove %s", path)
+
+        if not isinstance(result, dict):
+            return {"error": "no response from the session"}
+        if result.get("attached") is not True:
+            return {"error": str(result.get("error") or "the session refused the file")}
+        return {
+            "attached": True,
+            "id": result.get("id"),
+            "name": result.get("name") or name,
+            "path": result.get("path"),
+            "size": result.get("size", len(blob)),
         }
 
     async def fs_search_files(self, params: dict[str, Any]) -> dict[str, Any]:

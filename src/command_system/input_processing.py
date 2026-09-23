@@ -628,6 +628,29 @@ def expand_at_mentions(
     return text, attachments
 
 
+def read_file_attachment(path: str) -> dict[str, Any]:
+    """Classify one file for the prompt the way an ``@path`` mention would.
+
+    ``{"kind": "file", "content": …}`` for text the model can read inline;
+    ``{"kind": "binary", "hint": …}`` for PDFs, archives, images and anything
+    the sniff or the decode says is not text — with the same Read-tool hint
+    the @-mention pipeline gives, so an uploaded PDF and an @-mentioned one
+    reach the model with one vocabulary. ``ext`` rides along on both. Takes a
+    concrete path rather than mention text: an uploaded file may sit in a
+    directory with spaces in its name, which the mention grammar cannot
+    express.
+    """
+    ext = os.path.splitext(path)[1].lstrip(".").lower()
+    if ext in _AT_MENTION_IMAGE_EXTENSIONS:
+        return {"kind": "binary", "ext": ext, "hint": "Use the Read tool to view the image."}
+    if ext in _AT_MENTION_BINARY_EXTENSIONS or _looks_like_binary(path):
+        return {"kind": "binary", "ext": ext, "hint": _binary_hint_for_ext(ext)}
+    data = _read_text_with_encoding(path)
+    if data is None:
+        return {"kind": "binary", "ext": ext, "hint": _binary_hint_for_ext(ext)}
+    return {"kind": "file", "ext": ext, "content": data}
+
+
 def format_at_mention_attachments(attachments: list[dict[str, Any]]) -> str:
     """Render attachments produced by :func:`expand_at_mentions` and
     :func:`expand_agent_mentions` as a single string ready to be prepended to

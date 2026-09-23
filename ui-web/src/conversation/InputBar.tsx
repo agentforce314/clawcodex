@@ -16,15 +16,19 @@ import type {
   EffortOptionsResult,
   ModelOptionsResult,
 } from '../gateway/protocol.ts'
-import { attachImage, searchFiles } from '../state/actions.ts'
+import { attachFile, attachImage, searchFiles } from '../state/actions.ts'
 import { $commands, $notice, $sessionAttaching } from '../state/store.ts'
 import { ArrowUpIcon, PlusIcon, SlashSquareIcon, StopIcon, XIcon } from '../ui/icons.tsx'
+import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
 import {
   insertPlaceholder,
+  fileExtension,
+  formatBytes,
   liveAttachments,
   removePlaceholder,
   type Attachment,
+  type AttachmentKind,
 } from './attachments.ts'
 import { aliasOf, bareName, menuRows, rankRows, sectionRows, type MenuRow } from './command-menu.ts'
 import { applyMention, mentionAt, type MentionToken } from './mentions.ts'
@@ -252,11 +256,12 @@ export function InputBar({
     }
   }, [highlight, menu])
 
-  // Every image the session has accepted this composer session. What actually
-  // SENDS is whatever the draft still claims — see attachments.ts.
+  // Every image and file the session has accepted this composer session.
+  // What actually SENDS is whatever the draft still claims — see attachments.ts.
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const attachmentUrls = useRef(new Set<string>())
   const picker = useRef<HTMLInputElement | null>(null)
+  const filePicker = useRef<HTMLInputElement | null>(null)
 
   const shown = useMemo(() => liveAttachments(draft, attachments), [attachments, draft])
 
@@ -271,18 +276,22 @@ export function InputBar({
   )
 
   const attach = useCallback(
-    async (file: File | Blob, name: string) => {
-      const id = await attachImage(file, name)
+    async (file: File | Blob, name: string, kind: AttachmentKind = 'image') => {
+      const id = kind === 'image' ? await attachImage(file, name) : await attachFile(file, name)
 
       if (id === null) return
 
       const element = textarea.current
       const caret = element === null ? draft.length : element.selectionStart
-      const next = insertPlaceholder(draft, caret, id)
+      const next = insertPlaceholder(draft, caret, id, kind)
 
-      const url = URL.createObjectURL(file)
-      attachmentUrls.current.add(url)
-      setAttachments(current => [...current, { id, name, url }])
+      if (kind === 'image') {
+        const url = URL.createObjectURL(file)
+        attachmentUrls.current.add(url)
+        setAttachments(current => [...current, { id, kind, name, url }])
+      } else {
+        setAttachments(current => [...current, { id, kind, name, size: file.size }])
+      }
       onDraftChange(next.text)
 
       requestAnimationFrame(() => {
@@ -310,11 +319,30 @@ export function InputBar({
   }, [sessionModel])
 
   const dropAttachment = useCallback(
-    (id: number) => {
-      onDraftChange(removePlaceholder(draft, id))
+    (item: Attachment) => {
+      onDraftChange(removePlaceholder(draft, item.id, item.kind))
       textarea.current?.focus()
     },
     [draft, onDraftChange],
+  )
+
+  /**
+   * Files handed over by a drop or a paste: images go the image way (and
+   * are refused, with the reason, on a model that cannot read one); every
+   * other file is attached as a file.
+   */
+  const acceptDroppedFiles = useCallback(
+    (files: readonly File[]) => {
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          if (!vision) refuseImage()
+          else void attach(file, file.name, 'image')
+        } else {
+          void attach(file, file.name, 'file')
+        }
+      }
+    },
+    [attach, refuseImage, vision],
   )
 
   /**
@@ -329,10 +357,10 @@ export function InputBar({
 
       const typing = typed !== null
 
-      if (row.action === 'image') {
+      if (row.action === 'image' || row.action === 'file') {
         if (typing) onDraftChange('')
 
-        picker.current?.click()
+        ;(row.action === 'image' ? picker : filePicker).current?.click()
 
         return
       }
@@ -594,23 +622,49 @@ export function InputBar({
         )}
         {shown.length > 0 && (
           <div className={css.attachments}>
-            {shown.map(item => (
-              <div className={css.thumb} key={item.id}>
-                <img alt={item.name} src={item.url} />
-                <button
-                  aria-label={`Remove ${item.name}`}
-                  className={css.thumbRemove}
-                  onClick={() => {
-                    dropAttachment(item.id)
-                  }}
-                  title="Remove this image"
-                  type="button"
-                >
-                  <XIcon size={10} />
-                </button>
-                <span className={css.thumbTag}>#{item.id}</span>
-              </div>
-            ))}
+            {shown.map(item =>
+              item.kind === 'image' ? (
+                <div className={css.thumb} key={`image-${String(item.id)}`}>
+                  <img alt={item.name} src={item.url} />
+                  <button
+                    aria-label={`Remove ${item.name}`}
+                    className={css.thumbRemove}
+                    onClick={() => {
+                      dropAttachment(item)
+                    }}
+                    title="Remove this image"
+                    type="button"
+                  >
+                    <XIcon size={10} />
+                  </button>
+                  <span className={css.thumbTag}>#{item.id}</span>
+                </div>
+              ) : (
+                <div className={css.fileCard} data-file-card="" key={`file-${String(item.id)}`} title={item.name}>
+                  <FileTypeIcon className={css.fileIcon} path={item.name} size={18} />
+                  <span className={css.fileBody}>
+                    <span className={css.fileName}>{item.name}</span>
+                    <span className={css.fileMeta}>
+                      {[fileExtension(item.name), item.size === undefined ? '' : formatBytes(item.size)]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  </span>
+                  <button
+                    aria-label={`Remove ${item.name}`}
+                    className={css.thumbRemove}
+                    onClick={() => {
+                      dropAttachment(item)
+                    }}
+                    title="Remove this file"
+                    type="button"
+                  >
+                    <XIcon size={10} />
+                  </button>
+                  <span className={css.thumbTag}>#{item.id}</span>
+                </div>
+              ),
+            )}
           </div>
         )}
         <div className={css.scroll}>
@@ -624,45 +678,45 @@ export function InputBar({
               if (event.dataTransfer.types.includes('Files')) event.preventDefault()
             }}
             onDrop={event => {
-              const file = [...event.dataTransfer.files].find(item =>
-                item.type.startsWith('image/'),
-              )
+              const files = [...event.dataTransfer.files]
 
-              if (file === undefined) return
+              if (files.length === 0) return
 
               event.preventDefault()
-
-              if (!vision) {
-                refuseImage()
-
-                return
-              }
-
-              void attach(file, file.name)
+              acceptDroppedFiles(files)
             }}
             onPaste={event => {
-              // Only take over when an image is actually on the clipboard; a
-              // normal text paste must keep working.
-              const item = [...event.clipboardData.items].find(entry =>
+              // Only take over when an image or a file is actually on the
+              // clipboard; a normal text paste must keep working.
+              const image = [...event.clipboardData.items].find(entry =>
                 entry.type.startsWith('image/'),
               )
 
-              if (item === undefined) return
+              if (image !== undefined) {
+                const file = image.getAsFile()
 
-              const file = item.getAsFile()
+                if (file === null) return
 
-              if (file === null) return
+                event.preventDefault()
 
-              event.preventDefault()
+                // A model that cannot read images gets told so. Attaching
+                // anyway is a hard 400 that kills the turn.
+                if (!vision) {
+                  refuseImage()
 
-              // A model that cannot read images gets told so. Attaching anyway
-              // is a hard 400 that kills the turn.
-              if (!vision) {
-                refuseImage()
+                  return
+                }
+                void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
 
                 return
               }
-              void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
+
+              const files = [...event.clipboardData.files].filter(file => !file.type.startsWith('image/'))
+
+              if (files.length === 0) return
+
+              event.preventDefault()
+              acceptDroppedFiles(files)
             }}
             onChange={event => {
               // Typing takes over from the launcher: the draft now says what
@@ -709,6 +763,19 @@ export function InputBar({
                 type="file"
               />
             )}
+            <input
+              aria-label="Attach a file"
+              className={css.hiddenPicker}
+              onChange={event => {
+                const file = event.target.files?.[0]
+
+                if (file !== undefined) void attach(file, file.name, 'file')
+                event.target.value = ''
+              }}
+              ref={filePicker}
+              tabIndex={-1}
+              type="file"
+            />
             <button
               aria-expanded={launcher}
               aria-haspopup="listbox"

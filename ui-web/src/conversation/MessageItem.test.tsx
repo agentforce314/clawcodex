@@ -63,3 +63,43 @@ describe('user image messages', () => {
     expect(container.textContent).not.toContain('Multiply coordinates')
   })
 })
+
+describe('user file messages', () => {
+  it('renders a card per attached file before the caption, without the leading chip', () => {
+    render(
+      <UserMessage
+        node={{
+          at: 0,
+          files: [{ name: 'notes.txt', placeholder: '[File #1]', size: 11 }],
+          id: 'user-2',
+          kind: 'user',
+          text: '[File #1] summarise this',
+        }}
+      />,
+    )
+
+    const card = document.querySelector('[data-file-card]') as HTMLElement
+    expect(card.textContent).toContain('notes.txt')
+    expect(card.textContent).toContain('TXT · 11 B')
+    expect(screen.getByText('summarise this')).toBeTruthy()
+    expect(screen.queryByText(/\[File #1\]/)).toBeNull()
+    expect(card.compareDocumentPosition(screen.getByText('summarise this')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows a reopened file turn as a card and hides the contents the agent inlined', () => {
+    const [restored] = hydrateStoredMessages([{
+      role: 'user',
+      content: [
+        { type: 'text', text: '[File #1] what is in it' },
+        { type: 'text', text: '[File #1: secrets.env] saved at /tmp/a/secrets.env (20 B)\n<system-reminder>\nContents of secrets.env:\n```\nTOKEN=abc\n```\n</system-reminder>' },
+      ],
+    }])
+    if (restored?.kind !== 'user') throw new Error('missing restored user message')
+    const { container } = render(<UserMessage node={restored} />)
+
+    expect(container.querySelector('[data-file-card]')?.textContent).toContain('secrets.env')
+    expect(screen.getByText('what is in it')).toBeTruthy()
+    expect(container.textContent).not.toContain('TOKEN=abc')
+    expect(container.textContent).not.toContain('system-reminder')
+  })
+})

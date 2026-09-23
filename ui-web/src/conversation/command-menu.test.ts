@@ -30,6 +30,15 @@ describe('menuRows', () => {
     expect(menuRows(catalog, true)[0]?.action).toBe('image')
   })
 
+  it('lists the file action for every model, after the image action', () => {
+    expect(menuRows(catalog, false)[0]?.action).toBe('file')
+    expect(menuRows(catalog, true).slice(0, 2).map(row => row.action)).toEqual(['image', 'file'])
+
+    const file = menuRows(catalog, false).find(row => row.action === 'file')
+    expect(file?.label).toBe('File')
+    expect(file?.description).toBe('Attach a file')
+  })
+
   it('leaves a skill with its own copy and no face', () => {
     const skill = menuRows(catalog, false).find(row => row.name === '/deploy')
 
@@ -55,6 +64,7 @@ describe('sectionRows', () => {
 
     expect(sectioned.map(row => [row.section, row.name])).toEqual([
       ['Add', '/image'],
+      ['Add', '/file'],
       ['Add', '/plan'],
       ['Add', '/goal'],
       ['Commands', '/compact'],
@@ -87,6 +97,7 @@ describe('rankRows', () => {
   it('matches the title as well as the name', () => {
     expect(rankRows(rows, 'output s').map(row => row.name)).toEqual(['/output-style'])
     expect(rankRows(rows, 'image').map(row => row.name)).toEqual(['/image'])
+    expect(rankRows(rows, 'file').map(row => row.name)).toEqual(['/file'])
   })
 
   it('is case-insensitive and drops rows the query does not fit', () => {

@@ -13,17 +13,21 @@
 
 import { type ReactNode } from 'react'
 
-import type { UserImage } from '../state/transcript.ts'
+import type { UserFile, UserImage } from '../state/transcript.ts'
 import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
 import css from './user-text.module.css'
 
 const MENTION = /(^|\s)@(?:"([^"\n]+)"|([^\s@"]+))/g
 
-/** Leading attachment chips are redundant with the preview; inline references still read as written. */
-export function userMessageCaption(text: string, images: readonly UserImage[] = []): string {
-  const placeholders = new Set(images.map(image => image.placeholder))
-  return text.replace(/^(?:\[Image #\d+\]\s*)+/, prefix => {
-    return prefix.replace(/\[Image #\d+\]\s*/g, marker =>
+/** Leading attachment chips are redundant with the preview or the card; inline references still read as written. */
+export function userMessageCaption(
+  text: string,
+  images: readonly UserImage[] = [],
+  files: readonly UserFile[] = [],
+): string {
+  const placeholders = new Set([...images, ...files].map(item => item.placeholder))
+  return text.replace(/^(?:\[(?:Image|File) #\d+\]\s*)+/, prefix => {
+    return prefix.replace(/\[(?:Image|File) #\d+\]\s*/g, marker =>
       placeholders.has(marker.trimEnd()) ? '' : marker,
     )
   })

@@ -72,7 +72,13 @@ import {
   recordPrompt,
 } from './trajectory.ts'
 import { updatesFor } from '../conversation/PlanReviewPanel.tsx'
-import { liveAttachments, placeholderFor, type Attachment } from '../conversation/attachments.ts'
+import {
+  MAX_FILE_BYTES,
+  formatBytes,
+  liveAttachments,
+  placeholderFor,
+  type Attachment,
+} from '../conversation/attachments.ts'
 import {
   appendUserMessage,
   applyEvent,
@@ -116,7 +122,7 @@ function markSessionUsed(): void {
 }
 // The backend owns sending images; keep their bytes here only for the local
 // user row, including prompts waiting in the queue. Drained with the prompt.
-let pendingImages: Attachment[] = []
+let pendingAttachments: Attachment[] = []
 
 export function gateway(): GatewayClient {
   if (client === null) throw new Error('gateway not started')
@@ -127,7 +133,7 @@ export function gateway(): GatewayClient {
 /** Test seam: install a client with an injected socket factory. */
 export function setGatewayClient(next: GatewayClient | null): void {
   client = next
-  pendingImages = []
+  pendingAttachments = []
 }
 
 function notice(text: string, tone: 'error' | 'info' = 'info'): void {
@@ -137,7 +143,7 @@ function notice(text: string, tone: 'error' | 'info' = 'info'): void {
 function beginSessionNavigation(): void {
   sessionNavigationEpoch += 1
   attachInFlight = null
-  pendingImages = []
+  pendingAttachments = []
   notice('')
 }
 
@@ -798,7 +804,7 @@ export async function clearSession(): Promise<void> {
 
     if (!isStillCurrent()) return
 
-    pendingImages = []
+    pendingAttachments = []
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
     $trajectory.set(emptyTrajectory())
     $subagentView.set(null)
@@ -899,11 +905,15 @@ async function send(text: string, retried = false): Promise<void> {
 
   if (sessionId === null) return
 
-  const images = liveAttachments(text, pendingImages).map(({ id, name, url }) => ({
-    name, placeholder: placeholderFor(id), url,
-  }))
-  pendingImages = []
-  $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text, images)))
+  const live = liveAttachments(text, pendingAttachments)
+  const images = live.flatMap(({ id, kind, name, url }) =>
+    kind === 'image' && url !== undefined ? [{ name, placeholder: placeholderFor(id, 'image'), url }] : [],
+  )
+  const files = live.flatMap(({ id, kind, name, size }) =>
+    kind === 'file' ? [{ name, placeholder: placeholderFor(id, 'file'), ...(size !== undefined && { size }) }] : [],
+  )
+  pendingAttachments = []
+  $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text, images, files)))
   $trajectory.set(recordPrompt($trajectory.get(), text))
   notice('')
 
@@ -1396,7 +1406,59 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
       return null
     }
 
-    pendingImages.push({ id: result.id, name, url })
+    pendingAttachments.push({ id: result.id, kind: 'image', name, url })
+    return result.id
+  } catch (error) {
+    notice(errorText(error), 'error')
+
+    return null
+  }
+}
+
+/**
+ * Send a file of any type to the session; the reply's id becomes its `[File #N]` chip.
+ *
+ * The bytes go over the socket as base64 and the backend keeps them under
+ * the file's own name in the session's artifact directory; at submit the
+ * agent inlines a text file's contents, or points the model at the saved
+ * path for a PDF, an archive, a spreadsheet. Sized here before the upload:
+ * pushing a file the backend would refuse, and losing the socket to an
+ * oversize frame on the way, is worse than saying so first.
+ */
+export async function attachFile(file: Blob, name: string): Promise<number | null> {
+  const sessionId = $sessionId.get()
+  const navigationEpoch = sessionNavigationEpoch
+
+  if (sessionId === null) {
+    notice('Start a session before attaching a file.', 'error')
+
+    return null
+  }
+
+  if (file.size > MAX_FILE_BYTES) {
+    notice(`${name} is ${formatBytes(file.size)}; files up to ${formatBytes(MAX_FILE_BYTES)} can be attached.`, 'error')
+
+    return null
+  }
+
+  try {
+    const url = await blobToDataUrl(file)
+    if (sessionNavigationEpoch !== navigationEpoch || $sessionId.get() !== sessionId) return null
+    const data = url.slice(url.indexOf(',') + 1)
+    const result = await gateway().request<{ attached?: boolean; error?: string; id?: number; name?: string }>(
+      'file.attach',
+      { data, name, session_id: sessionId },
+    )
+
+    if (sessionNavigationEpoch !== navigationEpoch || $sessionId.get() !== sessionId) return null
+
+    if (result.attached !== true || typeof result.id !== 'number') {
+      notice(result.error ?? 'Could not attach that file', 'error')
+
+      return null
+    }
+
+    pendingAttachments.push({ id: result.id, kind: 'file', name: result.name ?? name, size: file.size })
     return result.id
   } catch (error) {
     notice(errorText(error), 'error')
@@ -1411,7 +1473,7 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
     const reader = new FileReader()
 
     reader.onerror = () => {
-      reject(new Error('could not read the image'))
+      reject(new Error('could not read the file'))
     }
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
