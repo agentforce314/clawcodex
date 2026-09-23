@@ -110,6 +110,11 @@ an exhaustive live-model benchmark or a claim about every provider.
   native environment while isolating the config variable under test. Their
   behavioral assertions remain in place; the affected group passes all
   **144 tests** locally.
+- Admission tests also synchronize with the managed worker threads using
+  thread-safe events, elapsed-time waits, and teardown joins. Their prior
+  zero-delay event-loop spins could finish before a Windows thread started;
+  one fixture tried to wake a worker using another loop's asyncio.Event.
+  The corrected admission and end-to-end group passes **54 tests** locally.
 - Black and isort were applied to changed Python code. The four new runtime
   modules pass targeted mypy. Full-project mypy reports **395 diagnostics**
   versus **397 on the starting commit**, with **zero added diagnostics** after

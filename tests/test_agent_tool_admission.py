@@ -10,6 +10,8 @@ supervisor so nesting is admitted against one registry.
 from __future__ import annotations
 
 import asyncio
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +40,17 @@ def agent_tool():
 
 
 @pytest.fixture
-def ctx(tmp_path: Path) -> ToolContext:
-    return ToolContext(workspace_root=tmp_path, cwd=tmp_path)
+def ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ToolContext]:
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path / "config"))
+    context = ToolContext(workspace_root=tmp_path, cwd=tmp_path)
+    yield context
+    from src.tasks.local_agent import kill_async_agent
+
+    for state in context.runtime_tasks.all():
+        kill_async_agent(state.id, context.runtime_tasks, enqueue_notification=False)
+    for task in context.task_manager.list():
+        task.thread.join(timeout=5)
+        assert not task.thread.is_alive(), f"worker did not exit: {task.name}"
 
 
 def _call(tool, ctx: ToolContext, **overrides: Any):
@@ -358,29 +369,38 @@ async def test_a_background_subagent_survives_parent_abort(agent_tool, ctx, monk
     from src.types.messages import AssistantMessage
 
     captured: dict[str, Any] = {}
+    release = threading.Event()
 
     async def fake_run_agent(params):
         captured["abort"] = params.abort_controller
+        assert release.wait(5), "test did not release the background worker"
         yield AssistantMessage(content=[{"type": "text", "text": "done"}])
 
     monkeypatch.setattr(agentmod, "run_agent", fake_run_agent)
 
-    _call(agent_tool, ctx, run_in_background=True)
-    assert await _drain(lambda: "abort" in captured)
-
-    ctx.abort_controller.abort("user pressed ESC")
-    assert captured["abort"].signal.aborted is False
+    try:
+        _call(agent_tool, ctx, run_in_background=True)
+        assert await _drain(lambda: "abort" in captured)
+        ctx.abort_controller.abort("user pressed ESC")
+        assert captured["abort"].signal.aborted is False
+    finally:
+        release.set()
+    assert await _drain(lambda: ctx.agent_supervisor.live_count() == 0)
 
 
 # ── the background path ──────────────────────────────────────────────────
 
 
-async def _drain(predicate, tries: int = 200) -> bool:
-    """Yield to the loop until ``predicate()`` holds, or give up."""
-    for _ in range(tries):
+async def _drain(predicate, timeout: float = 5.0) -> bool:
+    """Wait for a worker-thread condition using elapsed time, not loop turns."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         if predicate():
             return True
-        await asyncio.sleep(0)
+        # sleep(0) only reschedules this loop: hundreds of iterations can end
+        # before a newly started thread gets any CPU time (especially Windows).
+        await asyncio.sleep(0.01)
     return predicate()
 
 
@@ -389,7 +409,7 @@ async def test_a_background_agent_frees_its_slot_when_the_worker_exits(
     agent_tool, ctx, monkeypatch,
 ):
     # The release lives in _background_lifecycle's finally, which only runs
-    # once the detached coroutine has actually finished — so a leak here would
+    # once the managed worker has actually finished — so a leak here would
     # be invisible to every synchronous test.
     import src.tool_system.tools.agent as agentmod
     from src.types.messages import AssistantMessage
@@ -433,24 +453,26 @@ async def test_a_background_agent_is_visible_and_interruptible_while_it_runs(
     import src.tool_system.tools.agent as agentmod
     from src.types.messages import AssistantMessage
 
-    release = asyncio.Event()
+    release = threading.Event()
+    entered = threading.Event()
 
     async def slow_run_agent(params):
-        await release.wait()
+        entered.set()
+        assert release.wait(5), "test did not release the background worker"
         yield AssistantMessage(content=[{"type": "text", "text": "done"}])
 
     monkeypatch.setattr(agentmod, "run_agent", slow_run_agent)
 
-    _call(agent_tool, ctx, run_in_background=True, description="long job")
-    assert await _drain(lambda: ctx.agent_supervisor.live_count() == 1)
-
-    (entry,) = ctx.agent_supervisor.snapshot()["active"]
-    assert entry["goal"] == "long job"
-    assert ctx.agent_supervisor.interrupt(entry["subagent_id"]) is True
-    # Still held: the worker has not exited yet.
-    assert ctx.agent_supervisor.live_count() == 1
-
-    release.set()
+    try:
+        _call(agent_tool, ctx, run_in_background=True, description="long job")
+        assert await _drain(entered.is_set)
+        (entry,) = ctx.agent_supervisor.snapshot()["active"]
+        assert entry["goal"] == "long job"
+        assert ctx.agent_supervisor.interrupt(entry["subagent_id"]) is True
+        # Still held: the worker has not exited yet.
+        assert ctx.agent_supervisor.live_count() == 1
+    finally:
+        release.set()
     assert await _drain(lambda: ctx.agent_supervisor.live_count() == 0)
 
 
