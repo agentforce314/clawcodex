@@ -275,6 +275,15 @@ export function InputBar({
     [],
   )
 
+  // The draft as it is NOW, for an upload that lands after the reader kept
+  // typing (or sent): the chip goes into the current text, not the one the
+  // upload started from.
+  const draftRef = useRef(draft)
+
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
   const attach = useCallback(
     async (file: File | Blob, name: string, kind: AttachmentKind = 'image') => {
       let id: number | null
@@ -292,9 +301,10 @@ export function InputBar({
 
       if (id === null) return
 
+      const current = draftRef.current
       const element = textarea.current
-      const caret = element === null ? draft.length : element.selectionStart
-      const next = insertPlaceholder(draft, caret, id, kind)
+      const caret = element === null ? current.length : element.selectionStart
+      const next = insertPlaceholder(current, caret, id, kind)
 
       if (kind === 'image') {
         const url = URL.createObjectURL(file)
@@ -314,7 +324,7 @@ export function InputBar({
         live.setSelectionRange(next.caret, next.caret)
       })
     },
-    [draft, onDraftChange],
+    [onDraftChange],
   )
 
   /**
@@ -363,7 +373,7 @@ export function InputBar({
       }
 
       if (skipped > 0) {
-        $notice.set({ text: 'Folders cannot be attached — drop the files inside them.', tone: 'error' })
+        $notice.set({ text: 'Folders and empty files are skipped — drop the files inside a folder instead.', tone: 'error' })
       }
     },
     [attach, refuseImage, vision],
@@ -709,16 +719,18 @@ export function InputBar({
               event.preventDefault()
 
               // Browsers that expose entries say outright which drops were
-              // folders; the rest are caught by their shape (no type, no bytes).
+              // folders (Linux hands a folder over as a File with the inode's
+              // size, so its shape does not give it away); the entries are
+              // index-aligned with the files. The rest are caught by shape.
               const items = [...(event.dataTransfer.items as Iterable<DataTransferItem> | undefined ?? [])]
-              const folders = items.filter(item => {
-                if (item.kind !== 'file') return false
-
-                const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
-
-                return entry?.isDirectory === true
-              }).length
-              const dropped = folders === 0 ? files : files.filter(file => !(file.type === '' && file.size === 0))
+              const isFolder = items.map(item =>
+                item.kind === 'file' && typeof item.webkitGetAsEntry === 'function'
+                  ? item.webkitGetAsEntry()?.isDirectory === true
+                  : false,
+              )
+              const folders = isFolder.filter(Boolean).length
+              const dropped =
+                folders > 0 && isFolder.length === files.length ? files.filter((_, index) => !isFolder[index]) : files
 
               acceptDroppedFiles(dropped, folders)
             }}

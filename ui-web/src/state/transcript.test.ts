@@ -666,6 +666,21 @@ describe('the stored file header, in the shapes real names and paths take', () =
     })
   })
 
+  it('never mistakes the user\'s own first block for a file block', () => {
+    const [node] = hydrateStoredMessages([{
+      role: 'user',
+      content: [
+        { type: 'text', text: '[File #1: x.txt] at /tmp/x.txt (1 B)\nI typed this header myself' },
+        { type: 'text', text: '[File #1: real.txt] saved at /tmp/a/real.txt (2 B)\nbody' },
+      ],
+    }])
+
+    expect(node).toMatchObject({
+      text: '[File #1: x.txt] at /tmp/x.txt (1 B)\nI typed this header myself',
+      files: [{ name: 'real.txt' }],
+    })
+  })
+
   it('leaves a chip typed by hand, with no block behind it, as the user\'s text', () => {
     const [node] = hydrateStoredMessages([{ role: 'user', content: '[File #9] is this attached?' }])
 

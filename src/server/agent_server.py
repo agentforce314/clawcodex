@@ -384,7 +384,10 @@ class _AgentSession:
             # image and then throw it away. Leave it queued for the real turn.
             if not ephemeral:
                 content = self._drain_pending_images(content)
-                content = self._drain_pending_files(content)
+                # Off the loop: the file drain reads and decodes up to 256 KB
+                # per file, and on the multi-session transport a slow disk
+                # must not stall every other session.
+                content = await asyncio.to_thread(self._drain_pending_files, content)
             self._inbox.put({"__btw__": True, "content": content} if ephemeral else content)
             return
         if msg_type == "control_response":
@@ -5757,6 +5760,11 @@ class _AgentSession:
                 pending.event.set()
         if abort is not None:
             abort.abort("session_closed")
+        # Files attached for a draft that will never be sent: their copies go
+        # with the session, as they do on /clear and resume.
+        with self._lock:
+            dropped_files, self._pending_files = self._pending_files, []
+        self._discard_pending_files(dropped_files)
         self._inbox.put(_SHUTDOWN)
         worker = self._worker
         if worker is not None:
@@ -7096,7 +7104,10 @@ def _user_prompt_text(prompt) -> str:
     trailing block would silently defeat), UserPromptSubmit hooks (which must
     not be handed a file's contents as "the prompt"), and the blocked-prompt
     echo. ``_extract_prompt_text``, which joins every text block, stays the
-    right reader for the whole message.
+    right reader for the whole message. A client that sent several text
+    blocks of its own would be read by its first here; none does — text-only
+    lists collapse to one string in ``_extract_prompt_content`` before the
+    drains run, so the only lists that reach this are the drains' own.
     """
     if isinstance(prompt, str):
         return prompt
@@ -7131,12 +7142,12 @@ def _safe_attachment_leaf(name: str) -> str:
     import unicodedata
 
     leaf = name[max(name.rfind("/"), name.rfind("\\")) + 1:]
-    # Control characters and Unicode format characters (bidi overrides, zero
-    # widths) go: a name that renders as ``aexe.pdf`` while ending in ``.exe``
-    # is not a name to store.
+    # Control characters (C0, C1, DEL), Unicode format characters (bidi
+    # overrides, zero widths) and line/paragraph separators go: a name that
+    # renders as ``aexe.pdf`` while ending in ``.exe`` is not a name to store,
+    # and a separator would break the one-line header the clients parse.
     clean = "".join(
-        ch for ch in leaf
-        if ord(ch) >= 32 and ch != "\x7f" and unicodedata.category(ch) != "Cf"
+        ch for ch in leaf if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp")
     )
     clean = re.sub(r'[<>:"|?*\[\]]', "_", clean).strip().rstrip(". ")
     clean = clean.encode("utf-8")[:128].decode("utf-8", errors="ignore").rstrip(". ")
@@ -7197,7 +7208,10 @@ def _describe_attached_file(
         info = {"kind": "binary", "hint": "Use the Read tool to inspect it."}
     kind = info.get("kind")
     if kind == "file":
-        content = str(info.get("content") or "").replace("</system-reminder>", "<\\/system-reminder>")
+        content = re.sub(
+            r"</\s*system-reminder\s*>", "<\\/system-reminder>",
+            str(info.get("content") or ""), flags=re.IGNORECASE,
+        )
         return (
             f"{header}\n<system-reminder>\nContents of {name}:\n"
             f"```\n{content}\n```\n</system-reminder>"

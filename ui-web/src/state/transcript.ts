@@ -713,16 +713,34 @@ function storedUserImages(blocks: StoredBlock[], text: string): UserImage[] {
  */
 const STORED_FILE_HEADER = /^\[File #(\d+): ([^\n]+?)\] (?:saved )?at ([^\n]+?) \(([\d.]+ [KM]?B)\)(?:\n|$)/
 
-/** Whether a stored text block is an attached file's block rather than prose. */
-function isStoredFileBlock(block: StoredBlock): boolean {
-  return block?.type === 'text' && typeof block.text === 'string' && STORED_FILE_HEADER.test(block.text)
+/**
+ * Whether the block at `index` is an attached file's block rather than prose.
+ *
+ * The agent appends file blocks AFTER the user's text, so the first text
+ * block is never one: a user who happens to type a header-shaped line keeps
+ * their own words on screen.
+ */
+function isStoredFileBlock(block: StoredBlock, index: number, firstText: number): boolean {
+  return (
+    index > firstText &&
+    block?.type === 'text' &&
+    typeof block.text === 'string' &&
+    STORED_FILE_HEADER.test(block.text)
+  )
+}
+
+/** The index of the user's own text block: the first text block, if any. */
+function firstTextBlock(blocks: StoredBlock[]): number {
+  return blocks.findIndex(block => block?.type === 'text' && typeof block.text === 'string')
 }
 
 /** The files a stored user message carried, from the agent's header lines. */
 function storedUserFiles(blocks: StoredBlock[]): UserFile[] {
   const files: UserFile[] = []
+  const firstText = firstTextBlock(blocks)
 
-  for (const block of blocks) {
+  for (const [index, block] of blocks.entries()) {
+    if (!isStoredFileBlock(block, index, firstText)) continue
     if (block?.type !== 'text' || typeof block.text !== 'string') continue
 
     const match = STORED_FILE_HEADER.exec(block.text)
@@ -831,12 +849,13 @@ export function hydrateStoredMessages(
       // The backend appends coordinate/source metadata, and each attached
       // file's block, as separate text blocks. They guide the model; they are
       // not part of the user's caption.
+      const firstText = firstTextBlock(blocks)
       const text = blockText(
         images.length === 0 && files.length === 0
           ? content
           : blocks.filter(
-              block =>
-                !isStoredFileBlock(block) &&
+              (block, index) =>
+                !isStoredFileBlock(block, index, firstText) &&
                 !(
                   block?.type === 'text' &&
                   typeof block.text === 'string' &&

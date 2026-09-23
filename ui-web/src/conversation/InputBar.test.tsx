@@ -272,6 +272,6 @@ describe('InputBar files from the clipboard and folders', () => {
       expect(attachFile).toHaveBeenCalledWith(note, 'note.txt')
     })
     expect(attachFile).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('status').textContent).toContain('Folders cannot be attached')
+    expect(screen.getByRole('status').textContent).toContain('Folders and empty files are skipped')
   })
 })
