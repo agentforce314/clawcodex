@@ -11,7 +11,7 @@ vi.mock('../state/actions.ts', async importOriginal => {
 
   return {
     ...actual,
-    attachFile: vi.fn(async () => 7),
+    attachFile: vi.fn(async () => ({ id: 7, name: 'notes.txt' })),
     attachImage: vi.fn(async () => 3),
   }
 })
@@ -212,5 +212,66 @@ describe('InputBar file attachments', () => {
     })
     expect(attachImage).not.toHaveBeenCalled()
     expect(screen.getByRole('status').textContent).toContain('cannot read images')
+  })
+})
+
+describe('InputBar files from the clipboard and folders', () => {
+  function Harness({ onDraftChange }: { onDraftChange: (text: string) => void }) {
+    const [draft, setDraft] = useState('')
+
+    return (
+      <InputBar
+        draft={draft}
+        effort={{ supported: false }}
+        models={{}}
+        onApprovalModeChange={vi.fn()}
+        onDraftChange={text => {
+          setDraft(text)
+          onDraftChange(text)
+        }}
+        onEffortChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onStop={vi.fn()}
+        onSubmit={vi.fn()}
+        running={false}
+        usage={null}
+      />
+    )
+  }
+
+  beforeEach(() => {
+    vi.mocked(attachFile).mockClear()
+    vi.mocked(attachImage).mockClear()
+  })
+
+  it('attaches a file pasted from the file manager, and leaves a text paste alone', async () => {
+    const onDraftChange = vi.fn()
+    render(<Harness onDraftChange={onDraftChange} />)
+    const textarea = screen.getByLabelText('Message ClawCodex')
+    const doc = new File(['x'], 'brief.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+
+    fireEvent.paste(textarea, { clipboardData: { files: [doc], items: [], getData: () => '' } })
+
+    await waitFor(() => {
+      expect(attachFile).toHaveBeenCalledWith(doc, 'brief.docx')
+    })
+
+    fireEvent.paste(textarea, { clipboardData: { files: [], items: [], getData: () => 'plain words' } })
+    expect(attachFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips a dropped folder with a notice instead of uploading an empty file', async () => {
+    render(<Harness onDraftChange={vi.fn()} />)
+    const textarea = screen.getByLabelText('Message ClawCodex')
+    const folder = new File([], 'Documents')
+    const note = new File(['n'], 'note.txt', { type: 'text/plain' })
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [folder, note], types: ['Files'] } })
+
+    await waitFor(() => {
+      expect(attachFile).toHaveBeenCalledWith(note, 'note.txt')
+    })
+    expect(attachFile).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('status').textContent).toContain('Folders cannot be attached')
   })
 })

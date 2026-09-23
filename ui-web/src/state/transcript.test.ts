@@ -636,3 +636,40 @@ describe('hydrateStoredMessages with attached files', () => {
     expect(node).toMatchObject({ kind: 'user', text: '[File #2]', files: [{ name: 'report.pdf', size: 12595 }] })
   })
 })
+
+describe('the stored file header, in the shapes real names and paths take', () => {
+  it('reads parentheses in the name and the path, a Windows path, and a megabyte size', () => {
+    const [first, second] = hydrateStoredMessages([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[File #3] hi' },
+          { type: 'text', text: '[File #3: plan (v2).md] saved at /Users/me/ws (2)/tool-results/attachments/file-x/plan (v2).md (1.0 MB)\nbody' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '[File #4] hi' },
+          { type: 'text', text: '[File #4: report.pdf] at C:\\Users\\me\\ws\\report.pdf (3 B)\nbody' },
+        ],
+      },
+    ])
+
+    expect(first).toMatchObject({
+      text: '[File #3] hi',
+      files: [{ name: 'plan (v2).md', path: '/Users/me/ws (2)/tool-results/attachments/file-x/plan (v2).md', size: 1024 * 1024 }],
+    })
+    expect(second).toMatchObject({
+      text: '[File #4] hi',
+      files: [{ name: 'report.pdf', path: 'C:\\Users\\me\\ws\\report.pdf', size: 3 }],
+    })
+  })
+
+  it('leaves a chip typed by hand, with no block behind it, as the user\'s text', () => {
+    const [node] = hydrateStoredMessages([{ role: 'user', content: '[File #9] is this attached?' }])
+
+    expect(node).toMatchObject({ text: '[File #9] is this attached?' })
+    expect(node).not.toHaveProperty('files')
+  })
+})

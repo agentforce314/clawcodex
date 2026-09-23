@@ -1016,7 +1016,8 @@ class _AgentSession:
                 # fresh one would silently attach it to an unrelated prompt.
                 with self._lock:
                     self._pending_images = []
-                    self._pending_files = []
+                    dropped_files, self._pending_files = self._pending_files, []
+                self._discard_pending_files(dropped_files)
                 # /clear starts a FRESH plan file (TS clearAllPlanSlugs on
                 # clear — plans.ts:75-86): drop every session's slug so the
                 # next plan-mode turn mints a new file instead of appending
@@ -1319,16 +1320,33 @@ class _AgentSession:
     MAX_INLINE_FILE_BYTES = 256 * 1024
 
     def _queue_file(
-        self, path: str, name: str, size: int, *, expects_placeholder: bool = False,
+        self, path: str, name: str, size: int, *,
+        expects_placeholder: bool = False, persisted: bool = False,
     ) -> int | None:
-        """Append under the lock and return the new file's id, or None if full."""
+        """Append under the lock and return the new file's id, or None if full.
+
+        ``persisted`` marks a copy this session made (its ``file-*/`` folder
+        is ours to remove once the file will never be sent); an original the
+        user pointed at is never touched.
+        """
         with self._lock:
             if len(self._pending_files) >= self.MAX_PENDING_FILES:
                 return None
             self._file_seq += 1
             file_id = self._file_seq
-            self._pending_files.append((file_id, path, name, size, expects_placeholder))
+            self._pending_files.append(
+                (file_id, path, name, size, expects_placeholder, persisted)
+            )
             return file_id
+
+    @staticmethod
+    def _discard_pending_files(pending: list) -> None:
+        """Remove the persisted copies of files that will never be sent."""
+        import shutil
+
+        for entry in pending:
+            if entry[5]:
+                shutil.rmtree(Path(entry[1]).parent, ignore_errors=True)
 
     async def _do_attach_file(
         self, request_id: object, raw_path: object, raw_name: object, *,
@@ -1349,6 +1367,10 @@ class _AgentSession:
             self._reply(request_id, {"error": "no path given"})
             return
         source = Path(text).expanduser()
+        if not source.is_absolute():
+            # Against the session's directory, as /image does — never the
+            # server process's.
+            source = Path(self.cwd or ".") / source
         try:
             size = source.stat().st_size if source.is_file() else -1
         except OSError:
@@ -1387,10 +1409,15 @@ class _AgentSession:
             except Exception as exc:  # noqa: BLE001 — report failed storage before accepting
                 self._reply(request_id, {"error": f"could not save file: {exc}"})
                 return
-        file_id = self._queue_file(path, name, size, expects_placeholder=expects_placeholder)
+        file_id = self._queue_file(
+            path, name, size, expects_placeholder=expects_placeholder, persisted=persist_source,
+        )
         if file_id is None:
             if persist_source:
-                Path(path).unlink(missing_ok=True)
+                # The whole ``file-*/`` folder is ours, not just the copy in it.
+                import shutil
+
+                shutil.rmtree(Path(path).parent, ignore_errors=True)
             self._reply(request_id, {
                 "error": (
                     f"already holding {self.MAX_PENDING_FILES} attached files "
@@ -1423,20 +1450,26 @@ class _AgentSession:
 
         referenced = _parse_file_refs(_content_text(content))
         trailing: list[dict] = []
-        for file_id, path, name, size, expects_placeholder in pending:
+        dropped: list = []
+        for entry in pending:
+            file_id, path, name, size, expects_placeholder, persisted = entry
             if expects_placeholder and file_id not in referenced:
                 logger.debug(
                     "[agent-server] dropping file #%s: its [File #%s] chip was "
                     "deleted from the prompt",
                     file_id, file_id,
                 )
+                dropped.append(entry)
                 continue
             trailing.append({
                 "type": "text",
                 "text": _describe_attached_file(
-                    file_id, path, name, size, inline_cap=self.MAX_INLINE_FILE_BYTES,
+                    file_id, path, name, size,
+                    inline_cap=self.MAX_INLINE_FILE_BYTES, persisted=persisted,
                 ),
             })
+        # Un-attached files are not coming back: their copies go with them.
+        self._discard_pending_files(dropped)
         if not trailing:
             return content
         if isinstance(content, list):
@@ -3317,7 +3350,8 @@ class _AgentSession:
             # resumed session.
             with self._lock:
                 self._pending_images = []
-                self._pending_files = []
+                dropped_files, self._pending_files = self._pending_files, []
+            self._discard_pending_files(dropped_files)
             # Seed the turns odometer so the stats line continues where the
             # resumed session left off (its token/cost siblings restore below
             # via restore_cost_state). Prefer the exact persisted counter
@@ -5366,7 +5400,7 @@ class _AgentSession:
 
             from src.hooks.session_hooks import run_user_prompt_submit_hooks
 
-            text = _extract_prompt_text({"content": prompt})
+            text = _user_prompt_text(prompt)
             return _asyncio.run(run_user_prompt_submit_hooks(
                 text, session_id=self.session_id, cwd=self.cwd,
                 tool_use_context=self.tool_context,
@@ -5383,7 +5417,7 @@ class _AgentSession:
         try:
             from src.query.token_budget import parse_token_budget
 
-            return parse_token_budget(_extract_prompt_text({"content": prompt}))
+            return parse_token_budget(_user_prompt_text(prompt))
         except Exception:  # noqa: BLE001 — budget parse is best-effort
             logger.debug("[agent-server] token budget parse failed",
                          exc_info=True)
@@ -5438,7 +5472,7 @@ class _AgentSession:
                     self.session_id,
                     f"UserPromptSubmit operation blocked by hook:\n"
                     f"{ups.block_message}\n\nOriginal prompt: "
-                    f"{_extract_prompt_text({'content': prompt})}",
+                    f"{_user_prompt_text(prompt)}",
                     level="warning",
                 ))
                 self._emit(_result_message(
@@ -7052,6 +7086,30 @@ def _parse_image_refs(text: str) -> set[int]:
     return {i for i in ids if i > 0}
 
 
+def _user_prompt_text(prompt) -> str:
+    """The user's own words in a prompt: the string, or the FIRST text block.
+
+    Images lead a block list but are not text, and the blocks the drains
+    append — image metadata, attached files' contents — trail it, so the
+    first text block is what the user typed. The readers of the prompt's
+    edges need exactly that: the end-anchored ``+500k`` shorthand (which a
+    trailing block would silently defeat), UserPromptSubmit hooks (which must
+    not be handed a file's contents as "the prompt"), and the blocked-prompt
+    echo. ``_extract_prompt_text``, which joins every text block, stays the
+    right reader for the whole message.
+    """
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        for block in prompt:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))
+            if isinstance(block, str):
+                return block
+        return ""
+    return str(prompt or "")
+
+
 #: ``[File #3]`` in the prompt text is what keeps file #3 attached.
 _FILE_REF_RE = re.compile(r"\[File #(\d+)\]")
 
@@ -7070,10 +7128,23 @@ def _safe_attachment_leaf(name: str) -> str:
     filesystem or the chip grammar accepts replaced, trailing dots and spaces
     trimmed, bounded in length. ``file`` when nothing survives.
     """
+    import unicodedata
+
     leaf = name[max(name.rfind("/"), name.rfind("\\")) + 1:]
-    clean = "".join(ch for ch in leaf if ord(ch) >= 32 and ch != "\x7f")
+    # Control characters and Unicode format characters (bidi overrides, zero
+    # widths) go: a name that renders as ``aexe.pdf`` while ending in ``.exe``
+    # is not a name to store.
+    clean = "".join(
+        ch for ch in leaf
+        if ord(ch) >= 32 and ch != "\x7f" and unicodedata.category(ch) != "Cf"
+    )
     clean = re.sub(r'[<>:"|?*\[\]]', "_", clean).strip().rstrip(". ")
     clean = clean.encode("utf-8")[:128].decode("utf-8", errors="ignore").rstrip(". ")
+    # A Windows reserved device name (``nul.txt`` included) would write to the
+    # device instead of a file on a Windows server; any client can send one.
+    stem = clean.split(".", 1)[0].rstrip(". ")
+    if re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])", stem):
+        clean = "_" + clean
     return clean if clean and clean not in (".", "..") else "file"
 
 
@@ -7106,23 +7177,32 @@ def _persist_file_source(source: Path, name: str, directory: Path) -> str:
 
 
 def _describe_attached_file(
-    file_id: int, path: str, name: str, size: int, *, inline_cap: int,
+    file_id: int, path: str, name: str, size: int, *, inline_cap: int, persisted: bool = True,
 ) -> str:
-    """The prompt block for one attached file: header line, then contents or a hint."""
+    """The prompt block for one attached file: header line, then contents or a hint.
+
+    A text file within ``inline_cap`` is inlined; a larger one is pointed at
+    without being read. The contents sit in a ``<system-reminder>`` envelope,
+    and a literal closing tag inside them is neutralised so a file cannot end
+    the envelope early and pass off what follows as the user's words — the
+    contents remain untrusted input either way, as any inlined file is.
+    """
     from src.command_system.input_processing import read_file_attachment
 
-    header = f"[File #{file_id}: {name}] saved at {path} ({_format_bytes(size)})"
+    where = "saved at" if persisted else "at"
+    header = f"[File #{file_id}: {name}] {where} {path} ({_format_bytes(size)})"
     try:
-        info = read_file_attachment(path)
+        info = read_file_attachment(path, max_text_bytes=inline_cap)
     except Exception:  # noqa: BLE001 — a file that cannot be classified is still attached
         info = {"kind": "binary", "hint": "Use the Read tool to inspect it."}
-    if info.get("kind") == "file":
-        content = str(info.get("content") or "")
-        if len(content.encode("utf-8", errors="ignore")) <= inline_cap:
-            return (
-                f"{header}\n<system-reminder>\nContents of {name}:\n"
-                f"```\n{content}\n```\n</system-reminder>"
-            )
+    kind = info.get("kind")
+    if kind == "file":
+        content = str(info.get("content") or "").replace("</system-reminder>", "<\\/system-reminder>")
+        return (
+            f"{header}\n<system-reminder>\nContents of {name}:\n"
+            f"```\n{content}\n```\n</system-reminder>"
+        )
+    if kind == "large":
         return (
             f"{header}\n<system-reminder>\n{name} is {_format_bytes(size)}, too large "
             f"to inline. Read it with the Read tool at {path}, using offset and limit "
@@ -7131,7 +7211,7 @@ def _describe_attached_file(
     hint = str(info.get("hint") or "Use the Read tool to inspect it.")
     return (
         f"{header}\n<system-reminder>\n{name} is a binary file and was not inlined. "
-        f"{hint} It is saved at {path}.\n</system-reminder>"
+        f"{hint} It is at {path}.\n</system-reminder>"
     )
 
 

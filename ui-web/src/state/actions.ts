@@ -1425,7 +1425,7 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
  * pushing a file the backend would refuse, and losing the socket to an
  * oversize frame on the way, is worse than saying so first.
  */
-export async function attachFile(file: Blob, name: string): Promise<number | null> {
+export async function attachFile(file: Blob, name: string): Promise<{ id: number; name: string } | null> {
   const sessionId = $sessionId.get()
   const navigationEpoch = sessionNavigationEpoch
 
@@ -1458,8 +1458,11 @@ export async function attachFile(file: Blob, name: string): Promise<number | nul
       return null
     }
 
-    pendingAttachments.push({ id: result.id, kind: 'file', name: result.name ?? name, size: file.size })
-    return result.id
+    // The name the backend kept — sanitised — is the one every surface
+    // shows, so the composer's card, the sent row and a reopened one agree.
+    const accepted = result.name ?? name
+    pendingAttachments.push({ id: result.id, kind: 'file', name: accepted, size: file.size })
+    return { id: result.id, name: accepted }
   } catch (error) {
     notice(errorText(error), 'error')
 

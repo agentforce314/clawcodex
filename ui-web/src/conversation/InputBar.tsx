@@ -277,7 +277,18 @@ export function InputBar({
 
   const attach = useCallback(
     async (file: File | Blob, name: string, kind: AttachmentKind = 'image') => {
-      const id = kind === 'image' ? await attachImage(file, name) : await attachFile(file, name)
+      let id: number | null
+      // The card shows the name the backend kept, which may differ from the
+      // picked one once sanitised — the sent row and a reopened one show it.
+      let label = name
+
+      if (kind === 'image') {
+        id = await attachImage(file, name)
+      } else {
+        const accepted = await attachFile(file, name)
+        id = accepted?.id ?? null
+        if (accepted !== null) label = accepted.name
+      }
 
       if (id === null) return
 
@@ -288,9 +299,9 @@ export function InputBar({
       if (kind === 'image') {
         const url = URL.createObjectURL(file)
         attachmentUrls.current.add(url)
-        setAttachments(current => [...current, { id, kind, name, url }])
+        setAttachments(current => [...current, { id, kind, name: label, url }])
       } else {
-        setAttachments(current => [...current, { id, kind, name, size: file.size }])
+        setAttachments(current => [...current, { id, kind, name: label, size: file.size }])
       }
       onDraftChange(next.text)
 
@@ -329,17 +340,30 @@ export function InputBar({
   /**
    * Files handed over by a drop or a paste: images go the image way (and
    * are refused, with the reason, on a model that cannot read one); every
-   * other file is attached as a file.
+   * other file is attached as a file. A folder — which a browser hands over
+   * as a nameless, empty File — is skipped and said so, rather than uploaded
+   * as an empty file the model is then told the (absent) contents of.
    */
   const acceptDroppedFiles = useCallback(
-    (files: readonly File[]) => {
+    (files: readonly File[], folders = 0) => {
+      let skipped = folders
+
       for (const file of files) {
+        if (file.type === '' && file.size === 0) {
+          skipped += 1
+          continue
+        }
+
         if (file.type.startsWith('image/')) {
           if (!vision) refuseImage()
-          else void attach(file, file.name, 'image')
+          else void attach(file, file.name === '' ? 'pasted-image.png' : file.name, 'image')
         } else {
-          void attach(file, file.name, 'file')
+          void attach(file, file.name === '' ? 'pasted-file' : file.name, 'file')
         }
+      }
+
+      if (skipped > 0) {
+        $notice.set({ text: 'Folders cannot be attached — drop the files inside them.', tone: 'error' })
       }
     },
     [attach, refuseImage, vision],
@@ -683,40 +707,49 @@ export function InputBar({
               if (files.length === 0) return
 
               event.preventDefault()
-              acceptDroppedFiles(files)
+
+              // Browsers that expose entries say outright which drops were
+              // folders; the rest are caught by their shape (no type, no bytes).
+              const items = [...(event.dataTransfer.items as Iterable<DataTransferItem> | undefined ?? [])]
+              const folders = items.filter(item => {
+                if (item.kind !== 'file') return false
+
+                const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+
+                return entry?.isDirectory === true
+              }).length
+              const dropped = folders === 0 ? files : files.filter(file => !(file.type === '' && file.size === 0))
+
+              acceptDroppedFiles(dropped, folders)
             }}
             onPaste={event => {
-              // Only take over when an image or a file is actually on the
-              // clipboard; a normal text paste must keep working.
-              const image = [...event.clipboardData.items].find(entry =>
-                entry.type.startsWith('image/'),
-              )
+              // Only take over when a file is actually on the clipboard — a
+              // screenshot, a document copied from the file manager; a
+              // normal text paste must keep working.
+              const files = [...event.clipboardData.files]
 
-              if (image !== undefined) {
-                const file = image.getAsFile()
-
-                if (file === null) return
-
+              if (files.length > 0) {
                 event.preventDefault()
-
-                // A model that cannot read images gets told so. Attaching
-                // anyway is a hard 400 that kills the turn.
-                if (!vision) {
-                  refuseImage()
-
-                  return
-                }
-                void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
+                acceptDroppedFiles(files)
 
                 return
               }
 
-              const files = [...event.clipboardData.files].filter(file => !file.type.startsWith('image/'))
+              // An image item without a file entry (some clipboards hand a
+              // screenshot over that way).
+              const image = [...event.clipboardData.items].find(entry => entry.type.startsWith('image/'))
+              const file = image?.getAsFile() ?? null
 
-              if (files.length === 0) return
+              if (file === null) return
 
               event.preventDefault()
-              acceptDroppedFiles(files)
+
+              if (!vision) {
+                refuseImage()
+
+                return
+              }
+              void attach(file, file.name === '' ? 'pasted-image.png' : file.name)
             }}
             onChange={event => {
               // Typing takes over from the launcher: the draft now says what

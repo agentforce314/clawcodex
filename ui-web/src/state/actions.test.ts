@@ -1441,7 +1441,7 @@ describe('attached files', () => {
     const gateway = await connect({ 'file.attach': { attached: true, id: 4, name: 'notes.txt' } })
     await createSession()
 
-    expect(await attachFile(new Blob(['alpha'], { type: 'text/plain' }), 'notes.txt')).toBe(4)
+    expect(await attachFile(new Blob(['alpha'], { type: 'text/plain' }), 'notes.txt')).toEqual({ id: 4, name: 'notes.txt' })
     expect(gateway.sent.find(frame => frame.method === 'file.attach')?.params).toEqual({
       data: 'YWxwaGE=',
       name: 'notes.txt',
@@ -1482,6 +1482,36 @@ describe('attached files', () => {
 
     expect(gateway.methods()).not.toContain('file.attach')
     expect($notice.get().text).toContain('files up to 10.0 MB')
+  })
+
+  it('shows the name the backend kept, so every surface agrees', async () => {
+    const gateway = await connect({ 'file.attach': { attached: true, id: 5, name: 'My _Report_.pdf' } })
+    await createSession()
+
+    expect(await attachFile(new Blob(['pdf']), 'My [Report].pdf')).toEqual({ id: 5, name: 'My _Report_.pdf' })
+
+    await submitPrompt('[File #5] read it')
+    expect($transcript.get().nodes[0]).toMatchObject({ files: [{ name: 'My _Report_.pdf' }] })
+    expect(gateway.methods()).toContain('file.attach')
+  })
+
+  it('lets go of an upload that lands after the window moved to another session', async () => {
+    const gateway = await connect({ 'file.attach': { attached: true, id: 6, name: 'late.txt' } })
+    await createSession()
+
+    gateway.hold('file.attach')
+    const uploading = attachFile(new Blob(['x']), 'late.txt')
+    await settle()
+
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    gateway.release('file.attach')
+
+    expect(await uploading).toBeNull()
+    expect($notice.get().text).toBe('')
+
+    await submitPrompt('[File #6] nothing to attach')
+    expect($transcript.get().nodes.at(-1)).not.toHaveProperty('files')
   })
 
   it('reports the backend\'s refusal', async () => {

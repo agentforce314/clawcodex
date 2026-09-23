@@ -711,7 +711,7 @@ function storedUserImages(blocks: StoredBlock[], text: string): UserImage[] {
  * backend's, not the user's words, so it is hidden from the caption and
  * turned back into the card the composer showed.
  */
-const STORED_FILE_HEADER = /^\[File #(\d+): (.+?)\] saved at (.+?) \(([\d.]+ [KM]?B)\)(?:\n|$)/
+const STORED_FILE_HEADER = /^\[File #(\d+): ([^\n]+?)\] (?:saved )?at ([^\n]+?) \(([\d.]+ [KM]?B)\)(?:\n|$)/
 
 /** Whether a stored text block is an attached file's block rather than prose. */
 function isStoredFileBlock(block: StoredBlock): boolean {
