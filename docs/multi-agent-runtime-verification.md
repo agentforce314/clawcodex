@@ -115,6 +115,10 @@ an exhaustive live-model benchmark or a claim about every provider.
   zero-delay event-loop spins could finish before a Windows thread started;
   one fixture tried to wake a worker using another loop's asyncio.Event.
   The corrected admission and end-to-end group passes **54 tests** locally.
+- The automatic-claim test observes completion through TaskGet's transaction
+  lock before checking the persisted snapshot. This avoids reading an
+  in-flight dictionary mutation. The team/task group passes **163 tests**,
+  and the dependency/automatic-claim trace passes **20 independent runs**.
 - Black and isort were applied to changed Python code. The four new runtime
   modules pass targeted mypy. Full-project mypy reports **395 diagnostics**
   versus **397 on the starting commit**, with **zero added diagnostics** after

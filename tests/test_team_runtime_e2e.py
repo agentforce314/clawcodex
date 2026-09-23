@@ -313,7 +313,12 @@ def test_task_dependencies_shared_board_and_automatic_claim(team):
     bob = spawn(team, "bob")
     assert not provider.assignments
     alice = spawn(team, "alice")
-    eventually(lambda: context.tasks[second]["status"] == "completed")
+    # Read through the public transaction boundary. The shared dict can show
+    # the worker's mutation while it still holds the lock persisting the file.
+    eventually(
+        lambda: call(registry, context, "TaskGet", taskId=second)["task"]["status"]
+        == "completed"
+    )
     assert provider.assignments == [("alice", first), ("bob", second)]
     stored = json.loads(context.task_board_path.read_text())
     assert stored[first]["status"] == stored[second]["status"] == "completed"
