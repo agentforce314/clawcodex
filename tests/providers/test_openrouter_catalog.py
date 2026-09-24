@@ -121,16 +121,16 @@ class TestGpt56ModelConfigs:
 
         config = get_model_config(model)
         assert config is not None, model
-        assert config.context_window == 1_048_576, model
+        assert config.context_window == 872_000, model
 
     def test_an_unlisted_5_6_variant_inherits_the_5_6_window(self):
         from src.models.configs import get_model_config
 
-        assert get_model_config("gpt-5.6-sol-pro").context_window == 1_048_576
+        assert get_model_config("gpt-5.6-sol-pro").context_window == 872_000
 
     def test_an_unknown_gpt_id_still_gets_the_conservative_catch_all(self):
         """The ordering invariant. ``gpt-5.6``'s prefix base is "gpt", so
-        placing it above ``gpt-5.5`` would hand every unknown gpt id a 1.05M
+        placing it above ``gpt-5.5`` would hand every unknown gpt id an 872K
         window. Over-estimating overflows the context; under-estimating only
         compacts early, so the catch-all must stay on the 272K entry."""
         from src.models.configs import get_model_config

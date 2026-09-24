@@ -227,7 +227,7 @@ class TestLunaOpenRouterIdRegistration(unittest.TestCase):
     reaches the provider when the terminal-bench harness runs this model."""
 
     def test_openrouter_id_resolves_to_the_real_window(self):
-        self.assertEqual(get_context_window_for_model(LUNA), 1_048_576)
+        self.assertEqual(get_context_window_for_model(LUNA), 872_000)
         self.assertEqual(get_model_max_output_tokens(LUNA), 128_000)
 
     def test_not_the_200k_default(self):
@@ -249,7 +249,7 @@ class TestLunaOpenRouterIdRegistration(unittest.TestCase):
         for model_id in ("openai/gpt-5.6-luna-pro", "gpt-5.6-luna-pro"):
             with self.subTest(model=model_id):
                 self.assertEqual(
-                    get_context_window_for_model(model_id), 1_048_576
+                    get_context_window_for_model(model_id), 872_000
                 )
 
     def test_decision_1_upheld_no_vendor_prefix_stripping(self):
@@ -272,8 +272,8 @@ class TestLunaOpenRouterIdRegistration(unittest.TestCase):
             # Inside the claimed prefix — these DO now resolve, to the same
             # window their bare equivalents get from #773's rows. Pinned so
             # the size of the claim is a fact rather than a comment.
-            "openai/gpt-5.6-mini": 1_048_576,
-            "openai/gpt-5.6-sol": 1_048_576,
+            "openai/gpt-5.6-mini": 872_000,
+            "openai/gpt-5.6-sol": 872_000,
             # Outside it — must stay unresolved.
             "openai/gpt-4o": None,
             "openai/gpt-5.5": None,
@@ -302,7 +302,7 @@ class TestLunaOpenRouterIdRegistration(unittest.TestCase):
         The shadowed surface is the row's PREFIX, not just its key: the added
         row's derived base is ``openai/gpt-5.6``, so a ``modelLimits`` entry
         for any ``openai/gpt-5.6*`` id now loses to the table (they all get
-        1,048,576, matching what their bare equivalents already get — so the
+        872,000, matching what their bare equivalents already get — so the
         qualified namespace mirrors the bare one rather than diverging).
         What must NOT happen is that claim spreading further, which is what
         this pins: an override outside the prefix still wins."""

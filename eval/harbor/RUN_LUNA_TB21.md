@@ -8,7 +8,7 @@ clawcodex Harbor adapter.
 | | |
 |---|---|
 | id | `openai/gpt-5.6-luna` (a `-pro` variant exists with identical specs) |
-| context | 1,050,000 tokens (registered as 1,048,576 = 2^20, matching the sibling gpt-5.6 rows; under-reading is the safe direction) |
+| context | 1,050,000 advertised; 922K max input (registered as 872,000 since 2026-09-24, the smaller of the API and ChatGPT-subscription input limits; runs past ~822K now compact where older builds overflowed, so such runs are not like-for-like with earlier baselines) |
 | max output | 128,000 tokens |
 | price | $0.10/M in, $0.60/M out — doubling to $0.20 / $0.90 above 272K prompt tokens |
 | reasoning | `reasoning_effort` supported; verified honored, not just accepted — reasoning tokens rise low 148 → medium 154 → high 266 → max 516 on a fixed prompt |
