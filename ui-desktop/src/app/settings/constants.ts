@@ -220,6 +220,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
     priority: 23
+  },
+  {
+    prefix: 'REQUESTY_',
+    name: 'Requesty',
+    description: 'OpenAI-compatible gateway to many vendors',
+    docsUrl: 'https://app.requesty.ai/api-keys',
+    priority: 24
   }
 ]
 

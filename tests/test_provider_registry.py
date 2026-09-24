@@ -53,6 +53,7 @@ EXPECTED_NEW_PROVIDERS = {
     "cerebras",
     "baseten",
     "xai",
+    "requesty",
 }
 
 # A sample of (id -> (base_url, default_model)) — each vendor's published
@@ -73,6 +74,7 @@ VENDOR_DEFAULTS = {
     "cerebras": ("https://api.cerebras.ai/v1", "gpt-oss-120b"),
     "baseten": ("https://inference.baseten.co/v1", "deepseek-ai/DeepSeek-V4-Pro"),
     "xai": ("https://api.x.ai/v1", "grok-4.5"),
+    "requesty": ("https://router.requesty.ai/v1", "anthropic/claude-sonnet-4-5"),
 }
 
 

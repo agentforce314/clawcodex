@@ -129,6 +129,30 @@ def fetch_openai_compatible_models(
         return None
 
 
+def fetch_requesty_models(
+    base_url: str, api_key: str | None = None, *, timeout: float = FETCH_TIMEOUT_S,
+) -> list[str] | None:
+    """GET {base}/models/managed → chat data[].id, else the {base}/models
+    catalog. Requesty's managed list is its curated set of routing policies,
+    so it is preferred; the full catalog is the fallback. None on failure."""
+    try:
+        payload = _http_get_json(
+            base_url.rstrip("/") + "/models/managed", api_key=api_key, timeout=timeout,
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, list):
+            models = [
+                str(item["id"]) for item in data
+                if isinstance(item, dict) and item.get("id")
+                and item.get("api", "chat") == "chat"
+            ]
+            if models:
+                return models
+    except Exception:  # noqa: BLE001
+        logger.debug("model discovery: requesty managed fetch failed for %s", base_url, exc_info=True)
+    return fetch_openai_compatible_models(base_url, api_key, timeout=timeout)
+
+
 def fetch_ollama_models(
     base_url: str, *, timeout: float = FETCH_TIMEOUT_S,
 ) -> list[str] | None:
@@ -160,6 +184,8 @@ def _fetch_for_kind(
         return fetch_ollama_models(base_url, timeout=timeout)
     if kind == "openai-compatible":
         return fetch_openai_compatible_models(base_url, api_key, timeout=timeout)
+    if kind == "requesty":
+        return fetch_requesty_models(base_url, api_key, timeout=timeout)
     return None
 
 

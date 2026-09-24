@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Requesty provider.** `requesty` is a new OpenAI-compatible registry row
+  (`https://router.requesty.ai/v1`, key from `REQUESTY_API_KEY`). Its model
+  list is discovered from Requesty's managed models endpoint, falling back to
+  the full `/models` catalog.
+
 ## [1.7.0] - 2026-09-23
 
 ### Added

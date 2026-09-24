@@ -28,7 +28,8 @@ from src.providers.openai_compatible_specs import SPECS_BY_ID, _SPECS
 # kimi-k3 was registered, so it belongs to exactly the population these
 # parameterized guards describe — curated list leads, discovery appends,
 # vendor env var sources the key.
-PORTED = ("groq", "cerebras", "baseten", "xai", "moonshot")
+# ``requesty`` is a hosted hybrid gateway row for the same reason.
+PORTED = ("groq", "cerebras", "baseten", "xai", "moonshot", "requesty")
 
 
 @pytest.mark.parametrize("provider_id", PORTED)
@@ -102,6 +103,7 @@ def test_the_key_is_sourced_from_the_vendor_env_var(provider_id: str) -> None:
         "baseten": "BASETEN_API_KEY",
         "xai": "XAI_API_KEY",
         "moonshot": "MOONSHOT_API_KEY",
+        "requesty": "REQUESTY_API_KEY",
     }[provider_id]
     assert expected in SPECS_BY_ID[provider_id].env_vars
 
