@@ -702,6 +702,28 @@ class TestEffortOptions:
         assert sess.last["model"] == "claude-opus-5"
         assert sess.last["supported"] is True
 
+    def test_live_openai_provider_decides_subscription_mode(self):
+        """The session's own OpenAI provider knows whether it rides the
+        ChatGPT login; that wins over inference from stored credentials (the
+        sandbox has none, so inference alone would answer API-key mode).
+        gpt-5.6-luna is where the two backends differ: max on the plan,
+        xhigh over an API key."""
+        sess = _StubSession("openai")
+        sess.provider = SimpleNamespace(model="gpt-5.6-luna", _subscription_active=True)
+        _AgentSession._do_effort_options(sess, "r1", "openai", "gpt-5.6-luna")
+        assert sess.last["levels"][-1] == "max"
+
+        sess.provider = SimpleNamespace(model="gpt-5.6-luna", _subscription_active=False)
+        _AgentSession._do_effort_options(sess, "r1", "openai", "gpt-5.6-luna")
+        assert sess.last["levels"][-1] == "xhigh"
+
+    def test_another_providers_subscription_flag_is_not_borrowed(self):
+        """A Claude-subscription session's flag says nothing about OpenAI."""
+        sess = _StubSession("anthropic")
+        sess.provider = SimpleNamespace(model="claude-opus-5", _subscription_active=True)
+        _AgentSession._do_effort_options(sess, "r1", "openai", "gpt-5.6-luna")
+        assert sess.last["levels"][-1] == "xhigh"
+
 
 # ── the cross-provider signal ────────────────────────────────────────────────
 

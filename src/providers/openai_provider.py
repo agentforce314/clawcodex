@@ -61,6 +61,7 @@ from .openai_responses import (
     RESPONSES_ITEM_BLOCK_TYPE,
     INCLUDE_ENCRYPTED_REASONING,
     SUBSCRIPTION_MODELS,
+    clamp_effort,
     normalize_openai_effort,
     supports_reasoning,
     build_usage_dict,
@@ -73,10 +74,9 @@ from .openai_responses import (
 
 logger = logging.getLogger(__name__)
 
-_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
-
-
-def _subscription_reasoning_effort(requested: str | None = None) -> str:
+def _subscription_reasoning_effort(
+    requested: str | None = None, model: str = "",
+) -> str | None:
     """Reasoning effort for subscription requests.
 
     Precedence: the session's ``/effort`` setting (arrives as
@@ -86,25 +86,27 @@ def _subscription_reasoning_effort(requested: str | None = None) -> str:
     default, transform.ts:1176, and the backend's own
     default_reasoning_level).
 
-    ``xhigh``/``max`` clamp to ``high`` HERE, and only here: this is the
-    ChatGPT-subscription backend (chatgpt.com/backend-api/codex), whose
-    general gpt-5.x models advertise low/medium/high and reject higher
-    tiers (probed 2026-07-25). That is narrower than the public API —
-    developers.openai.com/api/docs/guides/reasoning lists none | minimal |
-    low | medium | high | xhigh | max and notes support varies by model —
-    and narrower than what a gateway may accept (``openai/gpt-5.6-luna``
-    via OpenRouter takes both ``xhigh`` and ``max``, probed 2026-07-31,
-    with reasoning-token counts rising monotonically across the ladder).
-    So the clamp is a property of THIS backend, not of the level names;
-    the generic OpenAI-compatible path deliberately does not clamp.
+    The requested level is clamped to what THIS model takes on the ChatGPT
+    backend (chatgpt.com/backend-api/codex), which varies per model: probed
+    2026-09-24, gpt-6-* and gpt-5.6-* accept ``max``, gpt-5.5 accepts
+    ``xhigh`` but 400s on ``max``. The per-model list comes from this login's
+    cached model catalog (``supported_reasoning_levels``), falling back to a
+    static table — see ``get_subscription_effort_levels``. This used to clamp
+    ``xhigh``/``max`` to ``high`` for every model (true of the gpt-5.x models
+    probed 2026-07-25), which silently capped gpt-6 two notches low.
+
+    The generic OpenAI-compatible path deliberately does not clamp: a gateway
+    (``openai/gpt-5.6-luna`` via OpenRouter) takes both ``xhigh`` and ``max``.
     """
+    from .openai_subscription_models import get_subscription_effort_levels
+
+    levels = get_subscription_effort_levels(model)
     for candidate in (requested, os.environ.get("CLAWCODEX_OPENAI_REASONING_EFFORT")):
-        effort = (candidate or "").strip().lower()
-        if effort in ("xhigh", "max"):
-            return "high"
-        if effort in _REASONING_EFFORTS:
-            return effort
-    return "medium"
+        if (candidate or "").strip():
+            effort = clamp_effort(candidate, levels)
+            if effort:
+                return effort
+    return clamp_effort("medium", levels)
 
 
 class _HttpxStreamHolder:
@@ -487,16 +489,18 @@ class OpenAIProvider(OpenAICompatibleProvider):
         # model rather than only the reasoning ones.
         if supports_reasoning(model):
             if self._subscription_active:
-                # The ChatGPT backend advertises only low/medium/high and
-                # rejects higher tiers, so it keeps its own clamp.
+                # The ChatGPT backend's levels vary per model, so it keeps
+                # its own catalog-driven clamp.
                 effort = _subscription_reasoning_effort(
-                    (kwargs.get("extra_body") or {}).get("reasoning_effort")
+                    (kwargs.get("extra_body") or {}).get("reasoning_effort"),
+                    model,
                 )
             else:
-                # The public API accepts xhigh; only ``max`` is unsupported,
-                # and it degrades rather than failing the request.
+                # The public API accepts xhigh everywhere and ``max`` on
+                # gpt-6 only; elsewhere ``max`` degrades rather than failing.
                 effort = normalize_openai_effort(
-                    (kwargs.get("extra_body") or {}).get("reasoning_effort")
+                    (kwargs.get("extra_body") or {}).get("reasoning_effort"),
+                    model,
                 )
             if effort:
                 body["reasoning"] = {"effort": effort, "summary": "auto"}

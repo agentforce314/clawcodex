@@ -324,6 +324,38 @@ _TIER_GPT_56_LUNA_LONG = {
 }
 
 
+# OpenAI GPT-6 (developers.openai.com/api/docs/models/gpt-6-{astra,sol,luna},
+# read 2026-09-24). Same long-context rule as GPT-5.6 Luna: prompts above
+# 272K input tokens are priced at 2x input and cache rates and 1.5x output
+# for the full request. Cache WRITES follow the Luna row's convention of
+# 1.25x the uncached input rate; cache READS are the published cached-input
+# price. List prices, same policy as Luna (see above).
+_GPT_6_INPUT_TIER_LIMIT = 272_000
+
+
+def _gpt6_tiers(inp: float, cached: float, out: float) -> tuple[dict[str, float], dict[str, float]]:
+    per_m = 1_000_000
+    short = {
+        "input": inp / per_m,
+        "output": out / per_m,
+        "cache_creation": inp * 1.25 / per_m,
+        "cache_read": cached / per_m,
+    }
+    long = {
+        "input": short["input"] * 2,
+        "output": short["output"] * 1.5,
+        "cache_creation": short["cache_creation"] * 2,
+        "cache_read": short["cache_read"] * 2,
+    }
+    return short, long
+
+
+_GPT_6_TIERS: dict[str, tuple[dict[str, float], dict[str, float]]] = {
+    "gpt-6-astra": _gpt6_tiers(10.00, 1.00, 50.00),
+    "gpt-6-sol": _gpt6_tiers(2.00, 0.20, 10.00),
+    "gpt-6-luna": _gpt6_tiers(0.10, 0.01, 0.50),
+}
+
 # Exact-match table — keyed by canonical model name. Order DOESN'T matter
 # for exact match but DOES matter for the prefix fallback below
 # (more-specific keys must come first). See ``get_pricing``.
@@ -389,6 +421,9 @@ PRICING: dict[str, dict[str, float]] = {
     # Editing the dicts below changes nothing; edit the tiers instead.
     "gpt-5.6-luna": _TIER_GPT_56_LUNA,
     "gpt-5.6-luna-pro": _TIER_GPT_56_LUNA,
+    # GPT-6 — membership gates like the Luna rows above; the live card is
+    # picked by prompt size in ``_get_exact_pricing`` from ``_GPT_6_TIERS``.
+    **{model: tiers[0] for model, tiers in _GPT_6_TIERS.items()},
 }
 
 
@@ -480,6 +515,9 @@ def _get_exact_pricing(
             if input_tokens > _GPT_56_LUNA_INPUT_TIER_LIMIT
             else _TIER_GPT_56_LUNA
         )
+    gpt6 = _GPT_6_TIERS.get(model)
+    if gpt6 is not None:
+        return gpt6[1] if input_tokens > _GPT_6_INPUT_TIER_LIMIT else gpt6[0]
     # Time-tiered models: the published rate depends on WHEN the request was
     # sent and on nothing inside it. Neither existing axis can carry this —
     # ``input_tokens`` is prompt size, and ``service_tier`` is whatever the

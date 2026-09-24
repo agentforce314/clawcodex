@@ -722,6 +722,37 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # entries so they never take that path. As with the Meta entry above,
     # max_output_tokens is not sent on the wire for OpenAI providers — its
     # live effect is the auto-compact output reservation (clamped at 20K).
+    #
+    # --- GPT-6 -------------------------------------------------------------
+    # GPT-6 (Astra / Sol / Luna). developers.openai.com model pages
+    # (2026-09-24): 1,050,000 context, 922K max INPUT, 128K max output. The
+    # ChatGPT subscription is tighter still: its Codex catalog gives every
+    # gpt-6 model ``max_context_window: 872000``. ``context_window`` here
+    # drives the auto-compact threshold, and OpenAI's context-overflow error
+    # is not one reactive compaction recognises, so over-estimating is a
+    # hard failure while under-estimating only compacts early. Hence 872K —
+    # the smaller of the two real input limits, safe on both backends.
+    # Placed before every gpt-5.x row for the same prefix-fallback reason as
+    # GPT-5.6 below: each has base "gpt-6", so an unlisted variant
+    # (``gpt-6-sol-pro``) lands here rather than on the 272K catch-all.
+    "gpt-6-astra": ModelConfig(
+        model_id="gpt-6-astra",
+        display_name="GPT-6 Astra",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-6-sol": ModelConfig(
+        model_id="gpt-6-sol",
+        display_name="GPT-6 Sol",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-6-luna": ModelConfig(
+        model_id="gpt-6-luna",
+        display_name="GPT-6 Luna",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
     # GPT-5.6 (Sol / Terra / Luna — three durable capability tiers on one
     # generation, 1.05M context each). These keys sit BEFORE "gpt-5.5"
     # deliberately: ``get_model_config``'s prefix fallback walks in insertion
@@ -730,6 +761,8 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # ``gpt-5.6-sol-pro`` resolve to 1.05M instead of falling through to the
     # 272K catch-all. The bare ``gpt-5.6`` alias is deliberately NOT here —
     # see below.
+    # KNOWN GAP (not fixed here): the subscription catalog also caps these at
+    # ``max_context_window: 872000``, so 1.05M over-estimates on that path.
     "gpt-5.6-sol": ModelConfig(
         model_id="gpt-5.6-sol",
         display_name="GPT-5.6 Sol",
