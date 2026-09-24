@@ -476,6 +476,42 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("XAI_API_KEY", "GROK_API_KEY"),
         aliases=("x-ai", "x_ai", "grok"),
     ),
+    # Requesty, a multi-vendor gateway like OpenRouter. Model ids are either
+    # catalog ids in ``vendor/model`` form (``anthropic/claude-sonnet-4-5``,
+    # the same default OpenRouter uses) or Requesty's managed routing
+    # policies (short ids such as ``claude-sonnet-5``, listed at
+    # ``GET /models/managed``). The rest of the curated list is seeded from
+    # the managed ids; discovery (the ``requesty`` catalog kind) appends the
+    # live managed list and falls back to the full ``/models`` catalog. EU
+    # routing is available at https://router.eu.requesty.ai/v1 via the
+    # provider's ``base_url``.
+    ProviderSpec(
+        id="requesty",
+        dynamic_catalog="requesty",
+        catalog_mode="hybrid",
+        label="Requesty (multi-vendor gateway)",
+        default_base_url="https://router.requesty.ai/v1",
+        default_model="anthropic/claude-sonnet-4-5",
+        available_models=(
+            "anthropic/claude-sonnet-4-5",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-haiku-4-5",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "deepseek-v4.1-flash",
+            "gemini-3.5-flash",
+            "kimi-k3",
+            "glm-5.2",
+            "grok-4.5",
+        ),
+        env_vars=("REQUESTY_API_KEY",),
+    ),
 )
 
 

@@ -65,6 +65,42 @@ def test_fetch_errors_return_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(md, "_http_get_json", _boom)
     assert md.fetch_openai_compatible_models("http://x/v1") is None
     assert md.fetch_ollama_models("http://x/v1") is None
+    assert md.fetch_requesty_models("http://x/v1") is None
+
+
+def test_requesty_parser_prefers_managed_chat_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def _fake(url, *, api_key, timeout):
+        seen.append(url)
+        return {"data": [
+            {"id": "claude-sonnet-4-5", "api": "chat"},
+            {"id": "gpt-5.4-mini@eu", "api": "chat"},
+            {"id": "text-embedding-3-small", "api": "embedding"},
+        ]}
+
+    monkeypatch.setattr(md, "_http_get_json", _fake)
+    models = md.fetch_requesty_models("https://router.requesty.ai/v1/")
+    assert models == ["claude-sonnet-4-5", "gpt-5.4-mini@eu"]
+    assert seen == ["https://router.requesty.ai/v1/models/managed"]
+
+
+def test_requesty_parser_falls_back_to_full_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def _fake(url, *, api_key, timeout):
+        seen.append(url)
+        if url.endswith("/models/managed"):
+            raise OSError("unavailable")
+        return {"data": [{"id": "openai/gpt-4o-mini"}]}
+
+    monkeypatch.setattr(md, "_http_get_json", _fake)
+    models = md.fetch_requesty_models("https://router.requesty.ai/v1")
+    assert models == ["openai/gpt-4o-mini"]
+    assert seen == [
+        "https://router.requesty.ai/v1/models/managed",
+        "https://router.requesty.ai/v1/models",
+    ]
 
 
 # ---------------------------------------------------------------------------

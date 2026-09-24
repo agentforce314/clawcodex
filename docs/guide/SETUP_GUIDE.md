@@ -98,10 +98,13 @@ Create `~/.clawcodex/config.json` (only the providers you actually use are requi
 | `minimax` | `https://api.minimaxi.com/anthropic` | `MiniMax-M2.7` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro` |
 | `deepseek` | `https://api.deepseek.com` | `deepseek-flash` |
+| `requesty` | `https://router.requesty.ai/v1` | `anthropic/claude-sonnet-4-5` (also `openai/gpt-4o-mini`) |
 
 > **DeepSeek:** `deepseek-flash` is DeepSeek-V4.1-Flash — 1M context, 384K max output, thinking on by default, and the first DeepSeek model that accepts images. `deepseek-v4-pro` is being retired: the id still works, but from 2026-09-14 its requests run V4.1 Flash and bill at the Flash price. The older spellings (`deepseek-v4-flash`, `deepseek-chat`, `deepseek-reasoner`) still resolve.
 
 > **Z.ai (GLM):** clawcodex uses Z.ai's OpenAI-compatible GLM Coding Plan at `https://api.z.ai/api/coding/paas/v4`, serving `GLM-5.1` (stable) and `GLM-5.2` (preview). The legacy provider name `glm` is still accepted as an alias for `zai`. Get a key at <https://z.ai/>.
+
+> **Requesty:** an OpenAI-compatible gateway to many vendors. Use a catalog id such as `openai/gpt-4o-mini` or a managed model id such as `claude-sonnet-5`. Put the key in the provider's `api_key`, or export `REQUESTY_API_KEY` (get one at <https://app.requesty.ai/api-keys>). For EU routing set the provider's `base_url` to `https://router.eu.requesty.ai/v1`. Docs: <https://docs.requesty.ai>.
 
 ## 4. Run
 
