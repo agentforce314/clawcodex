@@ -89,8 +89,13 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.4",
         "available_models": [
-            # https://developers.openai.com/api/docs/models (2026-09-06)
+            # https://developers.openai.com/api/docs/models (2026-09-24)
+            # GPT-6 — Astra is the frontier tier, Sol the flagship, Luna the
+            # cheap high-volume tier. All three are also served by the
+            # ChatGPT subscription (Codex catalog, client_version >= 0.155).
             "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
             # GPT-5.6 — Sol / Terra / Luna are
             # durable capability tiers rather than a size ladder: Sol is the
             # flagship, Terra balances capability against cost, Luna is the

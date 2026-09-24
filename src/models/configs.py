@@ -722,30 +722,67 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     # entries so they never take that path. As with the Meta entry above,
     # max_output_tokens is not sent on the wire for OpenAI providers — its
     # live effect is the auto-compact output reservation (clamped at 20K).
+    #
+    # --- GPT-6 -------------------------------------------------------------
+    # GPT-6 (Astra / Sol / Luna). developers.openai.com model pages
+    # (2026-09-24): 1,050,000 context, 922K max INPUT, 128K max output. The
+    # ChatGPT subscription is tighter still: its Codex catalog gives every
+    # gpt-6 model ``max_context_window: 872000``. ``context_window`` here
+    # drives the auto-compact threshold, and OpenAI's context-overflow error
+    # is not one reactive compaction recognises, so over-estimating is a
+    # hard failure while under-estimating only compacts early. Hence 872K —
+    # the smaller of the two real input limits, safe on both backends.
+    # Placed before every gpt-5.x row for the same prefix-fallback reason as
+    # GPT-5.6 below: each has base "gpt-6", so an unlisted variant
+    # (``gpt-6-sol-pro``) lands here rather than on the 272K catch-all.
+    "gpt-6-astra": ModelConfig(
+        model_id="gpt-6-astra",
+        display_name="GPT-6 Astra",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-6-sol": ModelConfig(
+        model_id="gpt-6-sol",
+        display_name="GPT-6 Sol",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-6-luna": ModelConfig(
+        model_id="gpt-6-luna",
+        display_name="GPT-6 Luna",
+        context_window=872_000,
+        max_output_tokens=128_000,
+    ),
     # GPT-5.6 (Sol / Terra / Luna — three durable capability tiers on one
-    # generation, 1.05M context each). These keys sit BEFORE "gpt-5.5"
+    # generation, 1.05M advertised context each). These keys sit BEFORE "gpt-5.5"
     # deliberately: ``get_model_config``'s prefix fallback walks in insertion
     # order and each of these has base "gpt-5.6" (rsplit on the last "-"), so
     # putting them first is what lets an unlisted variant like
-    # ``gpt-5.6-sol-pro`` resolve to 1.05M instead of falling through to the
+    # ``gpt-5.6-sol-pro`` resolve to the 5.6 window instead of falling through to the
     # 272K catch-all. The bare ``gpt-5.6`` alias is deliberately NOT here —
     # see below.
+    # Window is 872K, not the advertised 1.05M, for the same reason as the
+    # GPT-6 rows above: the public API caps INPUT at 922K
+    # (developers.openai.com/api/docs/models/gpt-5.6-sol) and the ChatGPT
+    # subscription catalog caps it at ``max_context_window: 872000``. At
+    # 1.05M auto-compact fired near 998K — past both limits, into an
+    # overflow error that reactive compaction does not recognise.
     "gpt-5.6-sol": ModelConfig(
         model_id="gpt-5.6-sol",
         display_name="GPT-5.6 Sol",
-        context_window=1_048_576,
+        context_window=872_000,
         max_output_tokens=128_000,
     ),
     "gpt-5.6-terra": ModelConfig(
         model_id="gpt-5.6-terra",
         display_name="GPT-5.6 Terra",
-        context_window=1_048_576,
+        context_window=872_000,
         max_output_tokens=128_000,
     ),
     "gpt-5.6-luna": ModelConfig(
         model_id="gpt-5.6-luna",
         display_name="GPT-5.6 Luna",
-        context_window=1_048_576,
+        context_window=872_000,
         max_output_tokens=128_000,
     ),
     # The same model as the row above, under its OpenRouter id. This table is
@@ -770,7 +807,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     "openai/gpt-5.6-luna": ModelConfig(
         model_id="openai/gpt-5.6-luna",
         display_name="GPT-5.6 Luna",
-        context_window=1_048_576,
+        context_window=872_000,
         max_output_tokens=128_000,
     ),
     "gpt-5.5": ModelConfig(
@@ -781,14 +818,14 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
     ),
     # ``gpt-5.6`` is OpenAI's alias for Sol. Its base is "gpt" (not
     # "gpt-5.6"), so it would become the catch-all for EVERY unknown gpt id if
-    # it preceded "gpt-5.5" — handing them a 1.05M window. Over-estimating
+    # it preceded "gpt-5.5" — handing them an 872K window. Over-estimating
     # overflows the context; under-estimating only compacts early, so the
     # catch-all must stay on the 272K entry. Exact lookups are unaffected by
     # position: ``get_model_config`` checks for an exact key first.
     "gpt-5.6": ModelConfig(
         model_id="gpt-5.6",
         display_name="GPT-5.6 (Sol)",
-        context_window=1_048_576,
+        context_window=872_000,
         max_output_tokens=128_000,
     ),
     "gpt-5.4": ModelConfig(

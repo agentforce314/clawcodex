@@ -2097,7 +2097,18 @@ class _AgentSession:
 
             slug = provider if isinstance(provider, str) and provider else self.provider_name
             name = model if isinstance(model, str) and model else getattr(self.provider, "model", "")
-            options = effort_options(slug, name)
+            # The live provider knows whether it is riding the ChatGPT login;
+            # for any other provider slug, effort_options infers it.
+            subscription = None
+            from src.providers import canonical_provider_name
+
+            if slug == self.provider_name and canonical_provider_name(slug) == "openai":
+                from src.providers import unwrap_provider
+
+                active = getattr(unwrap_provider(self.provider), "_subscription_active", None)
+                if isinstance(active, bool):
+                    subscription = active
+            options = effort_options(slug, name, openai_subscription=subscription)
         except Exception as exc:  # noqa: BLE001 — never break the control channel
             logger.exception("[agent-server] effort_options failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})

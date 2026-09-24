@@ -70,6 +70,24 @@ def test_max_is_clamped_to_xhigh_for_openai() -> None:
     assert normalize_openai_effort("MAX") == "xhigh"
 
 
+def test_max_passes_through_for_gpt6_on_the_api() -> None:
+    """developers.openai.com lists max for gpt-6-astra/sol/luna (2026-09-24);
+    gpt-5.6-luna still 400s on it, so only GPT-6 keeps it."""
+    for model in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+        assert normalize_openai_effort("max", model) == "max"
+    assert normalize_openai_effort("max", "gpt-5.6-luna") == "xhigh"
+
+
+def test_clamp_never_degrades_into_none() -> None:
+    """``none`` turns reasoning OFF — a different behaviour, not less of it."""
+    from src.providers.openai_responses import clamp_effort
+
+    assert clamp_effort("minimal", ("none", "low", "medium")) is None
+    assert clamp_effort("max", ("none", "low", "medium", "high")) == "high"
+    assert clamp_effort("none", ("none", "low")) == "none"
+    assert clamp_effort("ultra", ("low", "max")) is None
+
+
 def test_known_efforts_pass_through_and_junk_is_dropped() -> None:
     for effort in ("none", "low", "medium", "high", "xhigh"):
         assert normalize_openai_effort(effort) == effort

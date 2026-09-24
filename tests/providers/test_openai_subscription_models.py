@@ -13,6 +13,15 @@ from src.auth import openai_subscription as auth
 from src.providers import openai_subscription_models as catalog
 
 
+def _patch_fetch(monkeypatch, fetch):
+    """Stub discovery with a slugs-only fetcher (no per-model efforts)."""
+    def fetch_catalog(creds):
+        models = fetch(creds)
+        return None if models is None else (models, {})
+
+    monkeypatch.setattr(catalog, "_fetch_catalog", fetch_catalog)
+
+
 @pytest.fixture
 def credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path))
@@ -45,10 +54,36 @@ def test_fetch_uses_this_login_and_only_visible_models(credentials, monkeypatch)
     assert "secret-token" not in saved and "secret-refresh" not in saved
 
 
+def test_fetch_keeps_each_models_wire_effort_levels(credentials, monkeypatch):
+    """``supported_reasoning_levels`` is cached per model minus ``ultra``,
+    which the catalog advertises but the backend 400s on (2026-09-24)."""
+    def levels(*names):
+        return [{"effort": n, "description": "x"} for n in names]
+
+    get = Mock(return_value=httpx.Response(200, request=httpx.Request("GET", catalog.MODELS_ENDPOINT), json={
+        "models": [
+            {"slug": "gpt-6-astra", "visibility": "list",
+             "supported_reasoning_levels": levels("low", "medium", "high", "xhigh", "max", "ultra")},
+            {"slug": "gpt-5.5", "visibility": "list",
+             "supported_reasoning_levels": levels("low", "medium", "high", "xhigh")},
+            {"slug": "gpt-6-odd", "visibility": "list",
+             "supported_reasoning_levels": [None, "high", {"effort": "ultra"}]},
+            {"slug": "hidden", "visibility": "hide", "supported_reasoning_levels": levels("low")},
+        ],
+    }))
+    monkeypatch.setattr(httpx, "get", get)
+    assert catalog.get_subscription_models(background=False) == ["gpt-6-astra", "gpt-5.5", "gpt-6-odd"]
+    assert catalog.get_subscription_effort_levels("gpt-6-astra") == ("low", "medium", "high", "xhigh", "max")
+    assert catalog.get_subscription_effort_levels("gpt-5.5") == ("low", "medium", "high", "xhigh")
+    # No usable level in the catalog: the static table answers instead.
+    assert catalog.get_subscription_effort_levels("gpt-6-odd") == ("low", "medium", "high", "xhigh", "max")
+    assert catalog.get_subscription_effort_levels("gpt-5.4") == ("minimal", "low", "medium", "high")
+
+
 @pytest.mark.parametrize("changed", [{"account_id": "other"}, {"access_token": "new-token"}])
 def test_cache_cannot_leak_models_between_logins(credentials, monkeypatch, changed):
     fetch = Mock(side_effect=[["gpt-5.6-sol"], ["gpt-5.6-terra"]])
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     assert catalog.get_subscription_models(credentials, background=False) == ["gpt-5.6-sol"]
     assert catalog.get_subscription_models(replace(credentials, **changed), background=False) == ["gpt-5.6-terra"]
     assert fetch.call_count == 2
@@ -56,7 +91,7 @@ def test_cache_cannot_leak_models_between_logins(credentials, monkeypatch, chang
 
 def test_stale_cache_survives_failed_refresh_and_throttles_retries(credentials, monkeypatch):
     fetch = Mock(return_value=["gpt-5.6-terra"])
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     catalog.get_subscription_models(background=False)
     path = auth.credentials_path().with_name("openai-models-cache.json")
     saved = json.loads(path.read_text())
@@ -69,19 +104,19 @@ def test_stale_cache_survives_failed_refresh_and_throttles_retries(credentials, 
 
 
 def test_empty_live_catalog_does_not_restore_static_models(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: [])
+    _patch_fetch(monkeypatch, lambda _: [])
     assert catalog.get_subscription_models(background=False) == []
     assert catalog.get_subscription_models() == []
 
 
 def test_cold_failure_has_conservative_fallback(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: None)
+    _patch_fetch(monkeypatch, lambda _: None)
     assert catalog.get_subscription_models(background=False) == ["gpt-5.5"]
 
 
 def test_corrupt_cache_is_refetched(credentials, monkeypatch):
     auth.credentials_path().with_name("openai-models-cache.json").write_text("[]")
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-terra"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-terra"])
     assert catalog.get_subscription_models(background=False) == ["gpt-5.6-terra"]
 
 
@@ -102,7 +137,7 @@ def test_background_discovery_is_nonblocking_and_single_flight(credentials, monk
         finally:
             finished.set()
 
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     monkeypatch.setattr(catalog, "_refresh", refresh)
     try:
         assert catalog.get_subscription_models() == ["gpt-5.5"]
@@ -117,20 +152,20 @@ def test_background_discovery_is_nonblocking_and_single_flight(credentials, monk
 
 def test_expired_credentials_do_not_refresh_tokens_on_picker_thread(credentials, monkeypatch):
     fetch = Mock()
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     assert catalog.get_subscription_models(replace(credentials, expires_at=0), background=False) == ["gpt-5.5"]
     fetch.assert_not_called()
 
 
 def test_missing_login_does_not_reuse_cache(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-terra"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-terra"])
     catalog.get_subscription_models(background=False)
     monkeypatch.setattr(catalog, "load_credentials", lambda: None)
     assert catalog.get_subscription_models() == []
 
 
 def test_successful_unlisted_model_survives_catalog_refresh(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-sol"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-sol"])
     assert catalog.get_subscription_models(background=False) == ["gpt-5.6-sol"]
     catalog.record_subscription_model(credentials, "gpt-6-astra")
     assert catalog.get_subscription_models(background=False, force=True) == ["gpt-6-astra", "gpt-5.6-sol"]
@@ -138,14 +173,14 @@ def test_successful_unlisted_model_survives_catalog_refresh(credentials, monkeyp
 
 
 def test_verified_model_is_not_offered_to_another_login(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-terra"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-terra"])
     catalog.record_subscription_model(credentials, "gpt-6-astra")
     other = replace(credentials, account_id="free-account", access_token="other-token")
     assert catalog.get_subscription_models(other, background=False) == ["gpt-5.6-terra"]
 
 
 def test_rejected_model_loses_previous_verification(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-sol"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-sol"])
     catalog.get_subscription_models(background=False)
     catalog.record_subscription_model(credentials, "gpt-6-astra")
     catalog.record_subscription_model(credentials, "gpt-6-astra", available=False)
@@ -154,7 +189,7 @@ def test_rejected_model_loses_previous_verification(credentials, monkeypatch):
 
 @pytest.mark.parametrize("discovered", [["gpt-5.5", "gpt-5.6-sol"], None])
 def test_rejected_model_stays_hidden_after_refresh_or_fallback(credentials, monkeypatch, discovered):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: discovered)
+    _patch_fetch(monkeypatch, lambda _: discovered)
     catalog.get_subscription_models(background=False)
     catalog.record_subscription_model(credentials, "gpt-5.5", available=False)
     expected = ["gpt-5.6-sol"] if discovered else []
@@ -163,7 +198,7 @@ def test_rejected_model_stays_hidden_after_refresh_or_fallback(credentials, monk
 
 
 def test_rejection_expires_so_model_can_be_retried(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-sol"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-sol"])
     catalog.get_subscription_models(background=False)
     catalog.record_subscription_model(credentials, "gpt-5.6-sol", available=False)
     assert catalog.get_subscription_models() == []
@@ -173,7 +208,7 @@ def test_rejection_expires_so_model_can_be_retried(credentials, monkeypatch):
 
 
 def test_success_clears_previous_rejection(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: [])
+    _patch_fetch(monkeypatch, lambda _: [])
     catalog.get_subscription_models(background=False)
     catalog.record_subscription_model(credentials, "gpt-6-astra", available=False)
     catalog.record_subscription_model(credentials, "gpt-6-astra")
@@ -185,12 +220,12 @@ def test_refresh_preserves_rejection_recorded_during_http(credentials, monkeypat
         catalog.record_subscription_model(creds, "gpt-5.6-sol", available=False)
         return ["gpt-5.6-sol", "gpt-5.6-terra"]
 
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     assert catalog.get_subscription_models(background=False) == ["gpt-5.6-terra"]
 
 
 def test_expired_verification_is_not_offered(credentials, monkeypatch):
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-sol"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-sol"])
     catalog.get_subscription_models(background=False)
     catalog.record_subscription_model(credentials, "gpt-6-astra")
     path = auth.credentials_path().with_name("openai-models-cache.json")
@@ -205,7 +240,7 @@ def test_refresh_preserves_verification_recorded_during_http(credentials, monkey
         catalog.record_subscription_model(creds, "gpt-6-astra")
         return ["gpt-5.6-sol"]
 
-    monkeypatch.setattr(catalog, "_fetch_models", fetch)
+    _patch_fetch(monkeypatch, fetch)
     assert catalog.get_subscription_models(background=False) == ["gpt-6-astra", "gpt-5.6-sol"]
 
 
@@ -214,7 +249,7 @@ def test_subscription_login_saves_discovered_default(credentials, monkeypatch):
 
     monkeypatch.setattr(auth, "has_codex_cli_credentials", lambda: True)
     monkeypatch.setattr(auth, "import_codex_cli_credentials", lambda: credentials)
-    monkeypatch.setattr(catalog, "_fetch_models", lambda _: ["gpt-5.6-terra", "gpt-5.6-luna"])
+    _patch_fetch(monkeypatch, lambda _: ["gpt-5.6-terra", "gpt-5.6-luna"])
     save = Mock()
     monkeypatch.setattr("src.config.set_api_key", save)
     monkeypatch.setattr("src.config.set_default_provider", Mock())

@@ -12,6 +12,14 @@ from src.providers.effort_options import LADDER, effort_options
 from src.settings.constants import VALID_EFFORT_VALUES
 
 
+@pytest.fixture(autouse=True)
+def _no_real_credentials(tmp_path, monkeypatch):
+    """OpenAI mode is inferred from stored ChatGPT credentials when a caller
+    does not say; keep that inference off the developer's real login."""
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
 class TestAnthropic:
     def test_opus_5_carries_the_full_ladder(self):
         """Wire-probed 2026-07-25: opus-5 accepts xhigh and max."""
@@ -41,26 +49,63 @@ class TestAnthropic:
 
 
 class TestOpenAI:
+    """API-key mode unless a test says otherwise: without the explicit flag
+    the mode is inferred from stored ChatGPT credentials, which would make
+    these tests depend on whoever runs them."""
+
+    @staticmethod
+    def _api(model):
+        return effort_options("openai", model, openai_subscription=False)
+
     def test_a_reasoning_model_drops_max(self):
-        """OPENAI_REASONING_EFFORTS omits max — OpenAI 400s on it for the same
-        model OpenRouter tolerates it for, so the clamp is provider-scoped."""
-        r = effort_options("openai", "gpt-5.6-luna")
+        """gpt-5.6-luna 400s on max over the public API (probed 2026-08-01)
+        while OpenRouter tolerates it, so the clamp is provider-scoped."""
+        r = self._api("gpt-5.6-luna")
 
         assert r["supported"] is True
-        assert "max" not in r["levels"]
         assert r["levels"] == ["low", "medium", "high", "xhigh"]
+
+    def test_gpt6_offers_max_over_the_api(self):
+        """developers.openai.com lists max for all three GPT-6 models."""
+        for model in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+            assert self._api(model)["levels"] == ["low", "medium", "high", "xhigh", "max"]
 
     def test_none_never_leaks_into_the_ladder(self):
         """``none`` is an OpenAI level but not a clawcodex one — _do_set_effort
         would reject it, so an offered row would be unapplicable."""
-        assert "none" not in effort_options("openai", "gpt-5.6-luna")["levels"]
+        assert "none" not in self._api("gpt-5.6-luna")["levels"]
+        assert "none" not in self._api("gpt-6-sol")["levels"]
 
     def test_a_non_reasoning_model_gets_no_step(self):
         """A reasoning block on gpt-4o is a hard 400, verified live."""
-        assert effort_options("openai", "gpt-4o")["supported"] is False
+        assert self._api("gpt-4o")["supported"] is False
 
     def test_chat_variants_are_not_reasoning_models(self):
-        assert effort_options("openai", "gpt-5-chat-latest")["supported"] is False
+        assert self._api("gpt-5-chat-latest")["supported"] is False
+
+
+class TestOpenAISubscription:
+    """The ChatGPT backend's levels differ per model (probed 2026-09-24)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_login(self, monkeypatch):
+        from src.providers import openai_subscription_models as catalog
+
+        monkeypatch.setattr(catalog, "load_credentials", lambda: None)
+
+    @staticmethod
+    def _sub(model):
+        return effort_options("openai", model, openai_subscription=True)
+
+    def test_gpt6_and_gpt56_offer_max(self):
+        for model in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna"):
+            assert self._sub(model)["levels"] == ["low", "medium", "high", "xhigh", "max"]
+
+    def test_gpt55_stops_at_xhigh(self):
+        assert self._sub("gpt-5.5")["levels"] == ["low", "medium", "high", "xhigh"]
+
+    def test_unknown_older_models_keep_the_conservative_ceiling(self):
+        assert self._sub("gpt-5.4")["levels"] == ["low", "medium", "high"]
 
 
 class TestOtherProviders:

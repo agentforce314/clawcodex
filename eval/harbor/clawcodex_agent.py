@@ -113,19 +113,22 @@ Agent kwargs (``--ak key=value``):
     path ``openrouter/openai/gpt-5.6-luna`` takes, and OpenRouter accepts
     ``max`` for that model.
   - **First-party ``--provider openai``** — reasoning models go over the
-    Responses API, which tops out at ``xhigh``: ``max`` is degraded to
-    ``xhigh`` rather than sent (the API rejects ``max`` outright with
-    "Supported values are: 'none', 'low', 'medium', 'high', and 'xhigh'").
-    So ``--ak effort=max`` against ``openai/gpt-5.6-luna`` really runs at
-    ``xhigh``, while the same nominal setting on OpenRouter sends ``max``.
-    Non-reasoning models (gpt-4o, …) stay on Chat Completions and have the
-    effort field STRIPPED, since they reject it as an unknown argument.
+    Responses API. GPT-6 (astra/sol/luna) accepts ``max``; every other
+    model tops out at ``xhigh``, so ``max`` is degraded to ``xhigh`` rather
+    than sent (gpt-5.6-luna rejects it outright with "Supported values are:
+    'none', 'low', 'medium', 'high', and 'xhigh'"). So ``--ak effort=max``
+    against ``openai/gpt-5.6-luna`` really runs at ``xhigh``, while the same
+    nominal setting on OpenRouter sends ``max``. Non-reasoning models
+    (gpt-4o, …) stay on Chat Completions and have the effort field
+    STRIPPED, since they reject it as an unknown argument.
   - **ChatGPT subscription** (``subscription=true`` with
-    ``--model openai/…``) clamps ``xhigh`` and ``max`` down to ``high``,
-    because that backend advertises only low/medium/high. So the same
-    ``effort=max`` runs at three different levels depending on route:
-    ``max`` on OpenRouter, ``xhigh`` on an OpenAI key, ``high`` on a
-    ChatGPT plan.
+    ``--model openai/…``) clamps PER MODEL to the levels the login's Codex
+    catalog advertises (static fallback when uncached), probed 2026-09-24:
+    gpt-6-* and gpt-5.6-* take ``max``; gpt-5.5 stops at ``xhigh``; older
+    models stop at ``high``. So ``effort=max`` on gpt-5.6-luna runs at
+    ``max`` on OpenRouter and on a ChatGPT plan, but ``xhigh`` on an OpenAI
+    key. Builds before 2026-09-24 clamped every subscription model to
+    ``high``.
 
   REQUIRES a clawcodex build from 2026-07-31 or later. Before that, effort
   was emitted ONLY on the Anthropic branch, so ``--effort`` was a silent

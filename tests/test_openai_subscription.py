@@ -630,20 +630,53 @@ def test_abort_mid_stream_raises_and_closes_response(monkeypatch) -> None:
 
 def test_effort_setting_reaches_reasoning_body(monkeypatch) -> None:
     """/effort (injected as extra_body.reasoning_effort by the agent-server
-    wrapper) wins over the default; xhigh clamps to high."""
+    wrapper) wins over the default and is clamped PER MODEL to what the
+    ChatGPT backend accepts (probed live 2026-09-24): gpt-5.5 takes xhigh
+    but 400s on max; gpt-6 takes max; ``ultra`` is catalog-only and 400s."""
+    monkeypatch.setattr(
+        "src.providers.openai_subscription_models.load_credentials", lambda: None,
+    )
+    provider = _subscription_provider(monkeypatch)
+
+    def effort(model, requested=None):
+        kwargs = {"model": model}
+        if requested is not None:
+            kwargs["extra_body"] = {"reasoning_effort": requested}
+        body = provider._subscription_request_body(
+            [{"role": "user", "content": "hi"}], None, **kwargs,
+        )
+        return body["reasoning"]["effort"]
+
+    assert effort("gpt-5.5", "low") == "low"
+    assert effort("gpt-5.5", "xhigh") == "xhigh"
+    assert effort("gpt-5.5", "max") == "xhigh"
+    assert effort("gpt-6-astra", "max") == "max"
+    assert effort("gpt-6-sol", "ultra") == "medium"  # not a wire value: default
+    assert effort("gpt-5.4", "xhigh") == "high"
+    assert effort("gpt-6-luna") == "medium"
+
+
+def test_subscription_effort_follows_the_cached_catalog(monkeypatch, tmp_path) -> None:
+    """A login's catalog ``supported_reasoning_levels`` outranks the static
+    table, minus ``ultra`` (advertised, but a 400 on the wire)."""
+    from src.providers import openai_subscription_models as catalog
+
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(tmp_path))
+    creds = _credentials()
+    monkeypatch.setattr(catalog, "load_credentials", lambda: creds)
+    monkeypatch.setattr(catalog, "_fetch_catalog", lambda _c: (
+        ["gpt-6-nova"],
+        {"gpt-6-nova": catalog._wire_efforts([
+            {"effort": "low"}, {"effort": "medium"}, {"effort": "ultra"},
+        ])},
+    ))
+    assert catalog.get_subscription_models(background=False, force=True) == ["gpt-6-nova"]
+    assert catalog.get_subscription_effort_levels("gpt-6-nova") == ("low", "medium")
+
     provider = _subscription_provider(monkeypatch)
     body = provider._subscription_request_body(
         [{"role": "user", "content": "hi"}], None,
-        extra_body={"reasoning_effort": "low"},
-    )
-    assert body["reasoning"]["effort"] == "low"
-    body = provider._subscription_request_body(
-        [{"role": "user", "content": "hi"}], None,
-        extra_body={"reasoning_effort": "xhigh"},
-    )
-    assert body["reasoning"]["effort"] == "high"
-    body = provider._subscription_request_body(
-        [{"role": "user", "content": "hi"}], None,
+        model="gpt-6-nova", extra_body={"reasoning_effort": "max"},
     )
     assert body["reasoning"]["effort"] == "medium"
 

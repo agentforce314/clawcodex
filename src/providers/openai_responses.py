@@ -140,29 +140,71 @@ def supports_reasoning(model: str) -> bool:
     return "codex" in m
 
 
-def normalize_openai_effort(effort: str | None) -> str | None:
+# Every level either OpenAI backend has ever accepted on ``reasoning.effort``,
+# lowest to highest. Clamping walks DOWN this ladder, so its order is load-
+# bearing. ``ultra`` is deliberately absent: the Codex model catalog
+# advertises it for gpt-6 / gpt-5.6, but both the ChatGPT backend and the
+# public API 400 on it ("Invalid value: 'ultra'. Supported values are: 'none',
+# 'minimal', 'low', 'medium', 'high', 'xhigh', and 'max'." — probed live
+# 2026-09-24 on gpt-6-astra/sol/luna and gpt-5.5). It is a Codex-client mode,
+# not a wire value.
+EFFORT_LADDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _is_max_effort_family(model: str) -> bool:
+    """GPT-6 accepts ``max`` on the public API (developers.openai.com model
+    pages for gpt-6-astra/sol/luna, 2026-09-24); gpt-5.6-luna 400s on it
+    there (probed 2026-08-01, see ``OPENAI_REASONING_EFFORTS``)."""
+    return (model or "").lower().startswith("gpt-6")
+
+
+def clamp_effort(effort: str | None, supported: tuple[str, ...] | list[str]) -> str | None:
+    """Degrade ``effort`` to the highest ``supported`` level at or below it.
+
+    A level the model cannot take should cost a notch of depth, not the run:
+    an unsupported VALUE of reasoning.effort is a hard 400 on both OpenAI
+    backends. Unknown values (and levels below everything supported) return
+    ``None`` so the caller omits the block and the backend uses its default.
+    """
+    value = (effort or "").strip().lower()
+    if value not in EFFORT_LADDER or not supported:
+        return None
+    if value in supported:
+        return value
+    for level in reversed(EFFORT_LADDER[: EFFORT_LADDER.index(value)]):
+        # Never degrade INTO ``none``: that switches reasoning off, a
+        # different behaviour rather than a notch less of the same one.
+        if level in supported and level != "none":
+            return level
+    return None
+
+
+def api_effort_levels(model: str) -> tuple[str, ...]:
+    """Effort levels the PUBLIC API accepts for ``model`` (reasoning models)."""
+    if _is_max_effort_family(model):
+        return (*OPENAI_REASONING_EFFORTS, "max")
+    return OPENAI_REASONING_EFFORTS
+
+
+def normalize_openai_effort(effort: str | None, model: str = "") -> str | None:
     """Coerce a cross-provider effort level to one the OpenAI API accepts.
 
-    ``max`` degrades to ``xhigh`` (the highest OpenAI level) rather than
-    erroring, matching how ``resolve_thinking_effort`` degrades an
-    unsupported ``xhigh`` to ``high`` on the Anthropic wire — a level the
-    provider cannot take should cost a notch of depth, not the whole run.
+    ``max`` passes through for GPT-6 and degrades to ``xhigh`` (the highest
+    level the rest accept) elsewhere, matching how ``resolve_thinking_effort``
+    degrades an unsupported ``xhigh`` to ``high`` on the Anthropic wire.
     Unknown values return ``None`` so the caller omits the block and lets the
     API apply its own default.
     """
-    value = (effort or "").strip().lower()
-    if not value:
-        return None
-    if value == "max":
-        return "xhigh"
-    return value if value in OPENAI_REASONING_EFFORTS else None
+    return clamp_effort(effort, api_effort_levels(model))
 
 
 def supports_verbosity(model: str) -> bool:
-    """gpt-5.x general models accept ``text.verbosity``; codex/chat variants
-    don't (OpenCode transform.ts:1189-1196)."""
+    """gpt-5.x / gpt-6 general models accept ``text.verbosity``; codex/chat
+    variants don't (OpenCode transform.ts:1189-1196). The Codex catalog marks
+    every gpt-6 model ``support_verbosity: true, default_verbosity: low``,
+    and ``verbosity: low`` was accepted live on all three (2026-09-24)."""
     return (
-        model.startswith("gpt-5")
+        model.startswith(("gpt-5", "gpt-6"))
         and "codex" not in model
         and "-chat" not in model
     )

@@ -31,7 +31,12 @@ LADDER: tuple[str, ...] = tuple(v for v in VALID_EFFORT_VALUES if v)
 AUTO = "auto"
 
 
-def effort_options(provider_name: str | None, model: str | None) -> dict[str, object]:
+def effort_options(
+    provider_name: str | None,
+    model: str | None,
+    *,
+    openai_subscription: bool | None = None,
+) -> dict[str, object]:
     """The effort levels ``model`` accepts under ``provider_name``.
 
     Returns ``{"supported": bool, "levels": [...]}``. ``supported`` False
@@ -39,6 +44,10 @@ def effort_options(provider_name: str | None, model: str | None) -> dict[str, ob
     third step rather than offering a list that cannot be applied. ``levels``
     never includes ``auto``; the caller prepends it, since "let the provider
     decide" is meaningful exactly when some real level is also on offer.
+
+    ``openai_subscription`` says whether OpenAI requests ride the ChatGPT
+    login rather than an API key — the two backends accept different levels
+    for the same model. ``None`` infers it from stored credentials.
     """
     canonical = _canonical(provider_name)
 
@@ -46,7 +55,9 @@ def effort_options(provider_name: str | None, model: str | None) -> dict[str, ob
         return _anthropic_options(model)
 
     if canonical == "openai":
-        return _openai_options(model)
+        if openai_subscription is None:
+            openai_subscription = _openai_subscription_in_use()
+        return _openai_options(model, subscription=openai_subscription)
 
     # Every other provider: the codebase carries no per-model effort table,
     # and the OpenAI-compatible paths pass the value through as a body field
@@ -92,18 +103,39 @@ def _anthropic_options(model: str | None) -> dict[str, object]:
     }
 
 
-def _openai_options(model: str | None) -> dict[str, object]:
+def _openai_subscription_in_use() -> bool:
+    """Mirror ``OpenAIProvider.__init__``: a configured key wins, otherwise a
+    stored ChatGPT login is used. (The base-URL guard is not mirrored; a
+    proxy with no key and a stale login is an edge the wire clamp absorbs.)"""
+    try:
+        from src.auth.openai_subscription import load_credentials
+        from src.providers import resolve_api_key
+
+        return not resolve_api_key("openai") and load_credentials() is not None
+    except Exception:  # noqa: BLE001 — a picker query must not fail on this
+        return False
+
+
+def _openai_options(model: str | None, *, subscription: bool = False) -> dict[str, object]:
     """OpenAI: the Responses API rejects a reasoning block outright on
-    non-reasoning models, so those get no third step at all."""
-    from src.providers.openai_responses import OPENAI_REASONING_EFFORTS, supports_reasoning
+    non-reasoning models, so those get no third step at all. The rest get the
+    per-model ladder the request path clamps to, so every offered level is
+    sent as-is rather than silently downgraded."""
+    from src.providers.openai_responses import api_effort_levels, supports_reasoning
 
     if not supports_reasoning(model or ""):
         return {"supported": False, "levels": []}
 
-    # Intersect rather than pass through: OPENAI_REASONING_EFFORTS carries
-    # ``none``, which ``/effort`` would reject, and omits ``max``, which
-    # OpenAI 400s on for the same model OpenRouter tolerates it for.
+    if subscription:
+        from src.providers.openai_subscription_models import get_subscription_effort_levels
+
+        accepted = get_subscription_effort_levels(model or "")
+    else:
+        accepted = api_effort_levels(model or "")
+
+    # Intersect rather than pass through: the OpenAI lists carry ``none``
+    # (and ``minimal``), which ``/effort`` would reject.
     return {
         "supported": True,
-        "levels": [lvl for lvl in LADDER if lvl in OPENAI_REASONING_EFFORTS],
+        "levels": [lvl for lvl in LADDER if lvl in accepted],
     }
