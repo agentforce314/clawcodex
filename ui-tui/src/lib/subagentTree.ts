@@ -308,6 +308,67 @@ export function fmtDuration(seconds: number): string {
   return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
+// The types every unnamed spawn runs say nothing about the agent, so labels
+// hide them — the reference's userFacingName (AgentTool/UI.tsx:648) does the
+// same for general-purpose and worker. The detail pane still shows the type.
+const DEFAULT_AGENT_TYPES = new Set(['fork', 'general-purpose', 'worker'])
+
+/**
+ * Who a subagent is, for labels: the addressable name the spawn gave it (a
+ * teammate's `name`), else the agent definition it runs (`Explore`, a custom
+ * `.clawcodex/agents/<type>.md`). Empty for a default type, and when neither
+ * is known (older gateways carry only the goal).
+ */
+export function subagentIdentity(item: Pick<SubagentProgress, 'agentType' | 'name'>): string {
+  if (item.name) {
+    return item.name
+  }
+
+  return item.agentType && !DEFAULT_AGENT_TYPES.has(item.agentType) ? item.agentType : ''
+}
+
+/** `identity · goal` for single-string labels; the bare goal without one. */
+export function subagentTitle(
+  item: Pick<SubagentProgress, 'agentType' | 'goal' | 'name'>,
+  fallback = 'subagent'
+): string {
+  const goal = item.goal || fallback
+  const identity = subagentIdentity(item)
+
+  return identity ? `${identity} · ${goal}` : goal
+}
+
+/** Still working (or waiting for a slot) — not finished in any way. */
+export function isSubagentAlive(status: SubagentProgress['status']): boolean {
+  return status === 'queued' || status === 'running'
+}
+
+/**
+ * The agents overlay's live list: this turn's subagents, plus agents from
+ * earlier turns that are still running (persistent teammates, background
+ * agents) but that the turn-scoped list no longer holds.
+ */
+export function withCarriedAgents(
+  turn: SubagentProgress[],
+  session: Readonly<Record<string, SubagentProgress>>
+): SubagentProgress[] {
+  const inTurn = new Set(turn.map(s => s.id))
+  const carried = Object.values(session).filter(s => !inTurn.has(s.id) && isSubagentAlive(s.status))
+
+  return carried.length ? [...turn, ...carried] : turn
+}
+
+/** The detail pane's `agent` field: name and type (`nl-sketcher (math-nl-sketcher)`), or whichever is known. */
+export function subagentAgentLabel(item: Pick<SubagentProgress, 'agentType' | 'name'>): string {
+  const { agentType, name } = item
+
+  if (name && agentType && agentType !== name) {
+    return `${name} (${agentType})`
+  }
+
+  return name || agentType || ''
+}
+
 /**
  * A subagent is top-level if it has no `parentId`, or its parent isn't in
  * the same snapshot (orphaned by a pruned mid-flight root).  Same rule

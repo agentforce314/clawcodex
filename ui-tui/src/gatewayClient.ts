@@ -2572,14 +2572,20 @@ export class GatewayClient extends EventEmitter {
         if (aid) {
           const payload: any = {
             depth: msg.depth ?? 0,
-            goal: msg.description || msg.name || 'subagent',
+            goal: msg.description || 'subagent',
             // The model the subagent actually runs on. Without this the
             // agents overlay falls back to 'inherit' — which the
             // per-provider default-subagent-model change makes actively
             // wrong (spawns default to e.g. claude-haiku-4-5 now).
             model: msg.model,
+            // Who the agent IS, kept apart from `goal` (the task
+            // description). Folding `name` into `goal` only as a fallback
+            // lost it on every spawn — the Agent tool requires a
+            // description — so named teammates and custom agent types
+            // showed up in the agents overlay as bare task text.
+            name: msg.name || undefined,
             subagent_id: aid,
-            subagent_type: msg.subagent_type
+            subagent_type: msg.subagent_type || undefined
           }
 
           if (!this.seenSubagents.has(aid)) {
@@ -2601,7 +2607,12 @@ export class GatewayClient extends EventEmitter {
 
           const status = String(msg.status ?? '')
 
-          if (status === 'completed' || status === 'failed' || status === 'killed') {
+          // Every status but a live one ends the run — including the
+          // `interrupted` the backend reports for an ESC or overlay kill, a
+          // killed teammate, and an aborted workflow agent. Publishing only
+          // completed/failed/killed left those rows `running`, and the
+          // session roster would carry them into every later turn.
+          if (status && status !== 'running' && status !== 'queued') {
             this.publish({ payload: { ...payload, status }, type: 'subagent.complete' })
           }
         }

@@ -10,7 +10,7 @@ import {
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
-import { useTurnSelector } from '../app/turnStore.js'
+import { $sessionAgents, useTurnSelector } from '../app/turnStore.js'
 import { INLINE_MODE } from '../config/env.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
@@ -25,9 +25,13 @@ import {
   hotnessBucket,
   peakHotness,
   sparkline,
+  subagentAgentLabel,
+  subagentIdentity,
+  subagentTitle,
   topLevelSubagents,
   treeTotals,
-  widthByDepth
+  widthByDepth,
+  withCarriedAgents
 } from '../lib/subagentTree.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -430,6 +434,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
+        {subagentAgentLabel(item) ? <Field name="agent" t={t} value={subagentAgentLabel(item)} /> : null}
         <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
         {item.model ? <Field name="model" t={t} value={item.model} /> : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
@@ -545,7 +550,9 @@ function ListRow({
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const identity = compactPreview(subagentIdentity(node.item), 24)
+  const goalBudget = width - 28 - node.item.depth * 2 - (identity ? identity.length + 3 : 0)
+  const goal = compactPreview(node.item.goal || 'subagent', Math.max(8, goalBudget))
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -560,7 +567,14 @@ function ListRow({
       <Text color={active ? fg : t.color.muted}>{formatRowId(index)} </Text>
       {indentFor(node.item.depth)}
       {heatMarker ? <Text color={heatMarker}>▍</Text> : null}
-      <Text color={active ? fg : color}>{glyph}</Text> {goal}
+      <Text color={active ? fg : color}>{glyph}</Text>{' '}
+      {identity ? (
+        <>
+          <Text color={active ? fg : t.color.accent}>{identity}</Text>
+          <Text color={active ? fg : t.color.muted}> · </Text>
+        </>
+      ) : null}
+      {goal}
       <Text color={active ? fg : t.color.muted}>
         {toolsCount}
         {kids}
@@ -607,7 +621,7 @@ function DiffPane({
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">
-                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'}
+                <Text color={color}>{glyph}</Text> {subagentTitle(s)}
               </Text>
             )
           })}
@@ -679,7 +693,11 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
-  const liveSubagents = useTurnSelector(state => state.subagents)
+  const turnSubagents = useTurnSelector(state => state.subagents)
+  const sessionAgents = useStore($sessionAgents)
+  // Teammates and background agents outlive the turn that spawned them, and
+  // the turn-scoped list forgets them at the next turn boundary.
+  const liveSubagents = useMemo(() => withCarriedAgents(turnSubagents, sessionAgents), [turnSubagents, sessionAgents])
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
   const diffPair = useStore($spawnDiff)

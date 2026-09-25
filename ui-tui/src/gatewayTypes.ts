@@ -663,12 +663,14 @@ export interface SubagentEventPayload {
   input_tokens?: number
   iteration?: number
   model?: string
+  name?: string
   output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
   output_tokens?: number
   parent_id?: null | string
   reasoning_tokens?: number
   status?: SubagentStatus
   subagent_id?: string
+  subagent_type?: string
   summary?: string
   task_count?: number
   task_index: number

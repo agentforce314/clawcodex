@@ -9,11 +9,16 @@ import {
   fmtTokens,
   formatSummary,
   hotnessBucket,
+  isSubagentAlive,
   peakHotness,
   sparkline,
+  subagentAgentLabel,
+  subagentIdentity,
+  subagentTitle,
   topLevelSubagents,
   treeTotals,
-  widthByDepth
+  widthByDepth,
+  withCarriedAgents
 } from '../lib/subagentTree.js'
 import type { SubagentProgress } from '../types.js'
 
@@ -403,5 +408,71 @@ describe('topLevelSubagents', () => {
   it('promotes orphans whose parent is missing', () => {
     const items = [makeItem({ id: 'a', index: 0 }), makeItem({ depth: 1, id: 'orphan', index: 1, parentId: 'ghost' })]
     expect(topLevelSubagents(items).map(s => s.id)).toEqual(['a', 'orphan'])
+  })
+})
+
+describe('subagentIdentity + subagentTitle + subagentAgentLabel', () => {
+  it('prefers the spawn name, then a non-default agent type', () => {
+    expect(subagentIdentity({ agentType: 'math-nl-sketcher', name: 'nl-sketcher' })).toBe('nl-sketcher')
+    expect(subagentIdentity({ agentType: 'Explore' })).toBe('Explore')
+    expect(subagentIdentity({})).toBe('')
+  })
+
+  it('hides the default types every unnamed spawn runs', () => {
+    for (const agentType of ['general-purpose', 'worker', 'fork']) {
+      expect(subagentIdentity({ agentType })).toBe('')
+    }
+
+    // A name still wins over a default type.
+    expect(subagentIdentity({ agentType: 'general-purpose', name: 'alice' })).toBe('alice')
+  })
+
+  it('titles as identity · goal, and keeps the bare goal without one', () => {
+    expect(subagentTitle({ agentType: 'Explore', goal: 'Find cutoff literature' })).toBe(
+      'Explore · Find cutoff literature'
+    )
+    expect(subagentTitle({ agentType: 'general-purpose', goal: 'Fix the bug' })).toBe('Fix the bug')
+    expect(subagentTitle({ goal: 'Legacy row' })).toBe('Legacy row')
+    expect(subagentTitle({ goal: '' }, 'Subagent 2')).toBe('Subagent 2')
+  })
+
+  it('labels the detail pane with the name and the raw type', () => {
+    expect(subagentAgentLabel({ agentType: 'math-nl-sketcher', name: 'nl-sketcher' })).toBe(
+      'nl-sketcher (math-nl-sketcher)'
+    )
+    expect(subagentAgentLabel({ agentType: 'general-purpose' })).toBe('general-purpose')
+    expect(subagentAgentLabel({ agentType: 'Explore', name: 'Explore' })).toBe('Explore')
+    expect(subagentAgentLabel({})).toBe('')
+  })
+})
+
+describe('withCarriedAgents', () => {
+  it('appends running agents the turn no longer holds, and nothing else', () => {
+    const turn = [makeItem({ id: 'a3', index: 0 })]
+
+    const session = {
+      a3: makeItem({ id: 'a3', index: 0, status: 'completed' }),
+      q1: makeItem({ id: 'q1', index: 0, status: 'queued' }),
+      t1: makeItem({ id: 't1', index: 0, status: 'running' }),
+      x1: makeItem({ id: 'x1', index: 0, status: 'interrupted' })
+    }
+
+    // In-turn rows win over their roster copy; finished roster agents stay out.
+    expect(withCarriedAgents(turn, session).map(s => s.id)).toEqual(['a3', 'q1', 't1'])
+  })
+
+  it('returns the turn list itself when nothing is carried', () => {
+    const turn = [makeItem({ id: 'a1', index: 0 })]
+
+    expect(withCarriedAgents(turn, { a1: turn[0]! })).toBe(turn)
+  })
+
+  it('treats only running and queued as alive', () => {
+    expect(['running', 'queued'].every(s => isSubagentAlive(s as SubagentProgress['status']))).toBe(true)
+    expect(
+      ['completed', 'error', 'failed', 'interrupted', 'timeout'].some(s =>
+        isSubagentAlive(s as SubagentProgress['status'])
+      )
+    ).toBe(false)
   })
 })

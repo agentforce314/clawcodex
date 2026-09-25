@@ -1083,6 +1083,32 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(last('subagent.complete').payload.status).toBe('completed')
   })
 
+  it('ends a run on any non-live status, including interrupted', async () => {
+    // ESC / an overlay kill, a killed teammate and an aborted workflow agent
+    // all end as `interrupted`; only completed/failed/killed used to publish
+    // subagent.complete, so those rows stayed `running` for good.
+    const base = { agent_id: 'a4', description: 'search the archive', type: 'agent_progress' }
+    proc.line({ ...base, activity: 'Grep(foo)', status: 'running' })
+    await vi.waitFor(() => expect(last('subagent.progress')?.payload.subagent_id).toBe('a4'))
+    proc.line({ ...base, activity: 'Exited', status: 'interrupted' })
+    await vi.waitFor(() => expect(last('subagent.complete')?.payload.subagent_id).toBe('a4'))
+    expect(last('subagent.complete').payload.status).toBe('interrupted')
+  })
+
+  it('keeps the agent name and type apart from the task description', async () => {
+    // `name` used to reach the TUI only as the goal's fallback — and the
+    // Agent tool requires a description, so it never did.
+    proc.line({
+      activity: 'reading notes', agent_id: 'a3', description: 'Map informal proof obligations',
+      name: 'nl-sketcher', status: 'running', subagent_type: 'math-nl-sketcher', type: 'agent_progress'
+    })
+    await vi.waitFor(() => expect(last('subagent.start')?.payload.subagent_id).toBe('a3'))
+    const p = last('subagent.start').payload
+    expect(p.goal).toBe('Map informal proof obligations')
+    expect(p.name).toBe('nl-sketcher')
+    expect(p.subagent_type).toBe('math-nl-sketcher')
+  })
+
   // ch13 round-4 — permission "always allow" persistence (item 1)
   it('forwards a can_use_tool suggestion as a persistable approval option', async () => {
     proc.line({

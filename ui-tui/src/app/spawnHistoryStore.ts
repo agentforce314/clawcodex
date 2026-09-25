@@ -130,6 +130,7 @@ function normaliseSubagent(raw: unknown): SubagentProgress {
   const arr = <T>(v: unknown): T[] | undefined => (Array.isArray(v) ? (v as T[]) : undefined)
 
   return {
+    agentType: s(o.agentType),
     apiCalls: n(o.apiCalls),
     costUsd: n(o.costUsd),
     depth: typeof o.depth === 'number' ? o.depth : 0,
@@ -142,6 +143,7 @@ function normaliseSubagent(raw: unknown): SubagentProgress {
     inputTokens: n(o.inputTokens),
     iteration: n(o.iteration),
     model: s(o.model),
+    name: s(o.name),
     notes: (arr<string>(o.notes) ?? []).filter(x => typeof x === 'string'),
     outputTail: arr(o.outputTail) as SubagentProgress['outputTail'],
     outputTokens: n(o.outputTokens),

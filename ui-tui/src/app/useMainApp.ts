@@ -959,6 +959,7 @@ export function useMainApp(gw: GatewayClient) {
 
     const exitHandler = () => {
       turnController.reset()
+      turnController.forgetSessionAgents()
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child

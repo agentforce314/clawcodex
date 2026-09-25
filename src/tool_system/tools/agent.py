@@ -509,7 +509,11 @@ def make_agent_tool(
                         "depth": _depth,
                         "name": agent_name,
                         "description": description,
-                        "subagent_type": subagent_type,
+                        # The RESOLVED definition, as the terminal emit
+                        # reports it — the raw tool input is None whenever
+                        # the call omitted subagent_type (general-purpose,
+                        # fork), so clients could not say which agent ran.
+                        "subagent_type": agent_def.agent_type,
                         "model": resolved_model,
                         "activity": activity,
                         "tool_use_count": _tracker.tool_use_count,
@@ -637,9 +641,10 @@ def make_agent_tool(
         agent_messages: list[Message] = []
         interrupted = False
         # R5 (ch13) — the HUD goal label: use the SAME name/description the
-        # running emits use, not the truncated prompt (critic residual).
-        _hud_name = agent_name if agent_name is not None else \
-            getattr(run_params.agent_definition, "agent_type", "")
+        # running emits use, not the truncated prompt (critic residual). The
+        # name is the spawn's own (None when unnamed), as on every running
+        # emit and the background path — never the agent type, which
+        # ``subagent_type`` already carries: clients label rows by name first.
         _hud_desc = description if description is not None else \
             (run_params.prompt or "")[:80]
 
@@ -698,7 +703,7 @@ def make_agent_tool(
             # delegation lingered "running". Emit failed, then re-raise so
             # the existing error flow is unchanged.
             _emit_terminal_agent_progress(
-                run_params.parent_context, agent_id=agent_id, name=_hud_name,
+                run_params.parent_context, agent_id=agent_id, name=agent_name,
                 description=_hud_desc, subagent_type=agent_type,
                 status="failed", model=resolved_model, tool_use_id=tool_use_id,
             )
@@ -726,7 +731,7 @@ def make_agent_tool(
         # TUI's subagent HUD marks this subagent complete instead of
         # lingering "running". The per-message emits carry status:"running".
         _emit_terminal_agent_progress(
-            run_params.parent_context, agent_id=agent_id, name=_hud_name,
+            run_params.parent_context, agent_id=agent_id, name=agent_name,
             description=_hud_desc, subagent_type=agent_type,
             status="interrupted" if interrupted else "completed",
             model=resolved_model, tool_use_id=tool_use_id,

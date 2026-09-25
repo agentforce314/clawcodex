@@ -27,6 +27,33 @@ describe('spawnHistoryStore status normalization', () => {
     expect(statuses).toEqual(['timeout', 'error'])
   })
 
+  it('keeps agent name and type from disk snapshots', () => {
+    pushDiskSnapshot(
+      {
+        finished_at: 1_700_000_001,
+        label: 'names',
+        session_id: 'sess-1',
+        started_at: 1_700_000_000,
+        subagents: [
+          {
+            agentType: 'math-nl-sketcher',
+            goal: 'Map informal proof obligations',
+            id: 'sa-1',
+            index: 0,
+            name: 'nl-sketcher',
+            status: 'completed'
+          }
+        ]
+      },
+      '/tmp/snap-names.json'
+    )
+
+    const s = getSpawnHistory()[0]?.subagents[0]
+
+    expect(s?.name).toBe('nl-sketcher')
+    expect(s?.agentType).toBe('math-nl-sketcher')
+  })
+
   it('falls back unknown disk statuses to completed', () => {
     pushDiskSnapshot(
       {

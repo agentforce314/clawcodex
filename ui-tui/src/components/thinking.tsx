@@ -12,6 +12,7 @@ import {
   hotnessBucket,
   peakHotness,
   sparkline,
+  subagentTitle,
   treeTotals,
   widthByDepth
 } from '../lib/subagentTree.js'
@@ -387,7 +388,7 @@ function SubagentAccordion({
         : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
-  const goalLabel = item.goal || `Subagent ${item.index + 1}`
+  const goalLabel = subagentTitle(item, `Subagent ${item.index + 1}`)
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
 
