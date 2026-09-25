@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The TUI's agents overlay names each agent.** Rows in the spawn tree showed
+  only the task description, so a team of named specialists read as a list of
+  anonymous tasks. Each row now leads with the spawn's name (a teammate's
+  `name`) or, when it has none, the agent definition it runs (`Explore`, a
+  custom agent); the default `general-purpose` type stays unlabeled, as in
+  Claude Code. The detail pane shows both, and replayed spawn trees (`[` / `]`
+  in the overlay) keep the label. The backend's live progress now reports the
+  resolved agent type, which was missing while an agent ran whenever the call
+  left `subagent_type` out, and an unnamed agent no longer reports its type as
+  its name when it finishes.
+- **Teammates and background agents stay in the agents overlay after their
+  turn.** The overlay's list lived only for the turn that spawned an agent: at
+  the next turn boundary a persistent teammate vanished while it kept working,
+  and its later progress was dropped. A session-wide roster now carries every
+  agent that is still running, so teammates stay listed — idle or busy, and
+  across `/clear` — until they exit, beside the current turn's subagents. A
+  foreground subagent stopped with ESC or from the overlay, a killed teammate,
+  or an aborted workflow agent now shows as interrupted; its row used to stay
+  `running`.
 - **Delegating to a subagent no longer takes minutes at `/effort max`.** A
   subagent's requests carried no effort of their own, so every subagent fell
   back to the saved `settings.effort`: the built-in Explore agent — the fast,

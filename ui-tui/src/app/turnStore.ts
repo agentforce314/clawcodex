@@ -26,6 +26,14 @@ const buildTurnState = (): TurnState => ({
 
 export const $turnState = atom<TurnState>(buildTurnState())
 
+// Session-scoped counterpart of `subagents`: the latest state of every agent
+// announced this session, by id. Turn state is turn-scoped on purpose —
+// startMessage() and idle() clear `subagents`, and the idle layout keys off
+// it — but a persistent teammate or a background agent outlives the turn that
+// spawned it. The agents overlay merges the ones still running back in from
+// here (withCarriedAgents).
+export const $sessionAgents = atom<Readonly<Record<string, SubagentProgress>>>({})
+
 export const getTurnState = () => $turnState.get()
 
 const subscribeTurn = (cb: () => void) => $turnState.listen(() => cb())

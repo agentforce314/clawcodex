@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
-import { getTurnState, resetTurnState } from '../app/turnStore.js'
+import { $sessionAgents, getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { LINK_TIP_TEXT, resetLinkTipForTests } from '../lib/linkAffordance.js'
+import { withCarriedAgents } from '../lib/subagentTree.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -64,6 +65,8 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     turnController.fullReset()
+    // fullReset() keeps the session roster (/clear keeps teammates running).
+    turnController.forgetSessionAgents()
     patchUiState({ showReasoning: true })
   })
 
@@ -937,6 +940,97 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
+  })
+
+  it('keeps a teammate that outlives its spawning turn in the session roster', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const teammate = {
+      goal: 'Pin environment encode statement',
+      name: 'fl-formalizer',
+      subagent_id: 't1',
+      subagent_type: 'math-fl-formalizer',
+      task_index: 0
+    }
+
+    // Turn 1 spawns a persistent teammate and a sync subagent that finishes.
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: teammate, type: 'subagent.start' } as any)
+    onEvent({ payload: { goal: 'Read the notes', subagent_id: 'a2', task_index: 1 }, type: 'subagent.start' } as any)
+    onEvent({
+      payload: { goal: 'Read the notes', status: 'completed', subagent_id: 'a2', task_index: 1 },
+      type: 'subagent.complete'
+    } as any)
+    // An agent stopped mid-run (ESC, an overlay kill) ends as `interrupted`.
+    onEvent({
+      payload: { goal: 'Search the archive', subagent_id: 'x1', task_index: 2 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'Search the archive', status: 'interrupted', subagent_id: 'x1', task_index: 2 },
+      type: 'subagent.complete'
+    } as any)
+    onEvent({ payload: { text: 'team started' }, type: 'message.complete' } as any)
+
+    // Turn 2: the turn-scoped list starts empty (the idle layout depends on
+    // that), and the teammate's next frame is update-only there.
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { ...teammate, text: 'Idle; waiting for another assignment' },
+      type: 'subagent.progress'
+    } as any)
+
+    expect(getTurnState().subagents).toEqual([])
+
+    // The roster still carries the running teammate, fresh, and has dropped
+    // the finished and the interrupted subagents from turn 1.
+    const roster = $sessionAgents.get()
+
+    expect(Object.keys(roster)).toEqual(['t1'])
+    expect(roster.t1?.name).toBe('fl-formalizer')
+    expect(roster.t1?.status).toBe('running')
+    expect(roster.t1?.notes).toContain('Idle; waiting for another assignment')
+    expect(withCarriedAgents(getTurnState().subagents, roster).map(s => s.id)).toEqual(['t1'])
+
+    // /clear, /new and resume reset the view but not the single backend
+    // session, whose teammates keep running; only a backend exit ends them.
+    turnController.fullReset()
+    expect(Object.keys($sessionAgents.get())).toEqual(['t1'])
+    turnController.forgetSessionAgents()
+    expect($sessionAgents.get()).toEqual({})
+  })
+
+  it('keeps a subagent name and agent type across later partial events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        goal: 'Map informal proof obligations',
+        name: 'nl-sketcher',
+        subagent_id: 'sa-named',
+        subagent_type: 'math-nl-sketcher',
+        task_index: 0
+      },
+      type: 'subagent.start'
+    } as any)
+    // A later frame without the identity must not wipe it.
+    onEvent({
+      payload: {
+        goal: 'Map informal proof obligations',
+        subagent_id: 'sa-named',
+        task_index: 0,
+        text: 'reading notes'
+      },
+      type: 'subagent.progress'
+    } as any)
+
+    const item = getTurnState().subagents.find(s => s.id === 'sa-named')
+
+    expect(item?.name).toBe('nl-sketcher')
+    expect(item?.agentType).toBe('math-nl-sketcher')
+    expect(item?.goal).toBe('Map informal proof obligations')
   })
 
   it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {

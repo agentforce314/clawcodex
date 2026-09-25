@@ -9,6 +9,7 @@ import type { SessionInterruptResponse, StructuredDiffPayload, SubagentEventPayl
 import { ensureHighlighter } from '../lib/colorDiff.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { isSubagentAlive } from '../lib/subagentTree.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -24,7 +25,7 @@ import type { ActiveTool, ActivityItem, Msg, MsgDiffData, SubagentProgress, Todo
 import type { Notice } from './interfaces.js'
 import { getOverlayState, resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
-import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
+import { $sessionAgents, archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
@@ -1106,6 +1107,13 @@ class TurnController {
     resetTurnState()
   }
 
+  // The backend process died, and every agent it ran died with it. Not part
+  // of reset()/fullReset(): /clear, /new and resume reach those too, while
+  // the single agent-server session — and its teammates — keep running.
+  forgetSessionAgents() {
+    $sessionAgents.set({})
+  }
+
   scheduleReasoning() {
     if (this.reasoningTimer) {
       return
@@ -1177,6 +1185,11 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
+    // Finished agents went into their turn's archived spawn tree; the roster
+    // only needs to carry the ones still running into this turn.
+    $sessionAgents.set(
+      Object.fromEntries(Object.entries($sessionAgents.get()).filter(([, agent]) => isSubagentAlive(agent.status)))
+    )
   }
 
   upsertSubagent(
@@ -1189,6 +1202,13 @@ class TurnController {
     // for older gateways that omit the field — those produce a flat list.
     const id = p.subagent_id || `sa:${p.task_index}:${p.goal || 'subagent'}`
 
+    // The session roster takes every event, even one the turn drops below: a
+    // persistent teammate or background agent keeps working in later turns,
+    // after its row left the turn-scoped list, and would otherwise vanish
+    // from the agents overlay while it is still alive.
+    const agents = $sessionAgents.get()
+    $sessionAgents.set({ ...agents, [id]: this.mergeSubagentEvent(agents[id], id, p, patch) })
+
     patchTurnState(state => {
       const existing = state.subagents.find(item => item.id === id)
 
@@ -1200,54 +1220,7 @@ class TurnController {
         return state
       }
 
-      const base: SubagentProgress = existing ?? {
-        depth: p.depth ?? 0,
-        goal: p.goal,
-        id,
-        index: p.task_index,
-        model: p.model,
-        notes: [],
-        parentId: p.parent_id ?? null,
-        startedAt: Date.now(),
-        status: 'running',
-        taskCount: p.task_count ?? 1,
-        thinking: [],
-        toolCount: p.tool_count ?? 0,
-        tools: [],
-        toolsets: p.toolsets
-      }
-
-      // Map snake_case payload keys onto camelCase state.  Only overwrite
-      // when the event actually carries the field; `??` preserves prior
-      // values across streaming events that emit partial payloads.
-      const outputTail = p.output_tail
-        ? p.output_tail.map(e => ({
-            isError: Boolean(e.is_error),
-            preview: String(e.preview ?? ''),
-            tool: String(e.tool ?? 'tool')
-          }))
-        : base.outputTail
-
-      const next: SubagentProgress = {
-        ...base,
-        apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
-        depth: p.depth ?? base.depth,
-        filesRead: p.files_read ?? base.filesRead,
-        filesWritten: p.files_written ?? base.filesWritten,
-        goal: p.goal || base.goal,
-        inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
-        model: p.model ?? base.model,
-        outputTail,
-        outputTokens: p.output_tokens ?? base.outputTokens,
-        parentId: p.parent_id ?? base.parentId,
-        reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
-        taskCount: p.task_count ?? base.taskCount,
-        toolCount: p.tool_count ?? base.toolCount,
-        toolsets: p.toolsets ?? base.toolsets,
-        ...patch(base)
-      }
+      const next = this.mergeSubagentEvent(existing, id, p, patch)
 
       // Stable order: by spawn (depth, parent, index) rather than insert time.
       // Without it, grandchildren can shuffle relative to siblings when
@@ -1258,6 +1231,66 @@ class TurnController {
 
       return { ...state, subagents }
     })
+  }
+
+  private mergeSubagentEvent(
+    existing: SubagentProgress | undefined,
+    id: string,
+    p: SubagentEventPayload,
+    patch: (current: SubagentProgress) => Partial<SubagentProgress>
+  ): SubagentProgress {
+    const base: SubagentProgress = existing ?? {
+      agentType: p.subagent_type,
+      depth: p.depth ?? 0,
+      goal: p.goal,
+      id,
+      index: p.task_index,
+      model: p.model,
+      name: p.name,
+      notes: [],
+      parentId: p.parent_id ?? null,
+      startedAt: Date.now(),
+      status: 'running',
+      taskCount: p.task_count ?? 1,
+      thinking: [],
+      toolCount: p.tool_count ?? 0,
+      tools: [],
+      toolsets: p.toolsets
+    }
+
+    // Map snake_case payload keys onto camelCase state.  Only overwrite
+    // when the event actually carries the field; `??` preserves prior
+    // values across streaming events that emit partial payloads.
+    const outputTail = p.output_tail
+      ? p.output_tail.map(e => ({
+          isError: Boolean(e.is_error),
+          preview: String(e.preview ?? ''),
+          tool: String(e.tool ?? 'tool')
+        }))
+      : base.outputTail
+
+    return {
+      ...base,
+      agentType: p.subagent_type ?? base.agentType,
+      apiCalls: p.api_calls ?? base.apiCalls,
+      costUsd: p.cost_usd ?? base.costUsd,
+      depth: p.depth ?? base.depth,
+      filesRead: p.files_read ?? base.filesRead,
+      filesWritten: p.files_written ?? base.filesWritten,
+      goal: p.goal || base.goal,
+      inputTokens: p.input_tokens ?? base.inputTokens,
+      iteration: p.iteration ?? base.iteration,
+      model: p.model ?? base.model,
+      name: p.name ?? base.name,
+      outputTail,
+      outputTokens: p.output_tokens ?? base.outputTokens,
+      parentId: p.parent_id ?? base.parentId,
+      reasoningTokens: p.reasoning_tokens ?? base.reasoningTokens,
+      taskCount: p.task_count ?? base.taskCount,
+      toolCount: p.tool_count ?? base.toolCount,
+      toolsets: p.toolsets ?? base.toolsets,
+      ...patch(base)
+    }
   }
 }
 

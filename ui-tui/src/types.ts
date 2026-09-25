@@ -26,6 +26,10 @@ export interface ActivityItem {
 export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
+  // Which agent this is: the definition it runs (`Explore`, a custom
+  // `.clawcodex/agents/<type>.md`) and the addressable name the spawn gave it
+  // (a teammate's `name`). `goal` is only the task description.
+  agentType?: string
   apiCalls?: number
   costUsd?: number
   depth: number
@@ -38,6 +42,7 @@ export interface SubagentProgress {
   inputTokens?: number
   iteration?: number
   model?: string
+  name?: string
   notes: string[]
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number

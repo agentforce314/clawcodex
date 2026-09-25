@@ -87,6 +87,57 @@ class TestSyncTerminal(unittest.TestCase):
             # Goal label is the task description, not the truncated prompt.
             self.assertEqual(done[-1]["description"], "explore the repo")
 
+    def test_running_emits_name_the_resolved_agent(self):
+        # Omitting subagent_type runs general-purpose. The running emits sent
+        # the raw input (None) while the terminal one sent the resolved type,
+        # so a client could not say which agent was running until it ended.
+        with TemporaryDirectory() as tmp:
+            ctx, emitted = _ctx(tmp)
+
+            async def _fake(p):
+                message = AssistantMessage(content=[TextBlock(text="working")])
+                p.on_message(message)
+                yield message
+
+            with patch("src.tool_system.tools.agent.run_agent", _fake):
+                registry = build_default_registry(provider=object())
+                registry.dispatch(ToolCall(name="Agent", input={
+                    "description": "map the proof obligations",
+                    "prompt": "look around",
+                    "name": "nl-sketcher",
+                }), ctx)
+
+            running = _terminal(emitted, "running")
+            self.assertTrue(running, "the per-message hook should emit running progress")
+            self.assertEqual(running[-1]["subagent_type"], "general-purpose")
+            self.assertEqual(running[-1]["name"], "nl-sketcher")
+            self.assertEqual(running[-1]["description"], "map the proof obligations")
+            self.assertEqual(_terminal(emitted, "completed")[-1]["subagent_type"], "general-purpose")
+
+    def test_unnamed_spawn_stays_unnamed_when_it_ends(self):
+        # The sync terminal emit used to fill `name` with the agent type, so a
+        # client labelling rows name-first renamed the agent at completion.
+        with TemporaryDirectory() as tmp:
+            ctx, emitted = _ctx(tmp)
+
+            async def _fake(p):
+                message = AssistantMessage(content=[TextBlock(text="working")])
+                p.on_message(message)
+                yield message
+
+            with patch("src.tool_system.tools.agent.run_agent", _fake):
+                registry = build_default_registry(provider=object())
+                registry.dispatch(ToolCall(name="Agent", input={
+                    "description": "survey the repo",
+                    "prompt": "look around",
+                    "subagent_type": "Explore",
+                }), ctx)
+
+            self.assertIsNone(_terminal(emitted, "running")[-1]["name"])
+            completed = _terminal(emitted, "completed")[-1]
+            self.assertIsNone(completed["name"])
+            self.assertEqual(completed["subagent_type"], "Explore")
+
     def test_sync_failure_emits_failed(self):
         with TemporaryDirectory() as tmp:
             ctx, emitted = _ctx(tmp)
