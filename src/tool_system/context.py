@@ -283,6 +283,16 @@ class ToolContext:
     # _call_model_sync assembly → byte-identical wire prefix.
     rendered_system_prompt: "str | list[dict[str, Any]] | None" = None
 
+    # The explicit reasoning-effort level of the query running on this
+    # context (``QueryParams.thinking_effort`` — the session's ``/effort``,
+    # headless ``--effort``); ``None`` = unset, so the wire boundary falls
+    # back to the persisted ``settings.effort``. POPULATED by query() at turn
+    # entry beside ``rendered_system_prompt``, so a subagent spawned during
+    # the turn inherits the level its parent actually runs at — TS
+    # runAgent.ts:514-518 reads the session ``effortValue`` from app state
+    # for the same purpose (see ``run_agent.resolve_subagent_effort``).
+    thinking_effort: str | None = None
+
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
         if self.cwd is None:

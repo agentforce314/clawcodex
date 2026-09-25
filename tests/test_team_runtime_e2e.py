@@ -592,3 +592,21 @@ def test_automatic_task_claim_is_atomic_across_competing_workers(team):
     claimed = [task["id"] for task in claims if task]
     assert len(claimed) == len(set(claimed)) == len(ids)
     assert set(claimed) == ids
+
+
+def test_teammate_turns_run_at_the_leaders_level(team, monkeypatch):
+    # A teammate turn is a run_agent over the leader's context, so it takes the
+    # level the leader's query captured there — not the persisted
+    # settings.effort that every subagent used to fall back to.
+    provider, context, registry = team
+    effort_seen = []
+    original = provider.chat
+
+    def recording_chat(messages, tools=None, **kwargs):
+        effort_seen.append((kwargs.get("extra_body") or {}).get("reasoning_effort"))
+        return original(messages, tools=tools, **kwargs)
+
+    monkeypatch.setattr(provider, "chat", recording_chat)
+    context.thinking_effort = "high"
+    spawn(team, "alice")
+    assert effort_seen and set(effort_seen) == {"high"}

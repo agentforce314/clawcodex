@@ -1738,6 +1738,16 @@ async def query(
             params.tool_use_context.rendered_system_prompt = params.system_prompt
         except Exception:  # noqa: BLE001 — read-only stub context
             pass
+    # Same capture for the effort level: run_agent gives a subagent its
+    # definition's ``effort`` else THIS value (TS runAgent.ts:514-518).
+    # Without it a subagent's query carried no effort at all and fell back
+    # to the persisted ``settings.effort`` — a session-only level (headless
+    # ``--effort``, an unsaved ``/effort``) never reached it. Unconditional:
+    # ``None`` is meaningful (the parent itself runs on that fallback).
+    try:
+        params.tool_use_context.thinking_effort = params.thinking_effort
+    except Exception:  # noqa: BLE001 — read-only stub context
+        pass
 
     # How much of the session-lifetime outbox predates THIS query. Entries
     # below the mark belong to earlier prompts and must not count as "the

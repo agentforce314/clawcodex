@@ -10,12 +10,13 @@ Per-provider defaults (2026-08): each provider's row in
 
 * ``subagent_tier_models`` — the resolution targets for bare tier aliases
   (anthropic haiku → ``claude-haiku-4-5``; deepseek haiku →
-  ``deepseek-v4-flash``). This is the port of the TS reference's
+  ``deepseek-flash``; openai haiku → ``gpt-6-luna``, on the ChatGPT
+  subscription only). This is the port of the TS reference's
   per-provider ``getDefault{Opus,Sonnet,Haiku}Model()`` functions.
 * ``subagent_model`` — the model subagents run on when neither the Agent
   tool call nor the agent definition names one (anthropic:
   ``claude-haiku-4-5``, the cheapest current-gen tier; deepseek:
-  ``deepseek-v4-flash``), overridable per provider via
+  ``deepseek-flash``), overridable per provider via
   ``providers.<id>.subagent_model`` in config.json. NOTE this is a
   DELIBERATE DIVERGENCE from both references, by explicit user directive
   (cheap fan-outs): TS ``getDefaultSubagentModel()`` returns ``'inherit'``
@@ -38,7 +39,9 @@ behavior — an alias/id the session provider doesn't recognize falls back to
 the session model rather than 400-ing the request, and an unspecified model
 inherits. A custom Anthropic-compatible endpoint (proxy / self-hosted) also
 inherits rather than trusting the first-party table, mirroring TS
-``checkIsClaudeNativeProvider``.
+``checkIsClaudeNativeProvider``. The openai table applies only on the
+ChatGPT subscription, the one route whose availability gate reads the
+account's own catalog; API-key and custom-endpoint openai sessions inherit.
 
 Deliberate asymmetry: a KNOWN alias whose canonical target is retired
 degrades to inherit through the availability gate (``h35``,
@@ -118,18 +121,43 @@ def _is_custom_anthropic(session_provider: Any) -> bool:
         return False
 
 
+def _is_openai_without_live_catalog(session_provider: Any) -> bool:
+    """An openai provider that is NOT on the ChatGPT subscription route.
+
+    The openai tier targets are trusted only where the availability gate is
+    a real per-account check: the subscription's Codex catalog
+    (``openai_subscription_models``). Everywhere else
+    ``get_available_models()`` is the static registry list, so the gate
+    passes every listed id — an API key whose project may not use
+    ``gpt-6-luna``, and a custom base URL (LiteLLM, vLLM, Azure,
+    ``$OPENAI_BASE_URL``) that serves none of them, would both be sent a
+    model they cannot serve. Those keep the reference behavior and inherit
+    (TS agent.ts:97-112 inherits haiku/sonnet on non-Claude-native
+    providers). The subscription only ever activates against the first-party
+    endpoint (``OpenAIProvider.__init__``). Read with an ``isinstance``
+    check, like the agent-server's effort-options probe: a mock answers any
+    attribute with a truthy object.
+    """
+    if _provider_id(session_provider) != "openai":
+        return False
+    active = getattr(_unwrap(session_provider), "_subscription_active", None)
+    return not (isinstance(active, bool) and active)
+
+
 def _provider_info_row(session_provider: Any) -> dict[str, Any]:
     """The session provider's PROVIDER_INFO row, or ``{}``.
 
-    Empty when the provider carries no ``provider_id`` (unregistered) or is
-    an anthropic provider on a custom endpoint — both mean "no subagent
-    table", so every lookup falls through to the reference (inherit)
-    behavior.
+    Empty when the provider carries no ``provider_id`` (unregistered), is an
+    anthropic provider on a custom endpoint, or is an openai provider off
+    the subscription route — each means "no subagent table", so every lookup
+    falls through to the reference (inherit) behavior.
     """
     provider_id = _provider_id(session_provider)
     if not provider_id:
         return {}
     if _is_custom_anthropic(session_provider):
+        return {}
+    if _is_openai_without_live_catalog(session_provider):
         return {}
     try:
         from src.providers import PROVIDER_INFO

@@ -179,6 +179,45 @@ def _build_permission_context(
     )
 
 
+def resolve_subagent_effort(
+    agent_definition: AgentDefinition,
+    parent_context: ToolContext,
+) -> str | None:
+    """The reasoning-effort level a subagent's query runs at.
+
+    TS runAgent.ts:514-518: ``agentDefinition.effort ?? state.effortValue``
+    — the definition's own level, else the SESSION's. Here the session level
+    is whatever the spawning query runs at (``ToolContext.thinking_effort``,
+    captured by query() at turn entry). ``None`` leaves the wire boundary's
+    fallback to the persisted ``settings.effort`` — the same place the
+    parent's own requests land when it has no explicit level.
+
+    A BUILT-IN definition's level is a ceiling on the level already in
+    force, not a level of its own: with nothing configured it must keep
+    sending nothing, because the field's mere presence is a hard 400 on some
+    wires (Groq's Llama models, older Grok) where the parent sends none. A
+    user/project/plugin definition's level is the author's explicit choice
+    and is used as written (TS parity).
+
+    A definition level off the ladder (frontmatter also accepts integers,
+    TS's numeric effort, which no wire here takes) is treated as unset so
+    it falls through to the parent's level rather than to the settings
+    fallback.
+    """
+    from ..query.query import VALID_THINKING_EFFORT_LEVELS, resolve_thinking_effort
+
+    parent = getattr(parent_context, "thinking_effort", None)
+    own = (agent_definition.effort or "").strip().lower()
+    if own not in VALID_THINKING_EFFORT_LEVELS:
+        return parent
+    if not is_built_in_agent(agent_definition):
+        return own
+    in_force = resolve_thinking_effort(parent, None, clamp_xhigh=False)
+    if in_force is None:
+        return parent
+    return min(own, in_force, key=VALID_THINKING_EFFORT_LEVELS.index)
+
+
 def filter_incomplete_tool_calls(messages: list[Message]) -> list[Message]:
     """Remove assistant messages that contain incomplete tool_use blocks.
 
@@ -436,6 +475,10 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         abort_controller=abort_controller,
         query_source=effective_query_source,
         max_turns=max_turns,
+        # Unset, every subagent fell back to the persisted settings.effort:
+        # an ``effort:`` in the definition was dead, and a session-only level
+        # (headless --effort, an unsaved /effort) never reached the subagent.
+        thinking_effort=resolve_subagent_effort(agent_def, params.parent_context),
     )
 
     terminal = TerminalHolder()

@@ -129,6 +129,7 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_BASE_URL",
+            "OPENAI_BASE_URL",
         ):
             os.environ.pop(var, None)
         # Hermetic: the resolver consults the user's real config.json for
@@ -152,6 +153,72 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         from src.providers.deepseek_provider import DeepSeekProvider
 
         return DeepSeekProvider(api_key="test-key", model=model)
+
+    @staticmethod
+    def _openai(model="gpt-6-astra", **kwargs):
+        from src.providers.openai_provider import OpenAIProvider
+
+        return OpenAIProvider(api_key="test-key", model=model, **kwargs)
+
+    def _openai_subscription(
+        self, model="gpt-6-astra", catalog=("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"),
+    ):
+        # A ChatGPT-subscription session without reading the developer's real
+        # login: the route flag plus the account catalog the gate consults.
+        p = self._openai(model)
+        p._subscription_active = True
+        p.get_available_models = lambda: list(catalog)
+        return p
+
+    def test_openai_subscription_haiku_tier_uses_luna(self):
+        # Explore pins 'haiku'. With no openai row the alias went through the
+        # global Claude-id table, which OpenAI does not serve, and inherited
+        # the session model — every Explore ran on gpt-6-astra (~57 s vs
+        # ~33 s on luna for the same repo survey, 2026-09-24).
+        self.assertEqual(
+            get_agent_model(None, "haiku", self._openai_subscription()), "gpt-6-luna",
+        )
+
+    def test_openai_subscription_catalog_without_the_tier_inherits(self):
+        # The live gate: a login whose Codex catalog lacks luna must not be
+        # sent a model its account cannot use.
+        p = self._openai_subscription(catalog=("gpt-6-astra", "gpt-5.5"))
+        self.assertEqual(get_agent_model(None, "haiku", p), "gpt-6-astra")
+
+    def test_openai_unspecified_model_still_inherits(self):
+        # Deliberately no openai ``subagent_model``: general-purpose and
+        # custom agents with no model keep the session model.
+        self.assertEqual(
+            get_agent_model(None, None, self._openai_subscription()), "gpt-6-astra",
+        )
+
+    def test_openai_explicit_inherit_beats_the_explore_tier(self):
+        # The slow session passed model: "inherit" on its Explore call; the
+        # tool param still wins over the definition's haiku.
+        self.assertEqual(
+            get_agent_model("inherit", "haiku", self._openai_subscription()),
+            "gpt-6-astra",
+        )
+
+    def test_openai_api_key_inherits(self):
+        # On an API key the gate is the static registry list, which passes
+        # gpt-6-luna whether or not the key's project may use it — so the
+        # table stays off and Explore keeps the session model it ran before.
+        self.assertEqual(get_agent_model(None, "haiku", self._openai()), "gpt-6-astra")
+
+    def test_openai_custom_base_url_inherits(self):
+        # LiteLLM / vLLM / Azure proxies serve none of the GPT-6 ids.
+        p = self._openai("my-litellm-model", base_url="http://localhost:4000/v1")
+        self.assertEqual(get_agent_model(None, "haiku", p), "my-litellm-model")
+
+    def test_openai_env_base_url_inherits(self):
+        # The other base-URL channel, with no key (the case the provider's
+        # own OAuth guard exists for): still no table.
+        from src.providers.openai_provider import OpenAIProvider
+
+        os.environ["OPENAI_BASE_URL"] = "https://api.deepseek.com/v1"
+        p = OpenAIProvider(api_key="", model="deepseek-v4-pro")
+        self.assertEqual(get_agent_model(None, "haiku", p), "deepseek-v4-pro")
 
     def test_anthropic_unspecified_uses_default_subagent_model(self):
         # Goal ask #1: on the anthropic provider the default subagent model
@@ -321,9 +388,9 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
                         f"{name} does not list — the runtime gate would "
                         "silently ignore it",
                     )
-        # Today: anthropic + deepseek. If this drops to zero the tables were
-        # deleted and this test should go with them.
-        self.assertGreaterEqual(checked, 2)
+        # Today: anthropic + deepseek + openai. If this drops to zero the
+        # tables were deleted and this test should go with them.
+        self.assertGreaterEqual(checked, 3)
 
     def test_tier_env_pin_beats_table(self):
         os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "my-bedrock-haiku"

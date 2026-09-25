@@ -165,10 +165,23 @@ EXPLORE_AGENT = AgentDefinition(
     # ch08 round-4 (critic M1) — Explore is the fast/cheap read-only agent;
     # TS exploreAgent.ts:77 runs it on Haiku. get_agent_model resolves this
     # per provider via the ``subagent_tier_models`` tables (anthropic →
-    # claude-haiku-4-5, deepseek → deepseek-v4-flash) and inherits on
-    # providers without a haiku-class mapping, so it is cross-provider
-    # safe.
+    # claude-haiku-4-5, deepseek → deepseek-flash, openai on the ChatGPT
+    # subscription → gpt-6-luna) and inherits the session model everywhere
+    # else (API-key openai, custom endpoints, providers without a table).
     model="haiku",
+    # A CEILING, not a level of its own (run_agent.resolve_subagent_effort):
+    # Explore never reasons harder than low, and never adds an effort field
+    # to a session that configured none. Without it the fast agent reasoned
+    # at the session's /effort max on every search turn — a quick repo
+    # survey took ~121 s on gpt-6-astra vs ~57 s at low (same task and
+    # tools, three runs each, 2026-09-24). Only wires that take an effort
+    # level are affected: on first-party Anthropic Explore runs on
+    # claude-haiku-4-5, which takes none (its cost is its thinking budget).
+    # TS goes further — runAgent.ts:720-725 runs every non-fork subagent
+    # with thinking DISABLED — which this port deliberately does not copy:
+    # custom agents doing long proofs rely on the session level. A
+    # user/project ``Explore`` definition replaces this one.
+    effort="low",
     get_system_prompt=_explore_system_prompt,
 )
 
