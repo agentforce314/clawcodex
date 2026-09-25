@@ -88,6 +88,24 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "label": "OpenAI GPT",
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.4",
+        # Tier aliases → GPT-6 tiers, applied ONLY on the ChatGPT
+        # subscription route (see agent_model._is_openai_without_live_catalog):
+        # that is the one place the availability gate checks the account's
+        # own catalog. An API key's gate is this static list and a custom
+        # base URL serves none of these, so both keep inheriting — which is
+        # also what TS does for Explore on OpenAI-shaped providers
+        # (agent.ts:97-112); this row is a deliberate divergence for the
+        # subscription. Without it Explore's ``haiku`` inherited the session
+        # model: ~57 s for a repo survey on gpt-6-astra vs ~33 s on
+        # gpt-6-luna, both at effort low (measured 2026-09-24). Deliberately
+        # NO ``subagent_model``: an agent with no model keeps the session
+        # model on this provider.
+        "subagent_tier_models": {
+            "fable": "gpt-6-astra",
+            "opus": "gpt-6-astra",
+            "sonnet": "gpt-6-sol",
+            "haiku": "gpt-6-luna",
+        },
         "available_models": [
             # https://developers.openai.com/api/docs/models (2026-09-24)
             # GPT-6 — Astra is the frontier tier, Sol the flagship, Luna the

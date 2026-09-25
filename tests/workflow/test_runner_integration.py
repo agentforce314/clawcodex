@@ -198,3 +198,31 @@ async def test_runner_model_slot_defaults_through_agent_definition(tmp_path):
         )
 
     assert captured == ["inherit", "haiku", "opus"]
+
+
+async def test_runner_agents_run_at_the_parent_level(tmp_path):
+    """A workflow agent's requests carry the level of the query that started
+    the workflow (``ToolContext.thinking_effort``, captured by query()), not
+    the persisted settings.effort that every subagent fell back to before."""
+    effort_seen: list = []
+
+    class _Recording(_ScriptedProvider):
+        def chat(self, messages, tools=None, **kwargs):
+            effort_seen.append((kwargs.get("extra_body") or {}).get("reasoning_effort"))
+            return super().chat(messages, tools=tools, **kwargs)
+
+    provider = _Recording([_resp("done")])
+    registry = build_default_registry(provider=provider)
+    ctx = ToolContext(workspace_root=tmp_path)
+    ctx.thinking_effort = "high"
+    runner = LiveAgentRunner(
+        provider=provider,
+        tool_registry=registry,
+        parent_context=ctx,
+        base_tools=list(registry.list_tools()),
+        resolve_agent=lambda _t: GENERAL_PURPOSE_AGENT,
+        run_id="wf_etest",
+        max_turns=2,
+    )
+    await runner.run(AgentSpec(prompt="p"), abort=create_abort_controller(), index="0")
+    assert effort_seen == ["high"]

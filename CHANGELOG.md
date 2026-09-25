@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Delegating to a subagent no longer takes minutes at `/effort max`.** A
+  subagent's requests carried no effort of their own, so every subagent fell
+  back to the saved `settings.effort`: the built-in Explore agent — the fast,
+  read-only search agent — reasoned at `max` on every turn; an `effort:` in an
+  agent definition's frontmatter was parsed and then ignored; and a
+  session-only level (headless `--effort`, or `/effort` on a client that does
+  not save preferences) never reached its subagents. A subagent now runs at
+  its definition's `effort`, else the level its parent runs at (the
+  reference's precedence). Explore caps its level at `low` — a ceiling, so a
+  session with no effort configured still sends none. On the ChatGPT
+  subscription (`gpt-6-astra`, `/effort max`), a "what is this repo" Explore
+  delegation fell from ~121 s to ~57 s (three runs each). This applies where
+  the wire takes an effort level; on first-party Anthropic, Explore runs on
+  `claude-haiku-4-5`, which takes none. Custom agents without an `effort:`
+  keep the session's level.
+- **Subagent tier aliases resolve on the ChatGPT subscription.** `haiku` — the
+  tier the Explore agent asks for — now runs on `gpt-6-luna` (`sonnet` →
+  `gpt-6-sol`, `opus`/`fable` → `gpt-6-astra`) when your plan's model catalog
+  lists it. Before, every alias fell back to the session model (`gpt-6-astra`
+  in the reported session); with the model left to the agent definition the
+  same delegation takes ~33 s. API-key and custom-endpoint OpenAI sessions
+  keep inheriting the session model, as do an explicit `model: "inherit"` and
+  agents that name no model.
+
 ## [1.7.0] - 2026-09-23
 
 ### Added
