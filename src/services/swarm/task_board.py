@@ -57,6 +57,28 @@ def task_board(
             raise
 
 
+def file_version(path: Path) -> tuple[int, int, int] | None:
+    """Identity of a file's current contents; ``None`` if it can't be stat'ed.
+
+    Pollers compare it to skip re-reading a file nobody has written since.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def board_version(context: Any) -> tuple[int, int, int] | None:
+    """``file_version`` of the task board; ``None`` when there is no board file.
+
+    Every write lands through ``write_json_atomic``'s rename, so a change to
+    the board normally gives the file a new inode, size, or mtime.
+    """
+    path = context.task_board_path
+    return None if path is None else file_version(path)
+
+
 def with_task_board(*, write: bool = False) -> Callable:
     """Apply the board transaction to a synchronous task tool."""
 

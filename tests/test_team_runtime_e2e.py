@@ -326,6 +326,108 @@ def test_task_dependencies_shared_board_and_automatic_claim(team):
     assert context.team_runtime.contexts[bob].tasks is context.tasks
 
 
+def watch_idle_claims(monkeypatch, version=None):
+    """Count an idle teammate's board checks and claims; ``version`` fakes
+    what ``board_version`` reports."""
+    import src.services.swarm.team_runtime as team_runtime
+
+    claims, checks = [], []
+    real_claim, real_version = team_runtime.claim_next_task, team_runtime.board_version
+
+    def counting_claim(ctx, owner):
+        claims.append(owner)
+        return real_claim(ctx, owner)
+
+    def counting_version(ctx):
+        checks.append(1)
+        return real_version(ctx) if version is None else version(ctx)
+
+    monkeypatch.setattr(team_runtime, "claim_next_task", counting_claim)
+    monkeypatch.setattr(team_runtime, "board_version", counting_version)
+    return claims, checks
+
+
+def test_idle_teammate_without_a_board_file_claims_every_wake(team, monkeypatch):
+    provider, context, registry = team
+    claims, checks = watch_idle_claims(monkeypatch, version=lambda ctx: None)
+    spawn(team, "alice")
+    eventually(lambda: len(checks) >= 5)
+    # Nothing to compare, so never skip. Read checks first: claims only catch up.
+    assert len(checks) - 1 <= len(claims)
+
+
+def test_idle_teammate_rechecks_a_board_whose_version_never_moves(team, monkeypatch):
+    # Coarse mtimes plus inode reuse can repeat a version across a same-size
+    # rewrite; the skip must not trust it forever.
+    import src.services.swarm.team_runtime as team_runtime
+
+    provider, context, registry = team
+    monkeypatch.setattr(team_runtime, "_IDLE_BOARD_RECHECK_SECONDS", 0.2)
+    _, checks = watch_idle_claims(monkeypatch, version=lambda ctx: (1, 1, 1))
+    spawn(team, "alice")
+    eventually(lambda: len(checks) >= 2)  # the empty claim is recorded first
+    task = call(
+        registry, context, "TaskCreate", subject="Research", description="Inspect"
+    )["task"]["id"]
+    eventually(
+        lambda: call(registry, context, "TaskGet", taskId=task)["task"]["status"]
+        == "completed"
+    )
+    assert provider.assignments == [("alice", task)]
+
+
+def test_idle_teammate_rereads_the_board_only_after_it_changes(team, monkeypatch):
+    # An idle teammate wakes every 50 ms. Re-reading and parsing the whole
+    # board on every wake kept a long team session's backend busy while
+    # nothing was happening.
+    import src.services.swarm.team_runtime as team_runtime
+
+    provider, context, registry = team
+    monkeypatch.setattr(team_runtime, "_IDLE_BOARD_RECHECK_SECONDS", 60.0)
+    claims, checks = watch_idle_claims(monkeypatch)
+    spawn(team, "alice")
+    eventually(lambda: len(checks) >= 10)  # ten idle wakes, well inside the recheck window
+    assert claims == ["alice"]
+
+    task = call(
+        registry, context, "TaskCreate", subject="Research", description="Inspect"
+    )["task"]["id"]
+    eventually(
+        lambda: call(registry, context, "TaskGet", taskId=task)["task"]["status"]
+        == "completed"
+    )
+    assert provider.assignments == [("alice", task)]
+
+
+def test_task_created_while_an_idle_claim_runs_is_still_claimed(team, monkeypatch):
+    import src.services.swarm.team_runtime as team_runtime
+
+    provider, context, registry = team
+    # Out of the way, so only taking the version before the claim can catch it.
+    monkeypatch.setattr(team_runtime, "_IDLE_BOARD_RECHECK_SECONDS", 60.0)
+    created = []
+    real_claim = team_runtime.claim_next_task
+
+    def racing_claim(ctx, owner):
+        taken = real_claim(ctx, owner)
+        if not created:  # the board changes after the claim read it
+            created.append(
+                call(
+                    registry, context, "TaskCreate", subject="Race", description="Mid-claim"
+                )["task"]["id"]
+            )
+        return taken
+
+    monkeypatch.setattr(team_runtime, "claim_next_task", racing_claim)
+    spawn(team, "alice")
+    eventually(lambda: created)
+    eventually(
+        lambda: call(registry, context, "TaskGet", taskId=created[0])["task"]["status"]
+        == "completed"
+    )
+    assert provider.assignments == [("alice", created[0])]
+
+
 def test_plan_rejection_preserves_restrictions_and_approval_unlocks_work(team):
     provider, context, registry = team
     planner = spawn(team, "planner", "MAKE_PLAN", mode="plan")

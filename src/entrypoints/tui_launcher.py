@@ -267,7 +267,12 @@ def _resolve_tui_command(tui_dir: Path | None) -> list[str] | None:
         return [node, str(dist)]
     bun = shutil.which("bun")
     if bun:
-        return [bun, "run", str(tui_dir / "src" / "entry.tsx")]
+        # Same fold as scripts/build.mjs: with NODE_ENV unset React loads its
+        # development build, whose per-render performance.measure() entries
+        # are never freed. A transpile-time define keeps NODE_ENV itself out
+        # of the environment the agent-server and user commands inherit.
+        return [bun, "run", "--define", 'process.env.NODE_ENV:"production"',
+                str(tui_dir / "src" / "entry.tsx")]
     return None
 
 
