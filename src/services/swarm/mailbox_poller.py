@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from src.services.swarm.leader_permission_bridge import deliver_permission_decision
 from src.services.swarm.mailbox import TeammateMessage, get_inbox_path, read_mailbox
+from src.services.swarm.task_board import file_version
 
 if TYPE_CHECKING:
     from src.task_registry import RuntimeTaskRegistry
@@ -220,11 +221,18 @@ def sweep_mailboxes(
     expected_lead_agent_id: str | None = None,
     recipient_to_agent_id: dict[str, str] | None = None,
     deliver: Callable[[str, TeammateMessage], None] | None = None,
+    consumed: dict[Path, tuple[int, int, int]] | None = None,
 ) -> int:
     """Read every tracked recipient's inbox and dispatch new envelopes.
 
     Returns the count of envelopes dispatched on this sweep (for
     observability / test assertions).
+
+    ``consumed`` lets a long-lived poller carry, across sweeps, the inbox
+    versions it has already read to the end. An inbox still at that version
+    holds nothing new, so it is skipped instead of re-read and re-parsed in
+    full — which a 50 ms team poller otherwise does forever, at a cost that
+    grows with every message the inbox has ever held.
 
     ``recipient_to_agent_id`` maps the on-disk recipient name to the
     in-process teammate's ``agent_id``. Callers that don't have this
@@ -243,16 +251,25 @@ def sweep_mailboxes(
         except ValueError:
             # Sanitization-rejected name — skip; the inbox can't exist.
             continue
-        if not inbox_path.exists():
+        # Inboxes are append-only, so any new line changes the version.
+        version = file_version(inbox_path)
+        if version is None:
+            continue
+        if consumed is not None and consumed.get(inbox_path) == version:
             continue
 
-        all_msgs = read_mailbox(
-            recipient_name, team_name=team_name, workspace_root=workspace_root,
-        )
+        try:
+            all_msgs = read_mailbox(
+                recipient_name, team_name=team_name, workspace_root=workspace_root,
+                strict=True,
+            )
+        except OSError:
+            # Not read is not consumed: leave the version unrecorded so the
+            # next sweep retries rather than waiting for another append.
+            logger.exception("mailbox read failed for %s", inbox_path)
+            continue
         offset = _read_offset(inbox_path)
         new_msgs = all_msgs[offset:]
-        if not new_msgs:
-            continue
 
         for msg in new_msgs:
             if deliver is not None:
@@ -304,7 +321,12 @@ def sweep_mailboxes(
                     envelope_type, inbox_path,
                 )
 
-        _write_offset(inbox_path, offset + len(new_msgs))
+        if new_msgs:
+            _write_offset(inbox_path, offset + len(new_msgs))
+        if consumed is not None:
+            # The version was taken BEFORE the read: a line appended mid-read
+            # moves the file past it, so the next sweep reads again.
+            consumed[inbox_path] = version
 
     return dispatched
 

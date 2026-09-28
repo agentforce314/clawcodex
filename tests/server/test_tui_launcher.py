@@ -30,6 +30,21 @@ def test_resolve_tui_dir_finds_repo_client():
     assert (found / "src" / "entry.tsx").exists()
 
 
+def test_bun_fallback_runs_the_production_react_build(tmp_path, monkeypatch):
+    """With no built bundle the client runs from source under bun, which must
+    fold NODE_ENV like the esbuild bundle: the development React leaks a
+    performance.measure() entry per render for the life of the process."""
+    import src.entrypoints.tui_launcher as launcher
+
+    monkeypatch.delenv("CLAWCODEX_TUI_CMD", raising=False)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/opt/bun" if name == "bun" else None)
+
+    assert launcher._resolve_tui_command(tmp_path) == [
+        "/opt/bun", "run", "--define", 'process.env.NODE_ENV:"production"',
+        str(tmp_path / "src" / "entry.tsx"),
+    ]
+
+
 def test_agent_server_cmd_invokes_module():
     """The backend command the client spawns is a runnable python -m entry."""
     class _Args:

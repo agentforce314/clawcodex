@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The TUI no longer slows to a crawl in long sessions.** The bundle shipped
+  React's development build: the launcher runs `node dist/entry.js` with
+  `NODE_ENV` unset, and React picks its build from that at load time. Its
+  performance tracks record a `performance.measure()` on every commit, and
+  Node keeps each entry for the life of the process, so the heap grew with
+  every frame — roughly 200 MB an hour from the spinner alone, about three
+  times that while agents reported progress. A multi-hour agent-team session
+  reached 3 GB of heap against V8's 4.5 GB limit, where frequent full garbage
+  collections pause the UI. The build now folds `NODE_ENV` to `production`,
+  dropping the dev build (and its per-render checks) from the bundle, and the
+  `bun run` fallback used without a built bundle gets the same define.
+- **An idle agent team no longer keeps the backend busy.** Every 50 ms the
+  team's mailbox poller re-read and re-parsed every message each inbox had
+  ever held, and each idle teammate re-read the whole task board, so an idle
+  team burned CPU in proportion to how much it had said. Both now skip a file
+  that has not changed since they last read it to the end (a failed read is
+  retried, and an idle teammate still re-reads the board every 2 seconds).
 - **The TUI's agents overlay names each agent.** Rows in the spawn tree showed
   only the task description, so a team of named specialists read as a list of
   anonymous tasks. Each row now leads with the spawn's name (a teammate's

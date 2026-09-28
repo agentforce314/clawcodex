@@ -275,6 +275,7 @@ def read_mailbox(
     *,
     team_name: str,
     workspace_root: Path,
+    strict: bool = False,
 ) -> list[TeammateMessage]:
     """Read every parseable message; skip blank/unparseable lines.
 
@@ -285,9 +286,14 @@ def read_mailbox(
 
     The ``log-once`` guard prevents a corrupt file from spamming the
     log on every read.
+
+    ``strict`` raises instead of returning ``[]`` when the inbox cannot be
+    opened, for a caller that must tell "could not read" apart from "nothing
+    there". It skips the ``exists()`` pre-check, which can swallow an error
+    as "missing"; the open itself reports it.
     """
     path = get_inbox_path(recipient_name, team_name, workspace_root)
-    if not path.exists():
+    if not strict and not path.exists():
         return []
 
     messages: list[TeammateMessage] = []
@@ -295,6 +301,8 @@ def read_mailbox(
     try:
         handle = open(path, "rb")
     except OSError:
+        if strict:
+            raise
         logger.exception("mailbox open failed for %s", path)
         return []
     try:

@@ -9,6 +9,7 @@ import shutil
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from xml.sax.saxutils import escape, quoteattr
@@ -25,6 +26,7 @@ from src.services.swarm.mailbox import (
 )
 from src.services.swarm.mailbox_poller import sweep_mailboxes
 from src.services.swarm.task_board import (
+    board_version,
     claim_next_task,
     release_tasks,
     write_json_atomic,
@@ -55,6 +57,11 @@ from src.utils.abort_controller import AbortController, create_child_abort_contr
 from src.utils.message_queue_manager import enqueue_pending_notification
 
 logger = logging.getLogger(__name__)
+
+# How long an idle teammate may trust an unchanged board version. A same-size
+# rewrite can repeat inode+size+mtime where mtimes are coarse (FAT, older ext4),
+# so the skip re-reads anyway after this long rather than miss a task for good.
+_IDLE_BOARD_RECHECK_SECONDS = 2.0
 
 
 def _approve(message: dict[str, Any]) -> bool:
@@ -434,6 +441,9 @@ class TeamRuntime:
             )
 
     def _poll(self, stop_event: threading.Event) -> None:
+        # Inbox versions already read to the end, so each 50 ms sweep skips
+        # the unchanged inboxes instead of re-parsing every message they hold.
+        consumed: dict[Path, tuple[int, int, int]] = {}
         while not self.stop.is_set() and not stop_event.is_set():
             try:
                 with self.lock:
@@ -446,6 +456,7 @@ class TeamRuntime:
                     team_name=self.name,
                     recipient_to_agent_id=recipients,
                     deliver=self._receive,
+                    consumed=consumed,
                 )
             except Exception:
                 logger.exception("team mailbox sweep failed for %s", self.name)
@@ -595,6 +606,9 @@ class TeamRuntime:
             )
             prompt = params.prompt
             first = True
+            # Board version (and when) at the last claim that found nothing.
+            idle_board: tuple[int, int, int] | None = None
+            idle_since = 0.0
             while not controller.signal.aborted:
                 state = registry.get(agent_id)
                 if state is None or state.shutdown_approved:
@@ -612,9 +626,22 @@ class TeamRuntime:
                         )
                     )
                     if not pending and not state.awaiting_plan_approval:
-                        assignment = claim_next_task(self.context, name)
-                        if assignment:
-                            pending = ["Task assigned: " + json.dumps(assignment)]
+                        # An idle teammate wakes every 50 ms; re-reading and
+                        # parsing the whole board each time only finds the
+                        # same nothing until someone writes it. The version is
+                        # taken before the claim, so a write racing the claim
+                        # still differs next time round.
+                        board = board_version(self.context)
+                        if (
+                            board is None
+                            or board != idle_board
+                            or time.monotonic() - idle_since >= _IDLE_BOARD_RECHECK_SECONDS
+                        ):
+                            assignment = claim_next_task(self.context, name)
+                            if assignment:
+                                pending = ["Task assigned: " + json.dumps(assignment)]
+                            else:
+                                idle_board, idle_since = board, time.monotonic()
                     if not pending:
                         await asyncio.sleep(0.05)
                         continue

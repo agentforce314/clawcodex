@@ -312,6 +312,159 @@ def test_offset_advances_so_envelopes_are_not_replayed(tmp_path: Path) -> None:
     assert state.pending_user_messages == ["first"]  # not duplicated
 
 
+def _counting_reads(monkeypatch: pytest.MonkeyPatch, after_read=None) -> list:
+    import src.services.swarm.mailbox_poller as poller
+
+    reads: list = []
+    real_read = poller.read_mailbox
+
+    def read(*args, **kwargs):
+        messages = real_read(*args, **kwargs)
+        reads.append(len(messages))
+        if after_read is not None:
+            after_read(len(reads))
+        return messages
+
+    monkeypatch.setattr(poller, "read_mailbox", read)
+    return reads
+
+
+def test_consumed_inbox_is_not_reread_until_it_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The team poller sweeps every 50 ms; re-parsing every message an inbox
+    # ever held on each sweep burned hours of CPU in a long team session.
+    reg = RuntimeTaskRegistry()
+    agent_id = _make_teammate(reg)
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="first", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+    reads = _counting_reads(monkeypatch)
+    consumed: dict = {}
+
+    def sweep() -> int:
+        return sweep_mailboxes(
+            runtime_tasks=reg, workspace_root=tmp_path, team_name="t",
+            recipient_to_agent_id={"alice": agent_id}, consumed=consumed,
+        )
+
+    assert sweep() == 1
+    assert [sweep(), sweep(), sweep()] == [0, 0, 0]
+    assert reads == [1]  # the unchanged inbox was never read again
+
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="second", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+    assert sweep() == 1
+    assert reads == [1, 2]
+    assert reg.get(agent_id).pending_user_messages == ["first", "second"]
+
+
+def test_line_appended_during_a_read_is_picked_up_next_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reg = RuntimeTaskRegistry()
+    agent_id = _make_teammate(reg)
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="first", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+
+    def race(n_reads: int) -> None:
+        if n_reads == 1:  # a writer lands between the read and the bookkeeping
+            write_to_mailbox("alice", TeammateMessage(from_="x", text="raced", timestamp="t"),
+                             team_name="t", workspace_root=tmp_path)
+
+    _counting_reads(monkeypatch, after_read=race)
+    consumed: dict = {}
+
+    def sweep() -> int:
+        return sweep_mailboxes(
+            runtime_tasks=reg, workspace_root=tmp_path, team_name="t",
+            recipient_to_agent_id={"alice": agent_id}, consumed=consumed,
+        )
+
+    assert sweep() == 1
+    assert sweep() == 1
+    assert reg.get(agent_id).pending_user_messages == ["first", "raced"]
+
+
+def test_inbox_that_failed_to_open_is_retried_next_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed read is not a consumed read. Before the skip existed the next
+    # sweep retried on its own; recording the version after a swallowed open
+    # error would park the message until some other message arrived.
+    import builtins
+
+    import src.services.swarm.mailbox as mailbox
+
+    reg = RuntimeTaskRegistry()
+    agent_id = _make_teammate(reg)
+    consumed: dict = {}
+
+    def sweep() -> int:
+        return sweep_mailboxes(
+            runtime_tasks=reg, workspace_root=tmp_path, team_name="t",
+            recipient_to_agent_id={"alice": agent_id}, consumed=consumed,
+        )
+
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="first", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+    assert sweep() == 1
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="shutdown please", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+
+    real_open = builtins.open
+    failed: list = []
+
+    def open_fails_once(path, *args, **kwargs):
+        if str(path).endswith("alice.jsonl") and not failed:
+            failed.append(path)
+            raise OSError(24, "Too many open files")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(mailbox, "open", open_fails_once, raising=False)
+    assert sweep() == 0
+    assert failed
+    assert sweep() == 1
+    assert reg.get(agent_id).pending_user_messages == ["first", "shutdown please"]
+
+
+def test_inbox_whose_existence_check_fails_is_retried_next_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Path.exists() turns a transient stat error into False (every OSError on
+    # 3.14). A strict read must not report that as an empty, consumed inbox.
+    reg = RuntimeTaskRegistry()
+    agent_id = _make_teammate(reg)
+    consumed: dict = {}
+
+    def sweep() -> int:
+        return sweep_mailboxes(
+            runtime_tasks=reg, workspace_root=tmp_path, team_name="t",
+            recipient_to_agent_id={"alice": agent_id}, consumed=consumed,
+        )
+
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="first", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+    assert sweep() == 1
+    write_to_mailbox("alice", TeammateMessage(from_="x", text="shutdown please", timestamp="t"),
+                     team_name="t", workspace_root=tmp_path)
+
+    real_exists = Path.exists
+    failed: list = []
+
+    def exists_fails_once(self, *args, **kwargs):
+        if self.name == "alice.jsonl" and not failed:
+            failed.append(self)
+            return False
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", exists_fails_once)
+    delivered = sweep()
+    monkeypatch.undo()
+    delivered += sum(sweep() for _ in range(3))
+    assert delivered == 1
+    assert reg.get(agent_id).pending_user_messages == ["first", "shutdown please"]
+
+
 # ---------------------------------------------------------------------------
 # Daemon thread lifecycle
 # ---------------------------------------------------------------------------
