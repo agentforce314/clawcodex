@@ -297,6 +297,128 @@ describe('GatewayClient NDJSON adapter', () => {
     proc.line({ response: { request_id: req.request_id, response }, type: 'control_response' })
   }
 
+  // ── resume picker ──────────────────────────────────────────────────────────
+  // session.list and session.resume used to resolve locally, so /resume showed
+  // "0 resumable" in every workspace and a picked row left the old
+  // conversation in place. They now ride the list_sessions / resume controls.
+
+  it('lists this workspace saved sessions for the resume picker', async () => {
+    proc.line(INIT)
+    const p = gw.request('session.list', { limit: 200 })
+    await replyToControl('list_sessions', {
+      sessions: [{ message_count: 788, name: '', preview: '/math-team formal', session_id: 'ds_old', updated_at: 1_790_538_257 }]
+    })
+    await expect(p).resolves.toEqual({
+      sessions: [{ id: 'ds_old', message_count: 788, preview: '/math-team formal', started_at: 1_790_538_257, title: '' }]
+    })
+    expect(seen.find(f => f.request?.subtype === 'list_sessions').request).toMatchObject({ cwd: '/ws', limit: 200 })
+  })
+
+  it('keeps the switcher 1.5 s live-session poll off the backend', async () => {
+    proc.line(INIT)
+    await expect(gw.request('session.active_list', {})).resolves.toEqual({ sessions: [] })
+    seen.push(...stdinFrames())
+    expect(seen.some(f => f.request?.subtype === 'list_sessions')).toBe(false)
+  })
+
+  it('resumes a saved session through the backend and hands back its transcript', async () => {
+    proc.line(INIT)
+    const p = gw.request<any>('session.resume', { session_id: 'ds_old' })
+    await replyToControl('resume', {
+      count: 4,
+      messages: [
+        { role: 'user', text: 'prove the lemma' },
+        { input: { file_path: '/ws/notes.md' }, name: 'Read', role: 'tool' },
+        { role: 'assistant', text: 'It holds.' }
+      ],
+      mode_banner: 'Entered coordinator mode to match resumed session.',
+      ok: true,
+      session_turns: 5
+    })
+    await replyToControl('get_settings', { model: 'gpt-6-astra' })
+    const r = await p
+
+    expect(r).toMatchObject({ message_count: 4, session_id: 's1' })
+    expect(r.messages).toEqual([
+      { role: 'user', text: 'prove the lemma' },
+      { context: 'notes.md', name: 'Read', role: 'tool' },
+      { role: 'assistant', text: 'It holds.' },
+      { role: 'system', text: 'Entered coordinator mode to match resumed session.' }
+    ])
+    expect(r.info.model).toBe('gpt-6-astra')
+    expect(seen.find(f => f.request?.subtype === 'resume').request).toMatchObject({
+      include_messages: true,
+      session_id: 'ds_old'
+    })
+    // Stamped after the reply, not with it: the switcher zeroes the stats
+    // line when the reply lands and relies on this event to refill it.
+    expect(last('session.stats')).toBeUndefined()
+    await vi.waitFor(() => expect(last('session.stats')?.payload).toMatchObject({ session_turns: 5 }))
+  })
+
+  it('surfaces a refused resume instead of pretending it worked', async () => {
+    proc.line(INIT)
+    const p = gw.request('session.resume', { session_id: 'gone' })
+    await replyToControl('resume', { error: 'session not found', ok: false })
+    await expect(p).rejects.toThrow('session not found')
+  })
+
+  it('stamps the resumed stats after the caller reset, however late get_settings answers', async () => {
+    proc.line(INIT)
+    const order: string[] = []
+    gw.on('event', (e: any) => e.type === 'session.stats' && order.push('stats'))
+    // resumeById resets the stats line synchronously when the reply lands.
+    const p = gw.request<any>('session.resume', { session_id: 'ds_old' }).then(r => (order.push('reset'), r))
+    await replyToControl('resume', { count: 1, cron_notice: '⏰ Restored 1 scheduled task(s).', messages: [], ok: true, session_turns: 5 })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await replyToControl('get_settings', { model: 'm' })
+    const r = await p
+    await vi.waitFor(() => expect(order).toEqual(['reset', 'stats']))
+    expect(r.messages).toEqual([{ role: 'system', text: '⏰ Restored 1 scheduled task(s).' }])
+  })
+
+  it('publishes gateway.ready once per backend, even when a resume re-sends init', async () => {
+    proc.line(INIT)
+    await vi.waitFor(() => expect(types()).toContain('gateway.ready'))
+    // A resume that flips coordinator mode re-emits system/init; a second
+    // ready would rerun startup and forge a session over the repaint.
+    proc.line({ ...INIT, tools: [{ name: 'Agent' }] })
+    await vi.waitFor(() => expect(types().filter(t => t === 'session.info')).toHaveLength(2))
+    expect(types().filter(t => t === 'gateway.ready')).toHaveLength(1)
+    expect(Object.values(last('session.info').payload.tools).flat()).toEqual(['Agent'])
+  })
+
+  it('publishes gateway.ready again for a respawned backend, so crash recovery still runs', async () => {
+    proc.line(INIT)
+    await vi.waitFor(() => expect(types().filter(t => t === 'gateway.ready')).toHaveLength(1))
+    // useMainApp's exit handler calls start() again on the same client.
+    const respawned = new FakeProc()
+    harness.proc = respawned
+    gw.start()
+    respawned.line({ ...INIT, session_id: 's2' })
+    await vi.waitFor(() => expect(types().filter(t => t === 'gateway.ready')).toHaveLength(2))
+  })
+
+  it('reports a refused session list rather than an empty one', async () => {
+    proc.line(INIT)
+    const p = gw.request('session.list', { limit: 200 })
+    await replyToControl('list_sessions', { error: 'sandbox refused to start', ok: false })
+    await expect(p).rejects.toThrow('sandbox refused to start')
+  })
+
+  it('deletes a saved session through the backend, and reports a refusal', async () => {
+    proc.line(INIT)
+    const ok = gw.request('session.delete', { session_id: 'ds_old' })
+    await replyToControl('delete_session', { deleted: 'ds_old', ok: true })
+    await expect(ok).resolves.toEqual({ deleted: 'ds_old' })
+    expect(seen.find(f => f.request?.subtype === 'delete_session').request).toMatchObject({ session_id: 'ds_old' })
+
+    seen = []
+    const refused = gw.request('session.delete', { session_id: 's1' })
+    await replyToControl('delete_session', { error: 'cannot delete the live session', ok: false })
+    await expect(refused).rejects.toThrow('cannot delete the live session')
+  })
+
   // ── delegation control plane ───────────────────────────────────────────────
   // These three RPCs had no case in request(), so they hit the `default:` arm
   // and resolved `{}` — the agents overlay's status readout, pause key and

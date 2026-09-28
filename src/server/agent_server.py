@@ -58,6 +58,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import os
 import queue as _queue
 import re
 import tempfile
@@ -67,6 +69,7 @@ import uuid as _uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -809,7 +812,31 @@ class _AgentSession:
             self._do_rewind(request_id, inner.get("turns", 1))
             return
         if subtype == "list_sessions":
-            self._reply(request_id, {"sessions": _list_saved_sessions()})
+            # Parses every saved session file, so it runs off the loop.
+            limit = inner.get("limit")
+            cwd = inner.get("cwd")
+            sessions = await asyncio.to_thread(
+                _list_saved_sessions,
+                min(max(limit, 1), 200) if isinstance(limit, int) and not isinstance(limit, bool) else 20,
+                cwd=cwd if isinstance(cwd, str) and cwd else None,
+                exclude=self.session_id,
+            )
+            self._reply(request_id, {"sessions": sessions})
+            return
+        if subtype == "delete_session":
+            # The resume picker's `d d`. The live session's file is the one
+            # being written, so it is not deletable from under it.
+            target = inner.get("session_id")
+            if not isinstance(target, str) or not target:
+                self._reply(request_id, {"ok": False, "error": "missing session_id"})
+            elif target == self.session_id:
+                self._reply(request_id, {"ok": False, "error": "cannot delete the live session"})
+            else:
+                from src.server.desktop_sessions import delete_session
+
+                deleted = delete_session(_sessions_dir(), target)
+                self._reply(request_id, {"ok": True, "deleted": target} if deleted
+                            else {"ok": False, "error": "session not found"})
             return
         if subtype == "rename":
             name = inner.get("name")
@@ -821,7 +848,19 @@ class _AgentSession:
             self._start_generate_title(request_id, inner.get("text"))
             return
         if subtype == "resume":
-            self._do_resume(request_id, inner.get("session_id"))
+            target = inner.get("session_id")
+            # `/resume <title>` names a session instead of its file; finding
+            # it reads every saved session, so off the loop.
+            if isinstance(target, str) and target and _saved_session_file(target) is None:
+                named = await asyncio.to_thread(
+                    _saved_session_named, target, cwd=self.cwd, exclude=self.session_id,
+                )
+                target = named or target
+            self._do_resume(
+                request_id,
+                target,
+                include_messages=bool(inner.get("include_messages")),
+            )
             return
         if subtype == "get_activity":
             self._reply(request_id, self._activity_snapshot())
@@ -3354,9 +3393,14 @@ class _AgentSession:
             "busy": turn_active or queued or goal_active or scheduled or background,
         }
 
-    def _do_resume(self, request_id: object, session_id: object) -> None:
+    def _do_resume(
+        self, request_id: object, session_id: object, *, include_messages: bool = False
+    ) -> None:
         """Load a saved conversation into this session (the original's /resume).
-        Idle-only — replacing the conversation mid-turn would race the worker."""
+        Idle-only — replacing the conversation mid-turn would race the worker.
+
+        ``include_messages`` adds the conversation as transcript rows, for a
+        client that repaints the resumed history (the Ink TUI's picker)."""
         with self._lock:
             active = self._current_abort is not None
         if active:
@@ -3366,8 +3410,8 @@ class _AgentSession:
             if not isinstance(session_id, str) or not session_id:
                 self._reply(request_id, {"ok": False, "error": "missing session_id"})
                 return
-            f = _sessions_dir() / f"{session_id}.json"
-            if not f.exists():
+            f = _saved_session_file(session_id)
+            if f is None:
                 self._reply(request_id, {"ok": False, "error": "session not found"})
                 return
             from src.agent.conversation import Conversation
@@ -3493,6 +3537,7 @@ class _AgentSession:
             # only an ACTIVE goal carries over; turn count, timer, and the
             # token-spend baseline reset. Achieved/cleared goals stay gone.
             goal_notice = None
+            cron_notice = None
             saved_goal = data.get("goal")
             if isinstance(saved_goal, dict):
                 try:
@@ -3543,10 +3588,11 @@ class _AgentSession:
                     if isinstance(saved_sched, dict) else 0
                 )
                 if restored_n:
-                    self._push_cron_state(
+                    cron_notice = (
                         f"⏰ Restored {restored_n} scheduled task(s) "
                         "from the saved session."
                     )
+                    self._push_cron_state(cron_notice)
                 else:
                     self._push_cron_state()
             except Exception:  # noqa: BLE001 — must not break resume
@@ -3563,6 +3609,10 @@ class _AgentSession:
                 "cost": _cost_snapshot(),
                 **({"mode_banner": mode_banner} if mode_banner else {}),
                 **({"goal_notice": goal_notice} if goal_notice else {}),
+                # Also pushed as a cron_status line above; carried here too for
+                # a client that repaints the transcript once this reply lands.
+                **({"cron_notice": cron_notice} if cron_notice else {}),
+                **({"messages": _transcript_rows(conv.messages)} if include_messages else {}),
             })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] resume failed")
@@ -7025,6 +7075,80 @@ def _first_prompt_preview(msgs: list) -> str:
     return ""
 
 
+# A saved session's id as a file stem: no separators, so it can't leave the
+# sessions directory (the same set desktop_sessions._safe_id accepts).
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _saved_session_file(session_id: str) -> Path | None:
+    """The saved file of a plain session id; ``None`` when there is none, or
+    when the id has path pieces that could reach outside the directory."""
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+    f = _sessions_dir() / f"{session_id}.json"
+    return f if f.exists() else None
+
+
+def _saved_session_named(title: str, *, cwd: str, exclude: str | None) -> str | None:
+    """`/resume <title>`: the newest of this workspace's sessions renamed to
+    ``title`` (case-insensitive), as long as its id is a plain one."""
+    wanted = title.strip().casefold()
+    if not wanted:  # a blank title would match every unnamed session
+        return None
+    for row in _list_saved_sessions(200, cwd=cwd, exclude=exclude):
+        if row["name"].strip().casefold() == wanted and _SESSION_ID_RE.fullmatch(row["session_id"]):
+            return row["session_id"]
+    return None
+
+# The tool-input fields the TUI's trail summary reads (gatewayClient toolContext).
+_TOOL_CONTEXT_FIELDS = (
+    "pattern", "file_path", "path", "notebook_path", "command", "url", "query",
+    "description", "prompt",
+)
+
+
+def _transcript_rows(msgs: list) -> list[dict]:
+    """A saved conversation as the TUI's transcript rows: prompts and replies
+    as ``{role, text}``, each tool call as ``{role: "tool", name, input}``.
+
+    What a live turn never painted stays out: meta and compact-summary
+    messages, injected ``<system-reminder>`` prompts (teammate mail, task
+    notices — the web client hides the same rows), tool results, and reasoning
+    items. A tool row keeps only the input fields its one-line summary reads,
+    so a Write doesn't ship the whole file it wrote.
+    """
+
+    def field(block: object, key: str) -> object:
+        return block.get(key) if isinstance(block, dict) else getattr(block, key, None)
+
+    def injected(role: str, text: str) -> bool:
+        return role == "user" and text.lstrip().startswith("<system-reminder>")
+
+    rows: list[dict] = []
+    for m in msgs:
+        role = getattr(m, "role", None)
+        if role not in ("user", "assistant") or getattr(m, "isMeta", False) \
+                or getattr(m, "isCompactSummary", False):
+            continue
+        content = getattr(m, "content", None)
+        blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        for block in blocks or []:
+            kind = field(block, "type")
+            if kind == "text":
+                text = field(block, "text")
+                if isinstance(text, str) and text.strip() and not injected(role, text):
+                    rows.append({"role": role, "text": text})
+            elif kind == "tool_use" and role == "assistant":
+                raw = field(block, "input")
+                summary = {
+                    key: str(value)[:500]
+                    for key, value in (raw.items() if isinstance(raw, dict) else ())
+                    if key in _TOOL_CONTEXT_FIELDS and isinstance(value, (str, int, float))
+                }
+                rows.append({"role": "tool", "name": str(field(block, "name") or "tool"), "input": summary})
+    return rows
+
+
 def _count_prompt_turns(msgs: list) -> int:
     """Real user prompts in a conversation — re-seeds ``_stats_turns`` after
     /resume and /rewind. A prompt is a user message that isn't an injected
@@ -7045,30 +7169,71 @@ def _count_prompt_turns(msgs: list) -> int:
     return n
 
 
-def _list_saved_sessions(limit: int = 20) -> list[dict]:
-    """Saved sessions, newest first (for /resume)."""
-    out: list[dict] = []
+def _updated_epoch(value: object, fallback: float) -> float:
+    """A session file's ``updated_at`` as epoch seconds.
+
+    The agent server writes a float; the older session writer wrote an ISO
+    string. Sorting the two together raised, so this is the one sortable form
+    — anything unreadable (or non-finite, which would also break the JSON
+    reply) falls back to the file's mtime.
+    """
+    epoch: float | None = None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        epoch = float(value)
+    elif isinstance(value, str):
+        try:
+            epoch = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (ValueError, OSError, OverflowError):  # OSError: a pre-1970 local time on Windows
+            epoch = None
+    return epoch if epoch is not None and math.isfinite(epoch) else fallback
+
+
+def _list_saved_sessions(
+    limit: int = 20, *, cwd: str | None = None, exclude: str | None = None
+) -> list[dict]:
+    """Saved sessions, newest first (for /resume).
+
+    ``cwd`` keeps the sessions that ran in that directory — a resume replays a
+    conversation into this session's workspace, so another project's rows only
+    crowd the picker. ``exclude`` drops one id: the live session is not
+    something to resume into itself.
+    """
     try:
-        d = _sessions_dir()
-        if not d.exists():
-            return []
-        for f in d.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
-            out.append({
-                "session_id": data.get("session_id", f.stem),
-                "updated_at": data.get("updated_at", 0),
-                "preview": data.get("preview", ""),
-                "name": data.get("name") or "",
-                "message_count": data.get("message_count", 0),
-                "model": data.get("model", ""),
-                "cwd": data.get("cwd", ""),  # for the TagTabs project filter
-            })
-        out.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
-    except Exception:  # noqa: BLE001
-        pass
+        files = list(_sessions_dir().glob("*.json"))
+    except OSError:
+        return []
+    want = os.path.normpath(cwd) if cwd else None
+    out: list[dict] = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            mtime = f.stat().st_mtime
+        except Exception:  # noqa: BLE001 — one bad file must not hide the rest
+            continue
+        if not isinstance(data, dict):
+            continue
+        session_id = data.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            session_id = f.stem
+        name = data.get("name")
+        session_cwd = data.get("cwd") or ""
+        if session_id == exclude:
+            continue
+        if want is not None and (
+            not isinstance(session_cwd, str) or not session_cwd
+            or os.path.normpath(session_cwd) != want
+        ):
+            continue
+        out.append({
+            "session_id": session_id,
+            "updated_at": _updated_epoch(data.get("updated_at"), mtime),
+            "preview": data.get("preview", ""),
+            "name": name if isinstance(name, str) else "",
+            "message_count": data.get("message_count", 0),
+            "model": data.get("model", ""),
+            "cwd": session_cwd,  # for the TagTabs project filter
+        })
+    out.sort(key=lambda s: s["updated_at"], reverse=True)
     return out[:limit]
 
 

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/resume` in the TUI finds and resumes saved sessions.** The Sessions
+  picker (`/resume`, `/sessions`, `/switch`) said "0 resumable" in every
+  workspace: the client answered its own list request with nothing, and
+  resuming by id silently kept the current conversation. It now lists this
+  workspace's saved sessions, newest first; picking one (or `/resume <id or
+  title>`) replays the conversation into the live session, repaints its
+  transcript, and restores its turn count. `d d` on a row deletes it. The
+  backend's session list is sorted again too: files store `updated_at` as a
+  number or, from the older writer, a date string, and sorting the mix failed
+  silently, so a list request returned an arbitrary slice instead of the
+  newest sessions.
 - **The TUI no longer slows to a crawl in long sessions.** The bundle shipped
   React's development build: the launcher runs `node dist/entry.js` with
   `NODE_ENV` unset, and React picks its build from that at load time. Its
