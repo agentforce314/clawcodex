@@ -396,12 +396,21 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
           })
           .catch((e: Error) => {
+            // Nothing to stay on (startup resume, crash recovery of a session
+            // that never saved): without a session every prompt only queues,
+            // so start a fresh one and say why.
+            if (!getUiState().sid) {
+              void newSession(`could not resume ${id}: ${e.message}`)
+
+              return
+            }
+
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
+    [closeSession, colsRef, gw, newSession, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys]
   )
 
   const guardBusySessionSwitch = useCallback(

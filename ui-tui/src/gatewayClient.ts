@@ -26,8 +26,11 @@ import type {
   CostSnapshot,
   CronSnapshot,
   GatewayEvent,
+  GatewayTranscriptMessage,
   GoalSnapshot,
   PatchHunk,
+  SessionListItem,
+  SessionResumeResponse,
   StructuredDiffPayload
 } from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
@@ -51,6 +54,9 @@ const WORKTREE_RPC_TIMEOUT_MS = 600_000
  *  downsamples through Pillow. A timeout here would drop an image the user
  *  watched themselves paste. */
 const IMAGE_RPC_TIMEOUT_MS = 30_000
+/** Listing parses every saved session file, and a resume parses one that can
+ *  run to megabytes; both outlast the 5 s default on a long history. */
+const SESSION_RPC_TIMEOUT_MS = 30_000
 /** Fallback app version for the banner ("clawcodex v{version}").
  *
  *  The version normally comes from the backend's `system/init` frame, which
@@ -144,6 +150,51 @@ function toolContext(input: any): string {
   const v = input.command ?? input.url ?? input.query ?? input.description ?? input.prompt
 
   return v == null ? '' : String(v)
+}
+
+/** The backend's saved-session rows → the switcher's resumable history.
+ *  `started_at` carries the last-updated time: the row's age should say when
+ *  the session was last used, not when it began. */
+function toSessionListItems(rows: unknown): SessionListItem[] {
+  if (!Array.isArray(rows)) {return []}
+
+  return rows.flatMap(row => {
+    const s = (row ?? {}) as Record<string, unknown>
+    const id = typeof s.session_id === 'string' ? s.session_id : ''
+
+    return id
+      ? [
+          {
+            id,
+            message_count: typeof s.message_count === 'number' ? s.message_count : 0,
+            preview: typeof s.preview === 'string' ? s.preview : '',
+            started_at: typeof s.updated_at === 'number' ? s.updated_at : 0,
+            title: typeof s.name === 'string' ? s.name : ''
+          }
+        ]
+      : []
+  })
+}
+
+/** The backend's resume rows → transcript rows. A tool row's one-line summary
+ *  is built here with the same toolContext a live tool.start uses, so a
+ *  resumed trail reads like the one the session showed while it ran. */
+function toResumedTranscript(rows: unknown): GatewayTranscriptMessage[] {
+  if (!Array.isArray(rows)) {return []}
+
+  return rows.flatMap((row): GatewayTranscriptMessage[] => {
+    const r = (row ?? {}) as Record<string, unknown>
+
+    if (r.role === 'tool') {
+      return [{ context: toolContext(r.input), name: String(r.name ?? 'tool'), role: 'tool' }]
+    }
+
+    if ((r.role === 'user' || r.role === 'assistant' || r.role === 'system') && typeof r.text === 'string') {
+      return [{ role: r.role, text: r.text }]
+    }
+
+    return []
+  })
 }
 
 /** Shorten an absolute path to a workspace-relative path (or basename). */
@@ -899,6 +950,11 @@ export class GatewayClient extends EventEmitter {
   private proc: ChildProcess | null = null
   private readyPromise: Promise<void>
   private readyResolve: (() => void) | null = null
+  // gateway.ready runs the app's startup (forge or resume a session), so it
+  // fires once per spawned backend. A resume that flips coordinator mode
+  // re-sends system/init; that one only refreshes session.info — as a second
+  // ready it forged a new session over the transcript just repainted.
+  private readyPublished = false
   private readyTimer: null | ReturnType<typeof setTimeout> = null
   private reqId = 0
   private sessionId = ''
@@ -926,6 +982,7 @@ export class GatewayClient extends EventEmitter {
 
   // ── lifecycle ────────────────────────────────────────────────────────────
   start(): void {
+    this.readyPublished = false
     const cmd = resolveAgentCmd()
     const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
     const env = { ...process.env, PYTHONUNBUFFERED: '1' }
@@ -1152,12 +1209,19 @@ export class GatewayClient extends EventEmitter {
         // the live mode, so the client can't step into bypassPermissions
         // unconditionally or desync a cursor after /mode.
         return this.controlQuery('cycle_permission_mode', {}).then(r => (r ?? {}) as T)
+      case 'session.resume': {
+        const wanted = String((params as any)?.session_id ?? '')
+
+        if (wanted) {
+          return this.readyPromise.then(() => this.resumeSaved(wanted) as Promise<T>)
+        }
+
+        return this.readyPromise.then(() => ({ info: this.sessionInfo ?? undefined, session_id: this.sessionId }) as T)
+      }
 
       case 'session.activate':
 
       case 'session.create':
-
-      case 'session.resume':
         // clawcodex runs a single agent-server session; hand back its id once
         // system/init has set it. The app then enables the composer.
         return this.readyPromise.then(() => ({ info: this.sessionInfo ?? undefined, session_id: this.sessionId }) as T)
@@ -1286,12 +1350,48 @@ export class GatewayClient extends EventEmitter {
       }
 
       case 'session.active_list':
-
-      case 'session.list':
-        // Single agent-server session in the basic port; the switcher/resume
-        // list is Phase 2. Resolve locally so the 1.5s poll doesn't spam the
-        // backend with list_sessions.
+        // One agent-server session, so no other live sessions to switch to.
+        // Resolved locally: the switcher polls this every 1.5 s.
         return Promise.resolve({ sessions: [] } as T)
+      case 'session.list': {
+        // The resumable history: this workspace's saved sessions, newest
+        // first, without the live one (the backend drops its own id).
+        const limit = typeof (params as any)?.limit === 'number' ? (params as any).limit : undefined
+
+        return this.readyPromise
+          .then(() =>
+            this.controlQuery('list_sessions', { cwd: this.sessionInfo?.cwd, limit }, SESSION_RPC_TIMEOUT_MS)
+          )
+          .then(r => {
+            if (!r) {
+              throw new Error('session list timed out')
+            }
+
+            // A refusal (a session that failed to start) is not "0 resumable".
+            if ((r as any).ok === false) {
+              throw new Error(String((r as any).error ?? 'could not list sessions'))
+            }
+
+            return { sessions: toSessionListItems((r as any).sessions) } as T
+          })
+      }
+
+      case 'session.delete': {
+        // The switcher's `d d` on a resumable row: remove its saved file.
+        const target = String((params as any)?.session_id ?? '')
+
+        return this.controlQuery('delete_session', { session_id: target }).then(r => {
+          if (!r) {
+            throw new Error('delete timed out')
+          }
+
+          if ((r as any).ok === false) {
+            throw new Error(String((r as any).error ?? 'delete failed'))
+          }
+
+          return { deleted: String((r as any).deleted ?? target) } as T
+        })
+      }
 
       case 'session.interrupt':
         this.sendControl('interrupt', {})
@@ -2437,7 +2537,12 @@ export class GatewayClient extends EventEmitter {
           this.sessionId = String(msg.session_id ?? '')
           this.sessionInfo = this.toSessionInfo(msg)
           this.readyResolve?.()
-          this.publish({ payload: {}, session_id: this.sessionId, type: 'gateway.ready' })
+
+          if (!this.readyPublished) {
+            this.readyPublished = true
+            this.publish({ payload: {}, session_id: this.sessionId, type: 'gateway.ready' })
+          }
+
           this.publish({ payload: this.sessionInfo, session_id: this.sessionId, type: 'session.info' })
         } else if (msg.subtype === 'status') {
           if (typeof msg.permission_mode === 'string' && msg.permission_mode) {
@@ -2849,6 +2954,51 @@ export class GatewayClient extends EventEmitter {
       session_id: typeof c.session_id === 'string' ? c.session_id : undefined,
       type: 'goal.state'
     })
+  }
+
+  /** Replay a saved session into the live agent-server session (the
+   *  backend's `resume` control) and hand the switcher its transcript. The
+   *  session keeps its live id: the resumed conversation continues there. */
+  private async resumeSaved(sessionId: string): Promise<SessionResumeResponse> {
+    const r = (await this.controlQuery(
+      'resume',
+      { include_messages: true, session_id: sessionId },
+      SESSION_RPC_TIMEOUT_MS
+    )) as any
+
+    if (!r) {
+      throw new Error('resume timed out')
+    }
+
+    if (r.ok === false) {
+      throw new Error(String(r.error ?? 'resume failed'))
+    }
+
+    // A resume puts the saved session's model back when it ran on this
+    // provider, so re-read it rather than keep showing the launch model.
+    const settings = (await this.controlQuery('get_settings', {})) as any
+    const model = settings?.fusion || settings?.model
+
+    if (this.sessionInfo && typeof model === 'string' && model) {
+      this.sessionInfo = { ...this.sessionInfo, model }
+    }
+
+    const notices = [r.mode_banner, r.goal_notice, r.cron_notice].filter(
+      (text): text is string => typeof text === 'string' && text.trim() !== ''
+    )
+
+    // The switcher resets the session (stats line included) when this reply
+    // lands, and counts on the resume's session.stats to re-stamp it after.
+    // Armed after the last await: the timer then fires once the reply's
+    // promise chain, and so the reset, has run.
+    setTimeout(() => this.publishSessionStats(r), 0)
+
+    return {
+      info: this.sessionInfo ?? undefined,
+      message_count: typeof r.count === 'number' ? r.count : undefined,
+      messages: [...toResumedTranscript(r.messages), ...notices.map(text => ({ role: 'system' as const, text }))],
+      session_id: this.sessionId
+    }
   }
 
   /** Stats-line refresh from a clear/resume reply's rider (session_turns +
