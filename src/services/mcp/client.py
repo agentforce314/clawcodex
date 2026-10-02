@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import logging
 import os
@@ -49,14 +50,21 @@ def _parse_server_capabilities(caps: Any) -> ServerCapabilities:
     which the ch15 list_changed refresh wiring gates on — is directly
     testable. ``tools``/``prompts``/``resources`` collapse to a bool
     (present-or-not); ``tools_list_changed`` is the nested
-    ``{tools: {listChanged: true}}`` sub-flag."""
+    ``{tools: {listChanged: true}}`` sub-flag.
+
+    Presence is tested with ``is not None``, not truthiness: the MCP spec makes
+    capability members *objects* whose presence signals support and whose
+    contents are optional, so ``{"tools": {}}`` is a spec-valid advertisement
+    of full tool support. ``bool({})`` is False and would report such a server
+    as having no tools, silently hiding all of them (observed against a live
+    server advertising 89 tools)."""
     if not isinstance(caps, dict):
         caps = {}
     tools_cap = caps.get("tools")
     return ServerCapabilities(
-        tools=bool(tools_cap),
-        prompts=bool(caps.get("prompts")),
-        resources=bool(caps.get("resources")),
+        tools=tools_cap is not None,
+        prompts=caps.get("prompts") is not None,
+        resources=caps.get("resources") is not None,
         tools_list_changed=bool(
             isinstance(tools_cap, dict) and tools_cap.get("listChanged")
         ),
@@ -85,6 +93,23 @@ def _is_remote_config(config: Any) -> bool:
     )
 
 
+def _exception_group_cls() -> type[BaseException] | None:
+    """The ``BaseExceptionGroup`` class in effect on this interpreter.
+
+    3.11+ has it as a builtin; on 3.10 anyio raises the ``exceptiongroup``
+    backport instead, so prefer the backport when the builtin is absent —
+    ``isinstance`` against the wrong class silently fails to unwrap.
+    """
+    builtin = getattr(builtins, "BaseExceptionGroup", None)
+    if builtin is not None:
+        return builtin
+    try:
+        from exceptiongroup import BaseExceptionGroup as backport
+    except ImportError:
+        return None
+    return backport
+
+
 def _unwrap_exception_group_message(exc: BaseException) -> str:
     """Extract the most actionable error string from a (possibly nested)
     ``BaseExceptionGroup``.
@@ -94,12 +119,15 @@ def _unwrap_exception_group_message(exc: BaseException) -> str:
     is the opaque ``"unhandled errors in a TaskGroup (1 sub-exception)"``.
     Walk the group tree and return the leaf exception's message — that's
     what the user actually needs to debug an unreachable server.
+
+    ``BaseExceptionGroup`` is a builtin from 3.11; on 3.10 the backport
+    (``exceptiongroup``) is what anyio actually raises, so resolve it from
+    there. Guarding only with ``except NameError`` returned the builtin-less
+    fallback on 3.10 — i.e. exactly the opaque message this function exists
+    to strip — so ``requires-python = ">=3.10"`` needs the backport path.
     """
-    try:
-        eg_cls = BaseExceptionGroup  # 3.11+ builtin  # type: ignore[name-defined]
-    except NameError:  # pragma: no cover - Python < 3.11
-        return str(exc) or type(exc).__name__
-    if isinstance(exc, eg_cls) and exc.exceptions:
+    eg_cls = _exception_group_cls()
+    if eg_cls is not None and isinstance(exc, eg_cls) and exc.exceptions:
         return _unwrap_exception_group_message(exc.exceptions[0])
     return str(exc) or type(exc).__name__
 
