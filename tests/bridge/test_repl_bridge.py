@@ -1555,17 +1555,28 @@ async def test_pointer_mtime_task_fires_and_advances_updated_at_ms(
 
         # Observe a real refresh. Under CI load a fixed 100 ms sleep can
         # expire before the background loop has even started its first timer.
-        async with asyncio.timeout(3):
+        # ``asyncio.timeout`` is 3.11+; CI pins 3.11 but the package declares
+        # ``requires-python = ">=3.10"``, so use ``wait_for`` which is the
+        # portable equivalent.
+        seen: dict[str, Any] = {}
+
+        async def _await_refresh() -> None:
             while True:
-                refreshed = read_pointer(params.dir, machine_name=params.machine_name)
+                refreshed = read_pointer(
+                    params.dir, machine_name=params.machine_name
+                )
                 if (
                     refreshed is not None
                     and refreshed.updated_at_ms > initial.updated_at_ms
                 ):
-                    break
+                    seen["refreshed"] = refreshed
+                    return
                 await asyncio.sleep(0.01)
 
+        await asyncio.wait_for(_await_refresh(), timeout=3)
+
         # Refresh preserves the install time and bridge/environment identity.
+        refreshed = seen["refreshed"]
         assert refreshed.created_at_ms == initial.created_at_ms
         assert refreshed.bridge_id == initial.bridge_id
         assert refreshed.environment_id == initial.environment_id
