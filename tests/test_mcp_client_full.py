@@ -7,6 +7,7 @@ from src.services.mcp.client import (
     McpClient,
     MAX_RECONNECT_ATTEMPTS,
     _cache_key_for,
+    _exception_group_cls,
     _unwrap_exception_group_message,
 )
 from src.services.mcp.types import (
@@ -185,18 +186,22 @@ class TestExceptionGroupUnwrap:
         assert _unwrap_exception_group_message(exc) == "port 1 closed"
 
     def test_unwraps_single_subexception(self):
+        eg_cls = _exception_group_cls()
+        assert eg_cls is not None, "no BaseExceptionGroup on this interpreter"
         try:
             inner_exc = ConnectionRefusedError("nobody home")
-            raise BaseExceptionGroup("unhandled errors", [inner_exc])
-        except BaseExceptionGroup as eg:
+            raise eg_cls("unhandled errors", [inner_exc])
+        except eg_cls as eg:
             assert _unwrap_exception_group_message(eg) == "nobody home"
 
     def test_recurses_through_nested_groups(self):
+        eg_cls = _exception_group_cls()
+        assert eg_cls is not None, "no BaseExceptionGroup on this interpreter"
         try:
             inner = TimeoutError("connect timed out")
-            mid = BaseExceptionGroup("inner group", [inner])
-            raise BaseExceptionGroup("outer group", [mid])
-        except BaseExceptionGroup as eg:
+            mid = eg_cls("inner group", [inner])
+            raise eg_cls("outer group", [mid])
+        except eg_cls as eg:
             assert _unwrap_exception_group_message(eg) == "connect timed out"
 
     def test_falls_back_to_class_name_when_str_is_empty(self):

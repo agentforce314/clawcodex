@@ -111,9 +111,10 @@ class TestCapabilityGatedWiring(unittest.TestCase):
         self.assertTrue(adv.tools)  # tools present
 
         # listChanged absent → False (must NOT wire refresh). The m3 gate
-        # cares only about tools_list_changed. (Note: an empty {} tools cap
-        # collapses tools→False under the existing bool() parse — a
-        # pre-existing quirk, unchanged here and orthogonal to m3.)
+        # cares only about tools_list_changed. An empty {} tools cap is a
+        # spec-valid advertisement of tool support (presence signals support,
+        # contents optional) — tools must stay True while listChanged
+        # stays False.
         no_lc = _parse_server_capabilities({"tools": {"other": 1}})
         self.assertFalse(no_lc.tools_list_changed)
         self.assertTrue(no_lc.tools)  # non-empty dict → tools present
@@ -125,6 +126,28 @@ class TestCapabilityGatedWiring(unittest.TestCase):
         # missing / malformed caps → all False, no raise.
         self.assertFalse(_parse_server_capabilities({}).tools_list_changed)
         self.assertFalse(_parse_server_capabilities(None).tools_list_changed)
+
+    def test_empty_capability_objects_count_as_present(self):
+        # Regression: capability members are objects whose *presence* signals
+        # support and whose contents are optional, so `{"tools": {}}` is a
+        # spec-valid advertisement. The parse used bool(), and bool({}) is
+        # False, so such a server reported no tools and list_tools() returned
+        # [] — silently hiding 89 tools on a live server.
+        from src.services.mcp.client import _parse_server_capabilities
+
+        caps = _parse_server_capabilities(
+            {"tools": {}, "prompts": {}, "resources": {}}
+        )
+        self.assertTrue(caps.tools)
+        self.assertTrue(caps.prompts)
+        self.assertTrue(caps.resources)
+        self.assertFalse(caps.tools_list_changed)  # empty obj has no sub-flags
+
+        # Absent members stay absent — presence, not truthiness.
+        empty = _parse_server_capabilities({})
+        self.assertFalse(empty.tools)
+        self.assertFalse(empty.prompts)
+        self.assertFalse(empty.resources)
 
     def test_capability_property_exposed(self):
         # The gate reads client.capabilities.tools_list_changed — confirm the
