@@ -275,15 +275,42 @@ class TestGracefulShutdownCoexistsWithPrefetchAtexit(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+def _drain_until_ready(proc: subprocess.Popen[str]) -> str:
+    """Read whatever the child has emitted so far, looking for ``__READY__``.
+
+    Non-blocking: returns immediately. The caller loops with a deadline, so a
+    child that dies during startup cannot hang the test.
+    """
+    import select
+
+    while True:
+        ready, _, _ = select.select([proc.stdout], [], [], 0.05)
+        if not ready:
+            return ""
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        if not chunk:
+            return ""
+        if b"__READY__" in chunk:
+            return "__READY__"
+
+
 def _run_in_subprocess(
     code: str,
     signal_after_ms: float | None = None,
     signal_name: str = "SIGTERM",
     timeout: float = 5.0,
+    wait_for_ready: bool = False,
 ) -> tuple[int, str, str]:
     """Run ``code`` in a fresh Python subprocess, optionally sending it
     ``signal_name`` after ``signal_after_ms`` ms. Returns
     (returncode, stdout, stderr).
+
+    ``wait_for_ready`` blocks until the child prints the ``__READY__``
+    marker before signalling. Signal tests MUST use it: a fixed delay races
+    interpreter startup, and a signal delivered before
+    ``setup_graceful_shutdown()`` installs its handler is taken by the
+    default disposition instead (exit ``-SIGINT`` rather than the handled
+    ``130``), which reads as a product bug but is purely a startup race.
     """
     import signal as _signal
     env = dict(os.environ)
@@ -295,7 +322,13 @@ def _run_in_subprocess(
         env=env,
     )
     if signal_after_ms is not None:
-        time.sleep(signal_after_ms / 1000.0)
+        if wait_for_ready:
+            deadline = time.time() + timeout
+            while "__READY__" not in _drain_until_ready(proc):
+                if time.time() > deadline:
+                    break
+        else:
+            time.sleep(signal_after_ms / 1000.0)
         try:
             proc.send_signal(getattr(_signal, signal_name))
         except ProcessLookupError:
@@ -330,13 +363,15 @@ class TestSigtermPathRunsCleanups(unittest.TestCase):
             )
             register_cleanup(lambda: print("DRAINED", flush=True))
             setup_graceful_shutdown()
+            # Handlers are installed; only now is a SIGTERM meaningful.
+            print("__READY__", flush=True)
             # Sleep long enough for the parent to send SIGTERM.
             time.sleep(3.0)
             print("LIVE", flush=True)
             """
         )
         rc, out, err = _run_in_subprocess(
-            code, signal_after_ms=200, signal_name="SIGTERM"
+            code, signal_after_ms=200, signal_name="SIGTERM", wait_for_ready=True
         )
         self.assertIn("DRAINED", out, msg=f"cleanup did not fire. err={err}")
         # 128+15 == 143 (SIGTERM exit code).
@@ -363,13 +398,15 @@ class TestSigintDuringPrefetch(unittest.TestCase):
             from src.prefetch import get_or_start_keychain_prefetch
             setup_graceful_shutdown()
             handle = get_or_start_keychain_prefetch()
+            # Handlers are installed; only now is a SIGINT meaningful.
+            print("__READY__", flush=True)
             # Sleep long enough for the parent to send SIGINT.
             time.sleep(3.0)
             print("LIVE", flush=True)
             """
         )
         rc, out, err = _run_in_subprocess(
-            code, signal_after_ms=100, signal_name="SIGINT"
+            code, signal_after_ms=100, signal_name="SIGINT", wait_for_ready=True
         )
         # SIGINT exit code is 128+2 == 130.
         self.assertEqual(rc, 130, msg=f"unexpected rc={rc}. out={out} err={err}")
@@ -390,12 +427,14 @@ class TestSigintBeforePrefetchStarted(unittest.TestCase):
             import time
             from src.utils.graceful_shutdown import setup_graceful_shutdown
             setup_graceful_shutdown()
+            # Handlers are installed; only now is a SIGINT meaningful.
+            print("__READY__", flush=True)
             time.sleep(3.0)
             print("LIVE", flush=True)
             """
         )
         rc, out, err = _run_in_subprocess(
-            code, signal_after_ms=300, signal_name="SIGINT"
+            code, signal_after_ms=300, signal_name="SIGINT", wait_for_ready=True
         )
         self.assertEqual(rc, 130, msg=f"unexpected rc={rc}. err={err}")
         # No "cleanup error" lines should appear in stderr.
