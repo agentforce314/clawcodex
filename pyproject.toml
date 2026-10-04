@@ -112,6 +112,18 @@ dependencies = [
     "wcwidth>=0.2",
     # ``typing.Self`` backport for Python 3.10 (added to stdlib in 3.11).
     "typing_extensions>=4.16.0; python_version < '3.11'",
+    # OS keychain backing for MCP OAuth token storage
+    # (services/mcp/auth.py McpTokenStore). Undeclared until now even though
+    # auth.py's backend allowlist is written against keyring 25.x class names
+    # and 27 MCP tests failed closed without it. Backends are resolved at
+    # runtime and PlaintextKeyring is explicitly rejected, so the package
+    # alone degrades to "no secure storage" rather than leaking tokens.
+    "keyring>=25",
+    # anyio raises this backport on Python 3.10 for TaskGroup exception
+    # groups; services/mcp/client.py resolves it to unwrap connection-error
+    # groups. Without it, `_unwrap_exception_group_message` returns the
+    # opaque "unhandled errors in a TaskGroup" text it exists to strip.
+    "exceptiongroup>=1.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
