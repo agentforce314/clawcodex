@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 
 from src.services.mcp.client import McpClient
@@ -10,7 +11,7 @@ from src.services.mcp.config import get_all_mcp_configs
 from src.services.mcp.types import ConnectedMCPServer, McpToolResult
 
 
-def print_result(name: str, result: McpToolResult) -> None:
+def print_result(name: str, result: McpToolResult) -> str:
     """Print text content, failing visibly on a server-reported tool error."""
     if result.is_error:
         raise RuntimeError(f"{name} failed: {result.content}")
@@ -20,6 +21,15 @@ def print_result(name: str, result: McpToolResult) -> None:
     if not text.strip():
         raise RuntimeError(f"{name} returned no text content")
     print(f"\n{name}:\n{text}")
+    return text
+
+
+def select_url(search_text: str) -> str:
+    """Select the first HTTP(S) URL in the returned search text."""
+    match = re.search(r'https?://[^\s"<>]+', search_text)
+    if match is None:
+        raise RuntimeError("web_search returned no HTTP(S) URL to fetch")
+    return match.group(0).rstrip("),]")
 
 
 async def main() -> None:
@@ -41,7 +51,7 @@ async def main() -> None:
                 f"Expected web_search and web_fetch, got {sorted(tools)}"
             )
         session_id = str(uuid.uuid4())
-        print_result(
+        search_text = print_result(
             "web_search",
             await client.call_tool(
                 "web_search",
@@ -57,7 +67,7 @@ async def main() -> None:
             await client.call_tool(
                 "web_fetch",
                 {
-                    "urls": ["https://docs.python.org/3/library/asyncio.html"],
+                    "urls": [select_url(search_text)],
                     "objective": "Explain what asyncio is used for",
                     "session_id": session_id,
                 },

@@ -60,7 +60,12 @@ async def test_example_uses_loaded_server_and_closes(
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
             return McpToolResult(
-                content=[{"type": "text", "text": "Python asyncio documentation"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": "Python asyncio documentation https://example.org/result-selected",
+                    }
+                ],
                 is_error=tool_error,
             )
 
@@ -78,7 +83,7 @@ async def test_example_uses_loaded_server_and_closes(
         assert calls[0][1]["search_queries"] == [
             "Python asyncio official documentation"
         ]
-        assert calls[1][1]["urls"] == ["https://docs.python.org/3/library/asyncio.html"]
+        assert calls[1][1]["urls"] == ["https://example.org/result-selected"]
         assert calls[0][1]["session_id"] == calls[1][1]["session_id"]
         assert "Python asyncio documentation" in capsys.readouterr().out
     assert closed == [True]
@@ -88,3 +93,9 @@ def test_example_rejects_empty_content() -> None:
     """An empty response must not look like a successful search."""
     with pytest.raises(RuntimeError, match="returned no text content"):
         example.print_result("web_search", McpToolResult())
+
+
+def test_example_rejects_search_without_url() -> None:
+    """Never fall back to a hardcoded page when search has no result URL."""
+    with pytest.raises(RuntimeError, match="no HTTP"):
+        example.select_url("No search results")
