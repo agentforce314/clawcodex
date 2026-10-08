@@ -4,15 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import src.services.mcp.types as mcp_types
 from demos.parallel_search import __main__ as example
 from src.services.mcp.config import get_all_mcp_configs
-from src.services.mcp.types import (
-    ConnectedMCPServer,
-    McpToolResult,
-    McpToolSchema,
-    ServerCapabilities,
-    ServerInfo,
-)
 
 
 @pytest.mark.asyncio
@@ -44,22 +38,22 @@ async def test_example_uses_loaded_server_and_closes(
         async def connect(self, name, selected):
             assert name == "parallel-search"
             assert selected == config
-            return ConnectedMCPServer(
+            return mcp_types.ConnectedMCPServer(
                 name=name,
                 config=selected,
-                capabilities=ServerCapabilities(tools=True),
-                server_info=ServerInfo(name="parallel", version="test"),
+                capabilities=mcp_types.ServerCapabilities(tools=True),
+                server_info=mcp_types.ServerInfo(name="parallel", version="test"),
             )
 
         async def list_tools(self):
             return [
-                McpToolSchema(name="web_search", input_schema={}),
-                McpToolSchema(name="web_fetch", input_schema={}),
+                mcp_types.McpToolSchema(name="web_search", input_schema={}),
+                mcp_types.McpToolSchema(name="web_fetch", input_schema={}),
             ]
 
         async def call_tool(self, name, arguments):
             calls.append((name, arguments))
-            return McpToolResult(
+            return mcp_types.McpToolResult(
                 content=[
                     {
                         "type": "text",
@@ -92,7 +86,7 @@ async def test_example_uses_loaded_server_and_closes(
 def test_example_rejects_empty_content() -> None:
     """An empty response must not look like a successful search."""
     with pytest.raises(RuntimeError, match="returned no text content"):
-        example.print_result("web_search", McpToolResult())
+        example.print_result("web_search", mcp_types.McpToolResult())
 
 
 def test_example_rejects_search_without_url() -> None:
