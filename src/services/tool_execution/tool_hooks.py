@@ -36,6 +36,20 @@ class PreToolUseResult:
     stop_reason: str | None = None
 
 
+def _prepare_pre_tool_hook_input(
+    tool_use_context: ToolContext,
+    tool: Tool,
+    processed_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Give Bash pre-tool hooks the directory Bash will actually use."""
+    if tool.name != "Bash" or "cwd" in processed_input:
+        return processed_input
+    effective_cwd = tool_use_context.cwd or tool_use_context.workspace_root
+    if effective_cwd is None:
+        return processed_input
+    return {**processed_input, "cwd": str(effective_cwd)}
+
+
 async def run_pre_tool_use_hooks(
     tool_use_context: ToolContext,
     tool: Tool,
@@ -48,10 +62,15 @@ async def run_pre_tool_use_hooks(
         if not has_hook_for_event("PreToolUse", tool_use_context):
             return
 
+        hook_input = _prepare_pre_tool_hook_input(
+            tool_use_context,
+            tool,
+            processed_input,
+        )
         async for result in execute_pre_tool_hooks(
             tool.name,
             tool_use_id,
-            processed_input,
+            hook_input,
             tool_use_context,
         ):
             if result.get("blocking_error"):
