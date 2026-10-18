@@ -5,6 +5,7 @@ import type { GeneralSettingsResult } from '../gateway/protocol.ts'
 import { Button } from '../ui/primitives/Button.tsx'
 import { FullAccessDialog } from '../ui/FullAccessDialog.tsx'
 import { type ThemePreference } from '../state/theme.ts'
+import { ReadingSection } from './ReadingSection.tsx'
 import css from './Settings.module.css'
 
 const THEMES: { id: ThemePreference; label: string }[] = [
@@ -130,6 +131,8 @@ export function GeneralSection({
           ))}
         </div>
       </div>
+
+      <ReadingSection />
 
       <div className={css.row}>
         <div className={css.rowHead}>

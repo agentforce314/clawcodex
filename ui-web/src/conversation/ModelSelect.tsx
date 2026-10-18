@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ModelOptionsResult } from '../gateway/protocol.ts'
 import { Menu, type MenuEntry } from '../ui/primitives/Menu.tsx'
 import { ChevronDownIcon } from '../ui/icons.tsx'
+import { rankRows } from './command-menu.ts'
 import css from './Pickers.module.css'
 
 export interface ModelChoice {
@@ -20,7 +21,7 @@ export interface ModelChoice {
  * `deepseek/deepseek-v4-pro` — and a parse that is *usually* right is the
  * worst kind. Positional ids cannot be wrong.
  */
-export function buildModelMenu(models: ModelOptionsResult): {
+export function buildModelMenu(models: ModelOptionsResult, query = ''): {
   choices: Map<string, ModelChoice>
   items: MenuEntry[]
 } {
@@ -32,9 +33,11 @@ export function buildModelMenu(models: ModelOptionsResult): {
 
     if (list.length === 0) continue
 
-    items.push({ id: `group-${provider.name}`, text: provider.name, type: 'label' })
+    const ranked = rankRows(list.map(model => ({ name: model })), query.trim())
+    if (ranked.length === 0) continue
+    items.push({ id: `group-${provider.slug ?? provider.name}`, text: provider.name, type: 'label' })
 
-    for (const model of list) {
+    for (const { name: model } of ranked) {
       const id = `m${choices.size}`
       // The SLUG, not the display name: the backend answers to "deepseek" and
       // rejects "DeepSeek" outright. Falls back to the name for a catalog row
@@ -83,7 +86,7 @@ export function selectedModelId(
 export interface ModelSelectProps {
   disabled?: boolean
   models: ModelOptionsResult
-  onChange: (model: string, provider?: string) => void
+  onChange: (model: string, provider?: string) => void | Promise<unknown>
   /** The session's live model/provider, which outrank the catalog's defaults. */
   sessionModel?: string
   sessionProvider?: string
@@ -105,25 +108,32 @@ export function ModelSelect({
   sessionProvider,
 }: ModelSelectProps) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [pending, setPending] = useState(false)
 
   const currentModel = sessionModel ?? models.model ?? ''
   const currentProvider = sessionProvider ?? models.provider ?? ''
 
-  const { choices, items } = useMemo(() => buildModelMenu(models), [models])
+  const { choices, items } = useMemo(() => buildModelMenu(models, query), [models, query])
   const selectedId = useMemo(
     () => selectedModelId(choices, currentModel, currentProvider),
     [choices, currentModel, currentProvider],
   )
 
   const choose = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (pending) return
       setOpen(false)
 
       const choice = choices.get(id)
 
-      if (choice !== undefined) onChange(choice.model, choice.provider)
+      if (choice !== undefined) {
+        setPending(true)
+        try { await onChange(choice.model, choice.provider) }
+        finally { setPending(false) }
+      }
     },
-    [choices, onChange],
+    [choices, onChange, pending],
   )
 
   // Qualified, because the same model id is offered by several providers —
@@ -141,20 +151,23 @@ export function ModelSelect({
           aria-haspopup="menu"
           aria-label={`Model: ${label}`}
           className={css.trigger}
-          disabled={disabled}
+          disabled={disabled || pending}
+          aria-busy={pending}
           onClick={() => {
+            setQuery('')
             setOpen(value => !value)
           }}
           title={`Model: ${label}`}
           type="button"
         >
-          <span className={css.triggerLabel}>{label}</span>
+          <span className={css.triggerLabel}>{pending ? 'Switching model…' : label}</span>
           <span className={[css.chevron, open ? css.chevronOpen : ''].filter(Boolean).join(' ')}>
             <ChevronDownIcon size={12} />
           </span>
         </button>
       }
-      emptyText="No configured providers yet."
+      emptyText={query === '' ? 'No configured providers yet.' : 'No matching models.'}
+      search={{ label: 'Search models', query, onChange: setQuery }}
       items={items}
       onClose={() => {
         setOpen(false)

@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
+
+import { $reading } from '../state/preferences.ts'
+import { chatParts, chatTurns, type WorkNode } from './work-groups.ts'
+import { describeTool } from './tool-view.ts'
 
 import { subagentCatalog, type SubagentEntry } from '../state/subagents.ts'
 import type { SubagentLive, TranscriptNode } from '../state/transcript.ts'
@@ -86,34 +91,54 @@ export function ChatView({
     return byTool
   }, [agents, nodes])
 
-  // The status line is the only thing marking a turn that has produced nothing
-  // yet; once prose or a tool row is streaming, those carry the activity.
-  const showStatus = running && nodes[nodes.length - 1]?.kind !== 'tool'
+  const preferences = useStore($reading)
+  const turns = useMemo(() => chatTurns(nodes), [nodes])
+  const [shown, setShown] = useState(20)
+  const root = useRef<HTMLDivElement>(null)
+  const scrollAnchor = useRef<{ element: Element; top: number } | null>(null)
+  const hidden = Math.max(0, turns.length - shown)
+
+  // Preserve the first visible turn when older history is inserted above it.
+  useLayoutEffect(() => {
+    const anchor = scrollAnchor.current
+    if (anchor === null) return
+    const scroller = root.current?.closest('[data-chat-scroll]')
+    if (scroller) scroller.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top
+    scrollAnchor.current = null
+  }, [shown])
+
+  const renderNode = (node: TranscriptNode) => <div className={css.item} key={node.id}>
+    {node.kind === 'user' && <UserMessage node={node} onEdit={onEditPrompt} />}
+    {node.kind === 'assistant' && <AssistantMessage node={node}
+      onRetry={!running && node === nodes[nodes.length - 1] ? onRetry : undefined} />}
+    {node.kind === 'reasoning' && <ReasoningRow node={node} />}
+    {node.kind === 'tool' && <ToolRow agent={agentEntries.get(node.toolId)} node={node} workspace={workspace} />}
+    {node.kind === 'notice' && <NoticeMessage node={node} />}
+  </div>
 
   return (
-    <div className={css.root}>
+    <div className={css.root} ref={root}>
       <div className={css.column}>
-        {nodes.map((node, index) => (
-          <div className={css.item} key={node.id}>
-            {node.kind === 'user' && <UserMessage node={node} onEdit={onEditPrompt} />}
-            {node.kind === 'assistant' && (
-              <AssistantMessage
-                node={node}
-                // The newest reply only, and never mid-turn: the agent refuses
-                // to rewind while a turn is running, so offering it would be
-                // offering something that cannot happen.
-                onRetry={!running && index === nodes.length - 1 ? onRetry : undefined}
-              />
-            )}
-            {node.kind === 'reasoning' && <ReasoningRow node={node} />}
-            {node.kind === 'tool' && (
-              <ToolRow agent={agentEntries.get(node.toolId)} node={node} workspace={workspace} />
-            )}
-            {node.kind === 'notice' && <NoticeMessage node={node} />}
+        {hidden > 0 && <button className={css.history} type="button" onClick={() => {
+          const element = root.current?.querySelector('[data-chat-turn]')
+          if (element) scrollAnchor.current = { element, top: element.getBoundingClientRect().top }
+          setShown(value => value + 20)
+        }}>Show earlier messages ({hidden} turns)</button>}
+        {turns.slice(hidden).map((turn, index) => {
+          const latest = hidden + index === turns.length - 1
+          const current = latest && (running || preferences.collapseTiming === 'next-input')
+          const grouped = preferences.workDetails !== 'verbose' && !(current && preferences.workDetails === 'detailed')
+          return <div className={css.turn} key={turn.id} data-chat-turn={turn.id}>
+            {grouped ? chatParts(turn.nodes).map(part => part.kind === 'message'
+              ? renderNode(part.node)
+              : <WorkGroup key={`${part.id}:${preferences.workDetails}:${current}`} nodes={part.nodes}
+                  compact={preferences.workDetails === 'compact'} workspace={workspace}>
+                  {part.nodes.map(renderNode)}
+                </WorkGroup>) : turn.nodes.map(renderNode)}
           </div>
-        ))}
-        {showStatus && (
-          <div className={css.turnStatus}>
+        })}
+        {running && (
+          <div className={css.turnStatus} role="status">
             Working
             {turnStartedAt !== undefined && elapsed > 0 && (
               <span className={css.turnStatusClock}>{formatClock(elapsed)}</span>
@@ -123,4 +148,25 @@ export function ChatView({
       </div>
     </div>
   )
+}
+
+function WorkGroup({ nodes, compact, workspace, children }: {
+  nodes: WorkNode[]; compact: boolean; workspace?: string; children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const tools = nodes.filter(node => node.kind === 'tool')
+  const failures = tools.filter(node => node.state === 'error').length
+  const live = nodes.findLast(node => node.kind === 'tool' ? node.state === 'running' : !node.sealed)
+  const detail = live?.kind === 'tool' ? describeTool(live, workspace).summary
+    : live?.kind === 'reasoning' ? live.text.split('\n').find(line => line.trim() !== '') : undefined
+  return <section className={css.workGroup} data-running={live ? '' : undefined}>
+    <button className={css.workHeader} type="button" aria-expanded={open} onClick={() => setOpen(value => !value)}>
+      <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+      <span>{live ? 'Working' : 'Work details'} · {tools.length} {tools.length === 1 ? 'tool' : 'tools'}
+        {nodes.length > tools.length ? ' · thoughts' : ''}</span>
+      {failures > 0 && <span className={css.failure}>{failures} failed</span>}
+      {!compact && detail && <span className={css.workDetail}>{detail}</span>}
+    </button>
+    {open && <div className={css.workBody}>{children}</div>}
+  </section>
 }

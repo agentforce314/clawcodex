@@ -2,7 +2,7 @@
   "name": "clawcodex-web",
   "private": true,
   "version": "0.1.0",
-  "description": "Browser client for ClawCodex — served by `clawcodex web` over the same gateway the desktop app uses.",
+  "description": "Browser client for ClawCodex \u2014 served by `clawcodex web` over the same gateway the desktop app uses.",
   "type": "module",
   "engines": {
     "node": ">=22.22.0"
@@ -11,12 +11,13 @@
     "dev": "vite --host 127.0.0.1 --port 5175",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5175",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "test:e2e": "npm run build && playwright test"
   },
   "dependencies": {
     "@nanostores/react": "1.1.0",
@@ -30,6 +31,7 @@
     "shiki": "4.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.2",
     "@types/node": "22.20.1",

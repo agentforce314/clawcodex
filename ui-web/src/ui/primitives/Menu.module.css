@@ -20,7 +20,7 @@
   display: flex;
   flex-direction: column;
   min-width: 218px;
-  max-width: 360px;
+  max-width: min(360px, calc(100vw - 24px));
   /* Stops short of the viewport edge; taller content scrolls inside. The
      component measures the room on its side of the anchor once open and
      sets a tighter cap inline (MENU_MAX_HEIGHT is this same 420). */
@@ -100,7 +100,7 @@
   cursor: pointer;
 }
 
-.item:hover:not(:disabled) {
+.item:hover:not(:disabled), .item[data-highlighted] {
   background: var(--cc-alias-interactive-bg-hover);
 }
 
@@ -171,6 +171,10 @@
 }
 
 .label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--cc-specific-menu);
   flex: none;
   padding: 6px 10px 2px;
   color: var(--cc-alias-label-caption);
@@ -179,6 +183,12 @@
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.search {
+  flex: none; min-width: 0; margin: 4px 4px 8px; padding: 8px 10px;
+  color: var(--cc-alias-label-primary); background: var(--cc-alias-interactive-bg-hover);
+  border: 1px solid var(--cc-alias-border-l2); border-radius: 8px; font: var(--cc-font-s-14);
 }
 
 .empty {

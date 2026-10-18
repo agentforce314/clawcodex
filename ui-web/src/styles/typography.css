@@ -8,12 +8,19 @@
  */
 
 :root {
-  --cc-font-family:
+  --cc-font-family-default:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --cc-font-family-code:
+  --cc-font-family-code-default:
     'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, 'Liberation Mono', Menlo, Courier,
     'PingFang SC', 'Microsoft YaHei';
+
+  --cc-font-family: var(--cc-font-family-default);
+  --cc-font-family-code: var(--cc-font-family-code-default);
+  --cc-text-size: 16px;
+  --cc-code-size: 13px;
+  --cc-terminal-size: 13px;
+  --cc-font-family-terminal: var(--cc-font-family-code);
 
   --cc-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --cc-duration-fast: 0.1s;
@@ -21,23 +28,23 @@
   --cc-duration-slow: 0.3s;
 
   /* Markdown scale — the transcript's body copy. */
-  --cc-font-markdown-h1: 700 24px/34px var(--cc-font-family);
-  --cc-font-markdown-h2: 700 22px/32px var(--cc-font-family);
-  --cc-font-markdown-h3: 700 20px/30px var(--cc-font-family);
-  --cc-font-markdown-h4: 600 16px/28px var(--cc-font-family);
-  --cc-font-markdown-base: 16px/28px var(--cc-font-family);
-  --cc-font-markdown-base-strong: 600 16px/28px var(--cc-font-family);
-  --cc-font-markdown-table: 15px/25px var(--cc-font-family);
-  --cc-font-markdown-table-head: 500 15px/25px var(--cc-font-family);
-  --cc-font-markdown-code: 14px/22px var(--cc-font-family-code);
-  --cc-font-markdown-code-block: 13px/22px var(--cc-font-family-code);
+  --cc-font-markdown-h1: 700 calc(var(--cc-text-size) + 8px)/1.42 var(--cc-font-family);
+  --cc-font-markdown-h2: 700 calc(var(--cc-text-size) + 6px)/1.45 var(--cc-font-family);
+  --cc-font-markdown-h3: 700 calc(var(--cc-text-size) + 4px)/1.5 var(--cc-font-family);
+  --cc-font-markdown-h4: 600 var(--cc-text-size)/1.75 var(--cc-font-family);
+  --cc-font-markdown-base: var(--cc-text-size)/1.75 var(--cc-font-family);
+  --cc-font-markdown-base-strong: 600 var(--cc-text-size)/1.75 var(--cc-font-family);
+  --cc-font-markdown-table: calc(var(--cc-text-size) - 1px)/1.67 var(--cc-font-family);
+  --cc-font-markdown-table-head: 500 calc(var(--cc-text-size) - 1px)/1.67 var(--cc-font-family);
+  --cc-font-markdown-code: calc(var(--cc-code-size) + 1px)/1.57 var(--cc-font-family-code);
+  --cc-font-markdown-code-block: var(--cc-code-size)/1.7 var(--cc-font-family-code);
   /* The smaller code size used inside tool-row cards. */
-  --cc-font-markdown-code-block-small: 12px/18px var(--cc-font-family-code);
+  --cc-font-markdown-code-block-small: max(10px, calc(var(--cc-code-size) - 1px))/1.5 var(--cc-font-family-code);
 
   /* UI scale — chrome, rows, chips. */
   --cc-font-xl-24: 600 24px/32px var(--cc-font-family);
   --cc-font-l-20: 500 20px/28px var(--cc-font-family);
-  --cc-font-m-18: 500 16px/28px var(--cc-font-family);
+  --cc-font-m-18: 500 var(--cc-text-size)/1.75 var(--cc-font-family);
   --cc-font-base-16: 16px/24px var(--cc-font-family);
   --cc-font-base-strong-16: 500 16px/24px var(--cc-font-family);
   --cc-font-s-14: 14px/22px var(--cc-font-family);

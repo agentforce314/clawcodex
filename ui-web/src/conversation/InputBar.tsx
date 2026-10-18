@@ -51,7 +51,7 @@ export interface InputBarProps {
   onApprovalModeChange: (mode: ApprovalMode) => void
   onDraftChange: (text: string) => void
   onEffortChange: (effort: string) => void
-  onModelChange: (model: string, provider?: string) => void
+  onModelChange: (model: string, provider?: string) => void | Promise<unknown>
   onStop: () => void
   onSubmit: (text: string) => void
   running: boolean

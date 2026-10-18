@@ -1,0 +1,38 @@
+name: Web end-to-end
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['ui-web/**', '.github/workflows/web-e2e.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui-web/package-lock.json
+      - run: python -m pip install -e .
+      - run: npm ci
+        working-directory: ui-web
+      - run: npx playwright install --with-deps chromium
+        working-directory: ui-web
+      - run: npm run test:e2e
+        working-directory: ui-web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-browser-failures
+          path: ui-web/test-results/
+          retention-days: 7

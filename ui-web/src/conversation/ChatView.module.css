@@ -31,6 +31,20 @@
   display: none;
 }
 
+.turn, .workBody { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.workGroup { min-width: 0; border-left: 2px solid var(--cc-alias-border-l2); padding-left: 12px; }
+.workHeader, .history {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 0;
+  border: 0; background: transparent; color: var(--cc-alias-label-secondary);
+  font: var(--cc-font-xs-13); text-align: left; cursor: pointer;
+}
+.workHeader:hover, .history:hover { color: var(--cc-alias-label-primary); }
+.workHeader > span:not(.workDetail) { flex: none; }
+.workDetail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cc-alias-label-tertiary); }
+.workBody { margin-top: 8px; }
+.failure { color: var(--cc-alias-state-error-primary); }
+.history { justify-content: center; }
+
 /* Turn activity keeps a loader's one-line footprint. A pale accent band sweeps
    left to right across the words; reduced motion keeps it static. */
 .turnStatus {
