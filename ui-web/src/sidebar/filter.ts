@@ -2,7 +2,7 @@ import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
 
 /** What a row is searched by: its display name, then the prompt behind it. */
 function haystack(row: SessionRow): string {
-  return `${row.title ?? ''}\n${row.preview ?? ''}`.toLowerCase()
+  return `${row.id}\n${row.title ?? ''}\n${row.preview ?? ''}`.toLowerCase()
 }
 
 /**

@@ -20,6 +20,8 @@ import { attachFile, attachImage, searchFiles } from '../state/actions.ts'
 import { $commands, $notice, $sessionAttaching } from '../state/store.ts'
 import { ArrowUpIcon, PlusIcon, SlashSquareIcon, StopIcon, XIcon } from '../ui/icons.tsx'
 import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
+import { $drafts } from '../state/drafts.ts'
+import { commandDraft } from './command-draft.ts'
 import { ContextMeter } from './ContextMeter.tsx'
 import {
   insertPlaceholder,
@@ -41,6 +43,7 @@ import pickerCss from './Pickers.module.css'
 export interface InputBarProps {
   approvalMode?: ApprovalMode
   draft: string
+  draftScope?: string
   effort: EffortOptionsResult
   hero?: boolean
   /** Nano mode (docs/nano.md) — renders a chip beside the model, like the TUI's. */
@@ -98,6 +101,7 @@ function keepFocus(event: MouseEvent): void {
 export function InputBar({
   approvalMode,
   draft,
+  draftScope,
   effort,
   hero = false,
   models,
@@ -137,6 +141,10 @@ export function InputBar({
   // pick, on Escape, on a pointer outside the card, and on the next keystroke.
   const [launcher, setLauncher] = useState(false)
   const rows = useMemo(() => menuRows(commands, vision), [commands, vision])
+  const claimed = commandDraft(draft, rows)
+  const prefix = claimed?.prefix ?? ''
+  const editorText = claimed?.body ?? draft
+  const documents = useStore($drafts)
   const typed = useMemo(() => typedCommand(draft), [draft])
 
   const menu = useMemo<MenuRow[] | null>(() => {
@@ -212,8 +220,8 @@ export function InputBar({
   const syncMention = useCallback((element: HTMLTextAreaElement | null) => {
     if (element === null) return
 
-    setMention(mentionAt(element.value, element.selectionStart))
-  }, [])
+    setMention(mentionAt(prefix + element.value, prefix.length + element.selectionStart))
+  }, [prefix])
 
   // Debounced: a mention is typed one keystroke at a time, and every query
   // costs an `rg --files` on the backend. 120ms is under the gap between
@@ -263,7 +271,7 @@ export function InputBar({
   const picker = useRef<HTMLInputElement | null>(null)
   const filePicker = useRef<HTMLInputElement | null>(null)
 
-  const shown = useMemo(() => liveAttachments(draft, attachments), [attachments, draft])
+  const shown = useMemo(() => liveAttachments(draft, draftScope ? documents[draftScope]?.attachments ?? [] : attachments), [attachments, draft, draftScope, documents])
 
   // Object URLs outlive the component unless revoked, and a long session can
   // paste a lot of screenshots.
@@ -303,7 +311,8 @@ export function InputBar({
 
       const current = draftRef.current
       const element = textarea.current
-      const caret = element === null ? current.length : element.selectionStart
+      const activePrefix = commandDraft(current, rows)?.prefix.length ?? 0
+      const caret = element === null ? current.length : element.selectionStart + activePrefix
       const next = insertPlaceholder(current, caret, id, kind)
 
       if (kind === 'image') {
@@ -321,10 +330,10 @@ export function InputBar({
         if (live === null) return
 
         live.focus()
-        live.setSelectionRange(next.caret, next.caret)
+        live.setSelectionRange(next.caret - activePrefix, next.caret - activePrefix)
       })
     },
-    [onDraftChange],
+    [onDraftChange, rows],
   )
 
   /**
@@ -400,7 +409,7 @@ export function InputBar({
       }
 
       if (row.hint !== undefined) {
-        const rest = typing ? '' : draft.trim()
+        const rest = typing ? '' : editorText.trim()
 
         onDraftChange(rest === '' ? `${row.name} ` : `${row.name} ${rest}`)
         textarea.current?.focus()
@@ -413,7 +422,7 @@ export function InputBar({
       onSubmit(row.name)
       textarea.current?.focus()
     },
-    [draft, onDraftChange, onSubmit, typed],
+    [editorText, onDraftChange, onSubmit, typed],
   )
 
   const acceptFile = useCallback(
@@ -434,10 +443,10 @@ export function InputBar({
         if (element === null) return
 
         element.focus()
-        element.setSelectionRange(next.caret, next.caret)
+        element.setSelectionRange(next.caret - prefix.length, next.caret - prefix.length)
       })
     },
-    [draft, mention, onDraftChange],
+    [draft, mention, onDraftChange, prefix],
   )
 
   const submit = useCallback(() => {
@@ -457,6 +466,11 @@ export function InputBar({
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Backspace' && prefix !== '' && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0 && !event.nativeEvent.isComposing) {
+        event.preventDefault()
+        onDraftChange(editorText)
+        return
+      }
       // The file menu is checked first: it is anchored at the caret, so it is
       // the one the user is looking at when both could be open.
       if (files.length > 0 && mention !== null) {
@@ -542,7 +556,7 @@ export function InputBar({
         submit()
       }
     },
-    [accept, acceptFile, files, highlight, launcher, mention, menu, onDraftChange, submit, typed],
+    [accept, acceptFile, files, highlight, launcher, mention, menu, onDraftChange, submit, typed, prefix, editorText],
   )
 
   return (
@@ -701,6 +715,12 @@ export function InputBar({
             )}
           </div>
         )}
+        {claimed && <div className={css.commandChip}>
+          <span>{claimed.row.label ?? bareName(claimed.row.name)}</span>
+          <button type="button" aria-label={`Remove ${claimed.row.name} command`} onClick={() => {
+            onDraftChange(claimed.body); textarea.current?.focus()
+          }}><XIcon size={12} /></button>
+        </div>}
         <div className={css.scroll}>
           <textarea
             aria-label="Message ClawCodex"
@@ -767,7 +787,7 @@ export function InputBar({
               // Typing takes over from the launcher: the draft now says what
               // the menu should show, or that it should not be open.
               setLauncher(false)
-              onDraftChange(event.target.value)
+              onDraftChange(prefix + event.target.value)
               syncMention(event.target)
             }}
             // Clicking or arrowing through the draft moves the caret without
@@ -787,7 +807,7 @@ export function InputBar({
             ref={textarea}
             rows={hero ? 2 : 1}
             spellCheck={false}
-            value={draft}
+            value={editorText}
           />
         </div>
         <div className={css.row}>

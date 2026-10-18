@@ -101,6 +101,11 @@ describe('Markdown link safety', () => {
 })
 
 describe('Markdown image safety', () => {
+  it('retains linked image navigation without nesting an interactive button', () => {
+    const { container } = render(<Markdown text="[![diagram](https://example.com/x.png)](https://example.com/docs)" />)
+    expect(container.querySelector('a img')).toBeTruthy()
+    expect(container.querySelector('a button')).toBeNull()
+  })
   it('renders absolute http(s) images lazily and without a referrer', () => {
     const { container } = render(<Markdown text="![alt text](https://example.com/x.png)" />)
     const image = container.querySelector('img')

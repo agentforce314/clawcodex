@@ -9,6 +9,7 @@
 
 import { GatewayClient, type ConnectionState } from '../gateway/client.ts'
 import { apiGet, resolveBackend, type BackendTarget } from '../gateway/boot.ts'
+import { addDraftAttachment, adoptDraft, clearDraftAttachments, getDraft, resetDrafts } from './drafts.ts'
 import type {
   ApprovalChoice,
   CommandEntry,
@@ -120,9 +121,6 @@ function markSessionUsed(): void {
 
   if (remembered !== null && remembered.live === $sessionId.get()) rememberSession({ ...remembered, used: true })
 }
-// The backend owns sending images; keep their bytes here only for the local
-// user row, including prompts waiting in the queue. Drained with the prompt.
-let pendingAttachments: Attachment[] = []
 
 export function gateway(): GatewayClient {
   if (client === null) throw new Error('gateway not started')
@@ -133,7 +131,7 @@ export function gateway(): GatewayClient {
 /** Test seam: install a client with an injected socket factory. */
 export function setGatewayClient(next: GatewayClient | null): void {
   client = next
-  pendingAttachments = []
+  resetDrafts()
 }
 
 function notice(text: string, tone: 'error' | 'info' = 'info'): void {
@@ -143,7 +141,6 @@ function notice(text: string, tone: 'error' | 'info' = 'info'): void {
 function beginSessionNavigation(): void {
   sessionNavigationEpoch += 1
   attachInFlight = null
-  pendingAttachments = []
   notice('')
 }
 
@@ -700,6 +697,8 @@ function adoptSession(result: SessionResumeResult): void {
   // report the row that runtime replayed, and the highlight would jump.
   const clicked = $storedSessionId.get()
   const row = clicked !== null && clicked === result.session_id ? clicked : (result.stored_session_id ?? result.session_id)
+  const draftSource = clicked ?? 'welcome'
+  if (adoptDraft(draftSource, row, result.session_id)) notice('Draft restored. Attach files again after reconnecting the agent.')
   $storedSessionId.set(row)
   rememberSession({
     live: result.session_id,
@@ -804,7 +803,7 @@ export async function clearSession(): Promise<void> {
 
     if (!isStillCurrent()) return
 
-    pendingAttachments = []
+    clearDraftAttachments($storedSessionId.get() ?? sessionId)
     $transcript.set({ ...emptyTranscript(), info: $transcript.get().info })
     $trajectory.set(emptyTrajectory())
     $subagentView.set(null)
@@ -905,14 +904,15 @@ async function send(text: string, retried = false): Promise<void> {
 
   if (sessionId === null) return
 
-  const live = liveAttachments(text, pendingAttachments)
+  const draftScope = $storedSessionId.get() ?? sessionId
+  const live = liveAttachments(text, getDraft(draftScope).attachments)
   const images = live.flatMap(({ id, kind, name, url }) =>
     kind === 'image' && url !== undefined ? [{ name, placeholder: placeholderFor(id, 'image'), url }] : [],
   )
   const files = live.flatMap(({ id, kind, name, size }) =>
     kind === 'file' ? [{ name, placeholder: placeholderFor(id, 'file'), ...(size !== undefined && { size }) }] : [],
   )
-  pendingAttachments = []
+  clearDraftAttachments(draftScope)
   $transcript.set(markTurnStarted(appendUserMessage($transcript.get(), text, images, files)))
   $trajectory.set(recordPrompt($trajectory.get(), text))
   notice('')
@@ -1406,7 +1406,9 @@ export async function attachImage(file: Blob, name: string): Promise<number | nu
       return null
     }
 
-    pendingAttachments.push({ id: result.id, kind: 'image', name, url })
+    const attachment: Attachment = { id: result.id, kind: 'image', name, url }
+    addDraftAttachment($storedSessionId.get() ?? sessionId, attachment, sessionId)
+    markSessionUsed()
     return result.id
   } catch (error) {
     notice(errorText(error), 'error')
@@ -1461,7 +1463,9 @@ export async function attachFile(file: Blob, name: string): Promise<{ id: number
     // The name the backend kept — sanitised — is the one every surface
     // shows, so the composer's card, the sent row and a reopened one agree.
     const accepted = result.name ?? name
-    pendingAttachments.push({ id: result.id, kind: 'file', name: accepted, size: file.size })
+    const attachment: Attachment = { id: result.id, kind: 'file', name: accepted, size: file.size }
+    addDraftAttachment($storedSessionId.get() ?? sessionId, attachment, sessionId)
+    markSessionUsed()
     return { id: result.id, name: accepted }
   } catch (error) {
     notice(errorText(error), 'error')

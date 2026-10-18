@@ -250,8 +250,7 @@
   background: var(--cc-alias-bg-base);
 }
 
-/* The image at its own size: the frame grows to it and the body scrolls both
-   ways, so nothing is scaled and a small image sits centred. */
+/* Fit width by default; numeric zoom grows the frame and permits scrolling. */
 .imageFrame {
   display: flex;
   box-sizing: border-box;
@@ -292,3 +291,10 @@
   font-size: 13px;
   line-height: 1.5;
 }
+.frontmatter { padding: 12px; margin: 0 0 20px; border: 1px solid var(--cc-alias-border-l2); border-radius: 10px; font: var(--cc-font-xs-13); }
+.frontmatter > div { display: grid; grid-template-columns: minmax(70px, 25%) 1fr; gap: 12px; padding: 5px 0; }
+.frontmatter dt { color: var(--cc-alias-label-tertiary); overflow-wrap: anywhere; }
+.frontmatter dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.frontmatterRaw { white-space: pre-wrap; font: var(--cc-font-markdown-code-block); }
+.zoomControls { display: flex; flex: none; gap: 4px; align-items: center; justify-content: flex-end; padding: 4px 12px; border-bottom: 1px solid var(--cc-alias-border-l2); }
+.zoomControls select { max-width: 110px; border: 0; border-radius: 6px; color: var(--cc-alias-label-secondary); background: var(--cc-specific-menu); font: var(--cc-font-xs-13); padding: 4px; }

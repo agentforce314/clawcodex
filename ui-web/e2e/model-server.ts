@@ -2,11 +2,18 @@ import http from 'node:http'
 
 export const FINAL_REPLY = 'All done! Here is the complete summary of what I found.'
 export const SIMPLE_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
+export const PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1000"><rect width="2000" height="1000" fill="#e0ece9"/><path d="M0 1000L2000 0" stroke="#137c6e" stroke-width="40"/><text x="100" y="220" font-size="100" fill="#143b34">ClawCodex image preview</text></svg>'
 
 /** Deterministic OpenAI-compatible inference, with real Read tool execution by the agent. */
 export async function startMockServer() {
   let toolIssued = false
+  const received: string[] = []
   const server = http.createServer(async (request, response) => {
+    if (request.url === '/preview.svg') {
+      response.setHeader('Content-Type', 'image/svg+xml')
+      response.end(PREVIEW_SVG)
+      return
+    }
     if (request.url === '/v1/models') {
       response.setHeader('Content-Type', 'application/json')
       response.end(JSON.stringify({ data: [{ id: 'mock-model' }] }))
@@ -15,11 +22,15 @@ export async function startMockServer() {
     let raw = ''
     for await (const chunk of request) raw += String(chunk)
     const body = JSON.parse(raw || '{}') as { stream?: boolean; tools?: { function: { name: string } }[]; messages?: { role: string; content: unknown }[] }
+    received.push(JSON.stringify(body.messages ?? []))
     const scripted = JSON.stringify(body.messages ?? []).includes('E2E_INTERIM_TRIGGER')
     const readTool = body.tools?.find(entry => ['Read', 'read_file'].includes(entry.function.name))
     const tool = scripted && !toolIssued && readTool !== undefined
     if (tool) toolIssued = true
-    const text = tool ? 'I will read the project documentation.' : scripted ? FINAL_REPLY : SIMPLE_REPLY
+    const imageUrl = `http://${request.headers.host}/preview.svg`
+    const text = tool ? 'I will read the project documentation.' : scripted ? FINAL_REPLY :
+      JSON.stringify(body.messages ?? []).includes('E2E_IMAGE_TRIGGER') ?
+        `![Workspace image](${imageUrl})\n\n[Inspect linked image](${imageUrl})` : SIMPLE_REPLY
     const calls = tool ? [{ id: 'read-project', type: 'function', function: { name: readTool?.function.name, arguments: JSON.stringify({ file_path: 'README.md' }) } }] : undefined
     const finish = tool ? 'tool_calls' : 'stop'
     const usage = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }
@@ -41,7 +52,7 @@ export async function startMockServer() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('No model server port')
-  return { url: `http://127.0.0.1:${address.port}`, close: () => new Promise<void>((resolve, reject) => {
+  return { url: `http://127.0.0.1:${address.port}`, received, close: () => new Promise<void>((resolve, reject) => {
     server.closeAllConnections()
     server.close(error => error ? reject(error) : resolve())
   }) }

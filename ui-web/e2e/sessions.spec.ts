@@ -1,0 +1,42 @@
+import { test, expect } from './fixtures'
+
+test('real gateway: session lists fold, search hidden IDs, copy IDs, and keep the selected row visible', async ({ page, context, app }, testInfo) => {
+  const composer = page.getByRole('textbox', { name: 'Message ClawCodex' })
+  for (let index = 0; index < 6; index++) {
+    if (index > 0) {
+      await page.getByRole('button', { name: 'New session', exact: true }).first().click()
+      await page.getByRole('button', { name: 'Create', exact: true }).click()
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    }
+    await composer.fill(`Start saved conversation ${index}`)
+    await composer.press('Enter')
+    await expect(page.getByText('Hello from the mock inference server! The full boot chain is working.', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+    const title = page.getByRole('textbox', { name: 'Session title' })
+    await expect(title).toHaveValue(/Hello from the mock inference server/)
+    await title.fill(`Saved conversation ${index}`)
+    await title.press('Enter')
+    await expect(page.getByRole('button', { name: new RegExp(`^Saved conversation ${index}`) })).toBeVisible()
+  }
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: 'Session title' })).toHaveValue('Saved conversation 5')
+  await expect(page.getByRole('button', { name: /^Saved conversation 0/ })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Show more (1)', exact: true }).click()
+  await page.getByRole('button', { name: 'Session actions: Saved conversation 0', exact: true }).click()
+  const details = page.getByRole('dialog', { name: 'Session details' })
+  const id = await details.locator('code').innerText()
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.url })
+  await details.getByRole('button', { name: 'Copy session ID' }).click()
+  await expect(details.getByRole('button', { name: 'Copied' })).toBeVisible()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(id)
+  await page.keyboard.press('Escape')
+  await expect(details).toHaveCount(0)
+  await page.getByRole('button', { name: 'Show less', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Filter sessions' }).fill(id)
+  await page.getByRole('button', { name: /^Saved conversation 0/ }).click()
+  await page.getByRole('button', { name: 'Clear the filter' }).click()
+  await expect(page.getByRole('textbox', { name: 'Session title' })).toHaveValue('Saved conversation 0')
+  await expect(page.getByRole('button', { name: /^Saved conversation 0/ })).toBeVisible()
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.screenshot({ path: testInfo.outputPath('sessions-dark.png') })
+})

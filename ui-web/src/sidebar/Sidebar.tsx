@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { ProjectNode, SessionRow } from '../gateway/protocol.ts'
 import { resumeSession } from '../state/actions.ts'
@@ -27,6 +28,8 @@ import {
   SunIcon,
   XIcon,
 } from '../ui/icons.tsx'
+import { sessionWatermark, SESSION_PAGE } from './watermark.ts'
+import { CopyButton } from '../ui/primitives/CopyButton.tsx'
 import { filterProjects, isBlankSession, visibleSessions } from './filter.ts'
 import { openNewSessionDialog } from './NewSessionDialog.tsx'
 import { absoluteTime, relativeTime } from './recency.ts'
@@ -82,27 +85,81 @@ interface SessionListProps {
   keep: ReadonlySet<string>
   liveId: string | null
   project: ProjectNode
+  searching: boolean
 }
 
-function SessionList({ activeId, hiddenId, keep, liveId, project }: SessionListProps) {
+function SessionActions({ row }: { row: SessionRow }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState({ top: 0, left: 0 })
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (!open) return
+    const rect = trigger.current?.getBoundingClientRect()
+    const panel = menu.current
+    if (rect && panel) setPosition({
+      left: Math.max(8, Math.min(rect.right - panel.offsetWidth, window.innerWidth - panel.offsetWidth - 8)),
+      top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - panel.offsetHeight - 8)),
+    })
+    panel?.querySelector('button')?.focus()
+  }, [open])
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setOpen(false); trigger.current?.focus() }
+    }
+    const close = () => setOpen(false)
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      document.removeEventListener('keydown', escape)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [open])
+  return <>
+    <button className={css.sessionActions} ref={trigger} type="button" aria-label={`Session actions: ${sessionLabel(row)}`}
+      aria-haspopup="dialog" aria-expanded={open} title="Session actions" onClick={() => setOpen(value => !value)}>⋯</button>
+    {open && createPortal(<div className={css.sessionMenu} ref={menu} role="dialog" aria-label="Session details" style={position}>
+      <span>Session ID</span><code>{row.id}</code><CopyButton text={row.id} label="Copy session ID" />
+    </div>, document.body)}
+  </>
+}
+
+function SessionList({ activeId, hiddenId, keep, liveId, project, searching }: SessionListProps) {
   // Lane headers only earn their line when a repo actually has more than one
   // checkout — a single-worktree project would otherwise show a header that
   // repeats its own name.
   const showLanes = laneCount(project) > 1
+  const [marks, setMarks] = useState<Record<string, number>>({})
+  const required = Object.fromEntries(project.repos.flatMap(repo => repo.groups.map(lane =>
+    [lane.id, sessionWatermark(laneRows(lane.sessions, hiddenId, keep), marks[lane.id] ?? SESSION_PAGE, activeId ?? liveId)])))
+  useEffect(() => {
+    if (searching) return
+    if (Object.entries(required).some(([id, value]) => value > (marks[id] ?? SESSION_PAGE))) setMarks(required)
+  }, [required, marks, searching])
 
   return (
     <>
       {project.repos.map(repo =>
-        repo.groups.map(lane => (
-          <div key={lane.id}>
+        repo.groups.map(lane => {
+          const rows = laneRows(lane.sessions, hiddenId, keep)
+          const visible = searching ? rows.length : required[lane.id] ?? SESSION_PAGE
+          return <div key={lane.id}>
             {showLanes && (
               <div className={css.laneLabel}>
                 <GitBranchIcon size={11} />
                 {lane.label}
               </div>
             )}
-            {laneRows(lane.sessions, hiddenId, keep).map(row => (
-              <button
+            {rows.slice(0, visible).map(row => (
+              <div className={css.sessionEntry} key={row.id}><button
                 className={[css.sessionRow, row.id === activeId ? css.sessionActive : '']
                   .filter(Boolean)
                   .join(' ')}
@@ -122,9 +179,16 @@ function SessionList({ activeId, hiddenId, keep, liveId, project }: SessionListP
                   </span>
                 )}
               </button>
+              <SessionActions row={row} /></div>
             ))}
+            {!searching && rows.length > visible && <button className={css.showMore} type="button"
+              onClick={() => setMarks(current => ({ ...current, [lane.id]: visible + SESSION_PAGE }))}>
+              Show more ({rows.length - visible})
+            </button>}
+            {!searching && visible > sessionWatermark(rows, SESSION_PAGE, activeId ?? liveId) && <button className={css.showMore} type="button"
+              onClick={() => setMarks(current => ({ ...current, [lane.id]: SESSION_PAGE }))}>Show less</button>}
           </div>
-        )),
+        }),
       )}
     </>
   )
@@ -321,6 +385,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
                       keep={keep}
                       liveId={liveId}
                       project={project}
+                      searching={searching}
                     />
                   )}
                 </div>

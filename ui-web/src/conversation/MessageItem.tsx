@@ -3,6 +3,7 @@ import { memo, useMemo } from 'react'
 
 import { openFile } from '../sidebar-right/store.ts'
 import { $workspace } from '../state/store.ts'
+import { ExpandableImage } from '../ui/ImagePreview.tsx'
 import { AlertIcon, InfoIcon } from '../ui/icons.tsx'
 import { CopyButton } from '../ui/primitives/CopyButton.tsx'
 import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
@@ -38,7 +39,7 @@ function UserMessageImpl({ node, onEdit }: { node: UserNode; onEdit?: (text: str
       {node.images !== undefined && node.images.length > 0 && (
         <div className={css.images}>
           {node.images.map((image, index) => (
-            <img
+            <ExpandableImage
               alt={image.name}
               className={css.image}
               key={index}

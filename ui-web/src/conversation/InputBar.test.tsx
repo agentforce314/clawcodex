@@ -275,3 +275,20 @@ describe('InputBar files from the clipboard and folders', () => {
     expect(screen.getByRole('status').textContent).toContain('Folders and empty files are skipped')
   })
 })
+
+it('edits command arguments independently and removes the command atomically', () => {
+  function Composer() {
+    const [draft, change] = useState('/plan fix the bug')
+    return <InputBar draft={draft} effort={{ supported: false }} models={{}} onDraftChange={change}
+      onApprovalModeChange={vi.fn()} onEffortChange={vi.fn()} onModelChange={vi.fn()}
+      onStop={vi.fn()} onSubmit={vi.fn()} running={false} usage={null} />
+  }
+  render(<Composer />)
+  const input = screen.getByRole('textbox', { name: 'Message ClawCodex' }) as HTMLTextAreaElement
+  expect(input.value).toBe('fix the bug')
+  expect(screen.getByRole('button', { name: 'Remove /plan command' })).toBeTruthy()
+  input.setSelectionRange(0, 0)
+  fireEvent.keyDown(input, { key: 'Backspace' })
+  expect(input.value).toBe('fix the bug')
+  expect(screen.queryByRole('button', { name: 'Remove /plan command' })).toBeNull()
+})

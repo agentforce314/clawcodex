@@ -16,6 +16,7 @@ import { readWorkspaceRelated } from '../state/actions.ts'
 import { $columnDrag } from '../state/layout.ts'
 import { createHtmlDocument, packHtml, referencePath, type ReadRelative } from './html-pack.ts'
 import { decodeBase64, fileExtension } from './text-store.ts'
+import type { PreviewZoom } from './zoom.ts'
 import css from './TextPreview.module.css'
 
 /**
@@ -92,8 +93,9 @@ export function imageMediaType(path: string): string | undefined {
   return IMAGE_MEDIA_TYPES[fileExtension(path)]
 }
 
-/** The image at its intrinsic size; the body around it scrolls. */
-export function ImagePreview({ data, path }: { data: Uint8Array; path: string }) {
+/** Fit large images to the panel, with explicit scaling for close inspection. */
+export function ImagePreview({ data, path, zoom = 'fit' }: { data: Uint8Array; path: string; zoom?: PreviewZoom }) {
+  const [naturalWidth, setNaturalWidth] = useState(0)
   const mediaType = imageMediaType(path) ?? 'application/octet-stream'
   const url = useObjectUrl(data, mediaType)
   const [state, setState] = useState<'failed' | 'loading' | 'ready'>('loading')
@@ -107,7 +109,7 @@ export function ImagePreview({ data, path }: { data: Uint8Array; path: string })
   const name = path.split(/[/\\]/).filter(Boolean).at(-1) ?? path
 
   return (
-    <div className={css.imageFrame} data-preview-image="">
+    <div className={css.imageFrame} data-preview-image="" style={{ width: zoom === 'fit' ? '100%' : undefined }}>
       {state === 'loading' && <p className={css.viewerStatus}>Preparing the preview…</p>}
       {state === 'failed' && (
         <p className={css.viewerStatus} role="alert">
@@ -119,13 +121,15 @@ export function ImagePreview({ data, path }: { data: Uint8Array; path: string })
       <img
         alt={`Preview of ${name}`}
         className={css.image}
+        style={{ maxWidth: zoom === 'fit' ? '100%' : undefined, width: zoom !== 'fit' && naturalWidth > 0 ? naturalWidth * zoom : undefined }}
         decoding="async"
         draggable={false}
         hidden={state !== 'ready'}
         onError={() => {
           setState('failed')
         }}
-        onLoad={() => {
+        onLoad={event => {
+          setNaturalWidth(event.currentTarget.naturalWidth)
           setState('ready')
         }}
         referrerPolicy="no-referrer"

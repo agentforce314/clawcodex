@@ -20,11 +20,13 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 
 import { $transcript, $workspace } from '../state/store.ts'
 import { ChevronDownIcon, RefreshIcon, WrapIcon } from '../ui/icons.tsx'
-import { Markdown } from '../ui/markdown/Markdown.tsx'
+import { ZoomControls } from './ZoomControls.tsx'
+import { setZoom } from './text-store.ts'
+const DocumentMarkdown = lazy(() => import('./DocumentMarkdown.tsx'))
 import { CodeBlock } from '../ui/primitives/CodeBlock.tsx'
 import { Menu } from '../ui/primitives/Menu.tsx'
 import { HtmlPreview, ImagePreview, PdfPreview } from './BytePreviews.tsx'
@@ -321,6 +323,9 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
           <RefreshIcon size={14} />
         </button>
       </div>
+      {['markdown', 'code', 'text', 'image'].includes(viewer) && <ZoomControls
+        value={state.zoom === 'fit' && viewer !== 'image' ? 1 : state.zoom} image={viewer === 'image'}
+        onChange={zoom => setZoom(tabId, zoom)} />}
       <div
         className={[
           css.body,
@@ -342,12 +347,12 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
         ref={body}
       >
         {viewer === 'markdown' && hasPages && (
-          <div className={css.prose} data-preview-markdown>
-            <Markdown text={text} />
+          <div className={css.prose} data-preview-markdown style={{ zoom: state.zoom === 'fit' ? 1 : state.zoom }}>
+            <Suspense fallback={<p>Loading document…</p>}><DocumentMarkdown text={text} /></Suspense>
           </div>
         )}
         {viewer === 'code' && hasPages && (
-          <div className={css.code} data-preview-code data-wrap={state.wrap}>
+          <div className={css.code} data-preview-code data-wrap={state.wrap} style={{ zoom: state.zoom === 'fit' ? 1 : state.zoom }}>
             <CodeBlock
               className={css.codeBlock}
               code={text}
@@ -356,14 +361,14 @@ export function TextPreview({ path, tabId }: TextPreviewProps) {
             />
           </div>
         )}
-        {viewer === 'text' && rows}
+        {viewer === 'text' && <div style={{ zoom: state.zoom === 'fit' ? 1 : state.zoom }}>{rows}</div>}
         {whole && bytes === undefined && state.failure === undefined && (
           <p className={css.viewerStatus} data-preview-state="reading">
             Reading…
           </p>
         )}
         {viewer === 'html' && bytes !== undefined && <HtmlPreview data={bytes} path={state.path} />}
-        {viewer === 'image' && bytes !== undefined && <ImagePreview data={bytes} path={state.path} />}
+        {viewer === 'image' && bytes !== undefined && <ImagePreview data={bytes} path={state.path} zoom={state.zoom} />}
         {viewer === 'pdf' && bytes !== undefined && <PdfPreview data={bytes} path={state.path} />}
         {state.failure !== undefined && (
           <p className={css.statusLine} data-preview-failed={state.failure.code}>
