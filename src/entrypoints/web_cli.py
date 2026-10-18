@@ -103,7 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-open", action="store_true", dest="no_open",
                         help="Print the URL without launching a browser.")
     parser.add_argument("--build", action="store_true",
-                        help="Build ui-web before serving (source checkouts).")
+                        help="Install locked dependencies and build ui-web before serving.")
     parser.add_argument("--allow-remote", action="store_true", dest="allow_remote",
                         help="Permit a non-loopback --host. The page hands out the "
                              "session token, so only do this behind your own auth.")
@@ -111,16 +111,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def build_web_app(app_dir: Path) -> int:
-    """Run ``npm install`` (when needed) then ``npm run build`` in ``ui-web``."""
+    """Sync locked dependencies with ``npm ci``, then build ``ui-web``."""
     if not (app_dir / "package.json").is_file():
         print(f"web: no web app at {app_dir}", file=sys.stderr)
         return 1
 
     npm = "npm.cmd" if os.name == "nt" else "npm"
-    plan: list[list[str]] = []
-    if not (app_dir / "node_modules").is_dir():
-        plan.append([npm, "ci", "--no-audit", "--no-fund"])
-    plan.append([npm, "run", "build"])
+    # Installer upgrades update the lockfile but can leave old node_modules.
+    # Always sync before an explicit build, including incomplete installs.
+    plan = [
+        [npm, "ci", "--no-audit", "--no-fund"],
+        [npm, "run", "build"],
+    ]
 
     for command in plan:
         print(f"web: {' '.join(command)}", file=sys.stderr)
@@ -140,7 +142,7 @@ def _missing_bundle_message(app_dir: Path) -> str:
         return (
             "web: the browser client is not built yet.\n"
             f"     Run `clawcodex web --build`, or build it directly:\n"
-            f"       cd {app_dir} && npm install && npm run build"
+            f"       cd {app_dir} && npm ci && npm run build"
         )
     return (
         "web: no web client bundle found. This install does not ship one; "
