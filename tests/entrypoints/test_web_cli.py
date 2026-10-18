@@ -10,11 +10,59 @@ second server with its own drifting flags.
 from __future__ import annotations
 
 import argparse
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from src.entrypoints import web_cli
+
+
+# ── web build ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("has_node_modules", [False, True], ids=["fresh", "upgrade"])
+def test_web_build_syncs_locked_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_node_modules: bool,
+) -> None:
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    if has_node_modules:
+        # An installer upgrade can leave dependencies from the previous version.
+        (tmp_path / "node_modules").mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], *, cwd: str, check: bool):
+        assert cwd == str(tmp_path)
+        assert check is False
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(web_cli.subprocess, "run", fake_run)
+
+    assert web_cli.build_web_app(tmp_path) == 0
+    npm = "npm.cmd" if web_cli.os.name == "nt" else "npm"
+    assert calls == [
+        [npm, "ci", "--no-audit", "--no-fund"],
+        [npm, "run", "build"],
+    ]
+
+
+@pytest.mark.parametrize("failure_step", ["ci", "run"])
+def test_web_build_stops_and_propagates_command_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_step: str,
+) -> None:
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    calls: list[str] = []
+
+    def fake_run(command: list[str], *, cwd: str, check: bool):
+        calls.append(command[1])
+        return subprocess.CompletedProcess(command, 23 if command[1] == failure_step else 0)
+
+    monkeypatch.setattr(web_cli.subprocess, "run", fake_run)
+
+    assert web_cli.build_web_app(tmp_path) == 23
+    assert calls == (["ci"] if failure_step == "ci" else ["ci", "run"])
 
 
 # ── loopback classification ──────────────────────────────────────────────────
