@@ -38,6 +38,7 @@ export default defineConfig({
         // on-demand chunk and is fetched only when a code block needs it.
         manualChunks(id: string): string | undefined {
           if (!id.includes('/node_modules/')) return undefined
+          if (id.includes('/node_modules/yaml/')) return 'yaml'
           if (id.includes('/node_modules/katex/')) return 'katex'
           if (id.includes('/node_modules/@shikijs/langs/')) return undefined
           if (id.includes('/node_modules/shiki/') || id.includes('/node_modules/@shikijs/')) {

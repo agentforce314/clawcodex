@@ -22,6 +22,7 @@
 import { Marked, type Token, type Tokens, type TokenizerAndRendererExtension } from 'marked'
 import { Fragment, memo, useMemo, useRef, type ReactNode } from 'react'
 
+import { ExpandableImage, ImageLink } from '../ImagePreview.tsx'
 import { CodeBlock } from '../primitives/CodeBlock.tsx'
 // Aliased: an unqualified `Math` here would shadow the global one for the
 // whole module, and this file does arithmetic.
@@ -136,6 +137,8 @@ const BARE_URL = /^https?:\/\/\S+$/i
 /* ── token rendering ─────────────────────────────────────────────────────── */
 
 interface RenderOptions {
+  /** Linked images retain the parent link's action without nesting a button. */
+  inLink?: boolean
   /**
    * False for the live tail of a streaming reply. An unsettled code fence
    * renders plain — its text is still growing, and an async highlight of a
@@ -235,6 +238,9 @@ function renderToken(token: Token, key: string, options: RenderOptions): ReactNo
         return <Fragment key={key}>{renderInline(link.tokens, key, options)}</Fragment>
       }
 
+      if (/^https?:\/\/.*\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#].*)?$/i.test(link.href)) {
+        return <ImageLink key={key} href={link.href} title={link.title ?? undefined}>{renderInline(link.tokens, key, { ...options, inLink: true })}</ImageLink>
+      }
       const external = isExternal(link.href)
 
       return (
@@ -247,7 +253,7 @@ function renderToken(token: Token, key: string, options: RenderOptions): ReactNo
           target={external ? '_blank' : undefined}
           title={link.title ?? undefined}
         >
-          {renderInline(link.tokens, key, options)}
+          {renderInline(link.tokens, key, { ...options, inLink: true })}
         </a>
       )
     }
@@ -263,13 +269,13 @@ function renderToken(token: Token, key: string, options: RenderOptions): ReactNo
         )
       }
 
+      if (options.inLink) return <img key={key} alt={image.text} src={image.href} title={image.title ?? undefined}
+        loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+
       return (
-        <img
+        <ExpandableImage
           alt={image.text}
-          decoding="async"
           key={key}
-          loading="lazy"
-          referrerPolicy="no-referrer"
           src={image.href}
           title={image.title ?? undefined}
         />

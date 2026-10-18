@@ -133,7 +133,7 @@ file, the compass for the start page.
   from where the displayed list ends.
 - **A file** opens as its own tab, drawn by the viewer its path picks —
   Markdown rendered as prose, code highlighted behind a line gutter, an HTML
-  document in a frame of its own, an image at its own size, a PDF through the
+  document in a frame of its own, an image fitted to the panel, a PDF through the
   browser's viewer, anything else as bare text — with the text viewers one
   pick away in the header's chooser where they still make sense (an HTML
   document or an SVG is also its source; a raster image or a PDF is only
@@ -398,6 +398,10 @@ unchanged.
 | Grouped work details | `015a9b202c`, `1bcb633c3f`, `a0a9aef5ec` | Compact, Standard, Detailed and Verbose; independent completion/next-input collapse timing; whole-turn history paging |
 | Model search | `6773e10645`, `989b93d86f`, `c87959bc44` | Fuzzy matching within provider groups, sticky headings, keyboard selection, pending indication and viewport placement |
 | Font preferences | `849e9ebd8d` | Independent conversation, code and terminal-output fonts and sizes, persisted per browser |
+| Structured composer drafts | `e400349e3a`, `98d93db18f` | Session-scoped text and attachment metadata across navigation/reload; argument-taking commands become removable atomic chips |
+| Session list folding and IDs | `7df3c41ec9`, `38c700f08e` | Five-row pages, a growing visible prefix for active sessions, search across folded rows and IDs, copyable session IDs |
+| Document previews | `0cad3a0137`, `f65c15a5cf` | YAML frontmatter property cards, source switching, per-tab zoom and fit-width image previews |
+| Image inspection | `7fe9c06fa6` | Expand inline and sent images, fit/actual-size controls, keyboard dismissal and lazy image-link hover previews |
 
 **Settings → General** owns reading preferences. Detailed mode shows individual
 work rows during the current turn and folds completed groups; Verbose retains
@@ -406,6 +410,19 @@ Standard also shows the live command or thought. Failed tools remain counted
 on collapsed groups. Assistant messages and notices retain their chronological
 positions. Long conversations initially render the latest 20 turns; **Show
 earlier messages** adds 20 without moving the first visible turn.
+
+Drafts are private to the browser tab and stored in `sessionStorage`. Accepted
+uploads remain attached while the same agent runtime is available. When a saved
+conversation needs a replacement runtime, its text is restored and stale upload
+markers are removed with a notice to attach the files again. Large image previews
+may be omitted from persisted metadata when browser storage is full. Command
+chips retain the existing slash-command protocol when submitted.
+
+File previews keep independent zoom levels (25–400%) while their tabs are open.
+Images initially fit the panel; HTML and PDF retain their native viewer controls.
+Leading YAML frontmatter renders as properties without expanding aliases; malformed
+metadata remains visible as source. Session ID popovers support copying, outside
+click dismissal and Escape, including near the bottom of a scrolled sidebar.
 
 The upstream account, plugin marketplace, native voice input, remote operators,
 translation, hosted search, scheduling service and interactive terminal depend

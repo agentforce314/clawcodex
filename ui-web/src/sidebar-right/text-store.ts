@@ -16,6 +16,7 @@
  */
 
 import { map } from 'nanostores'
+import { clampZoom, type PreviewZoom } from './zoom.ts'
 
 import type { FileBytes, FilePage, WorkspaceFileFailure } from '../gateway/protocol.ts'
 import { readWorkspaceBytes, readWorkspaceFile } from '../state/actions.ts'
@@ -139,6 +140,7 @@ export interface TextTabState {
   version: string
   viewer: PreviewViewer
   wrap: boolean
+  zoom: PreviewZoom
 }
 
 export const $textTabs = map<Record<string, TextTabState>>({})
@@ -156,6 +158,7 @@ export function emptyTextTab(path: string): TextTabState {
     version: '',
     viewer: defaultViewer(path),
     wrap: true,
+    zoom: defaultViewer(path) === 'image' ? 'fit' : 1,
   }
 }
 
@@ -408,4 +411,10 @@ export function forgetTextTab(tabId: string): void {
 export function resetTextTabs(): void {
   generations.clear()
   $textTabs.set({})
+}
+
+/** Zoom belongs to the file tab and survives a viewer switch or reload. */
+export function setZoom(tabId: string, zoom: PreviewZoom): void {
+  const state = $textTabs.get()[tabId]
+  if (state) $textTabs.setKey(tabId, { ...state, zoom: zoom === 'fit' ? 'fit' : clampZoom(zoom) })
 }

@@ -4,13 +4,13 @@ import { existsSync, appendFileSync } from 'node:fs'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { startMockServer } from './model-server'
+import { startMockServer, PREVIEW_SVG } from './model-server'
 
 const repo = path.resolve(import.meta.dirname, '../..')
 const python = process.env.CLAWCODEX_TEST_PYTHON ?? (existsSync(path.join(repo, '.venv/bin/python')) ? path.join(repo, '.venv/bin/python') : 'python3')
 
 /** Real Python gateway and agent loop; only model inference is replaced. */
-export const test = base.extend<{ app: { url: string; workspace: string } }>({
+export const test = base.extend<{ app: { url: string; workspace: string; received: string[] } }>({
   app: async ({ page }, use, testInfo) => {
     const temp = await mkdtemp(path.join(tmpdir(), 'clawcodex-web-e2e-'))
     const config = path.join(temp, 'config')
@@ -26,6 +26,7 @@ export const test = base.extend<{ app: { url: string; workspace: string } }>({
     }))
     await writeFile(path.join(workspace, 'README.md'), '---\ntitle: Preview document\ntags: [web, port]\n---\n# Preview body\n\nA document served by the ClawCodex gateway.\n')
     await writeFile(path.join(workspace, 'example.txt'), 'A file from the real workspace.\n')
+    await writeFile(path.join(workspace, 'preview.svg'), PREVIEW_SVG)
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TMPDIR: process.env.TMPDIR,
       PYTHONPATH: repo, PYTHONUNBUFFERED: '1', CLAWCODEX_DISABLE_LEGACY_MIGRATION: '1',
@@ -52,7 +53,8 @@ export const test = base.extend<{ app: { url: string; workspace: string } }>({
       const url = `http://127.0.0.1:${port}`
       await page.goto(url)
       await expect(page.getByRole('textbox', { name: 'Message ClawCodex' })).toBeVisible()
-      await use({ url, workspace })
+      await expect(page.getByText('Connected', { exact: true })).toBeVisible()
+      await use({ url, workspace, received: mock.received })
       expect(errors).toEqual([])
     } finally {
       await testInfo.attach('backend.log', { body: logs, contentType: 'text/plain' })

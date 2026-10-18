@@ -41,6 +41,7 @@ import {
   $workspace,
 } from './store.ts'
 import { emptyTranscript, type AssistantNode } from './transcript.ts'
+import { getDraft, setDraftText } from './drafts.ts'
 
 /** Answers every RPC from a canned table and lets tests push events. */
 class FakeGateway {
@@ -1437,6 +1438,40 @@ describe('the same runtime reached through its other row', () => {
 })
 
 describe('attached files', () => {
+  it('keeps draft uploads with the saved conversation while navigating between runtimes', async () => {
+    const gateway = await connect({
+      'session.resume': { session_id: 'runtime-one', stored_session_id: 'saved-one' },
+      'file.attach': { attached: true, id: 4, name: 'notes.txt' },
+    })
+    await resumeSession('saved-one')
+    setDraftText('saved-one', 'Read [File #4]')
+    await attachFile(new Blob(['alpha']), 'notes.txt')
+    gateway.results['session.resume'] = { session_id: 'runtime-two', stored_session_id: 'saved-two' }
+    await resumeSession('saved-two')
+    expect(getDraft('saved-two').attachments).toEqual([])
+    gateway.results['session.resume'] = { session_id: 'runtime-one', stored_session_id: 'saved-one' }
+    await resumeSession('saved-one')
+    expect(getDraft('saved-one').attachments[0]?.name).toBe('notes.txt')
+    await submitPrompt(getDraft('saved-one').text)
+    expect($transcript.get().nodes.find(node => node.kind === 'user')).toMatchObject({ files: [{ name: 'notes.txt' }] })
+    expect(getDraft('saved-one').attachments).toEqual([])
+  })
+
+  it('restores saved text and warns about uploads after a replacement runtime attaches', async () => {
+    const gateway = await connect({
+      'session.resume': { session_id: 'runtime-one', stored_session_id: 'saved' },
+      'file.attach': { attached: true, id: 4, name: 'notes.txt' },
+    })
+    await resumeSession('saved')
+    setDraftText('saved', 'Read [File #4] carefully')
+    await attachFile(new Blob(['alpha']), 'notes.txt')
+    $sessionId.set(null)
+    gateway.results['session.resume'] = { session_id: 'replacement', stored_session_id: 'saved' }
+    await resumeSession('saved')
+    expect(getDraft('saved')).toEqual({ text: 'Read carefully', attachments: [] })
+    expect($notice.get().text).toContain('Attach files again')
+  })
+
   it('uploads the bytes and carries the card into the user row while the wire prompt stays text', async () => {
     const gateway = await connect({ 'file.attach': { attached: true, id: 4, name: 'notes.txt' } })
     await createSession()

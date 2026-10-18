@@ -33,11 +33,13 @@ import {
   $sessionId,
   $sessionLoading,
   $sessionTitle,
+  $storedSessionId,
   $subagentView,
   $trajectory,
   $transcript,
   $workspace,
 } from '../state/store.ts'
+import { $drafts, setDraftText } from '../state/drafts.ts'
 import { subagentCatalog } from '../state/subagents.ts'
 import { currentTodos } from '../state/todo-progress.ts'
 import { trajectoryStats } from '../state/trajectory.ts'
@@ -108,7 +110,12 @@ export function ConversationRoot() {
   // backend restart, and the session's word wins.
   const nano = transcript.info.nano ?? backendNano
 
-  const [draft, setDraft] = useState('')
+  const storedId = useStore($storedSessionId)
+  const drafts = useStore($drafts)
+  const titleBeforeEdit = useRef('')
+  const draftScope = storedId ?? sessionId ?? 'welcome'
+  const draft = drafts[draftScope]?.text ?? ''
+  const setDraft = useCallback((text: string) => setDraftText(draftScope, text), [draftScope])
   // null while in flight, so the panel can say "loading" rather than "no plan".
   const [plan, setPlan] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -227,6 +234,8 @@ export function ConversationRoot() {
 
   const composer = (
     <InputBar
+      key={draftScope}
+      draftScope={draftScope}
       // The session's mode when there is one, otherwise the choice being held
       // for the session that does not exist yet.
       approvalMode={transcript.info.approval_mode ?? pendingApproval ?? undefined}
@@ -317,10 +326,11 @@ export function ConversationRoot() {
                 <input
                   aria-label="Session title"
                   className={css.title}
+                  onFocus={event => { titleBeforeEdit.current = event.currentTarget.value }}
                   onBlur={event => {
                     const value = event.target.value.trim()
 
-                    if (value !== '' && value !== sessionTitle) void renameSession(value)
+                    if (value !== '' && value !== titleBeforeEdit.current) void renameSession(value)
                   }}
                   onChange={event => {
                     $sessionTitle.set(event.target.value)

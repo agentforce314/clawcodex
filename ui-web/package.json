@@ -28,7 +28,8 @@
     "nanostores": "1.4.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "shiki": "4.3.1"
+    "shiki": "4.3.1",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

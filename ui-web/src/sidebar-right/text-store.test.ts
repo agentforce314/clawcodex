@@ -20,6 +20,7 @@ import {
   reloadPages,
   resetTextTabs,
   setScroll,
+  setZoom,
   toggleWrap,
   viewerChoices,
 } from './text-store.ts'
@@ -53,6 +54,17 @@ afterEach(() => {
   $sessionId.set(null)
   $workspace.set('')
   resetTextTabs()
+})
+
+it('keeps preview zoom per tab and clamps numeric zoom to the supported range', () => {
+  $textTabs.set({ a: emptyTextTab('/repo/a.md'), b: emptyTextTab('/repo/image.png') })
+  expect($textTabs.get().b?.zoom).toBe('fit')
+  setZoom('a', 1.5)
+  setZoom('b', 100)
+  expect($textTabs.get().a?.zoom).toBe(1.5)
+  expect($textTabs.get().b?.zoom).toBe(4)
+  setZoom('b', Number.NaN)
+  expect($textTabs.get().b?.zoom).toBe(1)
 })
 
 describe('page arithmetic', () => {

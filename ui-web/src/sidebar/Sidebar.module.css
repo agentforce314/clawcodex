@@ -366,3 +366,17 @@
   background: var(--cc-alias-interactive-bg-active);
   color: var(--cc-alias-label-primary);
 }
+.sessionEntry { display: flex; position: relative; min-width: 0; align-items: center; }
+.sessionEntry > .sessionRow { flex: 1; min-width: 0; }
+.sessionActions { flex: none; font: var(--cc-font-xs-13); cursor: pointer; padding: 4px; border: 0; background: transparent; color: var(--cc-alias-label-tertiary); }
+.sessionActions:hover, .sessionActions[aria-expanded="true"] { color: var(--cc-alias-label-primary); }
+.sessionMenu {
+  position: fixed; z-index: 100; display: flex; flex-direction: column; gap: 8px;
+  width: 230px; padding: 12px; border-radius: 10px; box-shadow: var(--cc-shadow-lv3);
+  max-width: calc(100vw - 40px);
+  color: var(--cc-alias-label-primary); background: var(--cc-specific-menu);
+}
+.sessionMenu code { overflow-wrap: anywhere; font-size: 11px; }
+.sessionMenu button, .showMore { padding: 5px 10px; border: 0; border-radius: 6px; color: var(--cc-alias-label-secondary); background: transparent; font: var(--cc-font-xs-13); cursor: pointer; }
+.sessionMenu button:hover, .showMore:hover { background: var(--cc-alias-interactive-bg-hover); }
+.showMore { margin-left: 18px; }
