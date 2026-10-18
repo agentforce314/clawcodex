@@ -4,8 +4,8 @@
    folding a column-aligned command's output destroys its alignment. */
 .block {
   --cc-terminal-radius: 12px;
-  --cc-terminal-line-height: 22px;
-  --cc-terminal-font: var(--cc-font-markdown-code-block);
+  --cc-terminal-line-height: calc(var(--cc-terminal-size) * 1.7);
+  --cc-terminal-font: var(--cc-terminal-size)/1.7 var(--cc-font-family-terminal);
   /* The card's own left inset, holding the run-state dot in a column of its
      own so it never competes with the command for horizontal space. */
   --cc-terminal-gutter: 30px;

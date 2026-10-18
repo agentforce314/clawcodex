@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 import { CheckIcon } from '../icons.tsx'
 import css from './Menu.module.css'
@@ -102,6 +102,8 @@ export interface MenuProps {
   onSelect: (id: string) => void
   open: boolean
   selectedId?: string
+  /** Optional controlled search. The owner filters rows and retains their identities. */
+  search?: { label: string; query: string; onChange: (value: string) => void }
   /** `top` opens upward — what a control at the bottom of the window needs. */
   side?: 'bottom' | 'top'
 }
@@ -128,9 +130,19 @@ export function Menu({
   onSelect,
   open,
   selectedId,
+  search,
   side = 'bottom',
 }: MenuProps) {
   const root = useRef<HTMLSpanElement | null>(null)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const menuId = useId()
+  const [highlight, setHighlight] = useState(0)
+  const [shift, setShift] = useState(0)
+  useLayoutEffect(() => {
+    if (!open) return
+    setHighlight(0)
+    searchInput.current?.focus()
+  }, [open, search?.query])
   // Measured while open; null until then (and in a layout-less test DOM,
   // where an unmeasurable anchor keeps the requested side and the
   // stylesheet's cap).
@@ -155,6 +167,11 @@ export function Menu({
           window.innerHeight - rect.bottom - MENU_GAP - MENU_SAFE_MARGIN,
         ),
       )
+      const card = root.current?.querySelector<HTMLElement>('[role="menu"]')
+      if (card) {
+        const left = align === 'end' ? rect.right - card.offsetWidth : rect.left
+        setShift(Math.max(MENU_SAFE_MARGIN - left, Math.min(0, window.innerWidth - MENU_SAFE_MARGIN - left - card.offsetWidth)))
+      }
     }
 
     measure()
@@ -163,7 +180,7 @@ export function Menu({
     return () => {
       window.removeEventListener('resize', measure)
     }
-  }, [open, side])
+  }, [open, side, align])
 
   useEffect(() => {
     if (!open) return
@@ -179,6 +196,7 @@ export function Menu({
         // Stopped so a menu inside a dialog closes only the menu.
         event.stopPropagation()
         onClose()
+        root.current?.querySelector<HTMLButtonElement>('button')?.focus()
       }
     }
 
@@ -193,8 +211,12 @@ export function Menu({
 
   const selectable = items.filter((entry): entry is MenuItem => !isSeparator(entry) && !isLabel(entry))
 
+  const enabled = selectable.filter(entry => !entry.disabled)
+  const active = enabled[Math.min(highlight, enabled.length - 1)]
   const row = (entry: MenuItem, selected: boolean) => (
     <button
+      id={`${menuId}-${entry.id}`}
+      data-highlighted={search && entry.id === active?.id ? '' : undefined}
       className={[css.item, entry.danger === true ? css.danger : ''].filter(Boolean).join(' ')}
       disabled={entry.disabled}
       key={entry.id}
@@ -229,9 +251,25 @@ export function Menu({
             .filter(Boolean)
             .join(' ')}
           role="menu"
-          style={placement === null ? undefined : { maxHeight: placement.maxHeight }}
+          style={{ maxHeight: placement?.maxHeight, transform: `translateX(${shift}px)` }}
         >
-          <div className={css.viewport}>
+          {search && <input className={css.search} aria-label={search.label} placeholder={search.label}
+            ref={searchInput} value={search.query} role="combobox" aria-expanded={open}
+            aria-controls={`${menuId}-items`} aria-activedescendant={active ? `${menuId}-${active.id}` : undefined}
+            onChange={event => search.onChange(event.target.value)}
+            onKeyDown={event => {
+              if (event.nativeEvent.isComposing) return
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                const index = enabled.length === 0 ? 0 : (highlight + (event.key === 'ArrowDown' ? 1 : -1) + enabled.length) % enabled.length
+                setHighlight(index)
+                document.getElementById(`${menuId}-${enabled[index]?.id}`)?.scrollIntoView({ block: 'nearest' })
+              } else if (event.key === 'Enter' && active) {
+                event.preventDefault(); onSelect(active.id)
+                root.current?.querySelector<HTMLButtonElement>('button')?.focus()
+              }
+            }} />}
+          <div className={css.viewport} id={`${menuId}-items`}>
             {selectable.length === 0 && emptyText !== undefined ? (
               <div className={css.empty}>{emptyText}</div>
             ) : (

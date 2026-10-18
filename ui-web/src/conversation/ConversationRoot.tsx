@@ -243,7 +243,7 @@ export function ConversationRoot() {
         void setEffort(level)
       }}
       onModelChange={(model, provider) => {
-        void setModel(model, provider)
+        return setModel(model, provider)
       }}
       onStop={() => {
         void interrupt()
@@ -457,6 +457,7 @@ export function ConversationRoot() {
       ) : (
       <div
         className={css.scrollBody}
+        data-chat-scroll=""
         data-phase={hero ? 'hero' : 'active'}
         onScroll={onScroll}
         ref={scroller}
@@ -473,6 +474,7 @@ export function ConversationRoot() {
                 <div className={css.settling}>Loading session…</div>
               ) : (
                 <ChatView
+                  key={sessionId}
                   agents={transcript.agents}
                   nodes={transcript.nodes}
                   onEditPrompt={setDraft}

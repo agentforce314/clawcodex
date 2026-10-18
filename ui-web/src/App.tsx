@@ -11,6 +11,7 @@ import { Sidebar } from './sidebar/Sidebar.tsx'
 import { start } from './state/actions.ts'
 import { $detailsOpen, $detailsWidth, openDetails, toggleSidebar } from './state/layout.ts'
 import { $bootError, $bootPhase, $sessionId, $workspace } from './state/store.ts'
+import { installReading } from './state/preferences.ts'
 import { installTheme } from './state/theme.ts'
 import { Button } from './ui/primitives/Button.tsx'
 import { BrandMark } from './ui/BrandMark.tsx'
@@ -61,6 +62,7 @@ export function App() {
   const workspace = useStore($workspace)
 
   useEffect(() => installTheme(), [])
+  useEffect(() => installReading(), [])
 
   // The right column's open files belong to one session's workspace. Carrying
   // them into another would show a tree rooted somewhere the reader never went.

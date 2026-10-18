@@ -385,6 +385,34 @@ The rate is `cache_read / (input + cache_read + cache_write)` — the same sum t
 stats line's input figure sums, so the percentage and the count beside it
 describe one arithmetic.
 
+## October 2026 upstream port
+
+The upstream review targets DeepSeek Harness `687f282e86` (2026-10-17),
+compared with this client's September 22 feature baseline. User-facing behavior
+is adapted into React and nanostores; all session operations still use the
+ClawCodex JSON-RPC gateway. The Python backend and ClawCodex brand assets stay
+unchanged.
+
+| Feature | Upstream reference | ClawCodex implementation |
+| --- | --- | --- |
+| Grouped work details | `015a9b202c`, `1bcb633c3f`, `a0a9aef5ec` | Compact, Standard, Detailed and Verbose; independent completion/next-input collapse timing; whole-turn history paging |
+| Model search | `6773e10645`, `989b93d86f`, `c87959bc44` | Fuzzy matching within provider groups, sticky headings, keyboard selection, pending indication and viewport placement |
+| Font preferences | `849e9ebd8d` | Independent conversation, code and terminal-output fonts and sizes, persisted per browser |
+
+**Settings → General** owns reading preferences. Detailed mode shows individual
+work rows during the current turn and folds completed groups; Verbose retains
+individual rows. Compact and Standard show group controls during execution;
+Standard also shows the live command or thought. Failed tools remain counted
+on collapsed groups. Assistant messages and notices retain their chronological
+positions. Long conversations initially render the latest 20 turns; **Show
+earlier messages** adds 20 without moving the first visible turn.
+
+The upstream account, plugin marketplace, native voice input, remote operators,
+translation, hosted search, scheduling service and interactive terminal depend
+on upstream host services absent from ClawCodex's gateway. They are not copied
+into this browser port. ClawCodex's existing commands, provider credentials,
+approvals, subagents and agent execution remain the source of those capabilities.
+
 ## Development
 
 ```bash
@@ -392,11 +420,19 @@ npm install
 npm run typecheck
 npm run test
 npm run build          # → dist/, what `clawcodex web` serves
+npx playwright install chromium
+npm run test:e2e       # built UI → real Python gateway/agent → local model fixture
 
 # Live reload against a running backend:
 clawcodex serve --host 127.0.0.1 --port 8317 --token dev
 npm run dev            # http://127.0.0.1:5175/?token=dev  (proxies /api to 8317)
 ```
+
+Browser E2E tests require the Python project dependencies. They use `.venv/bin/python`
+when present, or `python3`; set `CLAWCODEX_TEST_PYTHON` to choose another interpreter.
+Each test uses a temporary workspace and config directory, with a local deterministic
+inference endpoint and no real API credentials. Traces and screenshots land in
+`ui-web/test-results/`.
 
 `CLAWCODEX_WEB_DIST=/path/to/dist` points the server at a bundle elsewhere; it
 is authoritative, so a path with no bundle in it means "no bundle" rather than

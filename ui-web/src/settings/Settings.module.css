@@ -263,3 +263,9 @@
   background: var(--cc-alias-interactive-bg-active);
   color: var(--cc-alias-label-primary);
 }
+.readingLabel { display: flex; flex-direction: column; gap: 6px; font: var(--cc-font-xs-13); min-width: 0; }
+.readingLabel select, .readingLabel input[type='number'] {
+  color: var(--cc-alias-label-primary); background: var(--cc-alias-interactive-bg-hover);
+  border: 1px solid var(--cc-alias-border-l2); border-radius: 8px; padding: 8px;
+}
+.fontRow { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 12px; }
