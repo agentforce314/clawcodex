@@ -237,7 +237,7 @@ python -m src.cli login
     "minimax": {
       "api_key": "your-api-key",
       "base_url": "https://api.minimaxi.com/anthropic",
-      "default_model": "MiniMax-M2.7"
+      "default_model": "MiniMax-M3.1-Flash"
     },
     "openrouter": {
       "api_key": "your-api-key",

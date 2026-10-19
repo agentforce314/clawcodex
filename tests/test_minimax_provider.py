@@ -54,7 +54,7 @@ def test_priority_request_capture_and_usage(
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
-        provider = MinimaxProvider(api_key="test", base_url=base_url)
+        provider = MinimaxProvider(api_key="test", base_url=base_url, model="MiniMax-M3")
         provider._client_kwargs["http_client"] = http_client
         response = provider.chat(
             [{"role": "user", "content": "hello"}],

@@ -158,19 +158,8 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
     "minimax": {
         "label": "Minimax AI",
         "default_base_url": "https://api.minimax.io/anthropic",
-        "default_model": "MiniMax-M3",
-        "available_models": [
-            "MiniMax-M3",
-            "MiniMax-M2.7",
-            "MiniMax-M2.7-highspeed",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5-highspeed",
-            "M2-her",
-            # Historical
-            "MiniMax-M2.1",
-            "MiniMax-M2.1-highspeed",
-            "MiniMax-M2",
-        ],
+        "default_model": "MiniMax-M3.1-Flash",
+        "available_models": ["MiniMax-M3.1-Flash", "MiniMax-M3"],
     },
     "deepseek": {
         "label": "DeepSeek",

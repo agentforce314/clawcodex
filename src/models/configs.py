@@ -466,6 +466,14 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         supports_vision=True,
     ),
     # MiniMax pricing is maintained in services/pricing.py.
+    "MiniMax-M3.1-Flash": ModelConfig(
+        model_id="MiniMax-M3.1-Flash",
+        display_name="MiniMax M3.1 Flash",
+        context_window=1_000_000,
+        max_output_tokens=524_288,
+        supports_cache=True,
+        claims_prefix=False,
+    ),
     "MiniMax-M2.7": ModelConfig(
         model_id="MiniMax-M2.7",
         display_name="MiniMax M2.7",
@@ -478,7 +486,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         model_id="MiniMax-M3",
         display_name="MiniMax M3",
         context_window=1_000_000,
-        max_output_tokens=8_192,
+        max_output_tokens=524_288,
         supports_cache=True,
     ),
     # Moonshot / Kimi (api.moonshot.ai, OpenAI-compatible). Windows and vision
