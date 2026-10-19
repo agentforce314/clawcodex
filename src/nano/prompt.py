@@ -25,6 +25,8 @@ session-stable, so the whole prompt sits in one cached prefix.
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Any
 
@@ -126,13 +128,15 @@ def _skills_section(cwd: str) -> str:
     # advertised but unusable (and would only bloat the prompt). Drop them.
     entries: list[tuple[str, str, str]] = []
     for skill in skills:
-        paths = getattr(skill, "paths", None) or []
-        if not paths:
+        # ``paths`` is the conditional-activation glob list, not a file
+        # location; the loadable file is ``<skill_root>/SKILL.md``.
+        root = getattr(skill, "skill_root", None)
+        if not root:
             continue
         entries.append((
             _xml_escape(str(getattr(skill, "name", ""))),
             _xml_escape(str(getattr(skill, "description", "") or "")),
-            _xml_escape(str(paths[0])),
+            _xml_escape(os.path.join(str(root), "SKILL.md")),
         ))
     if not entries:
         return ""

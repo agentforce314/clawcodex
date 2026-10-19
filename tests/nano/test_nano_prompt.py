@@ -120,3 +120,17 @@ def test_default_path_unchanged_when_nano_off(no_skills, tmp_path):
     # The maximal prompt keeps its signature sections.
     assert "# Doing tasks" in joined
     assert "nano mode" not in joined
+
+
+def test_skills_section_lists_skill_by_root_not_paths(monkeypatch):
+    """A skill is located at <skill_root>/SKILL.md; ``paths`` is only the
+    conditional-activation glob list and is usually empty."""
+    import src.command_system as cs
+    from src.nano.prompt import _skills_section
+
+    skill = SimpleNamespace(
+        name="demo", description="d", paths=[], skill_root="/x/skills/demo"
+    )
+    monkeypatch.setattr(cs, "get_skill_tool_commands", lambda cwd: (skill,))
+    out = _skills_section("/tmp")
+    assert "<location>/x/skills/demo/SKILL.md</location>" in out
