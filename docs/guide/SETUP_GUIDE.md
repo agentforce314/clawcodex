@@ -95,7 +95,7 @@ Create `~/.clawcodex/config.json` (only the providers you actually use are requi
 | `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-6` |
 | `openai` | `https://api.openai.com/v1` | `gpt-5.4` |
 | `zai` | `https://api.z.ai/api/coding/paas/v4` | `glm-5.2` (also `glm-5.1`) |
-| `minimax` | `https://api.minimaxi.com/anthropic` | `MiniMax-M2.7` |
+| `minimax` | `https://api.minimaxi.com/anthropic` | `MiniMax-M3.1-Flash` |
 | `openrouter` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro` |
 | `deepseek` | `https://api.deepseek.com` | `deepseek-flash` |
 

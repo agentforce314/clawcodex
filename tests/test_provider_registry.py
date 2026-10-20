@@ -102,13 +102,13 @@ class TestRegistryCompleteness(unittest.TestCase):
     def test_minimax_current_defaults_and_models(self):
         info = PROVIDER_INFO["minimax"]
         self.assertEqual(info["default_base_url"], "https://api.minimax.io/anthropic")
-        self.assertEqual(info["default_model"], "MiniMax-M3")
-        self.assertEqual(info["available_models"][:2], ["MiniMax-M3", "MiniMax-M2.7"])
+        self.assertEqual(info["default_model"], "MiniMax-M3.1-Flash")
+        self.assertEqual(info["available_models"], ["MiniMax-M3.1-Flash", "MiniMax-M3"])
 
         provider = MinimaxProvider(api_key="k")
         self.assertEqual(provider.base_url, "https://api.minimax.io/anthropic")
-        self.assertEqual(provider.model, "MiniMax-M3")
-        self.assertEqual(provider.get_available_models()[:2], ["MiniMax-M3", "MiniMax-M2.7"])
+        self.assertEqual(provider.model, "MiniMax-M3.1-Flash")
+        self.assertEqual(provider.get_available_models(), ["MiniMax-M3.1-Flash", "MiniMax-M3"])
 
     def test_hand_written_providers_not_shadowed(self):
         # The registry must hold only the *new* providers — never override the

@@ -451,7 +451,7 @@ clawcodex login
     "minimax": {
       "api_key": "your-api-key",
       "base_url": "https://api.minimax.io/anthropic",
-      "default_model": "MiniMax-M3"
+      "default_model": "MiniMax-M3.1-Flash"
     },
     "openrouter": {
       "api_key": "your-api-key",

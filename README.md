@@ -737,7 +737,7 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
     "minimax": {
       "api_key": "your-api-key",
       "base_url": "https://api.minimax.io/anthropic",
-      "default_model": "MiniMax-M3"
+      "default_model": "MiniMax-M3.1-Flash"
     },
     "openrouter": {
       "api_key": "your-api-key",
@@ -779,6 +779,24 @@ The final Messages request URLs are
 `https://api.minimax.io/anthropic/v1/messages` and
 `https://api.minimaxi.com/anthropic/v1/messages`. The OpenAI-compatible API roots are
 `https://api.minimax.io/v1` globally and `https://api.minimaxi.com/v1` in China.
+
+The direct MiniMax picker offers `MiniMax-M3.1-Flash` (default) and `MiniMax-M3`;
+saved, custom, and legacy IDs remain usable explicitly. Both current models have a
+1,000,000-token context and a 524,288-token output maximum. Flash always uses
+adaptive thinking; `output_config.effort` accepts `low`, `medium`, `high`, `xhigh`,
+or `max` (default). Unsupported efforts normalize to `max`; disabled thinking,
+`reasoning_split`, and `service_tier` are removed from Flash requests, including
+`extra_body` overrides. M3 retains adaptive/disabled thinking (Anthropic defaults
+to disabled), ignores effort, and supports Priority. Flash estimates use USD
+$0.15/M input, $0.60/M output, and $0.015/M cache reads. Its cache-write rate is
+unpublished: reported cache-write tokens are estimated at the input rate, not a
+verified cache-write price. Existing M3 long-context and Priority accounting is
+unchanged. OpenRouter availability comes from its own discovery; direct API
+support does not register third-party routes.
+
+Sources: [models](https://platform.minimax.io/docs/guides/models-intro.md),
+[pricing](https://platform.minimax.io/docs/pricing/overview.md), and
+[Anthropic compatibility](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md).
 
 - **`session`** — REPL session persistence: `auto_save` writes each session automatically; `max_history` caps retained turns.
 - **`settings`** — the advisor (reviewer) feature. **`advisor_enabled` is the master switch — `false` by default, so the advisor is OFF unless you opt in** (set it to `true`, or run `/advisor <provider>:<model>` which flips it on). `advisor_provider` / `advisor_model` pick the reviewer model; `advisor_client_mode` routes the call via the client.

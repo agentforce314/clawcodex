@@ -77,7 +77,7 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         """
         from src.providers.model_discovery import discovered_models
 
-        return discovered_models(
+        models = discovered_models(
             "openrouter",
             getattr(self, "base_url", None) or "https://openrouter.ai/api/v1",
             getattr(self, "api_key", None) or None,
@@ -85,6 +85,18 @@ class OpenRouterProvider(OpenAICompatibleProvider):
             self._curated_models(),
             mode="hybrid",  # gateways/openrouter.ts source:'hybrid' — curation first
         )
+        # Only retire known text generations on the actual OpenRouter host.
+        # Custom endpoints, nontext models and explicit model IDs stay usable.
+        import re
+        from urllib.parse import urlparse
+
+        if urlparse(self.base_url or self.DEFAULT_BASE_URL).hostname == "openrouter.ai":
+            obsolete = re.compile(
+                r"minimax/(?:minimax-01|minimax-m[12](?:[.\-][^/:]*)?)(?::[^/]*)?$",
+                re.IGNORECASE,
+            )
+            models = [model for model in models if not obsolete.fullmatch(model)]
+        return models
 
     @staticmethod
     def _curated_models() -> list[str]:

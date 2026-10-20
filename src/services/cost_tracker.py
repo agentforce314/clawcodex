@@ -99,7 +99,7 @@ class CostTracker:
         cost = (
             input_tokens * pricing["input"]
             + output_tokens * pricing["output"]
-            + cache_creation * pricing["cache_creation"]
+            + cache_creation * pricing.get("cache_creation", pricing["input"])
             + cache_read * pricing["cache_read"]
         )
 

@@ -19,6 +19,39 @@ except ModuleNotFoundError:  # pragma: no cover
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
 
+def _model_request_kwargs(model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Apply current MiniMax thinking rules without changing custom models."""
+    prepared = dict(kwargs)
+    if model not in ("MiniMax-M3.1-Flash", "MiniMax-M3"):
+        return prepared
+    extra_body = dict(prepared.get("extra_body") or {})
+    if "extra_body" in prepared:
+        prepared["extra_body"] = extra_body
+    if model == "MiniMax-M3.1-Flash":
+        # Merge before applying defaults: an unrelated extra_body must not
+        # overwrite a valid top-level effort. Explicit extra_body values win.
+        output_config = dict(prepared.get("output_config") or {})
+        output_config.update(extra_body.pop("output_config", None) or {})
+        if output_config.get("effort") not in ("low", "medium", "high", "xhigh", "max"):
+            output_config["effort"] = "max"
+        prepared["output_config"] = output_config
+        prepared["thinking"] = {"type": "adaptive"}
+        extra_body.pop("thinking", None)
+        for options in (prepared, extra_body):
+            options.pop("service_tier", None)
+            options.pop("reasoning_split", None)
+    else:
+        for options in (prepared, extra_body):
+            thinking = options.get("thinking")
+            if isinstance(thinking, dict) and thinking.get("type") in (
+                "enabled", "adaptive", "disabled"
+            ):
+                options["thinking"] = {
+                    "type": "disabled" if thinking["type"] == "disabled" else "adaptive"
+                }
+    return prepared
+
+
 def _usage_token_count(usage: Any, field: str) -> int:
     value = getattr(usage, field, 0)
     return int(value) if isinstance(value, (int, float)) else 0
@@ -43,10 +76,10 @@ class MinimaxProvider(BaseProvider):
         Args:
             api_key: Minimax API key
             base_url: Base URL (optional, defaults to Minimax Anthropic-compatible endpoint)
-            model: Default model (default: MiniMax-M3)
+            model: Default model (default: MiniMax-M3.1-Flash)
         """
         resolved_base_url = base_url or self.DEFAULT_BASE_URL
-        super().__init__(api_key, resolved_base_url, model or "MiniMax-M3")
+        super().__init__(api_key, resolved_base_url, model or "MiniMax-M3.1-Flash")
 
         self._client_kwargs: dict[str, Any] = {"api_key": api_key}
         if resolved_base_url:
@@ -149,9 +182,14 @@ class MinimaxProvider(BaseProvider):
             Chat response
         """
         model = self._get_model(**kwargs)
+        kwargs = _model_request_kwargs(model, kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
         request_service_tier = (
-            "priority" if kwargs.get("service_tier") == "priority" else "standard"
+            "priority"
+            if (kwargs.get("extra_body") or {}).get(
+                "service_tier", kwargs.get("service_tier")
+            ) == "priority"
+            else "standard"
         )
 
         system = kwargs.pop("system", None)
@@ -196,6 +234,7 @@ class MinimaxProvider(BaseProvider):
             Chunks of response content
         """
         model = self._get_model(**kwargs)
+        kwargs = _model_request_kwargs(model, kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
 
         # Convert messages
@@ -240,9 +279,14 @@ class MinimaxProvider(BaseProvider):
         guard.raise_if_pre_aborted()
 
         model = self._get_model(**kwargs)
+        kwargs = _model_request_kwargs(model, kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
         request_service_tier = (
-            "priority" if kwargs.get("service_tier") == "priority" else "standard"
+            "priority"
+            if (kwargs.get("extra_body") or {}).get(
+                "service_tier", kwargs.get("service_tier")
+            ) == "priority"
+            else "standard"
         )
         system = kwargs.pop("system", None)
         minimax_messages = self._prepare_messages(messages)
@@ -301,15 +345,6 @@ class MinimaxProvider(BaseProvider):
         Returns:
             List of model names
         """
-        return [
-            "MiniMax-M3",
-            "MiniMax-M2.7",
-            "MiniMax-M2.7-highspeed",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5-highspeed",
-            "M2-her",
-            # Historical
-            "MiniMax-M2.1",
-            "MiniMax-M2.1-highspeed",
-            "MiniMax-M2",
-        ]
+        from . import PROVIDER_INFO
+
+        return list(PROVIDER_INFO["minimax"]["available_models"])

@@ -212,6 +212,13 @@ _TIER_MINIMAX_M3_PRIORITY_LONG = {
     "cache_creation": 0.90 / 1_000_000,
     "cache_read": 0.18 / 1_000_000,
 }
+# Flash cache-write pricing is unpublished; omit it from the official card.
+# Cost estimates fall back to the input rate for any reported cache writes.
+_TIER_MINIMAX_M31_FLASH = {
+    "input": 0.15 / 1_000_000,
+    "output": 0.60 / 1_000_000,
+    "cache_read": 0.015 / 1_000_000,
+}
 _TIER_MINIMAX_M27 = {
     "input": 0.30 / 1_000_000,
     "output": 1.20 / 1_000_000,
@@ -399,6 +406,7 @@ PRICING: dict[str, dict[str, float]] = {
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
     "deepseek-v4-flash-vision-exp": _TIER_DEEPSEEK_FLASH_OFF_PEAK,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO_OFF_PEAK,
+    "MiniMax-M3.1-Flash": _TIER_MINIMAX_M31_FLASH,
     "MiniMax-M3": _TIER_MINIMAX_M3_STANDARD,
     "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
@@ -664,7 +672,7 @@ def compute_cost(
     return (
         input_tokens * pricing["input"]
         + output_tokens * pricing["output"]
-        + cache_creation * pricing["cache_creation"]
+        + cache_creation * pricing.get("cache_creation", pricing["input"])
         + cache_read * pricing["cache_read"]
     )
 
