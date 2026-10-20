@@ -18,7 +18,9 @@
 
 **🔥 Active Development • New Features Weekly 🔥**
 
-![ClawCodex Screenshot](assets/clawcodex-screenshot-1.png)
+![ClawCodex web UI demo](assets/clawcodex-web-demo.gif)
+
+<sub>A 30-second session in the web UI (`clawcodex web`): ask for a feature, watch it read, edit, run the tests, and report. [MP4 version](assets/clawcodex-web-demo.mp4)</sub>
 
 </div>
 
