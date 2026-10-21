@@ -6444,7 +6444,20 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             # Nano has no MCP surface (pi parity; docs/nano.md) — never
             # even construct the runtime, so no servers get spawned.
             mcp_rt = None if cfg.nano else McpRuntime()
-            if mcp_rt is not None and mcp_rt.start():
+            mcp_started = mcp_rt.start() if mcp_rt is not None else False
+            if mcp_rt is not None:
+                for notice in mcp_rt.config_errors:
+                    source = (
+                        notice.server_name or notice.path or notice.scope or "settings"
+                    )
+                    sess._emit(
+                        _system_message(
+                            sess.session_id,
+                            f"MCP configuration ({source}): " f"{notice.message}",
+                            level="warning",
+                        )
+                    )
+            if mcp_rt is not None and mcp_started:
                 for mtool in mcp_rt.tools:
                     try:
                         registry.register(mtool)

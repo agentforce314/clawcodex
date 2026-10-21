@@ -1006,6 +1006,10 @@ clawcodex/
 
 ## 🤝 Contributing
 
+For an opt-in web search integration, see the runnable
+[Parallel Search MCP example](demos/parallel_search/README.md). It uses the existing
+HTTP MCP client without a Parallel API key.
+
 **We welcome contributions!**
 
 ```bash

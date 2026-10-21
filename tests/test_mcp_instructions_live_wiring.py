@@ -113,7 +113,7 @@ class TestRuntimeRetention:
 
         scoped = SimpleNamespace(config=SimpleNamespace(enabled=True))
         monkeypatch.setattr(
-            "src.services.mcp.config.get_all_mcp_configs", lambda: {"srv": scoped}
+            "src.services.mcp.config.get_all_mcp_configs", lambda: ({"srv": scoped}, [])
         )
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
         # C4: start() now constructs a real McpAuthProvider (which touches the
@@ -151,7 +151,7 @@ class TestRuntimeRetention:
 
         scoped = SimpleNamespace(config=SimpleNamespace(enabled=True))
         monkeypatch.setattr(
-            "src.services.mcp.config.get_all_mcp_configs", lambda: {"srv": scoped}
+            "src.services.mcp.config.get_all_mcp_configs", lambda: ({"srv": scoped}, [])
         )
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
         # C4: start() now constructs a real McpAuthProvider (which touches the

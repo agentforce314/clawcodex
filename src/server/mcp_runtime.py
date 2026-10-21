@@ -62,6 +62,8 @@ class McpRuntime:
         self._thread: threading.Thread | None = None
         self.clients: dict[str, Any] = {}
         self.servers: dict[str, list[str]] = {}  # server name -> tool names
+        # Loader validation/policy notices are surfaced by the agent-server.
+        self.config_errors: list[Any] = []
         self.tools: list[Any] = []  # wrapped sync Tool objects (mcp__server__tool)
         # ConnectedMCPServer objects (name + server-authored ``instructions``
         # from the InitializeResult handshake). The connect() return used to
@@ -96,7 +98,7 @@ class McpRuntime:
             logger.debug("[mcp] config module unavailable", exc_info=True)
             return False
         try:
-            configs = get_all_mcp_configs()
+            configs, self.config_errors = get_all_mcp_configs()
         except Exception:  # noqa: BLE001
             logger.debug("[mcp] reading configs failed", exc_info=True)
             return False
