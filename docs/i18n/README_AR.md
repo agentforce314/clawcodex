@@ -100,7 +100,7 @@ providers = [
     # مزودون متوافقون مع OpenAI
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
-    "huggingface", "together", "stepfun", "deepinfra",
+    "huggingface", "together", "stepfun", "deepinfra", "runcrate",
     # خوادم محلية (لا تتطلب مفتاح API)
     "ollama", "vllm", "sglang",
 ]  # 25 مزوداً؛ الأسماء المستعارة مثل nim و kimi و hf تُحلّ تلقائياً

@@ -47,6 +47,7 @@ EXPECTED_NEW_PROVIDERS = {
     "together",
     "stepfun",
     "deepinfra",
+    "runcrate",
     "meta",
     # OpenCode's openai-compatible profiles that this registry was missing
     "groq",
@@ -63,6 +64,7 @@ VENDOR_DEFAULTS = {
     "moonshot": ("https://api.moonshot.ai/v1", "kimi-k3"),
     "ollama": ("http://localhost:11434/v1", "deepseek-coder:1.3b"),
     "deepinfra": ("https://api.deepinfra.com/v1/openai", "deepseek-ai/DeepSeek-V4-Pro"),
+    "runcrate": ("https://api.runcrate.ai/v1", "deepseek-ai/DeepSeek-V4-Flash"),
     "stepfun": ("https://api.stepfun.ai/v1", "step-3.7-flash"),
     "siliconflow-cn": ("https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V4-Pro"),
     "meta": ("https://api.meta.ai/v1", "muse-spark-1.1"),

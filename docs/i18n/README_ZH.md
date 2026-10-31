@@ -272,7 +272,7 @@ providers = [
     # OpenAI 兼容厂商
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
-    "huggingface", "together", "stepfun", "deepinfra",
+    "huggingface", "together", "stepfun", "deepinfra", "runcrate",
     # 本地服务（无需 API Key）
     "ollama", "vllm", "sglang",
 ]  # 共 25 个 provider；nim、kimi、hf 等别名自动解析

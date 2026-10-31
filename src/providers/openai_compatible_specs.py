@@ -382,6 +382,21 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN"),
         aliases=("deep-infra", "deep_infra"),
     ),
+    ProviderSpec(
+        id="runcrate",
+        label="Runcrate",
+        default_base_url="https://api.runcrate.ai/v1",
+        default_model="deepseek-ai/DeepSeek-V4-Flash",
+        available_models=(
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "zai-org/GLM-5.3",
+            "moonshotai/Kimi-K2.6",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+        ),
+        env_vars=("RUNCRATE_API_KEY",),
+        aliases=("run-crate", "run_crate"),
+    ),
     # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
     # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
     # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``
