@@ -18,6 +18,8 @@ import {
   setEffort,
   setModel,
   submitPrompt,
+  steerPrompt,
+  steerQueuedPrompt,
 } from '../state/actions.ts'
 import {
   $backendNano,
@@ -30,6 +32,7 @@ import {
   $pendingApprovalMode,
   $pendingModel,
   $queue,
+  $steeringSession,
   $sessionId,
   $sessionLoading,
   $sessionTitle,
@@ -84,6 +87,7 @@ export function ConversationRoot() {
   const effort = useStore($effort)
   const usage = useStore($contextUsage)
   const queue = useStore($queue)
+  const steeringSession = useStore($steeringSession)
   const connection = useStore($connection)
   const commands = useStore($commands)
   const detailsOpen = useStore($detailsOpen)
@@ -258,6 +262,8 @@ export function ConversationRoot() {
         void interrupt()
       }}
       onSubmit={onSubmit}
+      onSendNow={steerPrompt}
+      sendingNow={steeringSession === sessionId && sessionId !== null}
       running={transcript.running}
       // The session's model when there is one, else a welcome-screen pick
       // held for the session that does not exist yet — same shape as the
@@ -511,7 +517,12 @@ export function ConversationRoot() {
             )}
             <div className={css.composerSeat} ref={seat}>
               <TodoPanel todos={todos} />
-              <QueueDock items={queue} onRemove={dequeue} />
+              <QueueDock
+                items={queue}
+                onRemove={dequeue}
+                onSendNow={index => { void steerQueuedPrompt(index) }}
+                sendingNow={steeringSession === sessionId && sessionId !== null}
+              />
               {seatPanel}
               <StatsLine stats={stats} />
             </div>

@@ -67,6 +67,59 @@ describe('InputBar approval mode', () => {
   })
 })
 
+describe('InputBar Send now', () => {
+  function Harness({ onSendNow, onSubmit = vi.fn() }: {
+    onSendNow: (text: string) => Promise<boolean>; onSubmit?: (text: string) => void
+  }) {
+    const [draft, setDraft] = useState('also check complex functions')
+    return <InputBar draft={draft} onDraftChange={setDraft} onSendNow={onSendNow}
+      onSubmit={onSubmit} running effort={{ supported: false }} models={{}} usage={null}
+      onApprovalModeChange={vi.fn()} onEffortChange={vi.fn()} onModelChange={vi.fn()} onStop={vi.fn()} />
+  }
+
+  it('sends into the active turn on click and clears only after acceptance', async () => {
+    let resolve!: (accepted: boolean) => void
+    const onSendNow = vi.fn(() => new Promise<boolean>(done => { resolve = done }))
+    const onSubmit = vi.fn()
+    render(<Harness onSendNow={onSendNow} onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    expect(onSendNow).toHaveBeenCalledWith('also check complex functions')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('also check complex functions')
+    resolve(true)
+    await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
+  })
+
+  it('keeps the draft when delivery fails', async () => {
+    const onSendNow = vi.fn(async () => false)
+    render(<Harness onSendNow={onSendNow} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    await waitFor(() => expect(onSendNow).toHaveBeenCalledOnce())
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('also check complex functions')
+  })
+
+  it('keeps a newer draft when the earlier message is accepted', async () => {
+    let resolve!: (accepted: boolean) => void
+    render(<Harness onSendNow={() => new Promise<boolean>(done => { resolve = done })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'another question' } })
+    resolve(true)
+    await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('another question'))
+  })
+
+  it('still queues with Enter and prevents sending attachment markers as text', () => {
+    const onSendNow = vi.fn(async () => true)
+    const onSubmit = vi.fn()
+    render(<Harness onSendNow={onSendNow} onSubmit={onSubmit} />)
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    expect(onSubmit).toHaveBeenCalledWith('also check complex functions')
+    expect(onSendNow).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '[Image #1] look' } })
+    expect((screen.getByRole('button', { name: 'Send now' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Queue' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+})
+
 describe('InputBar command menu', () => {
   it('opens from the launcher with its two sections in usage order, and closes on Escape', () => {
     renderBar()

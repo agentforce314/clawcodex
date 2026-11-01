@@ -9,7 +9,7 @@ import random
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
 
@@ -43,6 +43,7 @@ from .continuation_nudge import (
     detect_continuation_signal,
 )
 from .stop_hooks import StopHookResult, handle_stop_hooks_streaming
+from .turn_input import TurnInput
 from .token_budget import (
     ContinueDecision,
     check_token_budget,
@@ -138,6 +139,7 @@ class QueryParams:
     # Live thinking deltas (separate channel from on_text_chunk) for the TUI's
     # streaming thinking view. None → thinking isn't surfaced live.
     on_thinking_chunk: Callable[[str], None] | None = None
+    turn_input: TurnInput | None = None
 
     # Extended thinking ("adaptive" mode) — opt the model into a private
     # reasoning scratchpad before producing its visible answer. Defaults
@@ -1758,6 +1760,12 @@ async def query(
     _outbox_watermark = len(getattr(params.tool_use_context, "outbox", None) or [])
 
     while True:
+        if params.turn_input is not None:
+            incoming = params.turn_input.drain()
+            for message in incoming:
+                yield message
+            if incoming:
+                state = replace(state, messages=[*state.messages, *incoming])
         messages = state.messages
         if _diag:
             logger.warning(
@@ -2653,6 +2661,21 @@ async def query(
                     holder, natural_termination, Terminal(reason="empty_response")
                 )
                 return
+
+            if params.turn_input is not None and (
+                not params.max_turns or turn_count < params.max_turns
+            ):
+                incoming = params.turn_input.drain(finishing=True)
+                if incoming:
+                    for message in incoming:
+                        yield message
+                    state = replace(
+                        state,
+                        messages=[*messages, *assistant_messages, *incoming],
+                        turn_count=turn_count + 1,
+                        continuation_nudge_count=0,
+                    )
+                    continue
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return

@@ -297,6 +297,7 @@ class _AgentSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _pending: dict[str, _Pending] = field(default_factory=dict)
     _current_abort: AbortController | None = None
+    _turn_input: Any = None
 
     # ─── outbound helpers (worker thread → main loop) ──────────────────────
 
@@ -422,6 +423,39 @@ class _AgentSession:
         # it unreleasable by a conditional close.
         if self.init_error is not None and subtype not in ("interrupt", "get_activity"):
             self._reply(request_id, {"ok": False, "error": self.init_error})
+            return
+        if subtype == "steer":
+            text = inner.get("text")
+            if not isinstance(text, str) or not text.strip():
+                self._reply(request_id, {"status": "rejected", "error": "Enter a message to send now."})
+                return
+            text = text.strip()
+            # Uploads and slash commands need the normal prompt preparation
+            # path. Never deliver their literal markers to the model.
+            if text.startswith("/") or re.search(r"\[(?:Image|File) #\d+\]", text):
+                self._reply(request_id, {"status": "rejected", "error": "Queue attachments and commands for the next turn."})
+                return
+            with self._lock:
+                turn_input = self._turn_input
+                abort = self._current_abort
+            if turn_input is None or abort is None or abort.signal.aborted:
+                self._reply(request_id, {"status": "rejected", "reason": "not_running"})
+                return
+            # Steering is user input too: run the same validation hooks, off
+            # the socket loop, before admitting it into the active query.
+            ups = await asyncio.to_thread(self._run_user_prompt_submit_hooks, text)
+            if ups is not None and (ups.blocked or ups.prevented):
+                self._reply(request_id, {"status": "rejected", "error": ups.block_message if ups.blocked else ups.prevent_reason})
+                return
+            from src.types.messages import UserMessage
+
+            content = text
+            for context in (ups.additional_contexts if ups is not None else []):
+                content += f"\n<system-reminder>\n{context}\n</system-reminder>"
+            message = UserMessage(content=content)
+            message._steering_text = text
+            accepted = not abort.signal.aborted and turn_input.put(message)
+            self._reply(request_id, {"status": "queued"} if accepted else {"status": "rejected", "reason": "not_running"})
             return
         if subtype == "interrupt":
             with self._lock:
@@ -5632,8 +5666,12 @@ class _AgentSession:
             prompt = _with_ultracode_reminder(prompt)
 
         abort = AbortController()
+        from src.query.turn_input import TurnInput
+
+        turn_input = TurnInput()
         with self._lock:
             self._current_abort = abort
+            self._turn_input = None if btw else turn_input
         # Wire the per-turn controller into the tool context so an interrupt
         # tears down an in-flight tool (Bash supervisor, etc.), not just the
         # model stream. A fresh controller per turn avoids a prior turn's
@@ -5690,6 +5728,11 @@ class _AgentSession:
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("[agent-server] persist failed")
+            if hasattr(message, "_steering_text"):
+                self._emit({
+                    "type": "system", "subtype": "steer",
+                    "session_id": self.session_id, "text": message._steering_text,
+                })
             env = _sdk_envelope(message, self.session_id)
             if env is not None:
                 self._emit(env)
@@ -5729,6 +5772,7 @@ class _AgentSession:
                 on_text_chunk=on_text_chunk,
                 on_thinking_chunk=on_thinking_chunk,
                 on_message=on_message,
+                turn_input=turn_input,
                 abort_controller=abort,
                 extended_thinking=self._thinking,  # None = model default; True/False = ThinkingToggle
                 # /effort for BOTH provider families: resolved at the wire
@@ -5779,6 +5823,14 @@ class _AgentSession:
         finally:
             with self._lock:
                 self._current_abort = None
+                self._turn_input = None
+            # Return undelivered input to the client. In particular, Stop
+            # must not silently launch another turn from acknowledged input.
+            for pending in turn_input.close():
+                self._emit({
+                    "type": "system", "subtype": "steer_failed",
+                    "session_id": self.session_id, "text": pending._steering_text,
+                })
             if btw and _btw_snapshot is not None:
                 msgs = self.session.conversation.messages
                 msgs.clear()

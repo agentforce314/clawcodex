@@ -42,6 +42,7 @@ from ..utils.abort_controller import AbortController, AbortError, AbortSignal
 
 from .query import QueryParams, StreamEvent, query
 from .transitions import Terminal, TerminalHolder
+from .turn_input import TurnInput
 
 
 # Renderer types are now canonically in ``src.tool_system.renderers``
@@ -517,6 +518,7 @@ async def run_query_as_agent_loop(
     on_text_chunk: TextChunkHandler | None = None,
     on_thinking_chunk: TextChunkHandler | None = None,
     on_message: Callable[[Message], None] | None = None,
+    turn_input: TurnInput | None = None,
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
     extended_thinking: bool | None = None,
@@ -771,6 +773,7 @@ async def run_query_as_agent_loop(
         # callback raising AbortError from inside the SDK stream.
         on_text_chunk=on_text_chunk,
         on_thinking_chunk=on_thinking_chunk,
+        turn_input=turn_input,
     )
 
     holder = TerminalHolder()
@@ -898,6 +901,10 @@ async def run_query_as_agent_loop(
             continue
 
         if isinstance(msg, UserMessage):
+            if hasattr(msg, "_steering_text"):
+                if on_message is not None:
+                    on_message(msg)
+                continue
             # Tool result(s) arrive as UserMessages with ToolResultBlock
             # content. Persist the full message (so the next turn's
             # API call can pair tool_use IDs to their results) AND

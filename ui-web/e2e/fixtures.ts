@@ -10,7 +10,11 @@ const repo = path.resolve(import.meta.dirname, '../..')
 const python = process.env.CLAWCODEX_TEST_PYTHON ?? (existsSync(path.join(repo, '.venv/bin/python')) ? path.join(repo, '.venv/bin/python') : 'python3')
 
 /** Real Python gateway and agent loop; only model inference is replaced. */
-export const test = base.extend<{ app: { url: string; workspace: string; received: string[] } }>({
+export const test = base.extend<{ app: {
+  url: string; workspace: string; received: string[]; releaseSteering: () => void
+  isSteeringHeld: () => boolean
+  methods: string[]; events: string[]
+} }>({
   app: async ({ page }, use, testInfo) => {
     const temp = await mkdtemp(path.join(tmpdir(), 'clawcodex-web-e2e-'))
     const config = path.join(temp, 'config')
@@ -42,6 +46,18 @@ export const test = base.extend<{ app: { url: string; workspace: string; receive
     child.stdout.on('data', record)
     child.stderr.on('data', record)
     const errors: string[] = []
+    const methods: string[] = []
+    const events: string[] = []
+    page.on('websocket', socket => {
+      socket.on('framesent', frame => {
+        const request = JSON.parse(String(frame.payload)) as { method: string }
+        methods.push(request.method)
+      })
+      socket.on('framereceived', frame => {
+        const response = JSON.parse(String(frame.payload)) as { method?: string; params?: { type: string } }
+        if (response.method === 'event' && response.params) events.push(response.params.type)
+      })
+    })
     page.on('pageerror', error => errors.push(error.message))
     try {
       await expect.poll(() => {
@@ -54,7 +70,8 @@ export const test = base.extend<{ app: { url: string; workspace: string; receive
       await page.goto(url)
       await expect(page.getByRole('textbox', { name: 'Message ClawCodex' })).toBeVisible()
       await expect(page.getByText('Connected', { exact: true })).toBeVisible()
-      await use({ url, workspace, received: mock.received })
+      await use({ url, workspace, received: mock.received, releaseSteering: mock.releaseSteering,
+        isSteeringHeld: mock.isSteeringHeld, methods, events })
       expect(errors).toEqual([])
     } finally {
       await testInfo.attach('backend.log', { body: logs, contentType: 'text/plain' })

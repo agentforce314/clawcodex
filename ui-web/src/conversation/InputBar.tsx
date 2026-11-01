@@ -20,6 +20,8 @@ import { attachFile, attachImage, searchFiles } from '../state/actions.ts'
 import { $commands, $notice, $sessionAttaching } from '../state/store.ts'
 import { ArrowUpIcon, PlusIcon, SlashSquareIcon, StopIcon, XIcon } from '../ui/icons.tsx'
 import { FileTypeIcon } from '../ui/primitives/FileTypeIcon.tsx'
+import { Button } from '../ui/primitives/Button.tsx'
+import { steeringUnavailableReason } from './steering.ts'
 import { $drafts } from '../state/drafts.ts'
 import { commandDraft } from './command-draft.ts'
 import { ContextMeter } from './ContextMeter.tsx'
@@ -56,6 +58,8 @@ export interface InputBarProps {
   onEffortChange: (effort: string) => void
   onModelChange: (model: string, provider?: string) => void | Promise<unknown>
   onStop: () => void
+  onSendNow?: (text: string) => Promise<boolean>
+  sendingNow?: boolean
   onSubmit: (text: string) => void
   running: boolean
   sessionModel?: string
@@ -111,6 +115,8 @@ export function InputBar({
   onEffortChange,
   onModelChange,
   onStop,
+  onSendNow,
+  sendingNow = false,
   onSubmit,
   running,
   sessionModel,
@@ -452,7 +458,7 @@ export function InputBar({
   const submit = useCallback(() => {
     const text = draft.trim()
 
-    if (text === '') return
+    if (text === '' || sendingNow) return
 
     setLauncher(false)
     onSubmit(text)
@@ -462,7 +468,16 @@ export function InputBar({
       attachmentUrls.current.clear()
       setAttachments([])
     }
-  }, [draft, onDraftChange, onSubmit])
+  }, [draft, onDraftChange, onSubmit, sendingNow])
+
+  const sendNow = async () => {
+    const text = draft.trim()
+    if (sendingNow || !onSendNow || steeringUnavailableReason(text) !== null) return
+    setLauncher(false)
+    const accepted = await onSendNow(text)
+    // Keep text on failure, and never overwrite words typed during the RPC.
+    if (accepted && draftRef.current.trim() === text) onDraftChange('')
+  }
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -799,7 +814,7 @@ export function InputBar({
             }}
             placeholder={
               running
-                ? 'Queue a follow-up…'
+                ? 'Write a follow-up…'
                 : hero
                   ? 'Describe what you want to build, / commands, @ files'
                   : 'Message ClawCodex, / commands, @ files'
@@ -884,6 +899,17 @@ export function InputBar({
           </div>
           <div className={css.trailing}>
             <ContextMeter usage={usage} />
+            {running && draft.trim() !== '' && onSendNow && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={sendingNow || steeringUnavailableReason(draft) !== null}
+                onClick={() => { void sendNow() }}
+                title={steeringUnavailableReason(draft) ?? 'Add to the active turn after the current step'}
+              >
+                {sendingNow ? 'Sending…' : 'Send now'}
+              </Button>
+            )}
             {/* Stopping the turn is the important action while one is running,
                 so it holds the primary seat — but a draft written meanwhile
                 still needs a way out that is not "press Enter and hope", so
@@ -903,7 +929,7 @@ export function InputBar({
               <button
                 aria-label={running ? 'Queue' : 'Send'}
                 className={[css.primary, running ? css.queue : ''].filter(Boolean).join(' ')}
-                disabled={draft.trim() === ''}
+                disabled={sendingNow || draft.trim() === ''}
                 onClick={submit}
                 title={running ? 'Queue for the next turn (Enter)' : 'Send (Enter)'}
                 type="button"
