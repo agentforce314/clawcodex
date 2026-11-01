@@ -380,6 +380,10 @@ class DesktopSession:
                 self.init_info = dict(frame)
                 self.init_seen.set()
                 await self._broadcast("session.info", _init_session_info(frame))
+            elif subtype == "steer":
+                await self._broadcast("message.steered", {"text": frame.get("text", "")})
+            elif subtype == "steer_failed":
+                await self._broadcast("message.steer_failed", {"text": frame.get("text", "")})
             return
 
         # A turn the agent started for itself (a /goal continuation, a loop
@@ -1127,6 +1131,7 @@ class GatewayConnection:
             "session.active_list": self.session_active_list,
             "session.list": self.session_active_list,
             "session.interrupt": self.session_interrupt,
+            "session.steer": self.session_steer,
             "session.rewind": self.session_rewind,
             "session.clear": self.session_clear,
             "session.title": self.session_title,
@@ -1675,6 +1680,12 @@ class GatewayConnection:
     async def session_interrupt(self, params: dict[str, Any]) -> dict[str, Any]:
         await self._session(params).interrupt()
         return {"ok": True}
+
+    async def session_steer(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = await self._session(params).control_query("steer", {"text": params.get("text")})
+        if not isinstance(result, dict):
+            raise ValueError("No response while sending to the active turn. Your message has been kept.")
+        return result
 
     async def session_rewind(self, params: dict[str, Any]) -> dict[str, Any]:
         """Drop the last N prompt-turns from the conversation (the CLI's /rewind).

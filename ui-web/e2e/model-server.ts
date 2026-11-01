@@ -7,6 +7,9 @@ export const PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="2000"
 /** Deterministic OpenAI-compatible inference, with real Read tool execution by the agent. */
 export async function startMockServer() {
   let toolIssued = false
+  let releaseSteering!: () => void
+  const steeringGate = new Promise<void>(resolve => { releaseSteering = resolve })
+  let heldSteering = false
   const received: string[] = []
   const server = http.createServer(async (request, response) => {
     if (request.url === '/preview.svg') {
@@ -23,12 +26,21 @@ export async function startMockServer() {
     for await (const chunk of request) raw += String(chunk)
     const body = JSON.parse(raw || '{}') as { stream?: boolean; tools?: { function: { name: string } }[]; messages?: { role: string; content: unknown }[] }
     received.push(JSON.stringify(body.messages ?? []))
-    const scripted = JSON.stringify(body.messages ?? []).includes('E2E_INTERIM_TRIGGER')
+    const input = JSON.stringify(body.messages ?? [])
+    const steering = input.includes('E2E_STEER_TRIGGER') || input.includes('E2E_STEER_TOOL_TRIGGER')
+    // The test holds inference until the button's RPC is acknowledged. No
+    // timers: the follow-up must arrive while the original turn is active.
+    if (steering && body.stream && !heldSteering) {
+      heldSteering = true
+      await steeringGate
+    }
+    const scripted = input.includes('E2E_INTERIM_TRIGGER') || input.includes('E2E_STEER_TOOL_TRIGGER')
     const readTool = body.tools?.find(entry => ['Read', 'read_file'].includes(entry.function.name))
     const tool = scripted && !toolIssued && readTool !== undefined
     if (tool) toolIssued = true
     const imageUrl = `http://${request.headers.host}/preview.svg`
-    const text = tool ? 'I will read the project documentation.' : scripted ? FINAL_REPLY :
+    const text = tool ? 'I will read the project documentation.' : steering ?
+      (input.includes('complex functions') ? 'The original task and complex functions are handled together.' : 'Finishing the original step.') : scripted ? FINAL_REPLY :
       JSON.stringify(body.messages ?? []).includes('E2E_IMAGE_TRIGGER') ?
         `![Workspace image](${imageUrl})\n\n[Inspect linked image](${imageUrl})` : SIMPLE_REPLY
     const calls = tool ? [{ id: 'read-project', type: 'function', function: { name: readTool?.function.name, arguments: JSON.stringify({ file_path: 'README.md' }) } }] : undefined
@@ -52,7 +64,9 @@ export async function startMockServer() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('No model server port')
-  return { url: `http://127.0.0.1:${address.port}`, received, close: () => new Promise<void>((resolve, reject) => {
+  return { url: `http://127.0.0.1:${address.port}`, received, releaseSteering,
+    isSteeringHeld: () => heldSteering, close: () => new Promise<void>((resolve, reject) => {
+    releaseSteering()
     server.closeAllConnections()
     server.close(error => error ? reject(error) : resolve())
   }) }

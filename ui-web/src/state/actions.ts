@@ -8,6 +8,7 @@
  */
 
 import { GatewayClient, type ConnectionState } from '../gateway/client.ts'
+import { steeringUnavailableReason } from '../conversation/steering.ts'
 import { apiGet, resolveBackend, type BackendTarget } from '../gateway/boot.ts'
 import { addDraftAttachment, adoptDraft, clearDraftAttachments, getDraft, resetDrafts } from './drafts.ts'
 import type {
@@ -30,6 +31,7 @@ import type {
   ProviderMutationResult,
   SessionHistoryResult,
   SessionResumeResult,
+  SessionSteerResult,
   SlashResult,
   SubagentInterruptResult,
   SubagentTranscriptResult,
@@ -56,6 +58,7 @@ import {
   $projects,
   $projectsLoading,
   $queue,
+  $steeringSession,
   $sessionId,
   $sessionAttaching,
   $sessionLoading,
@@ -96,6 +99,7 @@ let client: GatewayClient | null = null
 // advances it immediately, so a late reply from the conversation being left
 // cannot overwrite the transcript or status line of the one being opened.
 let sessionNavigationEpoch = 0
+const STEERING_NOTICE = 'Sent to the active turn. The agent will read it after the current step.'
 
 /**
  * The runtime attach in flight for the conversation on screen, if any, so a
@@ -131,6 +135,7 @@ export function gateway(): GatewayClient {
 /** Test seam: install a client with an injected socket factory. */
 export function setGatewayClient(next: GatewayClient | null): void {
   client = next
+  $steeringSession.set(null)
   resetDrafts()
 }
 
@@ -141,6 +146,7 @@ function notice(text: string, tone: 'error' | 'info' = 'info'): void {
 function beginSessionNavigation(): void {
   sessionNavigationEpoch += 1
   attachInFlight = null
+  $steeringSession.set(null)
   notice('')
 }
 
@@ -360,6 +366,16 @@ function handleEvent(event: GatewayEvent): void {
 
     return
   }
+
+  if (event.type === 'message.steer_failed') {
+    const text = (event.payload as { text?: string } | undefined)?.text
+    if (text) $queue.set([...$queue.get(), text])
+    notice('The turn ended before the message was read. It has been returned to the queue.', 'error')
+    return
+  }
+
+  if ((event.type === 'message.steered' || event.type === 'message.complete')
+    && $notice.get().text === STEERING_NOTICE) notice('')
 
   $transcript.set(applyEvent($transcript.get(), event))
   $trajectory.set(applyTrajectoryEvent($trajectory.get(), event))
@@ -899,10 +915,10 @@ export async function submitPrompt(text: string, spawn: SessionSpawnOptions = {}
   await send(trimmed)
 }
 
-async function send(text: string, retried = false): Promise<void> {
+async function send(text: string, retried = false): Promise<boolean> {
   const sessionId = $sessionId.get()
 
-  if (sessionId === null) return
+  if (sessionId === null) return false
 
   const draftScope = $storedSessionId.get() ?? sessionId
   const live = liveAttachments(text, getDraft(draftScope).attachments)
@@ -920,6 +936,7 @@ async function send(text: string, retried = false): Promise<void> {
   try {
     await gateway().request('prompt.submit', { session_id: sessionId, text })
     markSessionUsed()
+    return true
   } catch (error) {
     // The runtime is gone — closed by another window, or lost to a backend
     // restart behind the reconnect. The conversation is not: reconnect it
@@ -933,15 +950,75 @@ async function send(text: string, retried = false): Promise<void> {
       const result = await resumeSessionCore(stored, undefined, false)
 
       if (result !== null && $sessionId.get() !== null) {
-        await send(text, true)
-
-        return
+        return send(text, true)
       }
     }
 
     notice(errorText(error), 'error')
     $transcript.set({ ...$transcript.get(), running: false })
+    return false
   }
+}
+
+/** Add text to the live query without interrupting its tools or starting a turn. */
+export async function steerPrompt(text: string, queueIndex?: number): Promise<boolean> {
+  const sessionId = $sessionId.get()
+  const storedSessionId = $storedSessionId.get()
+  const epoch = sessionNavigationEpoch
+  const trimmed = text.trim()
+  const unavailable = steeringUnavailableReason(trimmed)
+  if (unavailable !== null) {
+    notice(unavailable, 'error')
+    return false
+  }
+  if (sessionId === null || $steeringSession.get() !== null) return false
+  if (queueIndex !== undefined && $queue.get()[queueIndex] !== text) return false
+
+  const isCurrent = () => epoch === sessionNavigationEpoch && (
+    $sessionId.get() === sessionId || (storedSessionId !== null && $storedSessionId.get() === storedSessionId)
+  )
+  $steeringSession.set(sessionId)
+  let accepted = false
+  try {
+    if (!$transcript.get().running) {
+      accepted = await send(trimmed)
+    } else {
+      const result = await gateway().request<SessionSteerResult>(
+        'session.steer', { session_id: sessionId, text: trimmed },
+      )
+      if (!isCurrent()) return false
+      if (result.status === 'queued') {
+        accepted = true
+        markSessionUsed()
+        if ($transcript.get().running) notice(STEERING_NOTICE)
+      } else if (result.reason === 'not_running') {
+        // The turn finished between the click and the RPC. It is now safe
+        // to submit normally; transport errors never take this retry path.
+        accepted = await send(trimmed)
+      } else {
+        notice(result.error || 'Could not send to the active turn. Your message has been kept.', 'error')
+      }
+    }
+    if (accepted && isCurrent() && queueIndex !== undefined) dequeue(queueIndex)
+    return accepted
+  } catch (error) {
+    if (isCurrent()) notice(errorText(error), 'error')
+    return false
+  } finally {
+    if (epoch === sessionNavigationEpoch && $steeringSession.get() === sessionId) {
+      $steeringSession.set(null)
+    }
+    if (isCurrent()) {
+      // A completion can arrive before the acknowledgement. Only drain
+      // after removing the accepted entry, so it cannot be submitted twice.
+      if (accepted && !$transcript.get().running) drainQueue()
+    }
+  }
+}
+
+export async function steerQueuedPrompt(index: number): Promise<boolean> {
+  const text = $queue.get()[index]
+  return text === undefined ? false : steerPrompt(text, index)
 }
 
 /** The backend's word for a runtime it no longer has. */
@@ -950,6 +1027,7 @@ function isUnknownSession(error: unknown): boolean {
 }
 
 function drainQueue(): void {
+  if ($steeringSession.get() !== null) return
   const queued = $queue.get()
 
   if (queued.length === 0) return

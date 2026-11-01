@@ -147,6 +147,9 @@ export const $pendingModel = atom<{ model: string; provider?: string } | null>(n
 /** Prompts typed while a turn was running, submitted in order when it ends. */
 export const $queue = atom<string[]>([])
 
+/** Session whose Send now request is awaiting acknowledgement. */
+export const $steeringSession = atom<string | null>(null)
+
 /** Transient status line under the composer (command output, errors). */
 export const $notice = map<{ text: string; tone: 'error' | 'info' }>({ text: '', tone: 'info' })
 

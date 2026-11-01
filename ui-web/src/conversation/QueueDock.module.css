@@ -58,6 +58,11 @@
   white-space: nowrap;
 }
 
+.sendNow {
+  flex: none;
+  white-space: nowrap;
+}
+
 .remove {
   flex: none;
   display: inline-flex;

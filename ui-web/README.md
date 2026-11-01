@@ -79,6 +79,15 @@ command that takes an argument claims the draft as `/name ` — or as
 as it would on Enter. The rows and their arrangement are a pure function
 (`src/conversation/command-menu.ts`); the composer decides what a pick does.
 
+### Follow-ups during a turn
+
+Enter or **Queue** holds a follow-up for the next turn. **Send now**, available
+in the composer and beside each queued prompt, adds text to the active turn.
+The agent reads it at the next model/tool boundary with the current context;
+running tools continue. A final model response also checks for new input before
+the turn ends. Messages are kept if delivery fails, and input left unread by a
+stopped turn returns to the queue. Attachments and slash commands use Queue.
+
 ### Attachments
 
 An image and a file attach the same way: the bytes go over the socket

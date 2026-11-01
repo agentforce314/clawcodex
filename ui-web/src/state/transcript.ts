@@ -289,7 +289,7 @@ function mergeUsage(current: UsagePayload | undefined, incoming: UsagePayload): 
   }
 }
 
-/** Append a user bubble — a local action, not a gateway event. */
+/** Append a user bubble for a local prompt or input consumed by the live turn. */
 export function appendUserMessage(
   state: TranscriptState,
   text: string,
@@ -409,6 +409,10 @@ function completeTool(
  */
 export function applyEvent(state: TranscriptState, event: GatewayEvent): TranscriptState {
   switch (event.type) {
+    case 'message.steered': {
+      const text = (event.payload as MessageDeltaPayload | undefined)?.text ?? ''
+      return text ? appendUserMessage(state, text) : state
+    }
     case 'session.info': {
       const payload = (event.payload ?? {}) as SessionInfoPayload
 

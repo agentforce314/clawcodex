@@ -45,6 +45,13 @@ export interface MessageDeltaPayload {
   text: string
 }
 
+/** `queued` means admitted to the active query's next boundary, not a new turn. */
+export interface SessionSteerResult {
+  status?: 'queued' | 'rejected'
+  reason?: 'not_running'
+  error?: string
+}
+
 export interface MessageCompletePayload {
   error?: string
   partial?: boolean

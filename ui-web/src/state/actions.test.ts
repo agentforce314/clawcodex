@@ -24,6 +24,8 @@ import {
   setGatewayClient,
   setModel,
   start,
+  steerPrompt,
+  steerQueuedPrompt,
   submitPrompt,
 } from './actions.ts'
 import {
@@ -32,6 +34,7 @@ import {
   $pendingModel,
   $providers,
   $queue,
+  $steeringSession,
   $sessionAttaching,
   $sessionId,
   $sessionLoading,
@@ -366,6 +369,106 @@ describe('queue', () => {
 
     dequeue(0)
     expect($queue.get()).toEqual(['third'])
+  })
+})
+
+describe('Send now', () => {
+  it('delivers a selected queued message to the active turn without stopping it', async () => {
+    const gateway = await connect({ 'session.steer': { status: 'queued' } })
+    await submitPrompt('original task')
+    await submitPrompt('keep waiting')
+    await submitPrompt('does it support complex functions?')
+    const started = $transcript.get().turnStartedAt
+
+    expect(await steerQueuedPrompt(1)).toBe(true)
+    expect(gateway.sent.find(frame => frame.method === 'session.steer')?.params).toEqual({
+      session_id: 'S1', text: 'does it support complex functions?',
+    })
+    expect($queue.get()).toEqual(['keep waiting'])
+    expect(gateway.methods().filter(method => method === 'prompt.submit')).toHaveLength(1)
+    expect(gateway.methods()).not.toContain('session.interrupt')
+    expect($transcript.get().running).toBe(true)
+    expect($transcript.get().turnStartedAt).toBe(started)
+
+    gateway.emit('message.steered', { text: 'does it support complex functions?' }, 'S1')
+    await settle()
+    expect($transcript.get().nodes.at(-1)).toMatchObject({ kind: 'user', text: 'does it support complex functions?' })
+    expect($transcript.get().turnStartedAt).toBe(started)
+    expect($notice.get().text).toBe('')
+  })
+
+  it.each(['rejection', 'transport error'])('keeps queued input after %s', async failure => {
+    const gateway = await connect({ 'session.steer': { status: 'rejected', error: 'Unavailable' } })
+    await submitPrompt('original')
+    await submitPrompt('keep me')
+    if (failure === 'transport error') gateway.failing.add('session.steer')
+    expect(await steerQueuedPrompt(0)).toBe(false)
+    expect($queue.get()).toEqual(['keep me'])
+    expect($notice.get().tone).toBe('error')
+    expect($steeringSession.get()).toBeNull()
+    expect(gateway.methods().filter(method => method === 'prompt.submit')).toHaveLength(1)
+  })
+
+  it('prevents duplicate clicks and delays queue drain until the acknowledgement', async () => {
+    const gateway = await connect({ 'session.steer': { status: 'queued' } })
+    await submitPrompt('original')
+    await submitPrompt('selected')
+    await submitPrompt('remaining')
+    gateway.hold('session.steer')
+    const sending = steerQueuedPrompt(0)
+    expect(await steerQueuedPrompt(0)).toBe(false)
+    gateway.emit('message.complete', { status: 'ok', text: 'finished' }, 'S1')
+    await settle()
+    expect($queue.get()).toEqual(['selected', 'remaining'])
+    gateway.release('session.steer')
+    expect(await sending).toBe(true)
+    await settle()
+    expect($queue.get()).toEqual([])
+    expect(gateway.sent.filter(frame => frame.method === 'prompt.submit').map(frame => frame.params.text))
+      .toEqual(['original', 'remaining'])
+  })
+
+  it('submits once when the backend says the active turn already ended', async () => {
+    const gateway = await connect({ 'session.steer': { status: 'rejected', reason: 'not_running' } })
+    await submitPrompt('original')
+    expect(await steerPrompt('just missed it')).toBe(true)
+    expect(gateway.sent.filter(frame => frame.method === 'prompt.submit').map(frame => frame.params.text))
+      .toEqual(['original', 'just missed it'])
+  })
+
+  it('does not apply a late acknowledgement to a different session', async () => {
+    const gateway = await connect({ 'session.steer': { status: 'queued' } })
+    await submitPrompt('original')
+    await submitPrompt('selected')
+    gateway.hold('session.steer')
+    const sending = steerQueuedPrompt(0)
+    gateway.results['session.create'] = { session_id: 'S2' }
+    await createSession()
+    $queue.set(['new session message'])
+    gateway.release('session.steer')
+    expect(await sending).toBe(false)
+    expect($queue.get()).toEqual(['new session message'])
+    expect($transcript.get().nodes).toEqual([])
+    expect($notice.get().text).toBe('')
+  })
+
+  it('returns acknowledged but unread input to the queue after Stop', async () => {
+    const gateway = await connect({ 'session.steer': { status: 'queued' } })
+    await submitPrompt('original')
+    await steerPrompt('unread')
+    gateway.emit('message.complete', { status: 'ok', text: '' }, 'S1')
+    gateway.emit('message.steer_failed', { text: 'unread' }, 'S1')
+    await settle()
+    expect($queue.get()).toEqual(['unread'])
+    expect($transcript.get().running).toBe(false)
+    expect(gateway.methods().filter(method => method === 'prompt.submit')).toHaveLength(1)
+  })
+
+  it.each([' ', '/plan build it', '[Image #2] look', '[File #1] read'])('keeps unsupported input out of the active turn: %s', async text => {
+    const gateway = await connect()
+    await submitPrompt('original')
+    expect(await steerPrompt(text)).toBe(false)
+    expect(gateway.methods()).not.toContain('session.steer')
   })
 })
 
