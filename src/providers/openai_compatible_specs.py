@@ -397,6 +397,29 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("RUNCRATE_API_KEY",),
         aliases=("run-crate", "run_crate"),
     ),
+    # CloudGPU (https://cloudgpu.app) is an OpenAI-compatible model API
+    # gateway: Bearer auth against ``/v1/chat/completions``. Keys come from
+    # ``CLOUDGPU_API_KEY`` (https://cloudgpu.app/api/console). Docs:
+    # https://cloudgpu.app/api/docs. ``cloud-gpu`` / ``cloud_gpu`` mirror the
+    # hyphen and underscore alias pattern used by the other gateway rows.
+    ProviderSpec(
+        id="cloudgpu",
+        label="CloudGPU",
+        default_base_url="https://cloudgpu.app/v1",
+        default_model="deepseek-v4.1-flash",
+        available_models=(
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "glm-5.2",
+            "minimax-m3",
+            "qwen3-coder-480b",
+            "qwen3.5-397b",
+        ),
+        env_vars=("CLOUDGPU_API_KEY",),
+        aliases=("cloud-gpu", "cloud_gpu"),
+    ),
     # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
     # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
     # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``

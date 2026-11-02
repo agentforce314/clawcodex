@@ -101,10 +101,10 @@ providers = [
     # Fournisseurs compatibles OpenAI
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
-    "huggingface", "together", "stepfun", "deepinfra", "runcrate",
+    "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
     # Serveurs locaux (aucune clé API requise)
     "ollama", "vllm", "sglang",
-]  # 25 fournisseurs ; les alias comme nim, kimi, hf sont résolus automatiquement
+]  # 27 fournisseurs ; les alias comme nim, kimi, hf sont résolus automatiquement
 ```
 
 ### REPL interactif

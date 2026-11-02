@@ -100,10 +100,10 @@ providers = [
     # OpenAI-संगत प्रदाता
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
-    "huggingface", "together", "stepfun", "deepinfra", "runcrate",
+    "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
     # लोकल सर्वर (कोई API key आवश्यक नहीं)
     "ollama", "vllm", "sglang",
-]  # 25 प्रदाता; nim, kimi, hf जैसे उपनाम स्वतः हल हो जाते हैं
+]  # 27 प्रदाता; nim, kimi, hf जैसे उपनाम स्वतः हल हो जाते हैं
 ```
 
 ### इंटरैक्टिव REPL
