@@ -182,7 +182,7 @@ The configuration file is saved at `~/.clawcodex/config.json`. Minimal example:
 }
 ```
 
-> **Note:** `TAVILY_API_KEY` is required for the WebSearch tool — get a key at [tavily.com](https://tavily.com).
+> **Note:** the WebSearch tool uses Tavily when `TAVILY_API_KEY` is set — get a key at [tavily.com](https://tavily.com). Without one, a DeepSeek API key is enough: WebSearch then goes through [DeepSeek's Search API](https://api-docs.deepseek.com/guides/search), billed to that account at $0.75 per 1,000 searches. A `deepseek` provider whose `base_url` points at another host (a gateway) is not used for search.
 
 The `session`, `settings`, and `env` blocks are optional — sensible defaults apply when they're omitted. See [Configure](#configure) for the full structure.
 

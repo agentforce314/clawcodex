@@ -165,15 +165,16 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "label": "DeepSeek",
         "default_base_url": "https://api.deepseek.com",
         "default_model": "deepseek-flash",
-        # Every tier is deepseek-flash (DeepSeek-V4.1-Flash), and that is the
-        # vendor's own arrangement rather than a simplification: DeepSeek says
-        # V4.1 Flash "has comprehensively surpassed V4 Pro in performance,
-        # cost, speed, and total time", and from 2026-09-14 routes every
-        # deepseek-v4-pro request to it, billed at the Flash price. So an
-        # opus-tier row naming v4-pro buys nothing after that date and costs
-        # up to 4.4x more before it. v4-pro stays listed below — it is still
-        # accepted, and a user who pins it keeps working — it just is not what
-        # anything defaults to.
+        # Every tier is deepseek-flash (DeepSeek-V4.1-Flash), on the vendor's
+        # own numbers: DeepSeek says V4.1 Flash "has comprehensively surpassed
+        # V4 Pro in performance, cost, speed, and total time", and the
+        # 2026-10-17 V4.1-Flash-1017 snapshot behind the same id improved on
+        # V4.1 Flash again. V4 Pro is NOT retiring — DeepSeek cancelled the
+        # 2026-09-14 routing of deepseek-v4-pro onto Flash and still bills it
+        # at its own card — but that makes an opus-tier row naming it worse,
+        # not better: 4.4x the input price (7.3x on cache read) for the model
+        # the vendor ranks second. v4-pro stays listed below for a user who
+        # wants it and pins it; it just is not what any tier escalates to.
         "subagent_model": "deepseek-flash",
         "subagent_tier_models": {
             "opus": "deepseek-flash",
@@ -181,9 +182,8 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "haiku": "deepseek-flash",
         },
         "available_models": [
-            # Current line
+            # Live models (GET /models)
             "deepseek-flash",
-            # Retiring: routed to V4.1 Flash from 2026-09-14 (still accepted)
             "deepseek-v4-pro",
             # Legacy aliases (retired models; served by V4.1 Flash)
             "deepseek-v4-flash",

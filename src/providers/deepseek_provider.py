@@ -1,13 +1,19 @@
 """DeepSeek provider implementation.
 
 DeepSeek exposes an OpenAI-compatible API at https://api.deepseek.com.
-The current line is ``deepseek-flash`` (DeepSeek-V4.1-Flash): 1M context,
-384K max output, thinking on by default, and — unlike every DeepSeek model
-before it — image input. ``deepseek-v4-pro`` is being retired; from
-2026-09-14 the id still resolves but its requests run V4.1 Flash at the Flash
-price. ``deepseek-v4-flash``, ``deepseek-v4-flash-vision-exp``,
-``deepseek-chat`` and ``deepseek-reasoner`` are legacy spellings the API still
-accepts and serves from V4.1 Flash.
+Its ``GET /models`` lists two models (checked 2026-11-02):
+
+* ``deepseek-flash`` — DeepSeek-V4.1-Flash, since 2026-10-17 the
+  V4.1-Flash-1017 snapshot behind the same id and price: 1M context, 384K max
+  output, thinking on by default, and — unlike every DeepSeek model before
+  it — image input.
+* ``deepseek-v4-pro`` — DeepSeek-V4-Pro, text only, on its own (higher)
+  card. The 2026-09-10 release notes scheduled it to be routed to V4.1 Flash
+  from 2026-09-14; DeepSeek reversed that, and it remains a separate model.
+
+``deepseek-v4-flash``, ``deepseek-v4-flash-vision-exp``, ``deepseek-chat``
+and ``deepseek-reasoner`` are legacy spellings the API still accepts and
+serves from V4.1 Flash.
 """
 
 from __future__ import annotations
@@ -173,17 +179,16 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     def get_available_models(self) -> list[str]:
         """Return the DeepSeek model ids the API accepts, current first.
 
-        Only ``deepseek-flash`` names a live model. The rest are ids DeepSeek
-        still routes: ``deepseek-v4-pro`` is being retired onto V4.1 Flash,
-        and the remaining spellings name models that are already gone. They
+        ``deepseek-flash`` and ``deepseek-v4-pro`` are the two live models —
+        exactly what ``GET /models`` lists. The rest are spellings of models
+        that are already gone, which DeepSeek still routes to V4.1 Flash. They
         stay listed because a session pinned to one keeps working and the
         subagent resolver degrades a model missing from this list to inherit —
         dropping them would silently re-point existing sessions.
         """
         return [
-            # Current line
+            # Live models (GET /models)
             "deepseek-flash",
-            # Retiring: routed to V4.1 Flash from 2026-09-14 (still accepted)
             "deepseek-v4-pro",
             # Legacy spellings (retired models; served by V4.1 Flash)
             "deepseek-v4-flash",

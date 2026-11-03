@@ -211,14 +211,14 @@ _PEAK = datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc).timestamp()  # Mon
 def test_deepseek_pricing_registered():
     """Published rates, pinned as absolutes on both sides of the schedule.
 
-    Checked 2026-09-10 against api-docs.deepseek.com/quick_start/pricing/.
-    Pinning absolutes (rather than ratios) is what catches a stale card —
-    the pre-2026-08-16 values in issue #904 were internally consistent and
-    still 3x low.
+    Checked 2026-09-10 and again 2026-11-02 against
+    api-docs.deepseek.com/quick_start/pricing/. Pinning absolutes (rather
+    than ratios) is what catches a stale card — the pre-2026-08-16 values in
+    issue #904 were internally consistent and still 3x low.
 
-    Both instants predate the 2026-09-14 retirement of ``deepseek-v4-pro``
-    onto V4.1 Flash, so the pro card here is still V4 Pro's own; that axis is
-    pinned in ``tests/test_deepseek_peak_pricing.py``.
+    ``deepseek-v4-pro`` keeps its own card at every instant (DeepSeek
+    cancelled its 2026-09-14 routing onto V4.1 Flash); that is pinned past
+    the old cutover in ``tests/test_deepseek_peak_pricing.py``.
     """
     from src.services.pricing import get_pricing
 

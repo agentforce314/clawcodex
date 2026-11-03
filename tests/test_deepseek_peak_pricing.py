@@ -1,5 +1,5 @@
-"""DeepSeek's peak/off-peak rate schedule (issue #904), and V4 Pro's
-retirement onto V4.1 Flash.
+"""DeepSeek's peak/off-peak rate schedule (issue #904), and V4 Pro on its
+own card past the cancelled 2026-09-14 cutover.
 
 Since 2026-08-16 DeepSeek publishes a peak and an off-peak card: every rate
 doubles during 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday. That
@@ -19,11 +19,12 @@ Two things are worth pinning here and are pinned separately:
   which is the same lesson the gpt-5.6-luna row in ``services/pricing.py``
   records.
 
-A second time axis joined them on 2026-09-10: DeepSeek is retiring
-``deepseek-v4-pro`` onto DeepSeek-V4.1-Flash, so from a fixed instant that id
-prices at the Flash card. It composes with the schedule rather than replacing
-it, and — like the schedule — it reads the REQUEST's timestamp, so a session
-that really did run V4 Pro is never restated at the cheaper card.
+A second time axis joined them on 2026-09-10 and has since left: that day's
+release notes scheduled ``deepseek-v4-pro`` to route to DeepSeek-V4.1-Flash
+from 2026-09-14, so from that instant the id priced at the Flash card.
+DeepSeek reversed it before it took effect — V4 Pro is still served and
+billed as itself — so the axis is gone, and the tests at the end pin that no
+instant past the old cutover moves pro off its own card.
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ from src.services.pricing import (
     _TIER_DEEPSEEK_PRO_OFF_PEAK,
     _TIER_DEEPSEEK_PRO_PEAK,
     compute_cost,
-    deepseek_v4_pro_is_routed_to_flash,
     get_pricing,
     is_deepseek_peak,
 )
@@ -64,18 +64,20 @@ MON, FRI, SAT, SUN = 24, 28, 29, 30
 
 # One instant on each side of the schedule, for the tests that care which
 # card is in force rather than where the boundaries are. Both are in August
-# 2026, BEFORE the 2026-09-14 cutover below, so ``deepseek-v4-pro`` is still
-# priced as its own model here — the schedule tests and the retirement tests
-# stay independent.
+# 2026.
 OFF_PEAK_TS = _utc(2026, 8, MON, 12)
 PEAK_TS = _utc(2026, 8, MON, 2)
 
-# DeepSeek retires V4 Pro onto V4.1 Flash at 12:00 Beijing (UTC+8) on
-# 2026-09-14 — 04:00 UTC, which is itself off-peak (the 01:00-04:00 window is
-# half-open). 2026-09-14 is a Monday and 2026-09-15 a Tuesday.
-CUTOVER_TS = _utc(2026, 9, 14, 4)
+# The instant DeepSeek's 2026-09-10 notes scheduled V4 Pro's routing onto
+# V4.1 Flash: 12:00 Beijing (UTC+8) on 2026-09-14 — 04:00 UTC, which is itself
+# off-peak (the 01:00-04:00 window is half-open). DeepSeek cancelled it; these
+# instants stay to pin that nothing happens there. 2026-09-14 is a Monday,
+# 2026-09-15 a Tuesday, and 2026-11-02 — when the reversal was re-checked
+# against the live API — a Monday.
+CANCELLED_CUTOVER_TS = _utc(2026, 9, 14, 4)
 AFTER_CUTOVER_OFF_PEAK_TS = _utc(2026, 9, 15, 12)
 AFTER_CUTOVER_PEAK_TS = _utc(2026, 9, 15, 2)
+RECHECKED_OFF_PEAK_TS = _utc(2026, 11, 2, 12)
 
 
 # --------------------------------------------------------------------------- #
@@ -248,11 +250,11 @@ def test_retired_flash_ids_are_billed_at_the_flash_card() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# V4 Pro's retirement onto V4.1 Flash
+# V4 Pro stays on its own card: the 2026-09-14 cutover was cancelled
 # --------------------------------------------------------------------------- #
 
 def _card(tiers: tuple[dict[str, float], dict[str, float]], ts: float) -> dict:
-    """The peak-schedule half of the expectation, so the retirement tests can
+    """The peak-schedule half of the expectation, so the tests below can
     state the other half without re-deriving which window ``ts`` is in."""
     off_peak, peak = tiers
     return peak if is_deepseek_peak(ts) else off_peak
@@ -262,70 +264,70 @@ PRO_TIERS = (_TIER_DEEPSEEK_PRO_OFF_PEAK, _TIER_DEEPSEEK_PRO_PEAK)
 FLASH_TIERS = (_TIER_DEEPSEEK_FLASH_OFF_PEAK, _TIER_DEEPSEEK_FLASH_PEAK)
 
 
-def test_pro_prices_as_itself_before_the_cutover() -> None:
-    # One second before, which is 03:59:59 UTC — inside a peak window, so this
-    # also pins that the two axes compose rather than one overriding the other.
-    ts = CUTOVER_TS - 1
-    assert deepseek_v4_pro_is_routed_to_flash(ts) is False
-    assert get_pricing("deepseek-v4-pro", request_time=ts) == _card(PRO_TIERS, ts)
+def test_pro_keeps_its_own_card_across_the_cancelled_cutover() -> None:
+    """DeepSeek scheduled V4 Pro to route to V4.1 Flash at this instant, then
+    kept it: "we have decided to continue providing API services for DeepSeek
+    V4 Pro after September 14, 2026, with the billing method remaining
+    unchanged". So one second before (03:59:59 UTC, inside a peak window), the
+    instant itself, the next day and the re-check date all price at the pro
+    card, in whichever window of the peak schedule they fall."""
+    for ts in (
+        CANCELLED_CUTOVER_TS - 1,
+        CANCELLED_CUTOVER_TS,
+        AFTER_CUTOVER_OFF_PEAK_TS,
+        AFTER_CUTOVER_PEAK_TS,
+        RECHECKED_OFF_PEAK_TS,
+    ):
+        assert get_pricing("deepseek-v4-pro", request_time=ts) == _card(
+            PRO_TIERS, ts
+        ), ts
+        assert get_pricing("deepseek-flash", request_time=ts) == _card(
+            FLASH_TIERS, ts
+        ), ts
 
 
-def test_pro_prices_as_flash_from_the_cutover_instant() -> None:
-    """Half-open, like the peak windows: the stated instant is already the new
-    regime."""
-    assert deepseek_v4_pro_is_routed_to_flash(CUTOVER_TS) is True
-    assert get_pricing("deepseek-v4-pro", request_time=CUTOVER_TS) == get_pricing(
-        "deepseek-flash", request_time=CUTOVER_TS
-    )
-
-
-def test_cutover_is_1200_beijing_not_1200_utc() -> None:
-    """Beijing is UTC+8 with no DST, so the vendor's noon is 04:00 UTC. An
-    off-by-eight-hours here mis-prices a whole business day."""
-    assert deepseek_v4_pro_is_routed_to_flash(_utc(2026, 9, 14, 3, 59, 59)) is False
-    assert deepseek_v4_pro_is_routed_to_flash(_utc(2026, 9, 14, 4, 0, 0)) is True
-
-
-def test_pro_still_follows_the_peak_schedule_after_the_cutover() -> None:
-    """The retirement swaps which CARD applies; it does not exempt the id from
-    the clock. Both axes have to compose, and the peak one is applied last."""
+def test_pro_after_september_14_is_the_published_pro_card() -> None:
+    """Against the vendor's numbers rather than the tiers: a regression that
+    put the cutover back would show the Flash card here — 0.15 input against
+    0.66."""
     for ts, window in (
         (AFTER_CUTOVER_OFF_PEAK_TS, "off_peak"),
         (AFTER_CUTOVER_PEAK_TS, "peak"),
     ):
-        card = PUBLISHED["deepseek-flash"][window]
+        card = PUBLISHED["deepseek-v4-pro"][window]
         pricing = get_pricing("deepseek-v4-pro", request_time=ts)
         for field, dollars in card.items():
             assert pricing[field] == dollars / 1_000_000, (window, field)
 
 
-def test_cutover_does_not_restate_history_at_the_new_card() -> None:
-    """A request that really did run V4 Pro is priced by ITS timestamp, not by
-    the clock at display time. ``compute_cost`` already carries the timestamp
-    for the peak schedule; the retirement rides the same value, so re-reading
-    an August session from October must still show what it cost.
-    """
+def test_a_pro_session_after_september_14_costs_what_an_august_one_did() -> None:
+    """The user-visible number. With the cutover in place, the issue's agent
+    mix priced at the Flash card from 2026-09-14 — about $0.0107 per 1M tokens
+    against the $0.0536 DeepSeek actually billed, so a V4 Pro session showed a
+    fifth of its cost. Both sides of the old instant now agree."""
     usage = _agent_mix()
     before = compute_cost("deepseek-v4-pro", usage, request_time=OFF_PEAK_TS)
     after = compute_cost(
         "deepseek-v4-pro", usage, request_time=AFTER_CUTOVER_OFF_PEAK_TS
     )
-    assert before == pytest.approx(0.0536, abs=5e-5)
-    assert after == pytest.approx(
-        compute_cost("deepseek-flash", usage,
-                     request_time=AFTER_CUTOVER_OFF_PEAK_TS)
+    assert after == pytest.approx(0.0536, abs=5e-5)
+    assert after == pytest.approx(before, rel=1e-12)
+    assert after > 4 * compute_cost(
+        "deepseek-flash", usage, request_time=AFTER_CUTOVER_OFF_PEAK_TS
     )
-    assert before > 4 * after
 
 
-def test_flash_is_untouched_by_the_pro_cutover() -> None:
-    """Scope gate: ``deepseek-flash`` was never on the pro card, so no instant
-    of the retirement may move it."""
-    for ts in (CUTOVER_TS - 1, CUTOVER_TS, AFTER_CUTOVER_OFF_PEAK_TS,
-               AFTER_CUTOVER_PEAK_TS):
-        assert get_pricing("deepseek-flash", request_time=ts) == _card(
-            FLASH_TIERS, ts
-        )
+def test_the_live_path_prices_pro_as_pro_today(monkeypatch) -> None:
+    """``request_time=None`` is what every live call site passes, and the clock
+    has been past 2026-09-14 since then — so this is the path that showed the
+    Flash card for every V4 Pro response."""
+    monkeypatch.setattr(
+        "src.services.pricing.time", _FakeClock(RECHECKED_OFF_PEAK_TS)
+    )
+    assert get_pricing("deepseek-v4-pro") == _TIER_DEEPSEEK_PRO_OFF_PEAK
+    assert compute_cost(
+        "deepseek-v4-pro", {"input_tokens": 1_000_000}
+    ) == pytest.approx(0.66)
 
 
 # --------------------------------------------------------------------------- #

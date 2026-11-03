@@ -33,6 +33,8 @@ class _FakeResp:
 
 def test_unconfigured_raises_clear_error(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    # A DeepSeek key is the other backend (tests/test_web_search_deepseek.py).
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     # Isolate from the developer's real ~/.clawcodex/config.json "env" block.
     monkeypatch.setattr("src.secret_store._config_env", lambda: {})
     assert is_web_search_configured() is False

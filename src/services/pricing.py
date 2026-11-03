@@ -5,10 +5,9 @@ of cost state lives in ``src.bootstrap.state`` (via
 ``add_to_total_cost_state`` and friends); this module just computes the
 dollar cost of a usage record.
 
-One exception to "pure", added for DeepSeek's peak/off-peak card and reused
-for its V4 Pro retirement: when a caller omits ``request_time``,
-``get_pricing`` reads the wall clock to decide which side of those schedules a
-request falls on. Every caller that knows the real request time should pass
+One exception to "pure", added for DeepSeek's peak/off-peak card: when a
+caller omits ``request_time``, ``get_pricing`` reads the wall clock to decide
+which side of that schedule a request falls on. Every caller that knows the real request time should pass
 it; "now" is only correct because the live path prices a response the moment
 it arrives.
 
@@ -84,8 +83,10 @@ _TIER_HAIKU_3 = {
     "cache_creation": 0.30 / 1_000_000,
     "cache_read": 0.03 / 1_000_000,
 }
-# DeepSeek (USD per million tokens) — checked 2026-09-10 against
-# https://api-docs.deepseek.com/quick_start/pricing/
+# DeepSeek (USD per million tokens) — checked 2026-11-02 against
+# https://api-docs.deepseek.com/quick_start/pricing/ (unchanged since the
+# 2026-09-10 re-card below; the 2026-10-17 V4.1-Flash-1017 update kept
+# ``deepseek-flash``'s price).
 #
 # DeepSeek's automatic prefix cache bills cache HITS at the low ``cache_read``
 # rate and cache MISSES at the normal input rate; there is no separate
@@ -150,22 +151,25 @@ _TIER_DEEPSEEK_PRO_PEAK = {
 # states the windows to the hour and says nothing finer, so hour granularity
 # is exact rather than a rounding.
 _DEEPSEEK_PEAK_WINDOWS_UTC: tuple[tuple[int, int], ...] = ((1, 4), (6, 10))
-# When ``deepseek-v4-pro`` stops being its own model. The vendor: "From 12:00
-# Beijing Time on September 14, 2026, and until V4.1 Pro is released in the
-# future, requests to deepseek-v4-pro will all be routed to V4.1 Flash and
-# billed at the V4.1 Flash price." Beijing is UTC+8 year-round (no DST), so
-# 12:00 there is 04:00 UTC.
+# ``deepseek-v4-pro`` is its own model, on its own card, with no end date.
 #
-# A DATE axis rather than a card edit, because both sides are live: a session
-# priced before the cutover really did run V4 Pro at the pro card, and
-# ``compute_cost`` already carries the request's timestamp for the peak
-# schedule, so re-pricing a stored usage record from last week still gets the
-# card that was in force when it was billed. Flattening pro onto the flash
-# card outright would restate that history 4.4x low; leaving it on the pro
-# card would over-report every request after the cutover by the same factor.
-_DEEPSEEK_V4_PRO_ROUTES_TO_FLASH_AT = datetime(
-    2026, 9, 14, 4, 0, tzinfo=timezone.utc
-).timestamp()
+# This file used to carry a second DeepSeek time axis: the 2026-09-10 release
+# notes said that from 2026-09-14 04:00 UTC every ``deepseek-v4-pro`` request
+# would run V4.1 Flash at the Flash price, so pro priced as Flash from that
+# instant. DeepSeek reversed it before it took effect. The changelog's
+# 2026-09-10 entry now reads: "In response to user demand, we have decided to
+# continue providing API services for DeepSeek V4 Pro after September 14,
+# 2026, with the billing method remaining unchanged", and the pricing page
+# lists V4 Pro at the card below. Probed 2026-11-02: a ``deepseek-v4-pro``
+# request answers as ``deepseek-v4-pro`` under its own system fingerprint,
+# while ``deepseek-v4-flash`` / ``deepseek-chat`` / ``deepseek-reasoner``
+# answer as ``deepseek-flash``.
+#
+# So the axis is gone, not moved. The cutover never happened, so there is no
+# history on the far side of it to preserve: every V4 Pro request since
+# 2026-09-14 was billed at the pro card, and pricing it as Flash showed an
+# agentic session at about a fifth of what it cost (the card is 4.4x low on
+# input, 3.3x on output and 7.3x on cache read).
 # Canonical model id -> (off-peak card, peak card).
 #
 # ``deepseek-flash`` is DeepSeek's current line (DeepSeek-V4.1-Flash). The two
@@ -491,22 +495,6 @@ def is_deepseek_peak(request_time: float | None = None) -> bool:
     )
 
 
-def deepseek_v4_pro_is_routed_to_flash(request_time: float | None = None) -> bool:
-    """True once ``deepseek-v4-pro`` is served and billed as V4.1 Flash.
-
-    ``request_time`` is POSIX epoch seconds; ``None`` means now. DeepSeek is
-    retiring V4 Pro: from 2026-09-14 12:00 Beijing (04:00 UTC) the id stays
-    accepted but every request behind it runs V4.1 Flash at the Flash price.
-
-    Public for the same reason ``is_deepseek_peak`` is — it is the only way to
-    explain why a ``deepseek-v4-pro`` line costs a quarter of what an older
-    one did, without re-deriving the vendor's retirement schedule. It says
-    nothing about ``deepseek-flash``, which was never on the pro card.
-    """
-    ts = time.time() if request_time is None else request_time
-    return ts >= _DEEPSEEK_V4_PRO_ROUTES_TO_FLASH_AT
-
-
 def _get_exact_pricing(
     model: str,
     *,
@@ -533,10 +521,6 @@ def _get_exact_pricing(
     # always resolves to "standard").
     deepseek = _DEEPSEEK_TIERS.get(model)
     if deepseek is not None:
-        if model == "deepseek-v4-pro" and deepseek_v4_pro_is_routed_to_flash(
-            request_time
-        ):
-            deepseek = _DEEPSEEK_FLASH_CARDS
         off_peak, peak = deepseek
         return peak if is_deepseek_peak(request_time) else off_peak
     if model != "MiniMax-M3":
@@ -753,7 +737,6 @@ __all__ = [
     "DEFAULT_PRICING",
     "get_pricing",
     "is_deepseek_peak",
-    "deepseek_v4_pro_is_routed_to_flash",
     "is_known_pricing",
     "compute_cost",
     "compute_session_cost",
