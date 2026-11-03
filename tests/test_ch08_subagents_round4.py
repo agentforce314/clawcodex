@@ -248,12 +248,13 @@ class TestPerProviderSubagentDefaults(unittest.TestCase):
         self.assertEqual(get_agent_model(None, "haiku", p), "deepseek-flash")
 
     def test_deepseek_opus_tier_also_uses_flash(self):
-        # DeepSeek is a one-model line again: V4.1 Flash beats V4 Pro on the
-        # vendor's own numbers, and from 2026-09-14 a v4-pro request IS a
-        # flash request. So the opus tier must NOT climb back to v4-pro —
-        # that spends up to 4.4x for the same or worse model. The assertion
-        # is load-bearing precisely because it looks like a no-op: it is what
-        # a re-added pro row in ``subagent_tier_models`` would trip.
+        # V4.1 Flash beats V4 Pro on the vendor's own numbers. DeepSeek
+        # cancelled the 2026-09-14 routing of v4-pro onto flash, so v4-pro is
+        # still its own model on its own card — which is exactly why the opus
+        # tier must NOT climb back to it: that spends 4.4x the input price for
+        # the model the vendor ranks second. The assertion is load-bearing
+        # precisely because it looks like a no-op: it is what a re-added pro
+        # row in ``subagent_tier_models`` would trip.
         p = self._deepseek(model="deepseek-v4-pro")
         self.assertEqual(get_agent_model("opus", None, p), "deepseek-flash")
 

@@ -87,7 +87,7 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {
     prefix: 'DEEPSEEK_',
     name: 'DeepSeek',
-    description: 'Direct DeepSeek API (V3.x, R1)',
+    description: 'Direct DeepSeek API (V4.1 Flash, V4 Pro)',
     docsUrl: 'https://platform.deepseek.com/api_keys',
     priority: 5
   },

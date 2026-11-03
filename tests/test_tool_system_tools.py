@@ -455,8 +455,9 @@ class TestWebSearchTool(ToolSystemTests):
 
     def test_web_search_unconfigured_raises(self) -> None:
         """With no TAVILY_API_KEY set, search raises a clear 'configure' error."""
-        # Empty env var + empty config "env" block (isolate from real config).
-        with patch.dict(os.environ, {"TAVILY_API_KEY": ""}), \
+        # Empty env vars + empty config "env" block (isolate from real config).
+        # DEEPSEEK_API_KEY too: a DeepSeek key is the other search backend.
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "", "DEEPSEEK_API_KEY": ""}), \
              patch("src.secret_store._config_env", return_value={}):
             with self.assertRaises(Exception) as cm:
                 WebSearchTool.call({"query": "anything"}, self.ctx)

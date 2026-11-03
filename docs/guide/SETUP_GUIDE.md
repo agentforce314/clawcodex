@@ -84,7 +84,7 @@ Create `~/.clawcodex/config.json` (only the providers you actually use are requi
 
 - **`default_provider`** — which provider block to use unless overridden with `--provider`.
 - **`providers`** — one block per provider (`api_key`, `base_url`, `default_model`).
-- **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Manage these with `clawcodex config`.
+- **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search; without it, a DeepSeek API key searches through DeepSeek's Search API). Manage these with `clawcodex config`.
 
 > **Secrets live in this single config file** (the `env` block and each provider's `api_key`) — clawcodex does **not** read `.env` files.
 
@@ -99,7 +99,7 @@ Create `~/.clawcodex/config.json` (only the providers you actually use are requi
 | `openrouter` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro` |
 | `deepseek` | `https://api.deepseek.com` | `deepseek-flash` |
 
-> **DeepSeek:** `deepseek-flash` is DeepSeek-V4.1-Flash — 1M context, 384K max output, thinking on by default, and the first DeepSeek model that accepts images. `deepseek-v4-pro` is being retired: the id still works, but from 2026-09-14 its requests run V4.1 Flash and bill at the Flash price. The older spellings (`deepseek-v4-flash`, `deepseek-chat`, `deepseek-reasoner`) still resolve.
+> **DeepSeek:** `deepseek-flash` is DeepSeek-V4.1-Flash (the V4.1-Flash-1017 snapshot since 2026-10-17, same id and price) — 1M context, 384K max output, thinking on by default, and the first DeepSeek model that accepts images. `deepseek-v4-pro` is still its own model: DeepSeek cancelled the 2026-09-14 routing of it onto V4.1 Flash, so it runs V4 Pro, is text-only, and bills at its own, higher price. The older spellings (`deepseek-v4-flash`, `deepseek-chat`, `deepseek-reasoner`) still resolve, served by V4.1 Flash.
 
 > **Z.ai (GLM):** clawcodex uses Z.ai's OpenAI-compatible GLM Coding Plan at `https://api.z.ai/api/coding/paas/v4`, serving `GLM-5.1` (stable) and `GLM-5.2` (preview). The legacy provider name `glm` is still accepted as an alias for `zai`. Get a key at <https://z.ai/>.
 
@@ -116,7 +116,7 @@ clawcodex --provider zai   # start this session with a specific provider
 - **`clawcodex: command not found`** — activate your virtualenv (`source .venv/bin/activate`), or run `python -m src.cli`.
 - **`Unknown provider` / auth errors** — make sure the provider key in `~/.clawcodex/config.json` matches a block under `providers`, and that its `api_key` is set.
 - **Wrong Python version** — clawcodex needs Python 3.10+. Check with `python --version`; recreate the venv with `uv venv --python 3.11` if needed.
-- **Web search not working** — set `TAVILY_API_KEY` in the `env` block of the config (see above).
+- **Web search not working** — set `TAVILY_API_KEY` in the `env` block of the config (see above), or configure a DeepSeek API key (with the official `https://api.deepseek.com` base URL) to search through DeepSeek's Search API.
 
 ---
 

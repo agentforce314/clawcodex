@@ -7,8 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WebSearch works with just a DeepSeek API key.** DeepSeek opened its
+  in-house search engine as an API on 2026-10-17, authenticated with the same
+  key as its chat models. When `TAVILY_API_KEY` is not set, WebSearch now goes
+  through DeepSeek's Search API instead of failing with "not configured".
+  Tavily stays first whenever its key is set. DeepSeek bills $0.75 per 1,000
+  searches to the key's account. A `deepseek` provider whose `base_url` points
+  at another host is treated as a gateway, and its key is never sent to
+  `api.deepseek.com`. DeepSeek's Fetch API is not adopted: WebFetch already
+  works without a key.
+
 ### Fixed
 
+- **`/cost` showed a `deepseek-v4-pro` session at about a fifth of what it
+  cost.** DeepSeek's 2026-09-10 release notes said every `deepseek-v4-pro`
+  request would run V4.1 Flash at the Flash price from 2026-09-14, and
+  pricing switched V4 Pro to the Flash card at that instant. DeepSeek reversed
+  the decision before it took effect: V4 Pro is still served as its own model
+  and billed at its own card (4.4x Flash on input, 3.3x on output, 7.3x on
+  cache read). So every V4 Pro request since 2026-09-14 was under-reported.
+  The switch is removed, and V4 Pro prices at its published card at every
+  instant, peak and off-peak, including stored sessions re-priced by their
+  timestamps. The model list and docs no longer describe V4 Pro as retiring,
+  and `deepseek-flash` notes the V4.1-Flash-1017 snapshot (2026-10-17), which
+  DeepSeek serves under the same id and price. Subagent tiers stay on
+  `deepseek-flash`, which DeepSeek ranks above V4 Pro.
 - **`/resume` in the TUI finds and resumes saved sessions.** The Sessions
   picker (`/resume`, `/sessions`, `/switch`) said "0 resumable" in every
   workspace: the client answered its own list request with nothing, and
