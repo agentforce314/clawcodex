@@ -273,9 +273,10 @@ providers = [
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
+    "cheapaimodel",
     # 本地服务（无需 API Key）
     "ollama", "vllm", "sglang",
-]  # 共 27 个 provider；nim、kimi、hf 等别名自动解析
+]  # 共 28 个 provider；nim、kimi、hf 等别名自动解析
 ```
 
 新增任意 OpenAI 兼容厂商，只需在 `src/providers/openai_compatible_specs.py`

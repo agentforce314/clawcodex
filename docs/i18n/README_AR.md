@@ -101,9 +101,10 @@ providers = [
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
+    "cheapaimodel",
     # خوادم محلية (لا تتطلب مفتاح API)
     "ollama", "vllm", "sglang",
-]  # 27 مزوداً؛ الأسماء المستعارة مثل nim و kimi و hf تُحلّ تلقائياً
+]  # 28 مزوداً؛ الأسماء المستعارة مثل nim و kimi و hf تُحلّ تلقائياً
 ```
 
 ### REPL تفاعلي
