@@ -420,6 +420,29 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("CLOUDGPU_API_KEY",),
         aliases=("cloud-gpu", "cloud_gpu"),
     ),
+    # cheapaimodel (https://cheapaimodel.ai) is an OpenAI-compatible model API
+    # gateway: Bearer auth against ``/v1/chat/completions``. Keys come from
+    # ``CHEAPAIMODEL_API_KEY`` (created in the console after signing in at
+    # https://cheapaimodel.ai). Docs: https://cheapaimodel.ai/docs. Model
+    # catalog: https://cheapaimodel.ai/models. ``kimi-k3`` only accepts
+    # temperature 0.6 or 1 and top_p 0.95. ``cheap-ai-model`` /
+    # ``cheap_ai_model`` mirror the hyphen and underscore alias pattern used by
+    # the other gateway rows.
+    ProviderSpec(
+        id="cheapaimodel",
+        label="cheapaimodel",
+        default_base_url="https://api.cheapaimodel.ai/v1",
+        default_model="deepseek-v4-1-flash",
+        available_models=(
+            "deepseek-v4-1-flash",
+            "glm-5.3",
+            "glm-5.3-flash",
+            "kimi-k3",
+            "grok-4.7",
+        ),
+        env_vars=("CHEAPAIMODEL_API_KEY",),
+        aliases=("cheap-ai-model", "cheap_ai_model"),
+    ),
     # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
     # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
     # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``
