@@ -65,6 +65,36 @@ logger = logging.getLogger(__name__)
 
 ESCALATED_MAX_TOKENS = 64_000
 
+
+def _bounded_escalated_max_output_tokens(provider: BaseProvider) -> int:
+    """Escalation value for the max_output_tokens retry (#958).
+
+    The 64K constant is a *request* value, so it must not exceed a
+    ceiling the operator configured in settings ``modelLimits``: for a
+    private OpenAI-compatible model that configured limit is the only
+    one that exists, and the unconditional 64K retry was rejected by
+    the endpoint for exceeding it — the recovery died with the same
+    400 class it was recovering from. A configured cap therefore
+    bounds the escalation for known and unknown models alike.
+
+    With no configured cap the historical 64K is preserved exactly.
+    The per-model table is deliberately NOT consulted here: its
+    ``max_output_tokens`` is a first-attempt wire convention for
+    Anthropic models, not a capability ceiling (see configs.py), so
+    bounding by it would shrink the designed 32K -> 64K escalation.
+    """
+    from ..models.context import get_configured_max_output_tokens
+
+    model = getattr(provider, "model", None)
+    base_url = getattr(provider, "base_url", None)
+    configured = get_configured_max_output_tokens(
+        model if isinstance(model, str) else "",
+        base_url=base_url if isinstance(base_url, str) else None,
+    )
+    if configured is None:
+        return ESCALATED_MAX_TOKENS
+    return min(ESCALATED_MAX_TOKENS, configured)
+
 # ch04 round-3 G3 — 529/overloaded retry lane. TS withRetry.ts: general
 # budget DEFAULT_MAX_RETRIES=10 with a 529-specific MAX_529_RETRIES=3
 # counter that triggers model-fallback or the external-user bail
@@ -2144,7 +2174,9 @@ async def query(
                         auto_compact_tracking=state.auto_compact_tracking,
                         max_output_tokens_recovery_count=max_output_tokens_recovery_count,
                         has_attempted_reactive_compact=has_attempted_reactive_compact,
-                        max_output_tokens_override=ESCALATED_MAX_TOKENS,
+                        max_output_tokens_override=_bounded_escalated_max_output_tokens(
+                            params.provider
+                        ),
                         stop_hook_active=None,
                         turn_count=turn_count,
                         transition=Transition(reason="max_output_tokens_escalate"),

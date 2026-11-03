@@ -138,6 +138,22 @@ def get_model_max_output_tokens(
     return DEFAULT_MAX_OUTPUT_TOKENS
 
 
+def get_configured_max_output_tokens(
+    model_id: str, *, base_url: str | None = None,
+) -> int | None:
+    """Return the settings ``modelLimits`` max-output cap, if configured.
+
+    Unlike :func:`get_model_max_output_tokens` this consults ONLY the
+    user-configured limit (exact/prefix/host-qualified matching via
+    :func:`_settings_limit`): no per-model table and no default, so
+    ``None`` means the operator has not stated a ceiling for this
+    model. Callers that must never exceed an operator-stated ceiling
+    (e.g. the query loop's truncation-escalation retry) use this to
+    bound a value they would otherwise pick unconditionally.
+    """
+    return _settings_limit(model_id, "max_output_tokens", base_url=base_url)
+
+
 def resolve_max_output_tokens(
     override: int | None,
     model_id: str | None,
