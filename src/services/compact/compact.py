@@ -325,6 +325,34 @@ def log_post_compaction_telemetry(
 # Maximum output tokens for the summary model
 COMPACT_MAX_OUTPUT_TOKENS = 8_192
 
+
+def _compact_max_output_tokens(context: "CompactContext") -> int:
+    """``max_tokens`` for a summary request.
+
+    ``COMPACT_MAX_OUTPUT_TOKENS``, lowered to what an ordinary request for the
+    model asks for when that is smaller. Mirrors TS compact.ts, which passes
+    ``min(COMPACT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(model))``.
+    Without the ``min``, a model whose output limit is under 8,192 (a
+    ``modelLimits`` ``maxOutputTokens`` of 4,096, a legacy 4K catalog row, a
+    lower ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``) had every summary request
+    rejected for asking too much, and compaction fell back to text
+    extraction (#958).
+    """
+    try:
+        from src.models.context import resolve_max_output_tokens
+
+        base_url = getattr(context.provider, "base_url", None)
+        model_limit = resolve_max_output_tokens(
+            None,
+            context.model or None,
+            base_url=base_url if isinstance(base_url, str) else None,
+        )
+    except Exception:
+        logger.debug("compaction max_tokens resolution failed", exc_info=True)
+        return COMPACT_MAX_OUTPUT_TOKENS
+    return min(COMPACT_MAX_OUTPUT_TOKENS, model_limit)
+
+
 # Maximum retries on PROMPT_TOO_LONG
 MAX_PTL_RETRIES = 3
 
@@ -647,7 +675,7 @@ async def compact_conversation(
                 messages=summary_request_messages,
                 tools=None,
                 model=context.model,
-                max_tokens=COMPACT_MAX_OUTPUT_TOKENS,
+                max_tokens=_compact_max_output_tokens(context),
                 system=COMPACT_SYSTEM_PROMPT,
             )
             summary_text = response.content.strip() if response.content else ""
@@ -700,7 +728,7 @@ async def compact_conversation(
                     summary_request_messages,
                     tools=None,
                     model=context.model,
-                    max_tokens=COMPACT_MAX_OUTPUT_TOKENS,
+                    max_tokens=_compact_max_output_tokens(context),
                     system=COMPACT_SYSTEM_PROMPT,
                 )
                 summary_text = response.content.strip() if response.content else ""
@@ -910,7 +938,7 @@ async def partial_compact_conversation(
                 messages=summary_request_messages,
                 tools=None,
                 model=context.model,
-                max_tokens=COMPACT_MAX_OUTPUT_TOKENS,
+                max_tokens=_compact_max_output_tokens(context),
                 system=COMPACT_SYSTEM_PROMPT,
             )
             summary_text = response.content.strip() if response.content else ""

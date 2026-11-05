@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from urllib.parse import urlparse
 
 from .configs import get_model_config
@@ -53,7 +54,11 @@ def _settings_limit(
         limits = get_settings().model_limits
     except Exception:
         return None
-    if not limits or not isinstance(model_id, str):
+    # ``SettingsSchema.from_dict`` converts only a mapping and passes any other
+    # JSON shape through untouched, so a hand-edited ``"modelLimits": [...]``
+    # arrives here as a list. Treat it as "nothing configured" rather than let
+    # ``.items()`` raise into the request path.
+    if not limits or not isinstance(limits, Mapping) or not isinstance(model_id, str):
         return None
 
     model = strip_1m_context_suffix(model_id).lower()
@@ -75,8 +80,11 @@ def _settings_limit(
         if host and key.startswith(f"{host}:"):
             qualified = True
             candidate = key[len(host) + 1 :]
-        elif ":" in key:
-            continue
+        # Any other key is matched whole, colons included. Ollama-style ids
+        # carry one (``llama3.1:8b``), and a bare exact key for them is a
+        # documented shape. A key qualified for a different host never
+        # matches by accident, because the model id would have to begin with
+        # that ``host:`` prefix.
         if candidate == model:
             (exact_host if qualified else exact_bare).append(limit)
         elif model.startswith(candidate):
@@ -138,6 +146,51 @@ def get_model_max_output_tokens(
     return DEFAULT_MAX_OUTPUT_TOKENS
 
 
+def get_max_output_tokens_ceiling(
+    model_id: str, *, base_url: str | None = None,
+) -> int | None:
+    """The most output a request for ``model_id`` may ask for, if known.
+
+    Not the same number as :func:`get_model_max_output_tokens`. That one is
+    what an ordinary request asks for, and on current Anthropic rows it sits
+    deliberately below the model's real maximum (see configs.py) so the query
+    loop's truncation escalation has room above it. This one answers "how high
+    may a request go", so it reports only a number that is a real limit:
+
+    * a catalog row's ``max_output_tokens_ceiling``, or ``None`` when the row
+      records none. The catalog stays authoritative, as in the lookups above:
+      a ``modelLimits`` entry never overrides a catalogued model;
+    * for a model absent from the catalog, the ``modelLimits``
+      ``maxOutputTokens`` the user configured (exact / prefix /
+      host-qualified, via :func:`_settings_limit`);
+    * otherwise ``None``. Nothing is known, and callers keep their own value.
+    """
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    config = get_model_config(strip_1m_context_suffix(model_id))
+    if config is not None:
+        return config.max_output_tokens_ceiling
+    return _settings_limit(model_id, "max_output_tokens", base_url=base_url)
+
+
+def get_env_max_output_tokens() -> int | None:
+    """``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` as a positive int, else ``None``.
+
+    Invalid / non-positive values are ignored with a debug log.
+    """
+    raw = os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+    if not raw:
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value > 0:
+        return value
+    logger.debug("ignoring invalid CLAUDE_CODE_MAX_OUTPUT_TOKENS=%r", raw)
+    return None
+
+
 def resolve_max_output_tokens(
     override: int | None,
     model_id: str | None,
@@ -147,12 +200,14 @@ def resolve_max_output_tokens(
     """Resolve the request-path ``max_tokens`` (ch04 round-3 G0).
 
     Precedence mirrors TS ``claude.ts:1602-1605``:
-    1. explicit override (the query loop's 64K escalation passes through
-       here unchanged);
+    1. explicit override. The query loop's truncation escalation passes
+       through here unchanged; the loop has already bounded it by the
+       model's output ceiling and the context window
+       (``query._escalated_max_output_tokens``);
     2. ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` env — the key has been on the
        trusted-env allowlist since round 1 (``trust_boundary.py``);
        consuming it closes that dangling promise. Invalid / non-positive
-       values are ignored with a debug log;
+       values are ignored with a debug log (:func:`get_env_max_output_tokens`);
     3. the per-model table via :func:`get_model_max_output_tokens`
        (→ ``DEFAULT_MAX_OUTPUT_TOKENS`` 8_192 for unknown models).
 
@@ -166,17 +221,9 @@ def resolve_max_output_tokens(
     """
     if override is not None:
         return override
-    raw = os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
-    if raw:
-        try:
-            value = int(raw.strip())
-        except ValueError:
-            value = 0
-        if value > 0:
-            return value
-        logger.debug(
-            "ignoring invalid CLAUDE_CODE_MAX_OUTPUT_TOKENS=%r", raw
-        )
+    env_value = get_env_max_output_tokens()
+    if env_value is not None:
+        return env_value
     if model_id:
         return get_model_max_output_tokens(model_id, base_url=base_url)
     return DEFAULT_MAX_OUTPUT_TOKENS
