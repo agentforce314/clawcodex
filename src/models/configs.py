@@ -32,6 +32,20 @@ class ModelConfig:
     #: opted-out row still describes its own id fully; it just stops
     #: describing everyone else's.
     claims_prefix: bool = True
+    #: The model's documented hard maximum for output tokens, when the row
+    #: records one. ``max_output_tokens`` above is NOT that number on most
+    #: rows. On current Anthropic rows it is the first-attempt wire value, set
+    #: below the real maximum so the query loop's truncation escalation has
+    #: room. On OpenAI-compatible rows it is advisory (nothing sends it) and
+    #: feeds only the auto-compact reservation. ``get_max_output_tokens_ceiling``
+    #: reads this field, and the escalation retry and compaction requests never
+    #: ask for more. ``None`` means not recorded, and the escalation keeps its
+    #: historical 64K. Set it only on a row whose maximum is below that, and
+    #: only when the row's prefix claim reaches no model with a higher one.
+    #: ``claude-opus-4-20250514`` is the counter-example: its 32K is Opus 4's
+    #: real limit, but its ``claude-opus-4`` prefix also resolves 4.5 / 4.6
+    #: ids, which allow far more.
+    max_output_tokens_ceiling: int | None = None
 
 
 MODEL_CONFIGS: dict[str, ModelConfig] = {
@@ -199,6 +213,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3.5 Sonnet (Oct 2024)",
         context_window=200_000,
         max_output_tokens=8_192,
+        max_output_tokens_ceiling=8_192,
         supports_thinking=False,
         cost_input_per_mtok=3.0,
         cost_output_per_mtok=15.0,
@@ -208,6 +223,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3.5 Sonnet (Jun 2024)",
         context_window=200_000,
         max_output_tokens=8_192,
+        max_output_tokens_ceiling=8_192,
         supports_thinking=False,
         is_deprecated=True,
         deprecation_message="Use claude-sonnet-4-20250514 instead",
@@ -219,6 +235,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3.5 Haiku",
         context_window=200_000,
         max_output_tokens=8_192,
+        max_output_tokens_ceiling=8_192,
         supports_thinking=False,
         cost_input_per_mtok=1.0,
         cost_output_per_mtok=5.0,
@@ -232,6 +249,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3 Opus",
         context_window=200_000,
         max_output_tokens=4_096,
+        max_output_tokens_ceiling=4_096,
         supports_thinking=False,
         is_deprecated=True,
         deprecation_message="Use claude-opus-4-20250514 instead",
@@ -243,6 +261,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3 Sonnet",
         context_window=200_000,
         max_output_tokens=4_096,
+        max_output_tokens_ceiling=4_096,
         supports_thinking=False,
         is_deprecated=True,
         deprecation_message="Use claude-sonnet-4-20250514 instead",
@@ -254,6 +273,7 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="Claude 3 Haiku",
         context_window=200_000,
         max_output_tokens=4_096,
+        max_output_tokens_ceiling=4_096,
         supports_thinking=False,
         cost_input_per_mtok=0.25,
         cost_output_per_mtok=1.25,
@@ -859,30 +879,35 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         display_name="GPT-4o",
         context_window=128_000,
         max_output_tokens=16_384,
+        max_output_tokens_ceiling=16_384,
     ),
     "gpt-4o-mini": ModelConfig(
         model_id="gpt-4o-mini",
         display_name="GPT-4o Mini",
         context_window=128_000,
         max_output_tokens=16_384,
+        max_output_tokens_ceiling=16_384,
     ),
     "gpt-4-turbo": ModelConfig(
         model_id="gpt-4-turbo",
         display_name="GPT-4 Turbo",
         context_window=128_000,
         max_output_tokens=4_096,
+        max_output_tokens_ceiling=4_096,
     ),
     "gpt-4": ModelConfig(
         model_id="gpt-4",
         display_name="GPT-4",
         context_window=8_192,
         max_output_tokens=8_192,
+        max_output_tokens_ceiling=8_192,
     ),
     "gpt-3.5-turbo": ModelConfig(
         model_id="gpt-3.5-turbo",
         display_name="GPT-3.5 Turbo",
         context_window=16_385,
         max_output_tokens=4_096,
+        max_output_tokens_ceiling=4_096,
     ),
 }
 

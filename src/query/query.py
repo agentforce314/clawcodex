@@ -363,6 +363,94 @@ def _get_context_window(provider: BaseProvider) -> int:
     return 200_000
 
 
+#: Headroom kept between the escalated request and the context window. The
+#: input count comes from the truncated reply's own usage, and the escalation
+#: re-sends that same request, so this only absorbs accounting slack. TS keeps
+#: the same 1,000-token buffer when it re-sizes ``max_tokens`` after a
+#: context-overflow 400 (withRetry.ts).
+ESCALATION_CONTEXT_MARGIN_TOKENS = 1_000
+
+
+def _usage_count(usage: Any, key: str) -> int:
+    """A non-negative int from a usage dict; 0 for anything else."""
+    value = usage.get(key) if isinstance(usage, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(value, 0)
+
+
+def _escalated_max_output_tokens(
+    provider: BaseProvider, truncated: Message | None,
+) -> int | None:
+    """``max_tokens`` for the truncation-escalation retry, or ``None`` to skip it.
+
+    The retry re-sends the request that was just cut off (#958), so it is
+    worth a request only if it allows more output than that request had.
+    Start from ``ESCALATED_MAX_TOKENS`` and lower it to:
+
+    * the model's known output ceiling (:func:`get_max_output_tokens_ceiling`:
+      a catalog row's documented maximum, or ``modelLimits`` for an
+      uncatalogued model);
+    * ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``, the user's own cap (TS skips the
+      escalation outright while it is set, query.ts);
+    * the context window less the truncated request's input tokens, so the
+      retry cannot overflow the window that the shorter request fitted in.
+
+    If what is left is no more than the truncated attempt already had (the
+    ``max_tokens`` sent on the Anthropic wire, and the output it actually
+    produced on either wire), the retry would be cut off at the same point.
+    Return ``None``, and the caller goes straight to the recovery lane, which
+    keeps the partial reply. With no limit known, the result is the
+    historical ``ESCALATED_MAX_TOKENS``.
+    """
+    try:
+        from ..models.context import (
+            get_env_max_output_tokens,
+            get_max_output_tokens_ceiling,
+            resolve_max_output_tokens,
+        )
+        from ..providers import is_anthropic_wire
+
+        model = getattr(provider, "model", None)
+        model = model if isinstance(model, str) else ""
+        base_url = getattr(provider, "base_url", None)
+        base_url = base_url if isinstance(base_url, str) else None
+
+        target = ESCALATED_MAX_TOKENS
+        for limit in (
+            get_max_output_tokens_ceiling(model, base_url=base_url),
+            get_env_max_output_tokens(),
+        ):
+            if limit is not None:
+                target = min(target, limit)
+
+        usage = getattr(truncated, "usage", None)
+        input_tokens = (
+            _usage_count(usage, "input_tokens")
+            + _usage_count(usage, "cache_creation_input_tokens")
+            + _usage_count(usage, "cache_read_input_tokens")
+        )
+        if input_tokens:
+            room = (
+                _get_context_window(provider)
+                - input_tokens
+                - ESCALATION_CONTEXT_MARGIN_TOKENS
+            )
+            target = min(target, room)
+
+        already_allowed = _usage_count(usage, "output_tokens")
+        if is_anthropic_wire(provider):
+            # The truncated request carried this exact value (_call_model_sync).
+            already_allowed = max(
+                already_allowed,
+                resolve_max_output_tokens(None, model or None, base_url=base_url),
+            )
+    except Exception:
+        logger.debug("escalation bound resolution failed", exc_info=True)
+        return ESCALATED_MAX_TOKENS
+    return target if target > already_allowed else None
+
+
 def _is_withheld_max_output_tokens(msg: Message | None) -> bool:
     if msg is None:
         return False
@@ -2134,17 +2222,25 @@ async def query(
             last_message = assistant_messages[-1] if assistant_messages else None
 
             if _is_withheld_max_output_tokens(last_message):
-                if (
-                    max_output_tokens_override is None
+                # One escalation per turn, and only when it can actually
+                # raise the ceiling. A retry that cannot (an output cap the
+                # first attempt already used, or a full context window) falls
+                # through to the recovery lane below, which keeps the partial
+                # reply instead of re-generating it (#958).
+                escalated_max_tokens = (
+                    _escalated_max_output_tokens(params.provider, last_message)
+                    if max_output_tokens_override is None
                     and max_output_tokens_recovery_count == 0
-                ):
+                    else None
+                )
+                if escalated_max_tokens is not None:
                     state = QueryState(
                         messages=messages,
                         tool_use_context=tool_use_context,
                         auto_compact_tracking=state.auto_compact_tracking,
                         max_output_tokens_recovery_count=max_output_tokens_recovery_count,
                         has_attempted_reactive_compact=has_attempted_reactive_compact,
-                        max_output_tokens_override=ESCALATED_MAX_TOKENS,
+                        max_output_tokens_override=escalated_max_tokens,
                         stop_hook_active=None,
                         turn_count=turn_count,
                         transition=Transition(reason="max_output_tokens_escalate"),
