@@ -1,4 +1,11 @@
-"""Tests for the data-driven OpenAI-compatible provider registry.
+"""Tes    "llmbuzz": {
+        "id": "llmbuzz",
+        "label": "llm.buzz",
+        "base_url": "https://api.llm.buzz/api/v1",
+        "default_model": "anthropic/claude-sonnet-4",
+        "env_var": "LLM_BUZZ_API_KEY",
+    },
+ts for the data-driven OpenAI-compatible provider registry.
 
 Covers ``src/providers/openai_compatible_specs.py``: registry completeness,
 generated-class defaults, alias resolution, API-key env-var fallback, and the
@@ -50,6 +57,7 @@ EXPECTED_NEW_PROVIDERS = {
     "runcrate",
     "cloudgpu",
     "cheapaimodel",
+    "llmbuzz",
     "meta",
     # OpenCode's openai-compatible profiles that this registry was missing
     "groq",
