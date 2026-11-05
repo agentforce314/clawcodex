@@ -41,6 +41,7 @@ def test_init_build_filters_disabled_server_instructions(tmp_path):
 
     class _FakeRuntime:
         def __init__(self):
+            self.config_errors = []
             self.server_infos = [_srv("enabled"), _srv("disabled")]
             self.tools = [SimpleNamespace(name="mcp__enabled__t")]
             self.clients = {"enabled": object(), "disabled": object()}

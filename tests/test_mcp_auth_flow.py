@@ -58,7 +58,7 @@ class TestNeedsAuthRetention:
             async def close(self): pass
 
         monkeypatch.setattr("src.services.mcp.config.get_all_mcp_configs",
-                            lambda: {"gh": _scoped()})
+                            lambda: ({"gh": _scoped()}, []))
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
         if auth is not None:
             monkeypatch.setattr(mod, "McpAuthProvider", lambda: auth, raising=False)
@@ -104,7 +104,7 @@ class TestTriggerOAuth:
             async def close(self): pass
 
         monkeypatch.setattr("src.services.mcp.config.get_all_mcp_configs",
-                            lambda: {"gh": _scoped()})
+                            lambda: ({"gh": _scoped()}, []))
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
         monkeypatch.setattr("src.services.mcp.auth_provider.McpAuthProvider",
                             lambda: auth)
