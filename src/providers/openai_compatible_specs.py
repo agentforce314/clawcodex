@@ -442,7 +442,16 @@ _SPECS: tuple[ProviderSpec, ...] = (
         ),
         env_vars=("CHEAPAIMODEL_API_KEY",),
         aliases=("cheap-ai-model", "cheap_ai_model"),
+    ),    ProviderSpec(
+        id="llmbuzz",
+        label="llm.buzz",
+        base_url="https://api.llm.buzz/api/v1",
+        default_model="anthropic/claude-sonnet-4",
+        available_models=["anthropic/claude-sonnet-4", "anthropic/claude-opus-4", "openai/gpt-5.4", "deepseek/deepseek-v4-flash", "google/gemma-4-31b-it"],
+        env_var="LLM_BUZZ_API_KEY",
+        aliases=["llm-buzz", "llm_buzz"],
     ),
+
     # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
     # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
     # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``
