@@ -1,14 +1,15 @@
 """McpRuntime: connect a stdio MCP server on a dedicated loop and call a tool
 through the loop-correct sync wrapper (the path the agent-server uses)."""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from tests.integration.test_mcp_integration import MOCK_MCP_SERVER_SCRIPT
-from src.services.mcp.types import McpStdioServerConfig, ScopedMcpServerConfig
 from src.server.mcp_runtime import McpRuntime
+from src.services.mcp.types import McpStdioServerConfig, ScopedMcpServerConfig
 from src.tool_system.context import ToolContext
+from tests.integration.test_mcp_integration import MOCK_MCP_SERVER_SCRIPT
 
 
 def _configure(monkeypatch, tmp_path: Path) -> None:
@@ -22,7 +23,7 @@ def _configure(monkeypatch, tmp_path: Path) -> None:
     }
     import src.services.mcp.config as mcpconfig
 
-    monkeypatch.setattr(mcpconfig, "get_all_mcp_configs", lambda: cfg)
+    monkeypatch.setattr(mcpconfig, "get_all_mcp_configs", lambda: (cfg, []))
 
 
 def test_runtime_connects_lists_and_calls(monkeypatch, tmp_path: Path) -> None:
@@ -79,8 +80,34 @@ def test_mcp_tools_register_into_default_registry(monkeypatch, tmp_path: Path) -
 def test_runtime_no_servers_is_noop(monkeypatch) -> None:
     import src.services.mcp.config as mcpconfig
 
-    monkeypatch.setattr(mcpconfig, "get_all_mcp_configs", lambda: {})
+    monkeypatch.setattr(mcpconfig, "get_all_mcp_configs", lambda: ({}, []))
     rt = McpRuntime()
     assert rt.start() is False
     assert rt.tools == []
     rt.shutdown()  # idempotent / safe when never started
+
+
+def test_runtime_retains_config_errors_without_starting(monkeypatch) -> None:
+    """Loader diagnostics survive even when every configured server is invalid."""
+    from src.services.mcp.config import ValidationError
+
+    errors = [ValidationError(path="mcpServers.bad", message="Invalid server")]
+    monkeypatch.setattr(
+        "src.services.mcp.config.get_all_mcp_configs", lambda: ({}, errors)
+    )
+    rt = McpRuntime()
+    assert rt.start() is False
+    assert rt.config_errors == errors
+    assert rt._loop is None
+
+
+def test_runtime_config_read_failure_is_guarded(monkeypatch) -> None:
+    """A loader exception still leaves startup safe and does not create a loop."""
+
+    def fail():
+        raise OSError("unreadable config")
+
+    monkeypatch.setattr("src.services.mcp.config.get_all_mcp_configs", fail)
+    rt = McpRuntime()
+    assert rt.start() is False
+    assert rt._loop is None
