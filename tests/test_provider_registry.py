@@ -57,6 +57,7 @@ EXPECTED_NEW_PROVIDERS = {
     "runcrate",
     "cloudgpu",
     "cheapaimodel",
+    "standardcompute",
     "llmbuzz",
     "meta",
     # OpenCode's openai-compatible profiles that this registry was missing
@@ -77,6 +78,7 @@ VENDOR_DEFAULTS = {
     "runcrate": ("https://api.runcrate.ai/v1", "deepseek-ai/DeepSeek-V4-Flash"),
     "cloudgpu": ("https://cloudgpu.app/v1", "deepseek-v4.1-flash"),
     "cheapaimodel": ("https://api.cheapaimodel.ai/v1", "deepseek-v4-1-flash"),
+    "standardcompute": ("https://api.stdcmpt.com/v1", "StandardCompute"),
     "stepfun": ("https://api.stepfun.ai/v1", "step-3.7-flash"),
     "siliconflow-cn": ("https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V4-Pro"),
     "meta": ("https://api.meta.ai/v1", "muse-spark-1.1"),

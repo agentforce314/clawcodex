@@ -442,7 +442,34 @@ _SPECS: tuple[ProviderSpec, ...] = (
         ),
         env_vars=("CHEAPAIMODEL_API_KEY",),
         aliases=("cheap-ai-model", "cheap_ai_model"),
-    ),    ProviderSpec(
+    ),
+    # Standard Compute (https://standardcompute.com) is an OpenAI-compatible
+    # model API gateway: Bearer auth against ``/v1/chat/completions``. Keys
+    # come from ``STANDARDCOMPUTE_API_KEY``. The default ``StandardCompute``
+    # model is routed: each request goes to the cheapest enabled model that
+    # can handle it, with automatic fallback. Pinned model ids are listed by
+    # the public ``GET https://api.stdcmpt.com/v1/models``.
+    # ``standard-compute`` / ``standard_compute`` mirror the hyphen and
+    # underscore alias pattern used by the other gateway rows.
+    ProviderSpec(
+        id="standardcompute",
+        label="Standard Compute",
+        default_base_url="https://api.stdcmpt.com/v1",
+        default_model="StandardCompute",
+        available_models=(
+            "StandardCompute",
+            "deepseek/deepseek-v4.1-flash",
+            "deepseek/deepseek-v4-pro",
+            "moonshotai/kimi-k3",
+            "z-ai/glm-5.3",
+            "minimax/minimax-m3",
+            "qwen/qwen3.7-plus",
+            "anthropic/claude-sonnet-5.5",
+        ),
+        env_vars=("STANDARDCOMPUTE_API_KEY",),
+        aliases=("standard-compute", "standard_compute"),
+    ),
+    ProviderSpec(
         id="llmbuzz",
         label="llm.buzz",
         base_url="https://api.llm.buzz/api/v1",
