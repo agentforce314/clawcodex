@@ -102,10 +102,10 @@ providers = [
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
-    "cheapaimodel",
+    "cheapaimodel", "uberllm",
     # Локальные серверы (ключ API не требуется)
     "ollama", "vllm", "sglang",
-]  # 28 провайдеров; псевдонимы вроде nim, kimi, hf разрешаются автоматически
+]  # 29 провайдеров; псевдонимы вроде nim, kimi, hf разрешаются автоматически
 ```
 
 ### Интерактивный REPL
