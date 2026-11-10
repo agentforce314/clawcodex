@@ -102,10 +102,10 @@ providers = [
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
-    "cheapaimodel",
+    "cheapaimodel", "uberllm",
     # Serveurs locaux (aucune clé API requise)
     "ollama", "vllm", "sglang",
-]  # 28 fournisseurs ; les alias comme nim, kimi, hf sont résolus automatiquement
+]  # 29 fournisseurs ; les alias comme nim, kimi, hf sont résolus automatiquement
 ```
 
 ### REPL interactif

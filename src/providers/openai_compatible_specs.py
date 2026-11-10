@@ -458,6 +458,28 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("LLM_BUZZ_API_KEY",),
         aliases=("llm-buzz", "llm_buzz"),
     ),
+    # UberLLM (https://uberllm.dev) is an OpenAI-compatible gateway: Bearer
+    # auth against ``/v1/chat/completions`` with ``vendor/model`` ids (public
+    # list: ``GET https://api.uberllm.dev/v1/models``). Keys come from
+    # ``UBERLLM_API_KEY`` (created at https://uberllm.dev/signup). Docs:
+    # https://uberllm.dev/docs/quickstart. Per-model prices:
+    # https://uberllm.dev/models. ``uber-llm`` / ``uber_llm`` mirror the
+    # hyphen and underscore alias pattern used by the other gateway rows.
+    ProviderSpec(
+        id="uberllm",
+        label="UberLLM",
+        default_base_url="https://api.uberllm.dev/v1",
+        default_model="deepseek/deepseek-v4.1-flash",
+        available_models=(
+            "deepseek/deepseek-v4.1-flash",
+            "deepseek/deepseek-v4-pro",
+            "qwen/qwen3-coder",
+            "openai/gpt-5.4-mini",
+            "anthropic/claude-sonnet-4.6",
+        ),
+        env_vars=("UBERLLM_API_KEY",),
+        aliases=("uber-llm", "uber_llm"),
+    ),
     # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
     # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
     # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``

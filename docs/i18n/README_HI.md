@@ -101,10 +101,10 @@ providers = [
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra", "runcrate", "cloudgpu",
-    "cheapaimodel",
+    "cheapaimodel", "uberllm",
     # लोकल सर्वर (कोई API key आवश्यक नहीं)
     "ollama", "vllm", "sglang",
-]  # 28 प्रदाता; nim, kimi, hf जैसे उपनाम स्वतः हल हो जाते हैं
+]  # 29 प्रदाता; nim, kimi, hf जैसे उपनाम स्वतः हल हो जाते हैं
 ```
 
 ### इंटरैक्टिव REPL
